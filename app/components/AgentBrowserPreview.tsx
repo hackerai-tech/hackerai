@@ -43,6 +43,7 @@ export function AgentBrowserPreview({
   browserRequested = false,
   runActive = false,
   onJumpToLive,
+  onContinue,
 }: {
   chatId: string;
   agentId: string;
@@ -50,6 +51,7 @@ export function AgentBrowserPreview({
   browserRequested?: boolean;
   runActive?: boolean;
   onJumpToLive?: () => void;
+  onContinue?: (message: { id: string; text: string }) => Promise<void>;
 }) {
   const session = useQuery(api.browserHandoffs.getForUser, { chatId, agentId });
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
@@ -61,7 +63,11 @@ export function AgentBrowserPreview({
   const backButtonRef = useRef<HTMLButtonElement>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const [grant, setGrant] = useState<string | null>(null);
-  const [confirmedIdentity, setConfirmedIdentity] = useState(false);
+  const [exitOpen, setExitOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [hasTakenControl, setHasTakenControl] = useState(false);
+  const exitRequestId = useRef<string | null>(null);
+  const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const grantRef = useRef<string | null>(null);
@@ -87,7 +93,13 @@ export function AgentBrowserPreview({
   );
   const resumeButtonRef = useRef<HTMLButtonElement>(null);
   const resumingRef = useRef(false);
-  const sessionId = session?.sessionId;
+  const scope = `${chatId}:${agentId}`;
+  if (session?.sessionId)
+    lastSession.current = { scope, id: session.sessionId };
+  const sessionId =
+    session?.sessionId ??
+    (lastSession.current?.scope === scope ? lastSession.current.id : undefined);
+  const activeSessionId = session?.sessionId;
   const endpoint = sessionId
     ? `/api/agent/browser/${encodeURIComponent(sessionId)}`
     : null;
@@ -108,7 +120,10 @@ export function AgentBrowserPreview({
     setFrame(null);
     setFrameSeenAt(0);
     setPreviewState("loading");
-    setConfirmedIdentity(false);
+    setExitOpen(false);
+    setNote("");
+    exitRequestId.current = null;
+    setHasTakenControl(false);
     setBusy(false);
     setError(null);
     setGrant(null);
@@ -139,7 +154,7 @@ export function AgentBrowserPreview({
   );
 
   useEffect(() => {
-    if (!endpoint) return;
+    if (!endpoint || !activeSessionId) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -156,7 +171,6 @@ export function AgentBrowserPreview({
           setFrame(data.frame as BrowserFrame);
           setFrameSeenAt(Date.now());
           setPreviewState("ready");
-          setError(null);
         }
       } catch {
         if (!stopped) setPreviewState("disconnected");
@@ -169,7 +183,7 @@ export function AgentBrowserPreview({
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [endpoint]);
+  }, [endpoint, activeSessionId]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -214,8 +228,11 @@ export function AgentBrowserPreview({
   }, [endpoint]);
 
   const frameStale =
-    !frame || previewState !== "ready" || now - frameSeenAt > FRAME_STALE_MS;
-  const human = !!grant;
+    !session ||
+    !frame ||
+    previewState !== "ready" ||
+    now - frameSeenAt > FRAME_STALE_MS;
+  const human = !!grant && !!session;
   const effectiveState =
     session &&
     (((session.state === "human" || session.state === "claiming") &&
@@ -230,9 +247,9 @@ export function AgentBrowserPreview({
     (effectiveState === "agent" || effectiveState === "recovery");
   const canResume =
     liveSelection &&
-    !frameStale &&
-    confirmedIdentity &&
-    (human || effectiveState === "recovery");
+    ((!!session && !frameStale && (human || effectiveState === "recovery")) ||
+      (!session && hasTakenControl) ||
+      (effectiveState === "agent" && !!exitRequestId.current));
 
   const takeControl = async () => {
     if (!canTake || !frame) return;
@@ -255,7 +272,10 @@ export function AgentBrowserPreview({
       setFrame(data.frame);
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
-      setConfirmedIdentity(false);
+      setExitOpen(false);
+      setNote("");
+      exitRequestId.current = null;
+      setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       setError(
@@ -268,7 +288,7 @@ export function AgentBrowserPreview({
   };
 
   const resumeAgent = async () => {
-    if (!canResume || !frame || resumingRef.current) return;
+    if (!canResume || resumingRef.current) return;
     resumingRef.current = true;
     const activeGrant = grantRef.current;
     setBusy(true);
@@ -286,16 +306,29 @@ export function AgentBrowserPreview({
       const data = await post({
         action: "resume",
         grant: activeGrant,
-        browserSessionName: frame.browserSessionName,
-        confirmedIdentity: true,
+        browserSessionName: frame?.browserSessionName,
+        requestId: (exitRequestId.current ??= crypto.randomUUID()),
+        note,
       });
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       grantRef.current = null;
       setGrant(null);
+      if (data.restart) {
+        if (!onContinue)
+          throw new Error(
+            "Your note is saved. Reopen this chat to continue the Agent.",
+          );
+        await onContinue(data.continuation);
+      }
       setFullScreen(false);
-      setConfirmedIdentity(false);
-      setFrame(data.frame);
-      setFrameSeenAt(Date.now());
+      setExitOpen(false);
+      setNote("");
+      exitRequestId.current = null;
+      setHasTakenControl(false);
+      if (data.frame) {
+        setFrame(data.frame);
+        setFrameSeenAt(Date.now());
+      }
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       grantRef.current = null;
@@ -443,7 +476,7 @@ export function AgentBrowserPreview({
     }
   };
 
-  if (!session && !browserRequested) return null;
+  if (!session && !browserRequested && !hasTakenControl) return null;
 
   const statusLabel = !session
     ? session === undefined
@@ -528,7 +561,7 @@ export function AgentBrowserPreview({
               human
                 ? fullScreen
                   ? "Control Agent browser. Escape moves focus to Back to chat."
-                  : "Control Agent browser. Escape moves focus to Resume agent."
+                  : "Control Agent browser. Escape moves focus to Exit takeover."
                 : undefined
             }
             className={`${fullScreen ? "flex h-full w-full min-h-0 items-center justify-center" : ""} ${human ? "cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" : ""}`}
@@ -617,29 +650,19 @@ export function AgentBrowserPreview({
             chat keeps the Agent paused.
           </span>
         )}
-        {human || effectiveState === "recovery" ? (
-          <>
-            <label className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                checked={confirmedIdentity}
-                onChange={(event) => setConfirmedIdentity(event.target.checked)}
-                className="mt-0.5 accent-foreground"
-              />
-              <span>
-                I verified the site and, if signed in, the account shown.
-              </span>
-            </label>
-            <button
-              ref={resumeButtonRef}
-              type="button"
-              onClick={() => void resumeAgent()}
-              disabled={!canResume || busy}
-              className="self-start rounded-md bg-foreground px-3 py-1.5 font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Resume agent
-            </button>
-          </>
+        {human || effectiveState === "recovery" || hasTakenControl ? (
+          <button
+            ref={resumeButtonRef}
+            type="button"
+            onClick={() => {
+              setExitOpen(true);
+              setError(null);
+            }}
+            disabled={busy}
+            className="self-start rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Exit takeover
+          </button>
         ) : (
           <span>
             {!session
@@ -688,33 +711,87 @@ export function AgentBrowserPreview({
   // Keep the controller mounted while switching views. A route navigation
   // would release the grant and interrupt queued input and the Agent pause.
   return (
-    <Dialog open={fullScreen} onOpenChange={setFullScreen}>
-      {!fullScreen && browserContent}
-      <DialogContent
-        showCloseButton={false}
-        className="inset-0 top-0 left-0 flex h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 duration-0 sm:max-w-none"
-        onOpenAutoFocus={(event) => {
-          event.preventDefault();
-          inputRef.current?.focus({ preventScroll: true });
-        }}
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          openButtonRef.current?.focus({ preventScroll: true });
-        }}
-        onEscapeKeyDown={(event) => {
-          // Escape leaves remote keyboard control, rather than silently
-          // dismissing the workspace or resuming the Agent.
-          event.preventDefault();
-          backButtonRef.current?.focus();
+    <>
+      <Dialog open={fullScreen} onOpenChange={setFullScreen}>
+        {!fullScreen && browserContent}
+        <DialogContent
+          showCloseButton={false}
+          className="inset-0 top-0 left-0 flex h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 duration-0 sm:max-w-none"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            inputRef.current?.focus({ preventScroll: true });
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            openButtonRef.current?.focus({ preventScroll: true });
+          }}
+          onEscapeKeyDown={(event) => {
+            // Escape leaves remote keyboard control, rather than silently
+            // dismissing the workspace or resuming the Agent.
+            event.preventDefault();
+            backButtonRef.current?.focus();
+          }}
+        >
+          <DialogTitle className="sr-only">Browser control</DialogTitle>
+          <DialogDescription className="sr-only">
+            Interact with the Agent browser while the Agent is paused. Return to
+            chat at any time, or exit takeover to continue the Agent.
+          </DialogDescription>
+          {fullScreen && browserContent}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={exitOpen}
+        onOpenChange={(open) => {
+          if (!busy) setExitOpen(open);
         }}
       >
-        <DialogTitle className="sr-only">Browser control</DialogTitle>
-        <DialogDescription className="sr-only">
-          Interact with the Agent browser while the Agent is paused. Return to
-          chat at any time, or confirm the site and account to resume the Agent.
-        </DialogDescription>
-        {fullScreen && browserContent}
-      </DialogContent>
-    </Dialog>
+        <DialogContent
+          className="sm:max-w-lg"
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (busy) event.preventDefault();
+          }}
+        >
+          <DialogTitle className="text-xl">
+            Tell HackerAI what you did
+          </DialogTitle>
+          <DialogDescription>
+            Briefly describe what you did, such as signing in or filling in
+            details, so HackerAI can continue from here. This is optional.
+          </DialogDescription>
+          <textarea
+            aria-label="What did you do? (optional)"
+            placeholder="e.g. I've signed in…"
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            maxLength={4000}
+            disabled={busy || !!exitRequestId.current}
+            className="min-h-32 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {!session && (
+            <p className="text-sm text-muted-foreground">
+              This run has ended. Continue will start a new Agent turn with your
+              saved context.
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={!canResume || busy}
+            onClick={() => void resumeAgent()}
+            className="justify-self-end rounded-xl bg-foreground px-5 py-3 font-medium text-background hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? "Continuing…" : "Send and continue"}
+          </button>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

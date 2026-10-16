@@ -849,6 +849,42 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it("delivers a saved handoff note to the next model request without replacing the task", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the form")],
+      { usedTokens: 1000, maxTokens: 128000 },
+    );
+    const getBrowserHandoffNotes = jest.fn().mockResolvedValue([
+      {
+        id: "handoff-1",
+        text: "I selected the XSS lab. Continue from here.",
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const result = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect the form" }],
+    });
+    expect(result.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "Inspect the form" }),
+        expect.objectContaining({
+          role: "user",
+          content: "I selected the XSS lab. Continue from here.",
+        }),
+      ]),
+    );
+    expect(getBrowserHandoffNotes).toHaveBeenCalledTimes(1);
+  });
+
   it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
     const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {

@@ -333,6 +333,7 @@ export default defineSchema({
     controlled_session_name: v.optional(v.string()),
     input_id: v.optional(v.string()),
     input_expires_at: v.optional(v.number()),
+    exit_note_ids: v.optional(v.array(v.string())),
     exposed_at: v.optional(v.number()),
     expires_at: v.number(),
     updated_at: v.number(),

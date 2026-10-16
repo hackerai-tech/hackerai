@@ -24,7 +24,11 @@ const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
 
-async function resolveSession(request: NextRequest, sessionId: string) {
+async function resolveSession(
+  request: NextRequest,
+  sessionId: string,
+  allowEnded = false,
+) {
   const userId = await getUserID(request);
   if (!serviceKey || !/^[a-f0-9]{32}$/.test(sessionId)) return null;
   const session = await getConvexClient().query(
@@ -33,6 +37,7 @@ async function resolveSession(request: NextRequest, sessionId: string) {
       serviceKey,
       userId,
       sessionId,
+      allowEnded,
     },
   );
   return session ? { session, userId } : null;
@@ -89,7 +94,8 @@ type BrowserAction = {
   grant?: unknown;
   input?: unknown;
   inputs?: unknown;
-  confirmedIdentity?: unknown;
+  requestId?: unknown;
+  note?: unknown;
 };
 
 export async function POST(
@@ -113,7 +119,11 @@ export async function POST(
     return json({ error: "Invalid input" }, 400);
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
   try {
-    resolved = await resolveSession(request, (await params).sessionId);
+    resolved = await resolveSession(
+      request,
+      (await params).sessionId,
+      body.action === "resume",
+    );
   } catch {
     return json({ error: "Unauthorized" }, 401);
   }
@@ -215,14 +225,38 @@ export async function POST(
 
   if (body.action === "resume") {
     if (
-      body.confirmedIdentity !== true ||
+      typeof body.requestId !== "string" ||
+      !/^[a-f0-9-]{36}$/.test(body.requestId) ||
+      (body.note !== undefined &&
+        (typeof body.note !== "string" || body.note.length > 4000))
+    )
+      return json({ error: "Invalid handoff note" }, 400);
+    const saveNote = () =>
+      convex.mutation(api.browserHandoffs.saveExitNoteForBackend, {
+        ...scope,
+        requestId: body.requestId as string,
+        note: (body.note as string | undefined) ?? "",
+      });
+    if (session.runActive === false || session.state === "agent") {
+      try {
+        const continuation = await saveNote();
+        return json({
+          state: session.state,
+          restart: !continuation.runActive,
+          continuation,
+        });
+      } catch {
+        return json(
+          { error: "Could not save the handoff. Please try again." },
+          409,
+        );
+      }
+    }
+    if (
       typeof body.browserSessionName !== "string" ||
       body.browserSessionName.length > 80
     )
-      return json(
-        { error: "Confirm the browser site and identity first" },
-        400,
-      );
+      return json({ error: "A current browser frame is required" }, 400);
     const started = await convex.mutation(
       api.browserHandoffs.beginResumeForBackend,
       {
@@ -247,6 +281,7 @@ export async function POST(
       );
       if (Date.now() - frame.capturedAt > 15_000)
         throw new BrowserPreviewUnavailable("disconnected");
+      const continuation = await saveNote();
       await setAgentBrowserPaused(sandbox, session, false);
       unpaused = true;
       const resumed = await convex.mutation(
@@ -261,7 +296,7 @@ export async function POST(
         agent_id: session.agentId,
       });
       after(() => phLogger.flush());
-      return json({ state: "agent", frame });
+      return json({ state: "agent", frame, continuation, restart: false });
     } catch (error) {
       if (unpaused) {
         try {

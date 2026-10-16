@@ -924,6 +924,7 @@ export const createChatHandler = () => {
               getSandboxSessionUsage,
               setCurrentModelName,
               getToolsForModel,
+              getBrowserHandoffNotes,
             } = createTools(
               userId,
               chatId,
@@ -1650,6 +1651,7 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              getBrowserHandoffNotes,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {

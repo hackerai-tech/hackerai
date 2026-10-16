@@ -149,6 +149,23 @@ export class BrowserSessions {
     };
   }
 
+  async getExitNotes(): Promise<Array<{ id: string; text: string }>> {
+    if (!this.handoffScope || this.closed) return [];
+    const scope = this.handoffScope;
+    const notes = await Promise.all(
+      [...this.sessions.values()]
+        .filter((session) => session.registered)
+        .map((session) =>
+          getConvexClient().query(api.browserHandoffs.getExitNotesForBackend, {
+            serviceKey: scope.serviceKey,
+            userId: scope.userId,
+            sessionId: session.sessionId,
+          }),
+        ),
+    );
+    return notes.flat();
+  }
+
   /** End ownership once, preventing any subsequent browser preparation. */
   cleanup(): Promise<void> {
     this.closed = true;

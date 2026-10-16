@@ -3,10 +3,19 @@ import type { NextRequest } from "next/server";
 const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
+let mockRunActive = true;
 let mockPaused = true;
 let mockFailure = "capture";
 const mockMutation = jest.fn(
   async (name: string, args: { paused?: boolean }) => {
+    if (name === "saveExitNoteForBackend") {
+      if (mockFailure === "save") throw new Error("Save failed");
+      return {
+        id: "saved-note",
+        text: "Saved context",
+        runActive: mockRunActive,
+      };
+    }
     if (name === "beginTakeoverForBackend") return true;
     if (name === "finishTakeoverForBackend") return mockFailure !== "claim";
     if (name === "abortTakeoverForBackend")
@@ -38,6 +47,7 @@ jest.mock("@/lib/db/convex-client", () => ({
     query: async () => ({
       sessionId: mockSessionId,
       state: mockState,
+      runActive: mockRunActive,
       controlledSessionName: "default",
     }),
     mutation: mockMutation,
@@ -79,6 +89,7 @@ beforeAll(async () => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockState = "recovery";
+  mockRunActive = true;
   mockPaused = true;
   mockFailure = "capture";
 });
@@ -156,4 +167,59 @@ it("sends a validated input burst through one lease and rejects invalid bursts b
   ]);
   expect(rejected.status).toBe(400);
   expect(mockSendInput).toHaveBeenCalledTimes(1);
+});
+
+const exitTakeover = (note = "") =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+      }),
+      json: async () => ({
+        action: "resume",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        browserSessionName: "default",
+        note,
+      }),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it("saves even a blank note before unpausing and preserves the gate on save failure", async () => {
+  mockFailure = "none";
+  const result = await exitTakeover();
+  expect(result.status).toBe(200);
+  expect(await result.json()).toMatchObject({
+    restart: false,
+    continuation: { id: "saved-note" },
+  });
+  const savedCall = mockMutation.mock.calls.findIndex(
+    ([name]) => name === "saveExitNoteForBackend",
+  );
+  expect(mockMutation.mock.invocationCallOrder[savedCall]).toBeLessThan(
+    mockPause.mock.invocationCallOrder[0],
+  );
+  jest.clearAllMocks();
+  mockPaused = true;
+  mockFailure = "save";
+  expect((await exitTakeover("I signed in")).status).toBe(503);
+  expect(mockPause).not.toHaveBeenCalled();
+  expect(mockPaused).toBe(true);
+});
+
+it("returns a persisted continuation after the run ends without touching its old browser", async () => {
+  mockRunActive = false;
+  mockState = "closed";
+  const result = await exitTakeover("Selected the XSS lab");
+  expect(result.status).toBe(200);
+  expect(await result.json()).toMatchObject({
+    restart: true,
+    continuation: { id: "saved-note" },
+  });
+  expect(mockPause).not.toHaveBeenCalled();
+  expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
+    "saveExitNoteForBackend",
+  ]);
 });

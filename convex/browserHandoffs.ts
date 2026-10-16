@@ -26,6 +26,7 @@ const publicSession = v.object({
   updatedAt: v.number(),
 });
 const privateSession = v.object({
+  runActive: v.boolean(),
   sessionId: v.string(),
   userId: v.string(),
   chatId: v.string(),
@@ -76,12 +77,21 @@ async function getSession(
   ctx: QueryCtx | MutationCtx,
   sessionId: string,
   userId: string,
+  allowEnded = false,
 ): Promise<Doc<"browser_handoffs"> | null> {
   const row = await ctx.db
     .query("browser_handoffs")
     .withIndex("by_session_id", (q) => q.eq("session_id", sessionId))
     .first();
-  if (row?.user_id !== userId || !(await currentOwner(ctx, row))) return null;
+  if (!row || row.user_id !== userId) return null;
+  if (allowEnded) {
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
+      .first();
+    if (!chat || chat.user_id !== userId || chat.deletion_started_at)
+      return null;
+  } else if (!(await currentOwner(ctx, row))) return null;
   // A recovered workspace can register a replacement session in the same
   // run. Older grants must not remain usable even after many replacements.
   const latest = await ctx.db
@@ -205,13 +215,19 @@ export const registerForBackend = mutation({
 });
 
 export const getForBackend = query({
-  args: serviceSessionArgs,
+  args: { ...serviceSessionArgs, allowEnded: v.optional(v.boolean()) },
   returns: v.union(privateSession, v.null()),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const row = await getSession(ctx, args.sessionId, args.userId);
+    const row = await getSession(
+      ctx,
+      args.sessionId,
+      args.userId,
+      args.allowEnded,
+    );
     if (!row) return null;
     return {
+      runActive: await currentOwner(ctx, row),
       sessionId: row.session_id,
       userId: row.user_id,
       chatId: row.chat_id,
@@ -476,5 +492,86 @@ export const closeForBackend = mutation({
       });
     }
     return null;
+  },
+});
+
+/** Save the exit intent and its user-visible message atomically, including after run cleanup. */
+export const saveExitNoteForBackend = mutation({
+  args: { ...serviceSessionArgs, requestId: v.string(), note: v.string() },
+  returns: v.object({
+    id: v.string(),
+    text: v.string(),
+    runActive: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (!/^[a-f0-9-]{36}$/.test(args.requestId) || args.note.length > 4000)
+      throw new Error("Invalid handoff note");
+    const row = await getSession(ctx, args.sessionId, args.userId, true);
+    if (!row) throw new Error("Browser session unavailable");
+    const runActive = await currentOwner(ctx, row);
+    const id = `browser-handoff-${row.session_id}-${args.requestId}`;
+    const existing = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", id))
+      .first();
+    if (existing) {
+      if (existing.user_id !== args.userId || existing.chat_id !== row.chat_id)
+        throw new Error("Invalid handoff message");
+      return { id, text: existing.content ?? "", runActive };
+    }
+    if (runActive && row.state !== "resuming")
+      throw new Error("Exit takeover must claim resume first");
+    const note = args.note.trim();
+    const text =
+      "I've finished browser takeover. " +
+      (note ? `What I did: ${note}\n\n` : "No additional details.\n\n") +
+      "Continue the task from the current state. Inspect the page before acting; my note is context, not proof of a successful action or account identity. If the earlier browser session ended, reopen what is needed and explain any state that could not be preserved.";
+    await ctx.db.insert("messages", {
+      id,
+      chat_id: row.chat_id,
+      user_id: args.userId,
+      role: "user",
+      parts: [{ type: "text", text }],
+      content: text,
+      mode: "agent",
+      trigger_run_id: row.run_id,
+      update_time: Date.now(),
+    });
+    await ctx.db.patch(row._id, {
+      exit_note_ids: [...(row.exit_note_ids ?? []), id].slice(-32),
+    });
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
+      .first();
+    if (chat) await ctx.db.patch(chat._id, { update_time: Date.now() });
+    return { id, text, runActive };
+  },
+});
+
+/** The owning runner re-reads saved notes at model boundaries; no destructive consumption. */
+export const getExitNotesForBackend = query({
+  args: serviceSessionArgs,
+  returns: v.array(v.object({ id: v.string(), text: v.string() })),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getSession(ctx, args.sessionId, args.userId);
+    if (!row) return [];
+    const messages = await Promise.all(
+      (row.exit_note_ids ?? []).map((id) =>
+        ctx.db
+          .query("messages")
+          .withIndex("by_message_id", (q) => q.eq("id", id))
+          .first(),
+      ),
+    );
+    return messages.flatMap((message) =>
+      message?.user_id === row.user_id &&
+      message.chat_id === row.chat_id &&
+      message.content
+        ? [{ id: message.id, text: message.content }]
+        : [],
+    );
   },
 });

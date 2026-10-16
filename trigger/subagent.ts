@@ -1056,6 +1056,7 @@ export const subagentTask = task({
             const {
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
+              getBrowserHandoffNotes,
               ensureSandbox,
               setCurrentModelName,
             } = createTools(
@@ -1470,8 +1471,13 @@ export const subagentTask = task({
                     );
                   }
                   const serializedMessages = JSON.stringify(messages);
+                  const handoffNotes = await getBrowserHandoffNotes();
                   const messagesWithUpdates = [
                     ...(messages as ModelMessage[]),
+                    ...handoffNotes.map((note) => ({
+                      role: "user" as const,
+                      content: note.text,
+                    })),
                     ...(deadlineMessage ? [deadlineMessage] : []),
                     ...Array.from(parentUpdates.entries()).flatMap(
                       ([messageId, updateMessage]) =>

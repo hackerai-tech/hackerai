@@ -34,6 +34,7 @@ function fixture() {
       },
     ],
     browser_handoffs: [],
+    messages: [],
   };
   const ctx = {
     auth: { getUserIdentity: async () => ({ subject: "owner" }) },
@@ -245,4 +246,82 @@ describe("browser handoff ownership", () => {
       (await browser.getForBackend.handler(ctx as never, scope))?.state,
     ).toBe("agent");
   });
+});
+
+it("saves exit context once, exposes it to the owning runner, and retains it after cleanup", async () => {
+  const { ctx, rows, scope, register } = fixture();
+  await register();
+  rows.browser_handoffs[0].state = "resuming";
+  const args = {
+    ...scope,
+    requestId: "11111111-1111-4111-8111-111111111111",
+    note: "I signed in.",
+  };
+  const saved = await browser.saveExitNoteForBackend.handler(
+    ctx as never,
+    args,
+  );
+  expect(saved.text).toContain("I signed in.");
+  expect(rows.messages).toHaveLength(1);
+  expect(
+    await browser.getExitNotesForBackend.handler(ctx as never, scope),
+  ).toEqual([{ id: saved.id, text: saved.text }]);
+  await browser.closeForBackend.handler(ctx as never, {
+    serviceKey: "key",
+    sessionId: scope.sessionId,
+  });
+  const retry = await browser.saveExitNoteForBackend.handler(
+    ctx as never,
+    args,
+  );
+  expect(retry).toEqual({ ...saved, runActive: false });
+  expect(rows.messages).toHaveLength(1);
+  expect(await browser.getForBackend.handler(ctx as never, scope)).toBeNull();
+  expect(
+    await browser.getForBackend.handler(ctx as never, {
+      ...scope,
+      allowEnded: true,
+    }),
+  ).toMatchObject({ runActive: false });
+});
+
+it("accepts an empty note after completion while rejecting another user or a replaced session", async () => {
+  const { ctx, rows, scope, register } = fixture();
+  await register();
+  rows.browser_handoffs[0].state = "closed";
+  const args = {
+    ...scope,
+    requestId: "11111111-1111-4111-8111-111111111111",
+    note: "  ",
+  };
+  expect(
+    await browser.saveExitNoteForBackend.handler(ctx as never, args),
+  ).toMatchObject({
+    runActive: false,
+    text: expect.stringContaining("No additional details"),
+  });
+  await expect(
+    browser.saveExitNoteForBackend.handler(ctx as never, {
+      ...args,
+      userId: "someone-else",
+    }),
+  ).rejects.toThrow();
+  await register("parent", "run-parent", "b".repeat(32));
+  await expect(
+    browser.saveExitNoteForBackend.handler(ctx as never, args),
+  ).rejects.toThrow();
+  expect(rows.messages).toHaveLength(1);
+});
+
+it("cannot create an exit message for a running session without the resume claim", async () => {
+  const { ctx, rows, scope, register } = fixture();
+  await register();
+  await expect(
+    browser.saveExitNoteForBackend.handler(ctx as never, {
+      ...scope,
+      requestId: "11111111-1111-4111-8111-111111111111",
+      note: "skip the claim",
+    }),
+  ).rejects.toThrow("claim resume");
+  expect(rows.messages).toHaveLength(0);
 });

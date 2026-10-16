@@ -907,6 +907,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const browserHandoffAdmissionRef = useRef<{
+    chatId: string;
+    id: string;
+    resolve: () => void;
+  } | null>(null);
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
@@ -1344,8 +1349,77 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setDelivery: setQueuedMessageDelivery,
     });
   useLayoutEffect(() => {
-    queuedAdmissionRef.current = acceptQueuedMessage;
+    queuedAdmissionRef.current = (admittedChatId, id) => {
+      acceptQueuedMessage(admittedChatId, id);
+      const pending = browserHandoffAdmissionRef.current;
+      if (pending?.chatId === admittedChatId && pending.id === id)
+        pending.resolve();
+    };
   }, [acceptQueuedMessage]);
+
+  const continueBrowserHandoff = useCallback(
+    async (message: { id: string; text: string }) => {
+      if (browserHandoffAdmissionRef.current)
+        throw new Error("A continuation is already starting.");
+      if (computerSendDisabledReasonRef.current)
+        throw new Error(computerSendDisabledReasonRef.current);
+      let accepted = false;
+      const admitted = new Promise<void>((resolve) => {
+        browserHandoffAdmissionRef.current = {
+          chatId,
+          id: message.id,
+          resolve: () => {
+            accepted = true;
+            resolve();
+          },
+        };
+      });
+      try {
+        hasManuallyStoppedRef.current = false;
+        setChatMode("agent");
+        chatModeRef.current = "agent";
+        const existing = messagesRef.current.some(
+          (item) => item.id === message.id,
+        );
+        const sending = sendMessage(
+          {
+            id: message.id,
+            role: "user",
+            parts: [{ type: "text", text: message.text }],
+            ...(existing ? { messageId: message.id } : {}),
+          },
+          {
+            body: {
+              mode: "agent",
+              todos: todosRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+              agentPermissionMode: agentPermissionModeRef.current,
+              selectedModel: requestSelectedModelRef.current,
+            },
+          },
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted)
+          throw new Error(
+            "Your note is saved, but the Agent could not start. Try Send and continue again.",
+          );
+      } finally {
+        browserHandoffAdmissionRef.current = null;
+      }
+    },
+    [
+      chatId,
+      sendMessage,
+      setChatMode,
+      chatModeRef,
+      sandboxPreferenceRef,
+      computerSendDisabledReasonRef,
+      messagesRef,
+      todosRef,
+      agentPermissionModeRef,
+      requestSelectedModelRef,
+    ],
+  );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -2578,6 +2652,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {sidebarOpen && (
                 <ComputerSidebar
+                  onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}
                   messages={messages}
                   status={status}
@@ -2607,6 +2682,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           >
             <div className="w-full max-w-4xl h-full">
               <ComputerSidebar
+                onBrowserContinue={continueBrowserHandoff}
                 chatId={chatId}
                 messages={messages}
                 status={status}

@@ -452,6 +452,8 @@ export const createTools = (
 
   return {
     tools,
+    getBrowserHandoffNotes: () =>
+      browserSessions?.getExitNotes() ?? Promise.resolve([]),
     cleanupBrowserSessions: () =>
       browserSessions?.cleanup() ?? Promise.resolve(),
     getSandbox,

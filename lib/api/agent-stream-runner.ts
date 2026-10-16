@@ -725,6 +725,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
@@ -1662,6 +1663,11 @@ export async function createAgentStream(
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      if (handoffNotes.length && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -1687,6 +1693,13 @@ export async function createAgentStream(
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
+      rollingModelMessages = [
+        ...rollingModelMessages,
+        ...handoffNotes.map((note) => ({
+          role: "user" as const,
+          content: note.text,
+        })),
+      ];
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||

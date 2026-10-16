@@ -93,6 +93,7 @@ interface ComputerSidebarProps {
   };
   browserChatId?: string;
   browserAgentId?: string;
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -332,6 +333,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   realtimeRecovery,
   browserChatId,
   browserAgentId = "parent",
+  onBrowserContinue,
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -724,6 +726,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
             {sidebarOpen && browserChatId && (
               <AgentBrowserPreview
+                onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
                 liveSelection={isAtLive && isFollowingLive}
@@ -1282,7 +1285,9 @@ const SubagentComputerSidebar = ({
   openSidebar,
   origin,
   sidebarContent,
+  onBrowserContinue,
 }: {
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
   chatId: string;
   closeSidebar: () => void;
   parentMessages: any[];
@@ -1385,6 +1390,7 @@ const SubagentComputerSidebar = ({
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
       sidebarOpen
       browserChatId={chatId}
       browserAgentId={origin.subagentId}
@@ -1414,7 +1420,8 @@ export const ComputerSidebar: React.FC<{
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
-}> = ({ chatId, messages, status }) => {
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+}> = ({ chatId, messages, status, onBrowserContinue }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
 
@@ -1431,6 +1438,7 @@ export const ComputerSidebar: React.FC<{
   if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
     return (
       <SubagentComputerSidebar
+        onBrowserContinue={onBrowserContinue}
         key={sidebarContent.origin.subagentId}
         chatId={chatId ?? ""}
         closeSidebar={closeSidebar}
@@ -1444,6 +1452,7 @@ export const ComputerSidebar: React.FC<{
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
       sidebarOpen={sidebarOpen}
       browserChatId={chatId}
       sidebarContent={sidebarContent}
