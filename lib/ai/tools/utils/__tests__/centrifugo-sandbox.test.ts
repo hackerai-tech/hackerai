@@ -3200,6 +3200,90 @@ describe("CentrifugoSandbox", () => {
       expect((error as Error).message).not.toContain("X-Amz-Signature");
     });
 
+    it.each([
+      { client: "curl", exitCode: 26, desktop: true, platform: "windows" },
+      { client: "wget", exitCode: 8, desktop: false, platform: "posix" },
+      { client: "powershell", exitCode: 1, desktop: true, platform: "windows" },
+      { client: "curl", exitCode: Infinity, desktop: false, platform: "posix" },
+    ])(
+      "records bounded $client upload failure diagnostics without transfer details",
+      async ({ client, exitCode, desktop, platform }) => {
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const { sandbox } = createWindowsBashSandbox();
+        (sandbox as any).connectionInfo.isDesktop = desktop;
+        if (platform === "posix")
+          (sandbox as any).connectionInfo.osInfo.platform = "linux";
+        (sandbox as any).httpClient = client;
+        const cleanup = jest.fn().mockResolvedValue(undefined);
+        jest
+          .spyOn(sandbox as any, "preparePowerShellCommand")
+          .mockResolvedValue({
+            command: "private prepared upload command",
+            cleanup,
+          });
+        const path = "C:\\private\\report-secret.txt";
+        const url =
+          "https://storage.example.com/private-key?X-Amz-Signature=secret";
+        const run = jest.fn(async (command: string) =>
+          command.includes("head -1")
+            ? { stdout: "GNU Wget", stderr: "", exitCode: 0 }
+            : {
+                stdout: `private stdout ${url}`,
+                stderr: `private stderr ${path} ${url}`,
+                exitCode,
+              },
+        );
+        (sandbox as any).commands.run = run;
+        try {
+          await expect(
+            sandbox.files.uploadToUrl(path, url, "private/media-type"),
+          ).rejects.toThrow("Failed to upload file:");
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0][0]).toBe("[centrifugo-http]");
+          const serialized = warn.mock.calls[0][1] as string;
+          expect(JSON.parse(serialized)).toEqual({
+            level: "warn",
+            event: "sandbox_file_upload_command_failed",
+            sandbox_type: desktop ? "desktop" : "local",
+            platform,
+            http_client: client,
+            exit_code: Number.isSafeInteger(exitCode) ? exitCode : null,
+          });
+          expect(serialized.length).toBeLessThan(220);
+          for (const sensitive of [
+            path,
+            url,
+            "secret",
+            "private",
+            "stdout",
+            "stderr",
+          ])
+            expect(serialized).not.toContain(sensitive);
+          expect(run).toHaveBeenCalledTimes(client === "wget" ? 2 : 1);
+          expect(cleanup).toHaveBeenCalledTimes(
+            client === "powershell" ? 1 : 0,
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("does not emit upload failure diagnostics for a successful command", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { sandbox } = createWindowsBashSandbox();
+      try {
+        await sandbox.files.uploadToUrl(
+          "report.txt",
+          "https://example.com",
+          "text/plain",
+        );
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("uploadToUrl emits Windows curl with --ssl-no-revoke when supported", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
 
