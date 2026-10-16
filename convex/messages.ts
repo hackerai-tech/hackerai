@@ -2080,6 +2080,8 @@ export const branchChat = mutation({
           content: msg.content,
           file_ids: msg.file_ids,
           source_message_id: msg.id,
+          is_hidden: msg.is_hidden,
+          is_browser_handoff: msg.is_browser_handoff,
           update_time: Date.now(),
           model: msg.model,
           mode: msg.mode,
