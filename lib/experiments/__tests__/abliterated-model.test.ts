@@ -267,7 +267,6 @@ describe("paid moderation-gated three-step Abliteration", () => {
   });
 
   describe("bounded same-chat follow-up", () => {
-    const now = Date.UTC(2026, 9, 16, 1, 24);
     const shortFollowup = [
       {
         id: "followup",
@@ -286,15 +285,12 @@ describe("paid moderation-gated three-step Abliteration", () => {
       moderationEligible: false,
       allowsAbliterationContinuation: true,
       independentAbliterationSeedCount: 2,
-      previousIndependentAbliterationSeedAt: now - 20 * 60 * 60 * 1000,
-      lastIndependentAbliterationSeedAt: now - 16 * 60 * 60 * 1000,
       continuationTurn: true,
       messages: shortFollowup,
-      now,
     };
 
     it.each(["ask", "agent"] as const)(
-      "serves step one on %s after a 16-hour gap and returns to baseline on step two",
+      "uses same-chat preference on %s without timestamps and returns to baseline on step two",
       async (mode) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
         const assignment = await evaluateAbliteratedModel({
@@ -334,22 +330,8 @@ describe("paid moderation-gated three-step Abliteration", () => {
     );
 
     it.each([
+      ["new or branched chat", { independentAbliterationSeedCount: 0 }],
       ["one seed", { independentAbliterationSeedCount: 1 }],
-      [
-        "missing earlier seed timestamp",
-        { previousIndependentAbliterationSeedAt: undefined },
-      ],
-      [
-        "only the newer seed is within 24 hours",
-        {
-          previousIndependentAbliterationSeedAt: now - 46 * 60 * 60 * 1000,
-          lastIndependentAbliterationSeedAt: now - 23 * 60 * 60 * 1000,
-        },
-      ],
-      [
-        "expired seed",
-        { lastIndependentAbliterationSeedAt: now - 25 * 60 * 60 * 1000 },
-      ],
       ["failed moderation", { allowsAbliterationContinuation: false }],
       ["regeneration or auto-run", { continuationTurn: false }],
       ["free plan", { subscription: "free" as const }],

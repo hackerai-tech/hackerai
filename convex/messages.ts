@@ -598,15 +598,11 @@ async function recordAbliterationSeed(
   chat: Doc<"chats">,
   at: number,
 ) {
-  const previousSeedAt =
-    typeof chat.abliteration_last_seed_at === "number" &&
-    at >= chat.abliteration_last_seed_at &&
-    at - chat.abliteration_last_seed_at <= 24 * 60 * 60 * 1000
-      ? chat.abliteration_last_seed_at
-      : undefined;
+  // A pause does not change the task. Keep evidence on this owned chat;
+  // inherited replies cannot add evidence and new/branched chats start without it.
   await ctx.db.patch(chat._id, {
-    abliteration_seed_count: previousSeedAt === undefined ? 1 : 2,
-    abliteration_previous_seed_at: previousSeedAt,
+    abliteration_seed_count: (chat.abliteration_seed_count ?? 0) >= 1 ? 2 : 1,
+    abliteration_previous_seed_at: chat.abliteration_last_seed_at,
     abliteration_last_seed_at: at,
   });
 }

@@ -244,9 +244,9 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
-  it("keeps a qualifying seed exactly 24 hours earlier in the pair", async () => {
+  it("keeps a qualifying seed when the same chat resumes after 30 days", async () => {
     const now = Date.UTC(2026, 9, 16, 12);
-    const previousSeedAt = now - 24 * 60 * 60 * 1000;
+    const previousSeedAt = now - 30 * 24 * 60 * 60 * 1000;
     const clock = jest.spyOn(Date, "now").mockReturnValue(now);
     try {
       setupExistingMessage(null, {
@@ -259,7 +259,7 @@ describe("saveMessage — is_hidden handling", () => {
       const { saveMessage } = await import("../messages");
       await saveMessage.handler(mockCtx, {
         serviceKey: SERVICE_KEY,
-        id: "completed-at-boundary",
+        id: "completed-after-pause",
         chatId: CHAT_ID,
         userId: USER_ID,
         role: "assistant",
@@ -286,7 +286,7 @@ describe("saveMessage — is_hidden handling", () => {
     }
   });
 
-  it("starts a new seed pair after the 24-hour window", async () => {
+  it("caps established same-chat evidence at two after a pause", async () => {
     setupExistingMessage(null, {
       _id: "chat-doc-1",
       id: CHAT_ID,
@@ -314,8 +314,7 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.db.patch).toHaveBeenCalledWith(
       "chat-doc-1",
       expect.objectContaining({
-        abliteration_seed_count: 1,
-        abliteration_previous_seed_at: undefined,
+        abliteration_seed_count: 2,
       }),
     );
   });

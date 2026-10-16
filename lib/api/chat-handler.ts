@@ -606,12 +606,6 @@ export const createChatHandler = () => {
         allowsAbliterationContinuation,
         independentAbliterationSeedCount:
           chat?.user_id === userId ? chat.abliteration_seed_count : 0,
-        previousIndependentAbliterationSeedAt:
-          chat?.user_id === userId
-            ? chat.abliteration_previous_seed_at
-            : undefined,
-        lastIndependentAbliterationSeedAt:
-          chat?.user_id === userId ? chat.abliteration_last_seed_at : undefined,
         continuationTurn: !regenerate && !isAutoContinue,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),

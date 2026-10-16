@@ -59,7 +59,6 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
   );
 
 const FOLLOWUP_MAX_CHARACTERS = 200;
-const FOLLOWUP_SEED_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const isShortTextFollowup = (messages: UIMessage[]): boolean => {
   const lastMessage = messages.at(-1);
@@ -104,10 +103,7 @@ export async function evaluateAbliteratedModel({
   moderationChecked = true,
   allowsAbliterationContinuation = false,
   independentAbliterationSeedCount = 0,
-  previousIndependentAbliterationSeedAt,
-  lastIndependentAbliterationSeedAt,
   continuationTurn = false,
-  now = Date.now(),
   messages,
   limitRescue = false,
   diagnosticContext,
@@ -122,10 +118,7 @@ export async function evaluateAbliteratedModel({
   moderationChecked?: boolean;
   allowsAbliterationContinuation?: boolean;
   independentAbliterationSeedCount?: number;
-  previousIndependentAbliterationSeedAt?: number;
-  lastIndependentAbliterationSeedAt?: number;
   continuationTurn?: boolean;
-  now?: number;
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
@@ -136,16 +129,6 @@ export async function evaluateAbliteratedModel({
     allowsAbliterationContinuation &&
     continuationTurn &&
     independentAbliterationSeedCount >= 2 &&
-    typeof previousIndependentAbliterationSeedAt === "number" &&
-    Number.isFinite(previousIndependentAbliterationSeedAt) &&
-    now >= previousIndependentAbliterationSeedAt &&
-    now - previousIndependentAbliterationSeedAt <= FOLLOWUP_SEED_WINDOW_MS &&
-    typeof lastIndependentAbliterationSeedAt === "number" &&
-    Number.isFinite(lastIndependentAbliterationSeedAt) &&
-    lastIndependentAbliterationSeedAt >=
-      previousIndependentAbliterationSeedAt &&
-    now >= lastIndependentAbliterationSeedAt &&
-    now - lastIndependentAbliterationSeedAt <= FOLLOWUP_SEED_WINDOW_MS &&
     isShortTextFollowup(messages);
   const reportDecision = (reason: string, variant?: string) => {
     if (
