@@ -51,7 +51,7 @@ export const stringifyRedactedError = (error: unknown): string => {
         ? error
         : (() => {
             try {
-              return JSON.stringify(error);
+              return JSON.stringify(error) ?? "Unknown error occurred";
             } catch {
               return String(error);
             }

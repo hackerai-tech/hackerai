@@ -25,19 +25,16 @@ export const getErrorMessage = (err: unknown): string => {
   if (err && typeof err === "object" && "message" in err) {
     const msg = (err as { message: unknown }).message;
     if (typeof msg === "string") return msg;
-    if (msg !== undefined) {
-      try {
-        const serialized = JSON.stringify(msg);
-        if (serialized !== undefined) return serialized;
-      } catch {
-        // Fall through to a stable message for malformed error values.
-      }
+    try {
+      return JSON.stringify(msg) ?? "Unknown error occurred";
+    } catch {
+      return "Unknown error occurred";
     }
   }
   try {
-    return JSON.stringify(err) ?? String(err);
+    return JSON.stringify(err) ?? "Unknown error occurred";
   } catch {
-    return String(err);
+    return "Unknown error occurred";
   }
 };
 

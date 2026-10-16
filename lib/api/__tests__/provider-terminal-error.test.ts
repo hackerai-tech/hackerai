@@ -59,17 +59,19 @@ describe("getProviderDisconnectIgnoredSlugs", () => {
 });
 
 describe("wrapProviderTerminalError", () => {
-  it("preserves recovery diagnostics when an empty response has no error cause", () => {
-    const error = wrapProviderTerminalError(undefined, {
-      model: "abliterated-model",
+  it("can prepare recovery diagnostics when an empty stream has no provider error", () => {
+    const state = { providerError: undefined };
+    const error = wrapProviderTerminalError(state.providerError, {
+      model: "test/model",
     });
-
     expect(error).toMatchObject({
       name: "ProviderTerminalError",
-      category: "unknown",
-      model: "abliterated-model",
       message: "Provider terminal error category=unknown",
+      category: "unknown",
+      model: "test/model",
     });
+    expect(error.cause).toBeUndefined();
+    expect(wrapProviderTerminalError(error, {})).toBe(error);
   });
 
   it("uses a low-cardinality fingerprint while retaining provider diagnostics", () => {

@@ -1,4 +1,8 @@
 import {
+  getStructuredCompactionPrompt,
+  renderStructuredCompaction,
+} from "./structured-summary";
+import {
   UIMessage,
   generateText,
   convertToModelMessages,
@@ -742,12 +746,15 @@ export const generateSummaryText = async (
     timeout?: number;
     maxRetries?: number;
     preservePrefix?: boolean;
+    structuredSummary?: boolean;
     maxOutputTokens?: number;
     onDiscardedUsage?: (usage: SummarizationUsage) => void;
     validateText?: (text: string) => boolean;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
-  const summarizationPrompt = getSummarizationPrompt(mode);
+  const summarizationPrompt = generationOptions?.structuredSummary
+    ? getStructuredCompactionPrompt(mode)
+    : getSummarizationPrompt(mode);
 
   const incrementalNote = hasExistingSummary
     ? `\n\n${INCREMENTAL_SUMMARIZATION_INSTRUCTIONS}`
@@ -858,25 +865,31 @@ export const generateSummaryText = async (
     finishReason: result.finishReason,
     reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens,
   };
+  const summaryText = generationOptions?.structuredSummary
+    ? renderStructuredCompaction(result.text, mode)
+    : result.text;
   // A discarded warm attempt can still be billable. Account for its reported
   // usage separately before trying a differently priced bounded fallback.
   if (
     abortSignal?.aborted ||
     !result.text.trim() ||
     result.finishReason !== "stop" ||
-    generationOptions?.validateText?.(result.text) === false
+    summaryText === null ||
+    generationOptions?.validateText?.(summaryText) === false
   ) {
     generationOptions?.onDiscardedUsage?.(usage);
     abortSignal?.throwIfAborted();
     throw new InvalidCompactionSummaryError(
       !result.text.trim()
-        ? "empty_summary"
+        ? usage.reasoningTokens && usage.reasoningTokens > 0
+          ? "reasoning_only"
+          : "empty_summary"
         : result.finishReason !== "stop"
           ? "non_stop_finish"
           : "missing_sections",
     );
   }
-  return { text: result.text, usage };
+  return { text: summaryText, usage };
 };
 
 export const buildSummaryPersistenceMetadata = ({

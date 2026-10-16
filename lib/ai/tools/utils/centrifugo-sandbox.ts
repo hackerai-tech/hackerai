@@ -2339,6 +2339,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: `Uploading: ${fileName}`,
         });
         if (result.exitCode !== 0) {
+          // The thrown error retains the existing redacted message. Record the
+          // command outcome separately without paths, signed URLs or output.
+          console.warn(
+            "[centrifugo-http]",
+            JSON.stringify({
+              level: "warn",
+              event: "sandbox_file_upload_command_failed",
+              sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+              platform: this.isWindows() ? "windows" : "posix",
+              http_client: httpClient,
+              exit_code: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : null,
+            }),
+          );
           const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
             rawPath,
             path,

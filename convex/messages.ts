@@ -5,7 +5,13 @@ import {
 } from "../lib/experiments/abliteration-history";
 import { query, mutation, internalQuery } from "./lib/serviceFunctions";
 import type { MutationCtx } from "./lib/serviceFunctions";
-import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
+import {
+  v,
+  ConvexError,
+  getConvexSize,
+  getDocumentSize,
+  type Value,
+} from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
@@ -136,6 +142,55 @@ const MIN_SEARCH_CONTENT_CHARS = 256;
 
 const getMessageDocumentSize = (document: Record<string, unknown>): number =>
   getDocumentSize(document as Record<string, Value>);
+
+const getClientPartSizeDiagnostics = (parts: Value[]) => {
+  const categories = {
+    text: { count: 0, sizeBytes: 0 },
+    reasoning: { count: 0, sizeBytes: 0 },
+    file: { count: 0, sizeBytes: 0 },
+    tool: { count: 0, sizeBytes: 0 },
+    data: { count: 0, sizeBytes: 0 },
+    "step-start": { count: 0, sizeBytes: 0 },
+    other: { count: 0, sizeBytes: 0 },
+  };
+  type Category = keyof typeof categories;
+  let largestPartCategory: Category | "none" = "none";
+  let largestPartSizeBytes = 0;
+  let partsSizeBytes = 2; // Convex array marker and terminator.
+  for (const part of parts) {
+    const type =
+      part && typeof part === "object" && "type" in part
+        ? part.type
+        : undefined;
+    // Never emit client-supplied type, tool or data names as telemetry keys.
+    const category: Category =
+      type === "text" ||
+      type === "reasoning" ||
+      type === "file" ||
+      type === "step-start"
+        ? type
+        : typeof type === "string" &&
+            (type.startsWith("tool-") || type === "dynamic-tool")
+          ? "tool"
+          : typeof type === "string" && type.startsWith("data-")
+            ? "data"
+            : "other";
+    const sizeBytes = getConvexSize(part);
+    categories[category].count++;
+    categories[category].sizeBytes += sizeBytes;
+    partsSizeBytes += sizeBytes;
+    if (sizeBytes > largestPartSizeBytes) {
+      largestPartSizeBytes = sizeBytes;
+      largestPartCategory = category;
+    }
+  }
+  return {
+    partsSizeBytes,
+    largestPartSizeBytes,
+    largestPartCategory,
+    categories,
+  };
+};
 
 const sliceValidUnicodePrefix = (value: string, end: number): string => {
   const sliced = value.slice(0, end);
@@ -1350,6 +1405,7 @@ export const saveAssistantMessage = mutation({
           maxDocumentSizeBytes: CONVEX_DOCUMENT_MAX_BYTES,
           targetDocumentSizeBytes: MESSAGE_DOCUMENT_TARGET_BYTES,
           partCount: args.parts.length,
+          partDiagnostics: getClientPartSizeDiagnostics(args.parts),
         });
       }
       // Match backend saves: canonical parts remain intact while the duplicated
