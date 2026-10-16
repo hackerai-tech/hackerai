@@ -94,7 +94,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  child?.kill();
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, "exit");
+    child.kill();
+    await exited;
+  }
   for (const socket of upstream?.clients ?? []) socket.terminate();
   if (upstream)
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
@@ -231,7 +235,7 @@ it("starts the detached relay from protected stdin and prints only its port", as
   const [code] = await once(launcher, "exit");
   expect(code).toBe(0);
   expect(stdout).toMatch(/^\d+$/);
-  await writeFile(join(second, "revoked"), "1");
+  expect(await stopRelay(second)).toBe(0);
 });
 
 async function stopRelay(target = directory) {
