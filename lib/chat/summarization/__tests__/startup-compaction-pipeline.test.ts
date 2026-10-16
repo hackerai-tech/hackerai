@@ -208,6 +208,15 @@ describe("startup compaction through the real AI SDK", () => {
       expect(abliteration.doGenerateCalls).toHaveLength(1);
       expect(glm.doGenerateCalls).toHaveLength(1);
       expect(fallback.doGenerateCalls).toHaveLength(0);
+      expect(glm.doGenerateCalls[0].providerOptions?.openrouter).toMatchObject({
+        provider: { sort: "throughput", data_collection: "deny" },
+      });
+      expect(
+        glm.doGenerateCalls[0].providerOptions?.openrouter?.provider,
+      ).not.toHaveProperty("ignore");
+      expect(
+        glm.doGenerateCalls[0].providerOptions?.openrouter?.provider,
+      ).not.toHaveProperty("order");
       expect(saveSummary).toHaveBeenCalledTimes(1);
     },
   );
@@ -406,6 +415,8 @@ describe("startup compaction through the real AI SDK", () => {
         reasoning: { enabled: true, effort: "low" },
         provider: {
           require_parameters: true,
+          order: ["baseten"],
+          ignore: ["modal"],
           sort: "latency",
           data_collection: "deny",
         },
@@ -650,7 +661,7 @@ describe("startup compaction through the real AI SDK", () => {
     },
   );
 
-  it.each([400, 403])(
+  it.each([400, 403, 503])(
     "recovers a non-retryable cheaper-provider HTTP %s through Abliteration",
     async (statusCode) => {
       mockFlag.mockResolvedValue(true);

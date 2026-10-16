@@ -106,7 +106,7 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      telemetry_version: 6,
+      telemetry_version: 7,
       $process_person_profile: false,
     };
     phLogger.event("compaction_model_started", properties);
