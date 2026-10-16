@@ -32,6 +32,8 @@ export async function recordUserScope(args: {
   let policy = { rules: current.rules, restrictions: current.restrictions };
   let clarification = current.clarification;
   let unavailable = false;
+  let failureStage: "generation" | "validation" = "generation";
+  const extractionSignal = AbortSignal.timeout(20_000);
   try {
     if (source.sourceText.length > MAX_SCOPE_TEXT) {
       clarification =
@@ -55,13 +57,16 @@ export async function recordUserScope(args: {
         temperature: 0,
         maxOutputTokens: 4000,
         maxRetries: 0,
-        abortSignal: AbortSignal.timeout(20_000),
+        abortSignal: extractionSignal,
         providerOptions: {
           openrouter: {
+            // Like title extraction, this bounded classification needs low reasoning.
+            reasoning: { enabled: true, effort: "low" },
             usage: { include: true },
           },
         },
       });
+      failureStage = "validation";
       ({ policy, clarification } = applyExtraction(
         policy,
         source.sourceText,
@@ -78,6 +83,10 @@ export async function recordUserScope(args: {
   } catch {
     // Persist the failure independently of transcript/model state. No raw input in logs.
     unavailable = true;
+    console.warn("engagement_scope_extraction_failed", {
+      stage: failureStage,
+      timedOut: extractionSignal.aborted,
+    });
   }
   const applied = await client.mutation(
     api.engagementScopes.commitUserMessage,
