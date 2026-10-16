@@ -1,5 +1,7 @@
 import "server-only";
 
+import { getCompactionResponseFormat } from "./structured-summary";
+
 import {
   CompactionModelPolicy,
   COMPACTION_PRIMARY_MODEL,
@@ -263,12 +265,17 @@ const buildContextCompactionProviderOptions = (
 
 const buildStartupCompactionProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
-  latencyRouting = false,
+  structuredMode?: ChatMode,
 ): Record<string, Record<string, unknown>> => ({
   openrouter: {
     ...buildContextCompactionProviderOptions(providerOptions).openrouter,
+    // Request JSON at the adapter boundary; validate after capturing billable usage.
+    ...(structuredMode
+      ? { response_format: getCompactionResponseFormat(structuredMode) }
+      : {}),
     provider: {
-      sort: latencyRouting ? "latency" : "throughput",
+      sort: structuredMode ? "latency" : "throughput",
+      ...(structuredMode ? { require_parameters: true } : {}),
       data_collection: "deny",
     },
   },
@@ -594,7 +601,7 @@ const generateSummaryTextWithRetry = async ({
                   }
                 : buildStartupCompactionProviderOptions(
                     providerOptions,
-                    isTreatmentGlm,
+                    isTreatmentGlm ? mode : undefined,
                   ),
               abortSignal,
               modelMessages,
@@ -604,7 +611,9 @@ const generateSummaryTextWithRetry = async ({
                 // GLM failures cluster at the 60s total deadline. Allow longer
                 // checkpoints to finish while keeping recovery bounded.
                 timeout: isTreatmentGlm ? 90_000 : 60_000,
-                maxOutputTokens: 8192,
+                // GLM shares this budget between mandatory reasoning and text.
+                maxOutputTokens: isTreatmentGlm ? 16384 : 8192,
+                structuredSummary: isTreatmentGlm,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
                 onDiscardedUsage: (usage) => {

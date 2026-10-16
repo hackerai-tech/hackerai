@@ -21,6 +21,7 @@ export class InvalidCompactionSummaryError extends Error {
   constructor(
     readonly reason:
       | "empty_summary"
+      | "reasoning_only"
       | "non_stop_finish"
       | "missing_sections"
       | "invalid_summary" = "invalid_summary",
