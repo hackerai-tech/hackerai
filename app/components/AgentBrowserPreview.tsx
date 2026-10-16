@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { api } from "@/convex/_generated/api";
+import { normalizeBrowserInputBatch } from "@/lib/ai/browser-handoff/input";
 import {
   readBrowserRelay,
   sendBrowserRelayInput,
@@ -102,6 +103,9 @@ export function AgentBrowserPreview({
     session?.sessionId ??
     (lastSession.current?.scope === scope ? lastSession.current.id : undefined);
   const activeSessionId = session?.sessionId;
+  const noteStorageKey = sessionId
+    ? `hackerai:browser-handoff-note:${scope}:${sessionId}`
+    : null;
   const endpoint = sessionId
     ? `/api/agent/browser/${encodeURIComponent(sessionId)}`
     : null;
@@ -123,7 +127,14 @@ export function AgentBrowserPreview({
     setFrameSeenAt(0);
     setPreviewState("loading");
     setExitOpen(false);
-    setNote("");
+    try {
+      const saved = noteStorageKey
+        ? sessionStorage.getItem(noteStorageKey)
+        : null;
+      setNote(saved?.slice(0, 4000) ?? "");
+    } catch {
+      setNote("");
+    }
     exitRequestId.current = null;
     setHasTakenControl(false);
     setBusy(false);
@@ -137,7 +148,7 @@ export function AgentBrowserPreview({
     resumingRef.current = false;
     bufferedInputs.current = [];
     drainingInputs.current = false;
-  }, [sessionId]);
+  }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
     async (body: Record<string, unknown>, keepalive = false) => {
@@ -326,10 +337,7 @@ export function AgentBrowserPreview({
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
       setExitOpen(false);
-      if (!hasTakenControl) {
-        setNote("");
-        exitRequestId.current = null;
-      }
+      if (!hasTakenControl) exitRequestId.current = null;
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -381,6 +389,11 @@ export function AgentBrowserPreview({
       setFullScreen(false);
       setExitOpen(false);
       setNote("");
+      try {
+        if (noteStorageKey) sessionStorage.removeItem(noteStorageKey);
+      } catch {
+        // Storage may be unavailable; the submitted context is already saved.
+      }
       exitRequestId.current = null;
       setHasTakenControl(false);
       if (data.frame) {
@@ -419,18 +432,14 @@ export function AgentBrowserPreview({
       .then(async () => {
         while (buffer.length && grantRef.current === activeGrant) {
           const inputs: BrowserInput[] = [];
-          let eventCount = 0;
           while (buffer.length && inputs.length < 16) {
-            const next = buffer[0];
-            const cost =
-              next.kind === "text"
-                ? [...next.text].length * 2
-                : next.kind === "key"
-                  ? 2
-                  : 1;
-            if (eventCount + cost > 64) break;
+            // Share the server's event AND serialized-size bounds. Newline key
+            // pairs are larger than ordinary text and can hit the byte limit first.
+            if (!normalizeBrowserInputBatch([...inputs, buffer[0]])) {
+              if (!inputs.length) throw new Error("Unsupported browser input");
+              break;
+            }
             inputs.push(buffer.shift()!);
-            eventCount += cost;
           }
           if (relayUrl) {
             await sendBrowserRelayInput(
@@ -637,10 +646,10 @@ export function AgentBrowserPreview({
               }
               setPasteError(null);
               const chars = [...text];
-              for (let i = 0; i < chars.length; i += 32) {
+              for (let i = 0; i < chars.length; i += 31) {
                 sendInput({
                   kind: "text",
-                  text: chars.slice(i, i + 32).join(""),
+                  text: chars.slice(i, i + 31).join(""),
                 });
               }
             }}
@@ -781,7 +790,7 @@ export function AgentBrowserPreview({
               setPreviewState("loading");
               setRelayReconnect((value) => value + 1);
             }}
-            className="pointer-events-auto inline-flex self-start items-center gap-1 text-foreground underline-offset-2 hover:underline"
+            className={`pointer-events-auto inline-flex items-center gap-1 text-foreground underline-offset-2 hover:underline ${fullScreen ? "rounded-lg border border-border bg-background px-3 py-2 text-sm shadow-lg" : "self-start"}`}
           >
             <RefreshCw size={12} aria-hidden /> Reconnect preview
           </button>
@@ -848,7 +857,20 @@ export function AgentBrowserPreview({
             aria-label="What did you do? (optional)"
             placeholder="e.g. I've signed in…"
             value={note}
-            onChange={(event) => setNote(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              setNote(value);
+              // Keep unsent context through reconnect/remount, scoped to this
+              // browser session and tab. Never persist the control grant.
+              try {
+                if (noteStorageKey) {
+                  if (value) sessionStorage.setItem(noteStorageKey, value);
+                  else sessionStorage.removeItem(noteStorageKey);
+                }
+              } catch {
+                // Typing and continuing still work when browser storage is blocked.
+              }
+            }}
             maxLength={4000}
             disabled={busy || !!exitRequestId.current}
             className="min-h-32 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

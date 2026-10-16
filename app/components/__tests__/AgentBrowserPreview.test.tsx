@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { AgentBrowserPreview } from "../AgentBrowserPreview";
+import { normalizeBrowserInputBatch } from "@/lib/ai/browser-handoff/input";
 
 let mockSession: Record<string, unknown> | null;
 jest.mock("convex/react", () => ({ useQuery: () => mockSession }));
@@ -40,6 +41,7 @@ async function takeControl() {
 
 beforeEach(() => {
   jest.useFakeTimers();
+  sessionStorage.clear();
   mockSession = { sessionId: "session-a", state: "agent" };
   actions = [];
   handleAction = async (body) =>
@@ -715,3 +717,98 @@ it.each(["x".repeat(2049), "a".repeat(2047) + "😀"])(
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   },
 );
+
+it("restores an unsent exit note after remount and clears it after successful resume", async () => {
+  const first = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Draft after reconnect." },
+  });
+  first.unmount();
+  mockSession!.state = "recovery";
+  const recovered = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Draft after reconnect.");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "resume",
+    note: "Draft after reconnect.",
+  });
+  recovered.unmount();
+  await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("");
+});
+
+it.each([32, 63])(
+  "pastes %i newlines without exceeding the server wire-size limit",
+  async (count) => {
+    handleAction = async (body) =>
+      body.action === "input"
+        ? response({}, !!normalizeBrowserInputBatch(body.inputs))
+        : response({ grant: "grant-a", frame });
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => "\n".repeat(count) },
+      });
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const sent = actions.filter((body) => body.action === "input");
+    expect(
+      sent.every((body) => normalizeBrowserInputBatch(body.inputs) !== null),
+    ).toBe(true);
+    expect(
+      sent
+        .flatMap((body) => body.inputs as Array<{ text: string }>)
+        .map((input) => input.text)
+        .join(""),
+    ).toBe("\n".repeat(count));
+  },
+);
+
+it("can submit the note when browser storage is blocked", async () => {
+  const get = jest
+    .spyOn(Storage.prototype, "getItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  const set = jest
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  const remove = jest
+    .spyOn(Storage.prototype, "removeItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  try {
+    await mount();
+    await takeControl();
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Storage unavailable, context still submitted." },
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send and continue" }),
+      );
+    });
+    expect(actions.at(-1)).toMatchObject({
+      action: "resume",
+      note: "Storage unavailable, context still submitted.",
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    get.mockRestore();
+    set.mockRestore();
+    remove.mockRestore();
+  }
+});
