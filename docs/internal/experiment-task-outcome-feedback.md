@@ -16,8 +16,7 @@ pairs separate in reservations and readouts:
 | `abliterated_max_moderated_v1`          | `abliterated_max_moderated_feedback_v1`          | Historical Pro/Max moderation assignments                                   |
 | `abliterated_paid_first_step_v2`        | `abliterated_paid_first_step_feedback_v2`        | All paid selectors, `paid_first_step`, control and test                     |
 | `abliterated_paid_moderated_default_v1` | `abliterated_paid_moderated_default_feedback_v1` | All paid selectors, `moderation`, shipped default (`test` attribution only) |
-
-| `abliterated_short_followup_v1` | `abliterated_short_followup_feedback_v1` | All paid selectors, `history`, control and test |
+| `abliterated_short_followup_v1`         | `abliterated_short_followup_feedback_v1`         | All paid selectors, `history`, control and test                             |
 
 An omitted selector is recorded as `auto`. The shipped default is descriptive
 feedback, not another experimental treatment arm. A new routing key must add an
