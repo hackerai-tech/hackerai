@@ -244,6 +244,48 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("keeps a qualifying seed exactly 24 hours earlier in the pair", async () => {
+    const now = Date.UTC(2026, 9, 16, 12);
+    const previousSeedAt = now - 24 * 60 * 60 * 1000;
+    const clock = jest.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      setupExistingMessage(null, {
+        _id: "chat-doc-1",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        abliteration_seed_count: 1,
+        abliteration_last_seed_at: previousSeedAt,
+      });
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "completed-at-boundary",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [{ type: "text", text: "bounded response" }],
+        finishReason: "stop",
+        usage: {
+          abliterationRouting: {
+            version: 1,
+            source: "moderation",
+            completed: true,
+          },
+        },
+      });
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(
+        "chat-doc-1",
+        expect.objectContaining({
+          abliteration_seed_count: 2,
+          abliteration_previous_seed_at: previousSeedAt,
+          abliteration_last_seed_at: now,
+        }),
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("starts a new seed pair after the 24-hour window", async () => {
     setupExistingMessage(null, {
       _id: "chat-doc-1",
