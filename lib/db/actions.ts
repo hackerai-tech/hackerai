@@ -244,6 +244,7 @@ const getUpstreamHttpError = (
 
   const statusMatch =
     message.match(/<title>[^<|]+\|\s*(5\d{2}):/i) ??
+    message.match(/<title>\s*(502)\s+Bad Gateway\s*<\/title>/i) ??
     message.match(/Error code\s+(5\d{2})/i);
   if (!statusMatch) return undefined;
 
