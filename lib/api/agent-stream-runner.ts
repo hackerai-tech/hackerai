@@ -2335,7 +2335,6 @@ export async function createAgentStream(
             requestedModel: lastRequestedSlug,
             responseModel: state.responseModel,
             reason: loopDetection.reason,
-            repeatedText: loopDetection.repeatedText,
             repeatCount: loopDetection.repeatCount,
           });
           recordAssistantContentLoopAbortState();
