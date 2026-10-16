@@ -194,8 +194,20 @@ export const registerForBackend = mutation({
       )
       .order("desc")
       .take(8);
+    // Resolve retries before mutating newer rows, including sessions older than
+    // the bounded replacement window. A retired session must never reclaim it.
+    const match = await ctx.db
+      .query("browser_handoffs")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .first();
+    if (match)
+      return (
+        match._id === existing[0]?._id &&
+        match.user_id === args.userId &&
+        match.run_id === args.runId &&
+        match.state !== "closed"
+      );
     for (const row of existing) {
-      if (row.session_id === args.sessionId) return row.state !== "closed";
       if (row.state !== "closed") {
         await ctx.db.patch(row._id, {
           state: "closed",

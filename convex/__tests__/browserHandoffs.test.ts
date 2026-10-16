@@ -248,6 +248,34 @@ describe("browser handoff ownership", () => {
   });
 });
 
+it.each([2, 10])(
+  "a delayed registration cannot close the current browser after %i sessions",
+  async (count) => {
+    const { ctx, rows, scope, register } = fixture();
+    await register();
+    for (let i = 1; i < count; i++) {
+      await register("parent", "run-parent", i.toString(16).padStart(32, "0"));
+    }
+    const current = rows.browser_handoffs.at(-1)!;
+    current.state = "human";
+    current.grant = "current-controller";
+    current.grant_expires_at = Date.now() + 60_000;
+    const before = JSON.stringify(rows.browser_handoffs);
+    expect(await register()).toBe(false);
+    expect(JSON.stringify(rows.browser_handoffs)).toBe(before);
+    expect(
+      await register("parent", "run-parent", current.session_id as string),
+    ).toBe(true);
+    expect(JSON.stringify(rows.browser_handoffs)).toBe(before);
+    expect(
+      await browser.getForBackend.handler(ctx as never, {
+        ...scope,
+        sessionId: current.session_id,
+      }),
+    ).toMatchObject({ state: "human" });
+  },
+);
+
 it("saves exit context once, exposes it to the owning runner, and retains it after cleanup", async () => {
   const { ctx, rows, scope, register } = fixture();
   await register();
