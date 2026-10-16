@@ -3,6 +3,7 @@ import {
   beginUserMessage,
   commitUserMessage,
   getForBackend,
+  getRetrySource,
   edit,
   claimClarification,
   deleteScopeBatch,
@@ -135,6 +136,7 @@ describe("persisted engagement scope", () => {
   it("persists a real message once and reloads the same policy in parent and restarted child", async () => {
     await message();
     const saved = await apply();
+    expect(await call(getRetrySource, db.ctx, auth)).toBeNull();
     const retry = await call(beginUserMessage, db.ctx, {
       ...auth,
       messageId: "m1",
@@ -189,6 +191,58 @@ describe("persisted engagement scope", () => {
     await expect(
       call(beginUserMessage, db.ctx, { ...auth, messageId: "m3" }),
     ).rejects.toThrow("previous scope update");
+  });
+  it("recovers an abandoned narrowing source before allowing the next message", async () => {
+    await message();
+    await apply();
+    await message("m2", {
+      parts: [{ type: "text", text: "Exclude api.example.test" }],
+    });
+    await message("m3", { parts: [{ type: "text", text: "continue" }] });
+    await call(beginUserMessage, db.ctx, { ...auth, messageId: "m2" });
+    const retryId = await call(getRetrySource, db.ctx, auth);
+    expect(retryId).toBe("m2");
+    const retry = await call(beginUserMessage, db.ctx, {
+      ...auth,
+      messageId: retryId,
+    });
+    expect(retry.sourceText).toBe("Exclude api.example.test");
+    const narrowed = {
+      rules: [
+        ...policy.rules,
+        { target: "api.example.test", effect: "deny", activity: "all_contact" },
+      ],
+      restrictions: [],
+    };
+    await call(commitUserMessage, db.ctx, {
+      ...auth,
+      messageId: retryId,
+      expectedRevision: retry.revision,
+      policy: narrowed,
+      clarification: "",
+      unavailable: false,
+    });
+    const next = await call(beginUserMessage, db.ctx, {
+      ...auth,
+      messageId: "m3",
+    });
+    expect(next.current.rules).toEqual(narrowed.rules);
+    await call(commitUserMessage, db.ctx, {
+      ...auth,
+      messageId: "m3",
+      expectedRevision: next.revision,
+      policy: narrowed,
+      clarification: "",
+      unavailable: false,
+    });
+    expect(
+      (
+        await createScopeRuntime("owner", "chat").checkUrl(
+          "https://api.example.test",
+        )
+      ).outcome,
+    ).toBe("deny");
+    expect(await call(getRetrySource, db.ctx, auth)).toBeNull();
   });
   it("refreshes child URL checks after narrowing and rejects stale edits and stale model dispatch", async () => {
     await message();

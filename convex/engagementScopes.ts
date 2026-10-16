@@ -80,6 +80,20 @@ export const getForBackend = query({
   },
 });
 
+/** Admission retries persisted input, never the model's rewritten transcript. */
+export const getRetrySource = query({
+  args: { serviceKey: v.string(), chatId: v.string(), userId: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await ownedChat(ctx, args.chatId, args.userId);
+    const row = await rowForChat(ctx, args.chatId);
+    return row && (row.status === "unavailable" || row.status === "processing")
+      ? row.source_id
+      : null;
+  },
+});
+
 /** Called only by authenticated request admission, never by an agent tool. */
 export const beginUserMessage = mutation({
   args: {
@@ -132,7 +146,7 @@ export const beginUserMessage = mutation({
         complete:
           event.status === "applied" || row?.source_id !== args.messageId,
         revision: row?.revision ?? 0,
-        sourceText: text,
+        sourceText: text.slice(0, MAX_SCOPE_TEXT + 1),
         current: row ? snapshot(row) : null,
       };
     }

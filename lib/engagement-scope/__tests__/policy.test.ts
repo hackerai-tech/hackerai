@@ -204,3 +204,24 @@ it("removes a referenced rule even after storage changes property order", () => 
   );
   expect(result.policy.rules).toEqual([]);
 });
+
+it("rejects a removal that silently leaves an all-ports grant in place", () => {
+  const rule = {
+    target: "example.test",
+    effect: "allow" as const,
+    activity: "active_testing" as const,
+  };
+  expect(() =>
+    applyExtraction(
+      { rules: [{ ...rule, ports: "any" }], restrictions: [] },
+      "Stop testing example.test",
+      {
+        changes: [
+          { operation: "remove", rule, evidence: "Stop testing example.test" },
+        ],
+        restrictions: [],
+        clarification: "",
+      },
+    ),
+  ).toThrow("does not match a saved rule");
+});

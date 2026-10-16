@@ -1,4 +1,4 @@
-import { recordUserScope } from "../admission";
+import { recordUserScope, retryUserScope } from "../admission";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { generateText } from "ai";
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
@@ -108,5 +108,44 @@ it("does not extract again for a duplicate or ordinary continuation", async () =
   expect(mutate.mock.calls[2][1]).toMatchObject({
     policy: { rules: current.rules },
     unavailable: false,
+  });
+});
+
+it("regeneration recovers only the backend-selected pending source and skips settled scope", async () => {
+  const query = jest
+    .fn()
+    .mockResolvedValueOnce("pending-human-message")
+    .mockResolvedValueOnce(null);
+  (getConvexClient as jest.Mock).mockReturnValue({ query, mutation: mutate });
+  mutate.mockResolvedValue({ complete: true });
+  await retryUserScope({ userId: "owner", chatId: "chat" });
+  expect(mutate).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ messageId: "pending-human-message" }),
+  );
+  mutate.mockClear();
+  await retryUserScope({ userId: "owner", chatId: "chat" });
+  expect(mutate).not.toHaveBeenCalled();
+  expect(generateText).not.toHaveBeenCalled();
+});
+
+it("returns a safe actionable API error for a failed save or recovery query", async () => {
+  mutate.mockRejectedValueOnce(new Error("internal secret database details"));
+  await expect(
+    recordUserScope({ userId: "owner", chatId: "chat", messageId: "m2" }),
+  ).rejects.toMatchObject({
+    statusCode: 400,
+    cause:
+      "The scope update could not be saved. Retry this request or edit the saved scope.",
+  });
+  (getConvexClient as jest.Mock).mockReturnValue({
+    query: jest.fn().mockRejectedValue(new Error("internal details")),
+  });
+  await expect(
+    retryUserScope({ userId: "owner", chatId: "chat" }),
+  ).rejects.toMatchObject({
+    statusCode: 400,
+    cause:
+      "Saved scope could not be recovered. Retry this request or edit the saved scope.",
   });
 });

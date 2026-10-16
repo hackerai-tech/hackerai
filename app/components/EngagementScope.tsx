@@ -60,7 +60,7 @@ export function EngagementScope({ chatId }: { chatId: string }) {
               );
             if (!match)
               throw new Error(
-                "Use one rule per line: allow, exclude, or no-contact followed by a host or URL.",
+                "Use one rule per line: allow, allow-all-ports, passive, exclude, or no-contact followed by a host or URL.",
               );
             return {
               target: match[2],

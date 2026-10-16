@@ -26,9 +26,10 @@ legacy chat history is not silently migrated into grants.
 
 The pending update is recorded before extraction. A missing/invalid expected
 policy or failed extraction holds dependent actions and keeps prior rules;
-there is no allow-all fallback. Retry the same request or correct scope in the
-editor. Concurrent edits use revision checks; a new message cannot supersede a
-pending extraction. Clarification claims are shared across workers and survive
+there is no allow-all fallback. Regeneration or the next genuine request retries
+the original pending source before admitting a new instruction. A failed narrowing
+is never silently superseded by a continuation. The scope editor also provides
+recovery. Concurrent edits use revision checks. Clarification claims are shared across workers and survive
 restart. Child agents never issue the parent's scope question again.
 
 Every model step reloads policy. Cached conversation replay is disabled when a

@@ -1,4 +1,7 @@
-import { recordUserScope } from "@/lib/engagement-scope/admission";
+import {
+  recordUserScope,
+  retryUserScope,
+} from "@/lib/engagement-scope/admission";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -512,15 +515,16 @@ export const createChatHandler = () => {
       });
       if (
         !isAutoContinue &&
-        !regenerate &&
         truncatedMessages.length > 0 &&
         (isAgentMode(mode) || chat?.engagement_scope_expected)
       ) {
-        await recordUserScope({
-          userId,
-          chatId,
-          messageId: truncatedMessages[truncatedMessages.length - 1].id,
-        });
+        await retryUserScope({ userId, chatId });
+        if (!regenerate)
+          await recordUserScope({
+            userId,
+            chatId,
+            messageId: truncatedMessages[truncatedMessages.length - 1].id,
+          });
       }
 
       const regionalFreeLimits = getRegionalFreeLimits({

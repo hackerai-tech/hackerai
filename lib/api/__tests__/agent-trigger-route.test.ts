@@ -1,5 +1,6 @@
 jest.mock("@/lib/engagement-scope/admission", () => ({
   recordUserScope: jest.fn().mockResolvedValue(undefined),
+  retryUserScope: jest.fn().mockResolvedValue(undefined),
 }));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 

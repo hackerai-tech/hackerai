@@ -1,3 +1,4 @@
+import { ChatSDKError } from "@/lib/errors";
 import { generateText, Output } from "ai";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -12,7 +13,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 /** Only request admission calls this. Workers and agent tools cannot propose scope changes. */
-export async function recordUserScope(args: {
+async function recordScope(args: {
   userId: string;
   chatId: string;
   messageId: string;
@@ -99,7 +100,45 @@ export async function recordUserScope(args: {
     },
   );
   if (!applied)
-    throw new Error(
+    throw new ChatSDKError(
+      "bad_request:api",
       "Scope changed while preparing this request. Retry to use the latest saved scope.",
     );
+}
+
+/** Keep admission failures actionable without returning internal/provider error text. */
+export async function recordUserScope(args: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+}) {
+  try {
+    await recordScope(args);
+  } catch (error) {
+    if (error instanceof ChatSDKError) throw error;
+    throw new ChatSDKError(
+      "bad_request:api",
+      "The scope update could not be saved. Retry this request or edit the saved scope.",
+    );
+  }
+}
+
+/** Recover the original pending instruction before admitting a later one. Never discard narrowing. */
+export async function retryUserScope(args: { userId: string; chatId: string }) {
+  try {
+    const messageId = await getConvexClient().query(
+      api.engagementScopes.getRetrySource,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        ...args,
+      },
+    );
+    if (messageId) await recordUserScope({ ...args, messageId });
+  } catch (error) {
+    if (error instanceof ChatSDKError) throw error;
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Saved scope could not be recovered. Retry this request or edit the saved scope.",
+    );
+  }
 }
