@@ -556,3 +556,50 @@ it("retains a failed continuation and reuses its request id without duplicate se
   expect(actions.at(-1)?.requestId).toBe(firstId);
   expect(onContinue).toHaveBeenCalledTimes(2);
 });
+
+it("keeps a new takeover and its draft when an old continuation finishes late", async () => {
+  let finish!: () => void;
+  const onContinue = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const props = {
+    chatId: "chat",
+    agentId: "parent",
+    liveSelection: true,
+    onContinue,
+  };
+  const view = render(<AgentBrowserPreview {...props} />);
+  await act(async () => {});
+  await takeControl();
+  mockSession = null;
+  view.rerender(<AgentBrowserPreview {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  handleAction = async (body) =>
+    response(
+      body.action === "resume"
+        ? { restart: true, continuation: { id: "old-note", text: "Old note" } }
+        : { grant: "grant-b", frame },
+    );
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  mockSession = { sessionId: "session-b", state: "agent" };
+  view.rerender(<AgentBrowserPreview {...props} />);
+  await act(async () => {});
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "New session draft!" },
+  });
+  await act(async () => {
+    finish();
+  });
+  expect(screen.getByRole("textbox")).toHaveValue("New session draft!");
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
+});

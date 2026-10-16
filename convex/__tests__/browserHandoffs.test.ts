@@ -325,3 +325,76 @@ it("cannot create an exit message for a running session without the resume claim
   ).rejects.toThrow("claim resume");
   expect(rows.messages).toHaveLength(0);
 });
+
+it.each(["parent", "child"])(
+  "retains %s exit notes after browser replacement without restoring old control",
+  async (agentId) => {
+    const { ctx, rows, scope, register } = fixture();
+    const runId = agentId === "parent" ? "run-parent" : "run-child";
+    await register(agentId, runId);
+    rows.browser_handoffs[0].state = "resuming";
+    const saved = await browser.saveExitNoteForBackend.handler(ctx as never, {
+      ...scope,
+      requestId: "11111111-1111-4111-8111-111111111111",
+      note: "STOP! Only inspect /LAB?X=YES&Y=no. café 日本語 😀",
+    });
+    await register(agentId, runId, "b".repeat(32));
+    expect(await browser.getForBackend.handler(ctx as never, scope)).toBeNull();
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, scope),
+    ).toEqual([{ id: saved.id, text: saved.text }]);
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, {
+        ...scope,
+        userId: "other",
+      }),
+    ).toEqual([]);
+    rows.chats[0].deletion_started_at = Date.now();
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, scope),
+    ).toEqual([]);
+    delete rows.chats[0].deletion_started_at;
+    if (agentId === "parent") rows.chats[0].active_trigger_run_id = "next-run";
+    else rows.subagent_runs[0].status = "completed";
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, scope),
+    ).toEqual([]);
+  },
+);
+
+it.each([" \n\t", "A.b@C-d! \n日本語 😀", "A".repeat(4000)])(
+  "preserves note text and idempotency at input boundaries (%#)",
+  async (note) => {
+    const { ctx, rows, scope, register } = fixture();
+    await register();
+    rows.browser_handoffs[0].state = "resuming";
+    const args = {
+      ...scope,
+      requestId: "11111111-1111-4111-8111-111111111111",
+      note,
+    };
+    const saved = await browser.saveExitNoteForBackend.handler(
+      ctx as never,
+      args,
+    );
+    expect(saved.text).toBe(
+      note.trim()
+        ? `I've finished browser takeover.\n\n${note.trim()}`
+        : "I've finished browser takeover. No additional details to add; please continue the task.",
+    );
+    const retry = await browser.saveExitNoteForBackend.handler(ctx as never, {
+      ...args,
+      note: "Changed after a lost response",
+    });
+    expect(retry).toEqual(saved);
+    expect(rows.messages).toHaveLength(1);
+    await expect(
+      browser.saveExitNoteForBackend.handler(ctx as never, {
+        ...args,
+        requestId: "22222222-2222-4222-8222-222222222222",
+        note: "A".repeat(4001),
+      }),
+    ).rejects.toThrow("Invalid handoff note");
+    expect(rows.messages).toHaveLength(1);
+  },
+);

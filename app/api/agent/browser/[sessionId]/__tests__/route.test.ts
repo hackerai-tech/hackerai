@@ -169,7 +169,7 @@ it("sends a validated input burst through one lease and rejects invalid bursts b
   expect(mockSendInput).toHaveBeenCalledTimes(1);
 });
 
-const exitTakeover = (note = "") =>
+const exitTakeover = (note: unknown = "") =>
   post(
     {
       url: "https://preview.example/api/agent/browser/test",
@@ -222,4 +222,29 @@ it("returns a persisted continuation after the run ends without touching its old
   expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
     "saveExitNoteForBackend",
   ]);
+});
+
+it.each([null, 42, { text: "hello" }, "A".repeat(4001)])(
+  "rejects malformed or oversized notes before saving or releasing control (%#)",
+  async (note) => {
+    mockFailure = "none";
+    expect((await exitTakeover(note)).status).toBe(400);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockPause).not.toHaveBeenCalled();
+  },
+);
+
+it("allows retry after an active run finished resuming without unpausing twice", async () => {
+  mockFailure = "none";
+  mockState = "agent";
+  const result = await exitTakeover("A.b@C-d! 日本語 😀");
+  expect(result.status).toBe(200);
+  expect(await result.json()).toMatchObject({
+    restart: false,
+    continuation: { id: "saved-note" },
+  });
+  expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
+    "saveExitNoteForBackend",
+  ]);
+  expect(mockPause).not.toHaveBeenCalled();
 });

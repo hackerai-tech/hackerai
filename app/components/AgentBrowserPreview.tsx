@@ -327,6 +327,9 @@ export function AgentBrowserPreview({
           );
         await onContinue(data.continuation);
       }
+      // Starting a run can register a new browser before admission resolves.
+      // A completion from the old session must not close or clear its takeover.
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       setFullScreen(false);
       setExitOpen(false);
       setNote("");

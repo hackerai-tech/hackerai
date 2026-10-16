@@ -48,16 +48,16 @@ const serviceSessionArgs = {
 const GRANT_MS = 30_000;
 const CLAIM_MS = 15_000;
 
-async function currentOwner(
+async function ownsActiveRun(
   ctx: QueryCtx | MutationCtx,
   row: Doc<"browser_handoffs">,
 ): Promise<boolean> {
-  if (row.state === "closed" || row.expires_at <= Date.now()) return false;
   const chat = await ctx.db
     .query("chats")
     .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
     .first();
-  if (!chat || chat.user_id !== row.user_id) return false;
+  if (!chat || chat.user_id !== row.user_id || chat.deletion_started_at)
+    return false;
   if (row.agent_id === "parent") {
     return chat.active_trigger_run_id === row.run_id;
   }
@@ -71,6 +71,14 @@ async function currentOwner(
     child.trigger_run_id === row.run_id &&
     child.status === "running"
   );
+}
+
+async function currentOwner(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"browser_handoffs">,
+): Promise<boolean> {
+  if (row.state === "closed" || row.expires_at <= Date.now()) return false;
+  return ownsActiveRun(ctx, row);
 }
 
 async function getSession(
@@ -555,8 +563,14 @@ export const getExitNotesForBackend = query({
   returns: v.array(v.object({ id: v.string(), text: v.string() })),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const row = await getSession(ctx, args.sessionId, args.userId);
-    if (!row) return [];
+    // Browser replacement revokes control, but saved instructions still belong
+    // to this run. Do not apply the latest-browser/grant checks to context reads.
+    const row = await ctx.db
+      .query("browser_handoffs")
+      .withIndex("by_session_id", (q) => q.eq("session_id", args.sessionId))
+      .first();
+    if (!row || row.user_id !== args.userId || !(await ownsActiveRun(ctx, row)))
+      return [];
     const messages = await Promise.all(
       (row.exit_note_ids ?? []).map((id) =>
         ctx.db
