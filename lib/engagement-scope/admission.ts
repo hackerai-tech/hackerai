@@ -58,7 +58,6 @@ export async function recordUserScope(args: {
         abortSignal: AbortSignal.timeout(20_000),
         providerOptions: {
           openrouter: {
-            reasoning: { enabled: false },
             usage: { include: true },
           },
         },
