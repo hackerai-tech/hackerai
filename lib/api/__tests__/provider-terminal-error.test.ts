@@ -59,6 +59,19 @@ describe("getProviderDisconnectIgnoredSlugs", () => {
 });
 
 describe("wrapProviderTerminalError", () => {
+  it("preserves recovery diagnostics when an empty response has no error cause", () => {
+    const error = wrapProviderTerminalError(undefined, {
+      model: "abliterated-model",
+    });
+
+    expect(error).toMatchObject({
+      name: "ProviderTerminalError",
+      category: "unknown",
+      model: "abliterated-model",
+      message: "Provider terminal error category=unknown",
+    });
+  });
+
   it("uses a low-cardinality fingerprint while retaining provider diagnostics", () => {
     const cause = Object.assign(new Error("Network connection lost."), {
       statusCode: 502,

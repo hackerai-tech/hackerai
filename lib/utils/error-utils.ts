@@ -24,10 +24,18 @@ export const getErrorMessage = (err: unknown): string => {
   }
   if (err && typeof err === "object" && "message" in err) {
     const msg = (err as { message: unknown }).message;
-    return typeof msg === "string" ? msg : JSON.stringify(msg);
+    if (typeof msg === "string") return msg;
+    if (msg !== undefined) {
+      try {
+        const serialized = JSON.stringify(msg);
+        if (serialized !== undefined) return serialized;
+      } catch {
+        // Fall through to a stable message for malformed error values.
+      }
+    }
   }
   try {
-    return JSON.stringify(err);
+    return JSON.stringify(err) ?? String(err);
   } catch {
     return String(err);
   }
