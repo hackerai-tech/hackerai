@@ -523,10 +523,9 @@ export const saveExitNoteForBackend = mutation({
     if (runActive && row.state !== "resuming")
       throw new Error("Exit takeover must claim resume first");
     const note = args.note.trim();
-    const text =
-      "I've finished browser takeover. " +
-      (note ? `What I did: ${note}\n\n` : "No additional details.\n\n") +
-      "Continue the task from the current state. Inspect the page before acting; my note is context, not proof of a successful action or account identity. If the earlier browser session ended, reopen what is needed and explain any state that could not be preserved.";
+    const text = note
+      ? `I've finished browser takeover.\n\n${note}`
+      : "I've finished browser takeover. No additional details to add; please continue the task.";
     await ctx.db.insert("messages", {
       id,
       chat_id: row.chat_id,

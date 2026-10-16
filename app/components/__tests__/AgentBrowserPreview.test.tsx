@@ -482,6 +482,13 @@ it("keeps an optional note when the run ends and starts a continuation with the 
       onContinue={onContinue}
     />,
   );
+  await act(async () => {
+    jest.advanceTimersByTime(15_000);
+  });
+  expect(
+    actions.filter((action) => action.action === "heartbeat"),
+  ).toHaveLength(0);
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
   expect(screen.getByRole("textbox")).toHaveValue("Signed in as my test user.");
   handleAction = async () =>
     response({

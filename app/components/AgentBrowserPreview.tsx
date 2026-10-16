@@ -191,10 +191,12 @@ export function AgentBrowserPreview({
   }, []);
 
   useEffect(() => {
-    if (!endpoint || !grant) return;
+    if (!endpoint || !grant || !activeSessionId) return;
+    let stopped = false;
     const timer = setInterval(() => {
       void post({ action: "heartbeat", grant }).catch(() => {
         if (
+          stopped ||
           !mountedRef.current ||
           sessionIdRef.current !== sessionId ||
           grantRef.current !== grant
@@ -203,11 +205,16 @@ export function AgentBrowserPreview({
         grantRef.current = null;
         setGrant(null);
         setPreviewState("recovery");
-        setError("Control expired. Reconnect or resume the Agent explicitly.");
+        setError(
+          "Control expired. Reconnect or choose Exit takeover to continue.",
+        );
       });
     }, 10_000);
-    return () => clearInterval(timer);
-  }, [endpoint, grant, post, sessionId]);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [endpoint, grant, post, sessionId, activeSessionId]);
 
   // Closing the sidebar or changing runs releases input without resuming the
   // Agent. A lost network is covered by the short lease and paused gate.
