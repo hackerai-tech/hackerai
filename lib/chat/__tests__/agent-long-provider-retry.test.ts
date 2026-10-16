@@ -1,7 +1,10 @@
 import {
+  appendProviderEmptyResponseFailure,
   createAssistantContentLoopMonitor,
   decideProviderRecovery,
   getProviderOutputDiagnostics,
+  hasUncertainProviderToolOutcome,
+  isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
@@ -202,6 +205,70 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it("keeps an unknown tool outcome out of automatic empty-answer recovery", () => {
+    const parts = [
+      {
+        type: "tool-save",
+        toolCallId: "unconfirmed",
+        state: "input-available",
+        input: {},
+      },
+      {
+        type: "tool-save",
+        toolCallId: "confirmed",
+        state: "output-available",
+        output: { ok: true },
+      },
+    ];
+    expect(isTerminalEmptyAssistantResponse(parts, "stop")).toBe(true);
+    expect(hasUncertainProviderToolOutcome(parts)).toBe(true);
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        finishReason: "stop",
+        hasTerminalProviderStreamError: false,
+      }),
+    ).toBe(false);
+    const messages = [
+      { id: "assistant", role: "assistant", parts },
+    ] as UIMessage[];
+    const write = jest.fn();
+    appendProviderEmptyResponseFailure(messages, "assistant", {
+      write,
+    } as any);
+    expect(messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        toolCallId: "unconfirmed",
+        state: "output-error",
+        errorText: expect.stringContaining("outcome is unknown"),
+      }),
+    );
+    expect(messages[0].parts).toContainEqual(parts[1]);
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "tool-output-error",
+        toolCallId: "unconfirmed",
+      }),
+    );
+  });
+
+  it.each([
+    [[], true],
+    [[{ type: "step-start" }, { type: "reasoning", text: "hidden" }], true],
+    [[{ type: "text", text: " \n" }], true],
+    [[{ type: "text", text: "Done" }], false],
+    [
+      [{ type: "tool-save", state: "output-available", output: { ok: true } }],
+      true,
+    ],
+    [[{ type: "file", mediaType: "text/plain" }], false],
+  ])(
+    "classifies normal-stop output without relying on hidden reasoning: %s",
+    (parts, empty) => {
+      expect(isTerminalEmptyAssistantResponse(parts, "stop")).toBe(empty);
+      expect(isTerminalEmptyAssistantResponse(parts, "tool-calls")).toBe(false);
+    },
+  );
+
   it.each([
     { label: "empty output", parts: [] },
     { label: "only a step boundary", parts: [{ type: "step-start" }] },

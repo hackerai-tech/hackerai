@@ -271,9 +271,12 @@ import {
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
+  appendProviderEmptyResponseFailure,
   decideProviderRecovery,
   detectAssistantContentLoopFromParts,
   getProviderOutputDiagnostics,
+  hasUncertainProviderToolOutcome,
+  isTerminalEmptyAssistantResponse,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
@@ -3916,6 +3919,29 @@ export const agentLongTask = task({
               retryMessageId: string;
               retryStartTime: number;
             }) => {
+              const lastRetryAssistant = retryMessages.findLast(
+                (message) => message.role === "assistant",
+              );
+              if (
+                !retryAborted &&
+                !userStopSignal.signal.aborted &&
+                isTerminalEmptyAssistantResponse(
+                  stripAgentLongHeartbeatParts(
+                    lastRetryAssistant ?? { parts: [] },
+                  ).parts ?? [],
+                  state.streamFinishReason,
+                )
+              ) {
+                state.streamFinishReason = "error";
+                state.providerError = new Error(
+                  "Provider completed without a usable answer",
+                );
+                appendProviderEmptyResponseFailure(
+                  retryMessages,
+                  retryMessageId,
+                  writer,
+                );
+              }
               const fallbackCacheRead =
                 usageTracker.cacheReadTokens - preFallbackCacheRead;
               const fallbackCacheWrite =
@@ -3951,10 +3977,9 @@ export const agentLongTask = task({
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
                   usageTracker.measurementProperties(selectedModel),
-                hasResponseContent: hasCompletedAssistantText(
-                  retryMessages,
-                  retryMessageId,
-                ),
+                hasResponseContent:
+                  outcome === "success" &&
+                  hasCompletedAssistantText(retryMessages, retryMessageId),
                 handledToolFailureCount,
                 abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
@@ -4335,6 +4360,11 @@ export const agentLongTask = task({
                             detectAssistantContentLoop: !isAborted,
                           },
                         );
+                      const terminalEmptyResponse =
+                        isTerminalEmptyAssistantResponse(
+                          lastAssistantMessageParts,
+                          state.streamFinishReason,
+                        );
                       const imageRecovery =
                         state.providerRejectedMultimodalToolResults
                           ? omitImageViewToolResultsForProviderRetry(
@@ -4376,8 +4406,13 @@ export const agentLongTask = task({
                             (message.parts?.length ?? 0) > 0,
                         );
                       const providerDisconnectContinuation =
-                        hasTerminalProviderStreamError &&
-                        (shouldRecoverAbliterationStreamError ||
+                        (hasTerminalProviderStreamError ||
+                          terminalEmptyResponse) &&
+                        ((terminalEmptyResponse &&
+                          !hasUncertainProviderToolOutcome(
+                            lastAssistantMessageParts,
+                          )) ||
+                          shouldRecoverAbliterationStreamError ||
                           isRetriableProviderStreamDisconnectError(
                             state.providerError,
                           )) &&
@@ -4388,6 +4423,7 @@ export const agentLongTask = task({
                               normalizedFinishedMessages,
                               {
                                 allowCompletedTail:
+                                  terminalEmptyResponse ||
                                   shouldRecoverAbliterationStreamError ||
                                   isProviderResponseTimeout(
                                     state.providerError,
@@ -4475,7 +4511,10 @@ export const agentLongTask = task({
                         }
                       }
 
-                      if (hasTerminalProviderStreamError) {
+                      if (
+                        hasTerminalProviderStreamError ||
+                        terminalEmptyResponse
+                      ) {
                         const failure = wrapProviderTerminalError(
                           state.providerError,
                           {
@@ -4514,6 +4553,7 @@ export const agentLongTask = task({
                           retry_already_used: isRetryWithFallback,
                           user_cancelled: userStopSignal.signal.aborted,
                           stream_aborted: isAborted,
+                          terminal_empty_response: terminalEmptyResponse,
                           has_safe_continuation:
                             shouldContinueAfterProviderDisconnect,
                           ...getProviderOutputDiagnostics(
@@ -4537,25 +4577,31 @@ export const agentLongTask = task({
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
                       ) {
-                        const retryReason = shouldRetryWithVisionSummary
-                          ? "vision_summary_recovery"
-                          : shouldRetryWithoutImageToolResults
-                            ? "image_tool_result_rejection"
-                            : shouldContinueAfterProviderDisconnect
-                              ? "provider_disconnect_continuation"
-                              : providerContentBlocked
-                                ? "content_filter"
-                                : stoppedDueToAssistantContentLoop
-                                  ? "assistant_content_loop"
-                                  : state.stoppedDueToDoomLoop
-                                    ? "doom_loop"
-                                    : shouldRetryInterruptedToolInput
-                                      ? "interrupted_tool_input"
-                                      : shouldRetryNonDurableOutputLimit
-                                        ? "non_durable_output_limit"
-                                        : shouldRetryReasoningOnlyProviderError
-                                          ? "reasoning_only_provider_error"
-                                          : "incomplete_stream";
+                        const retryReason =
+                          terminalEmptyResponse &&
+                          shouldContinueAfterProviderDisconnect
+                            ? "empty_answer_continuation"
+                            : terminalEmptyResponse
+                              ? "empty_answer"
+                              : shouldRetryWithVisionSummary
+                                ? "vision_summary_recovery"
+                                : shouldRetryWithoutImageToolResults
+                                  ? "image_tool_result_rejection"
+                                  : shouldContinueAfterProviderDisconnect
+                                    ? "provider_disconnect_continuation"
+                                    : providerContentBlocked
+                                      ? "content_filter"
+                                      : stoppedDueToAssistantContentLoop
+                                        ? "assistant_content_loop"
+                                        : state.stoppedDueToDoomLoop
+                                          ? "doom_loop"
+                                          : shouldRetryInterruptedToolInput
+                                            ? "interrupted_tool_input"
+                                            : shouldRetryNonDurableOutputLimit
+                                              ? "non_durable_output_limit"
+                                              : shouldRetryReasoningOnlyProviderError
+                                                ? "reasoning_only_provider_error"
+                                                : "incomplete_stream";
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
@@ -4624,6 +4670,7 @@ export const agentLongTask = task({
                         );
                         if (
                           providerDisconnectContinuation &&
+                          !terminalEmptyResponse &&
                           !shouldRetryWithVisionSummary
                         ) {
                           recordProviderDisconnectRecoveryAttempt({
@@ -4929,6 +4976,22 @@ export const agentLongTask = task({
                         return;
                       }
 
+                      if (
+                        terminalEmptyResponse &&
+                        !isAborted &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        state.streamFinishReason = "error";
+                        state.providerError = new Error(
+                          "Provider completed without a usable answer",
+                        );
+                        appendProviderEmptyResponseFailure(
+                          finishedMessages,
+                          assistantMessageId,
+                          writer,
+                        );
+                      }
+
                       // User-initiated cancel via trigger.dev: clear finish reason
                       // so the client doesn't show spurious "going off course" messages.
                       if (
@@ -4970,10 +5033,12 @@ export const agentLongTask = task({
                           cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                           usageMeasurement:
                             usageTracker.measurementProperties(selectedModel),
-                          hasResponseContent: hasCompletedAssistantText(
-                            finishedMessages,
-                            assistantMessageId,
-                          ),
+                          hasResponseContent:
+                            outcome === "success" &&
+                            hasCompletedAssistantText(
+                              finishedMessages,
+                              assistantMessageId,
+                            ),
                           handledToolFailureCount,
                           abliteratedProviderSummary:
                             abliteratedTelemetry?.getSummary(),

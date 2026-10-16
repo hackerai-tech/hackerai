@@ -1,6 +1,10 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
-import { isStaticToolUIPart, type UIMessage } from "ai";
+import {
+  isStaticToolUIPart,
+  type UIMessage,
+  type UIMessageStreamWriter,
+} from "ai";
 
 type MessagePartLike = {
   type?: unknown;
@@ -277,6 +281,65 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
   );
 };
 
+/** A normal stop with only hidden output or tool activity is not an answer. */
+export const isTerminalEmptyAssistantResponse = (
+  parts: unknown[],
+  finishReason?: string,
+): boolean =>
+  finishReason === "stop" &&
+  parts.every((part) => isFallbackSafeProviderPart(part) || isToolPart(part));
+
+/** Unknown tool outcomes require user review before any model continuation. */
+export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
+  parts.some((part) => isToolPart(part) && !isCompletedToolPart(part));
+
+export const PROVIDER_EMPTY_RESPONSE_MESSAGE =
+  "The model finished without a usable answer. Any completed tool results remain in this chat, but I could not safely finish the response. Continue this chat to review the work before repeating any action.";
+const UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE =
+  "The model stopped before this tool's result was confirmed. Its outcome is unknown; review its effects before trying it again.";
+
+/** Add the failure to both live UI output and the message later persisted. */
+export const appendProviderEmptyResponseFailure = (
+  messages: UIMessage[],
+  messageId: string,
+  writer: UIMessageStreamWriter,
+): void => {
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  const failurePart = {
+    type: "text" as const,
+    text: PROVIDER_EMPTY_RESPONSE_MESSAGE,
+    state: "done" as const,
+  };
+  if (assistant) {
+    assistant.parts = [
+      ...assistant.parts.map((part) => {
+        if (!isStaticToolUIPart(part) || part.state !== "input-available")
+          return part;
+        writer.write({
+          type: "tool-output-error",
+          toolCallId: part.toolCallId,
+          errorText: UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE,
+          providerExecuted: part.providerExecuted,
+        });
+        return {
+          ...part,
+          state: "output-error" as const,
+          errorText: UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE,
+        };
+      }),
+      failurePart,
+    ];
+  } else {
+    messages.push({ id: messageId, role: "assistant", parts: [failurePart] });
+  }
+  const textId = `provider-empty-${messageId}`;
+  writer.write({ type: "text-start", id: textId });
+  writer.write({ type: "text-delta", id: textId, delta: failurePart.text });
+  writer.write({ type: "text-end", id: textId });
+};
+
 const hasReasoningPart = (parts: unknown[]): boolean =>
   parts.some((part) => getPartType(part) === "reasoning");
 
@@ -445,6 +508,15 @@ export const shouldRetryProviderStreamWithFallback = (
   // excluded: their text and completed tool effects must be saved, and the
   // existing bounded continuation keeps the user's selected model.
   if (shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, options)) {
+    return true;
+  }
+
+  // The provider can finish normally after spending its output on hidden
+  // reasoning. Retry only when there are no tool effects to replay.
+  if (
+    isTerminalEmptyAssistantResponse(parts, options.finishReason) &&
+    parts.every(isFallbackSafeProviderPart)
+  ) {
     return true;
   }
 
