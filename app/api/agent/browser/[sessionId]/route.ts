@@ -143,6 +143,7 @@ export async function POST(
     )
       return json({ state: "stale" }, 409);
     const grant = randomBytes(32).toString("base64url");
+    const wasPaused = session.state === "recovery";
     const claimed = await convex.mutation(
       api.browserHandoffs.beginTakeoverForBackend,
       {
@@ -190,7 +191,7 @@ export async function POST(
       after(() => phLogger.flush());
       return json({ state: "human", grant, frame });
     } catch (error) {
-      if (paused) {
+      if (paused && !wasPaused) {
         try {
           const sandbox = await connectBrowserSandbox(session);
           await setAgentBrowserPaused(sandbox, session, false);
@@ -202,7 +203,7 @@ export async function POST(
       await convex.mutation(api.browserHandoffs.abortTakeoverForBackend, {
         ...scope,
         grant,
-        paused,
+        paused: paused || wasPaused,
       });
       return unavailable(error);
     }

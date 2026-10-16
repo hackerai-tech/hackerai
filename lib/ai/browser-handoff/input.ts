@@ -4,6 +4,43 @@ type Input =
   | { kind: "key"; key: string; code: string; modifiers?: number }
   | { kind: "text"; text: string };
 
+const punctuationCodes: Record<string, string> = {
+  "-": "Minus",
+  "=": "Equal",
+  "[": "BracketLeft",
+  "]": "BracketRight",
+  "\\": "Backslash",
+  ";": "Semicolon",
+  "'": "Quote",
+  ",": "Comma",
+  ".": "Period",
+  "/": "Slash",
+  "`": "Backquote",
+};
+const shiftedCodes: Record<string, string> = {
+  "!": "Digit1",
+  "@": "Digit2",
+  "#": "Digit3",
+  $: "Digit4",
+  "%": "Digit5",
+  "^": "Digit6",
+  "&": "Digit7",
+  "*": "Digit8",
+  "(": "Digit9",
+  ")": "Digit0",
+  _: "Minus",
+  "+": "Equal",
+  "{": "BracketLeft",
+  "}": "BracketRight",
+  "|": "Backslash",
+  ":": "Semicolon",
+  '"': "Quote",
+  "<": "Comma",
+  ">": "Period",
+  "?": "Slash",
+  "~": "Backquote",
+};
+
 const coordinate = (value: unknown) =>
   typeof value === "number" &&
   Number.isFinite(value) &&
@@ -110,10 +147,24 @@ export function normalizeBrowserInput(
           ? `Digit${text}`
           : text === " "
             ? "Space"
-            : "Unidentified";
+            : (punctuationCodes[text] ?? shiftedCodes[text] ?? "Unidentified");
+      const modifiers = /^[A-Z]$/.test(text) || shiftedCodes[text] ? 8 : 0;
       return [
-        { type: "input_keyboard", eventType: "keyDown", key: text, code, text },
-        { type: "input_keyboard", eventType: "keyUp", key: text, code },
+        {
+          type: "input_keyboard",
+          eventType: "keyDown",
+          key: text,
+          code,
+          modifiers,
+          text,
+        },
+        {
+          type: "input_keyboard",
+          eventType: "keyUp",
+          key: text,
+          code,
+          modifiers,
+        },
       ];
     });
   }
