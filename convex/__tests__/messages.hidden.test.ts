@@ -272,6 +272,38 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("records a seed when a streaming assistant message is completed by a later patch", async () => {
+    setupExistingMessage(
+      makeMessage({ id: "streaming-response", role: "assistant" }),
+      {
+        _id: "chat-doc-1",
+        id: CHAT_ID,
+        user_id: USER_ID,
+      },
+    );
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "streaming-response",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "completed response" }],
+      finishReason: "stop",
+      usage: {
+        abliterationRouting: {
+          version: 1,
+          source: "moderation",
+          completed: true,
+        },
+      },
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ abliteration_seed_count: 1 }),
+    );
+  });
+
   it("never seeds from hidden, incomplete, inherited, or already recorded responses", async () => {
     const { saveMessage } = await import("../messages");
     for (const [id, finishReason, source, isHidden] of [
