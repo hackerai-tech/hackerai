@@ -32,8 +32,12 @@ No automatic ramp or scheduled activation.
   totals, failures, empty/truncated output, fallback, duration and usage coverage.
   Never infer helpfulness or refusal from nonempty completion alone.
 - `hackerai-usage_cost` gives the cumulative accounted request cost, including
-  request overhead. Provider telemetry isolates generation cost including
-  retries. These are different views of the same spend: never add them together.
+  request overhead. It excludes discarded retry work from customer accounting.
+  Use `usage_observed_model_cost_dollars + non_model_cost_dollars` for observed
+  expense including retry waste and compaction; show discarded retry expense
+  and started-versus-reported call coverage. Provider telemetry isolates
+  generation cost including retries. These are overlapping views of the same
+  spend: never add them together.
   Unknown usage/cost is not zero; report coverage and missing final events.
 - Dedicated `abliterated_short_followup_feedback_v1` surveys reuse neutral task
   feedback. Both arms use the same independent delivery flag, one invitation
