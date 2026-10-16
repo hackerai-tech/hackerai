@@ -5,6 +5,15 @@ import {
 } from "../error-redaction";
 
 describe("error redaction", () => {
+  it.each([
+    undefined,
+    () => "private-function-body",
+    Symbol("private-symbol"),
+    { toJSON: () => undefined },
+  ])("formats values without a JSON representation safely", (value) => {
+    expect(stringifyRedactedError(value)).toBe("Unknown error occurred");
+  });
+
   it("redacts service keys from Convex validation messages", () => {
     const message =
       'ArgumentValidationError: Object is missing the required field `userId`.\n\nObject: {fileIds: ["file1"], serviceKey: "secret-value"}';
