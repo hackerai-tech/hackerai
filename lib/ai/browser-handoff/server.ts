@@ -7,7 +7,11 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { browserBridgeCommand } from "./bridge-program";
-import { browserRelayProgram, RELAY_START_PROGRAM } from "./relay-program";
+import {
+  browserRelayProgram,
+  RELAY_START_PROGRAM,
+  RELAY_STOP_PROGRAM,
+} from "./relay-program";
 
 export type BrowserSessionLocation = {
   userId: string;
@@ -127,7 +131,6 @@ export async function startBrowserRelay(
   browserSessionName: string,
   grant: string,
   origin: string,
-  lease: number,
 ) {
   const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
   const handle = await sandbox.commands.run(
@@ -151,7 +154,8 @@ export async function startBrowserRelay(
         expiresAt: session.expiresAt,
       },
       program: browserRelayProgram(),
-      lease,
+      // Expires before the eventual database grant, even if startup is slow.
+      lease: Date.now() + 25_000,
     }),
   );
   await handle.closeStdin();
@@ -194,13 +198,8 @@ export async function stopBrowserRelays(
 ) {
   // A permanent tombstone prevents a late heartbeat from resurrecting control.
   // Wait for the stream close handshake to drain accepted input before resume.
-  const program = String.raw`const fs=require('node:fs');const root=process.argv[1],only=process.argv[2];
-    (async()=>{const dirs=only?[only]:fs.readdirSync(root).filter(n=>/^relay-[a-f0-9]{24}$/.test(n)).map(n=>root+'/'+n);
-    await Promise.all(dirs.map(async d=>{if(!fs.existsSync(d))return;fs.writeFileSync(d+'/revoked','1',{mode:384});
-    for(let i=0;i<100&&!fs.existsSync(d+'/closed');i++)await new Promise(r=>setTimeout(r,50));
-    if(!fs.existsSync(d+'/closed'))process.exitCode=1;}));})().catch(()=>{process.exitCode=1;});`;
   const result = await sandbox.commands.run(
-    `node -e ${quote(program)} ${quote(session.directory)}${grant ? ` ${quote(relayDirectory(session, grant))}` : ""}`,
+    `node -e ${quote(RELAY_STOP_PROGRAM)} ${quote(session.directory)}${grant ? ` ${quote(relayDirectory(session, grant))}` : ""}`,
     {
       ...buildSandboxCommandOptions(sandbox),
       timeoutMs: 7000,

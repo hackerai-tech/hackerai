@@ -29,7 +29,11 @@ function fetch(
     },
   );
 }
-import { browserRelayProgram, RELAY_START_PROGRAM } from "../relay-program";
+import {
+  browserRelayProgram,
+  RELAY_START_PROGRAM,
+  RELAY_STOP_PROGRAM,
+} from "../relay-program";
 
 let root: string;
 let directory: string;
@@ -228,4 +232,57 @@ it("starts the detached relay from protected stdin and prints only its port", as
   expect(code).toBe(0);
   expect(stdout).toMatch(/^\d+$/);
   await writeFile(join(second, "revoked"), "1");
+});
+
+async function stopRelay(target = directory) {
+  const stopper = spawn(
+    process.execPath,
+    ["-e", RELAY_STOP_PROGRAM, root, target],
+    { stdio: "ignore" },
+  );
+  return (await once(stopper, "exit"))[0];
+}
+
+it("recovers from a dead relay without a close marker", async () => {
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  await expect(readFile(join(directory, "closed"))).rejects.toThrow();
+  expect(await stopRelay()).toBe(0);
+  expect(await readFile(join(directory, "revoked"), "utf8")).toBe("1");
+  expect(await readFile(join(directory, "closed"), "utf8")).toBe("1");
+});
+
+it("waits for a live relay to close before allowing resume", async () => {
+  await input({ sequence: 1, inputs: [{ kind: "text", text: "LAST" }] });
+  expect(await stopRelay()).toBe(0);
+  expect(
+    received
+      .filter(
+        (event) =>
+          event.type === "input_keyboard" && event.eventType === "keyDown",
+      )
+      .map((event) => event.text)
+      .join(""),
+  ).toBe("LAST");
+  expect(await readFile(join(directory, "closed"), "utf8")).toBe("1");
+});
+
+it("recovers a relay that crashed before opening its public port", async () => {
+  const second = join(root, "failed-relay");
+  const config = JSON.parse(await readFile(join(directory, "config"), "utf8"));
+  const launcher = spawn(process.execPath, ["-e", RELAY_START_PROGRAM], {
+    stdio: ["pipe", "ignore", "ignore"],
+  });
+  launcher.stdin.end(
+    JSON.stringify({
+      directory: second,
+      config,
+      program: "throw new Error('Startup failure')",
+      lease: Date.now() + 3000,
+    }),
+  );
+  expect((await once(launcher, "exit"))[0]).toBe(1);
+  expect(await stopRelay(second)).toBe(0);
+  expect(await readFile(join(second, "closed"), "utf8")).toBe("1");
 });

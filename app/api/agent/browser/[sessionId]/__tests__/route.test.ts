@@ -1,5 +1,9 @@
 import type { NextRequest } from "next/server";
 
+const mockStartRelay = jest.fn(async () => {
+  if (mockFailure === "relay-start") throw new Error("Relay startup failed");
+  return "https://relay.example";
+});
 const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
@@ -66,7 +70,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
     }
   },
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
-  startBrowserRelay: async () => "https://relay.example",
+  startBrowserRelay: () => mockStartRelay(),
   renewBrowserRelay: async () => undefined,
   stopBrowserRelays: () => mockStopRelay(),
   connectBrowserSandbox: async () => ({}),
@@ -268,3 +272,19 @@ it("drains the relay before unpausing and stays paused if shutdown is unconfirme
   expect(mockPause).not.toHaveBeenCalled();
   expect(mockPaused).toBe(true);
 });
+
+it.each(["agent", "recovery"])(
+  "rolls back a failed relay start without committing takeover from %s",
+  async (state) => {
+    mockState = state;
+    mockPaused = state === "recovery";
+    mockFailure = "relay-start";
+    expect((await take()).status).toBe(503);
+    expect(mockMutation.mock.calls.map(([name]) => name)).not.toContain(
+      "finishTakeoverForBackend",
+    );
+    expect(mockStopRelay).toHaveBeenCalled();
+    expect(mockState).toBe(state);
+    expect(mockPaused).toBe(state === "recovery");
+  },
+);

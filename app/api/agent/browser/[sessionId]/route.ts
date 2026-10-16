@@ -190,7 +190,15 @@ export async function POST(
         body.browserSessionName,
         true,
       );
-      const relayLease = Date.now() + 25_000;
+      // Start the transport while the row is still claiming. Failed startup
+      // can then roll back the gate and claim using the same grant.
+      const relayUrl = await startBrowserRelay(
+        sandbox,
+        session,
+        body.browserSessionName,
+        grant,
+        origin,
+      );
       const active = await convex.mutation(
         api.browserHandoffs.finishTakeoverForBackend,
         {
@@ -200,14 +208,6 @@ export async function POST(
         },
       );
       if (!active) throw new BrowserPreviewUnavailable("closed");
-      const relayUrl = await startBrowserRelay(
-        sandbox,
-        session,
-        body.browserSessionName,
-        grant,
-        origin,
-        relayLease,
-      );
       phLogger.event("agent_browser_human_control_started", {
         userId,
         chat_id: session.chatId,
@@ -217,12 +217,14 @@ export async function POST(
       after(() => phLogger.flush());
       return json({ state: "human", grant, frame, relayUrl });
     } catch (error) {
-      if (paused && !wasPaused) {
+      if (paused) {
         try {
           const sandbox = await connectBrowserSandbox(session);
           await stopBrowserRelays(sandbox, session, grant);
-          await setAgentBrowserPaused(sandbox, session, false);
-          paused = false;
+          if (!wasPaused) {
+            await setAgentBrowserPaused(sandbox, session, false);
+            paused = false;
+          }
         } catch {
           // Keep the recovery state if the gate cannot be reopened safely.
         }

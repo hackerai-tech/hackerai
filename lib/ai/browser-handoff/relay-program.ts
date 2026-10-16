@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const directory = process.argv[1];
+fs.writeFileSync(directory + '/pid', String(process.pid), {mode: 0o600});
 const config = JSON.parse(fs.readFileSync(directory + '/config', 'utf8'));
 const { normalizeBrowserInputBatch } = NORMALIZER_FACTORY();
 let stopped = false;
@@ -158,12 +159,53 @@ process.stdin.on('end', async () => {
   fs.writeFileSync(directory + '/config', JSON.stringify(config), {mode: 0o600});
   fs.writeFileSync(directory + '/lease', String(lease), {mode: 0o600});
   const child = spawn(process.execPath, ['--experimental-websocket', '-e', program, directory], {detached: true, stdio: 'ignore'});
+  if (child.pid) fs.writeFileSync(directory + '/pid', String(child.pid), {mode: 0o600});
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+  child.on('error', () => { exited = true; fs.writeFileSync(directory + '/closed', '1', {mode: 0o600}); });
   child.unref();
   for (let i = 0; i < 100; i++) {
+    if (exited) break;
     try { const port = fs.readFileSync(directory + '/port', 'utf8'); process.stdout.write(port); return; } catch {}
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
+  child.kill();
   process.exitCode = 1;
 });
+`;
+
+// Live relays must acknowledge their ordered socket close. A confirmed dead
+// process cannot accept more input and must not permanently block recovery.
+export const RELAY_STOP_PROGRAM = String.raw`
+const fs = require('node:fs');
+const root = process.argv[1], only = process.argv[2];
+function alive(directory) {
+  let pid;
+  try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch { return true; }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try { process.kill(pid, 0); } catch (error) { return error.code !== 'ESRCH'; }
+  if (process.platform === 'linux') {
+    // A reused PID belongs to a different process, not this relay.
+    try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(directory); }
+    catch (error) { return error.code !== 'ENOENT'; }
+  }
+  return true;
+}
+(async () => {
+  const dirs = only ? [only] : fs.readdirSync(root).filter(n => /^relay-[a-f0-9]{24}$/.test(n)).map(n => root + '/' + n);
+  await Promise.all(dirs.map(async directory => {
+    if (!fs.existsSync(directory)) return;
+    fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
+    for (let i = 0; i < 100; i++) {
+      if (fs.existsSync(directory + '/closed')) return;
+      if (!alive(directory)) {
+        fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    process.exitCode = 1;
+  }));
+})().catch(() => { process.exitCode = 1; });
 `;
