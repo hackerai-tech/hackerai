@@ -1376,11 +1376,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         throw new Error("A continuation is already starting.");
       if (computerSendDisabledReasonRef.current)
         throw new Error(computerSendDisabledReasonRef.current);
+      // Keep the private saved note immutable; this is only a restart signal.
+      const continuationId = `${message.id}-continue`;
       let accepted = false;
       const admitted = new Promise<void>((resolve) => {
         browserHandoffAdmissionRef.current = {
           chatId,
-          id: message.id,
+          id: continuationId,
           resolve: () => {
             accepted = true;
             resolve();
@@ -1392,18 +1394,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         setChatMode("agent");
         chatModeRef.current = "agent";
         const existing = messagesRef.current.some(
-          (item) => item.id === message.id,
+          (item) => item.id === continuationId,
         );
         const sending = sendMessage(
           {
-            id: message.id,
+            id: continuationId,
             role: "user",
-            parts: [{ type: "text", text: message.text }],
-            ...(existing ? { messageId: message.id } : {}),
+            metadata: { isAutoContinue: true },
+            parts: [{ type: "text", text: "Continue after browser takeover." }],
+            ...(existing ? { messageId: continuationId } : {}),
           },
           {
             body: {
               mode: "agent",
+              isAutoContinue: true,
               todos: todosRef.current,
               sandboxPreference: sandboxPreferenceRef.current,
               agentPermissionMode: agentPermissionModeRef.current,

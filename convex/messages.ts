@@ -1571,8 +1571,11 @@ export const getMessagesPageForBackend = query({
       .order("desc")
       .paginate(withMessagePageReadLimit(args.paginationOpts));
 
+    // Takeover notes are private user instructions needed by subsequent runs.
+    // Client history, search and sharing still exclude every hidden message.
     const visiblePage = result.page.filter(
-      (message) => message.is_hidden !== true,
+      (message) =>
+        message.is_hidden !== true || message.is_browser_handoff === true,
     );
     const fileIds = new Set<Id<"files">>();
     for (const message of visiblePage) {

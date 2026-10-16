@@ -750,36 +750,40 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
     return paginateMock;
   }
 
-  it("should exclude messages where is_hidden is true", async () => {
-    const visibleMsg = makeMessage({
-      _id: "msg-doc-visible" as Id<"messages">,
-      id: "msg-visible",
-      role: "user",
-    });
-    const hiddenMsg = makeMessage({
-      _id: "msg-doc-hidden" as Id<"messages">,
-      id: "msg-hidden",
-      role: "user",
-      is_hidden: true,
-    });
+  it.each([undefined, true])(
+    "excludes hidden messages including takeover context (%s)",
+    async (isBrowserHandoff) => {
+      const visibleMsg = makeMessage({
+        _id: "msg-doc-visible" as Id<"messages">,
+        id: "msg-visible",
+        role: "user",
+      });
+      const hiddenMsg = makeMessage({
+        _id: "msg-doc-hidden" as Id<"messages">,
+        id: "msg-hidden",
+        role: "user",
+        is_hidden: true,
+        is_browser_handoff: isBrowserHandoff,
+      });
 
-    const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
+      const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
 
-    const { getMessagesByChatId } = await import("../messages");
+      const { getMessagesByChatId } = await import("../messages");
 
-    const result = await getMessagesByChatId.handler(mockCtx, {
-      chatId: CHAT_ID,
-      paginationOpts: { numItems: 10, cursor: null },
-    });
+      const result = await getMessagesByChatId.handler(mockCtx, {
+        chatId: CHAT_ID,
+        paginationOpts: { numItems: 10, cursor: null },
+      });
 
-    expect(result.page).toHaveLength(1);
-    expect(result.page[0].id).toBe("msg-visible");
-    expect(paginateMock).toHaveBeenCalledWith({
-      numItems: 10,
-      cursor: null,
-      maximumBytesRead: 4 * 1024 * 1024,
-    });
-  });
+      expect(result.page).toHaveLength(1);
+      expect(result.page[0].id).toBe("msg-visible");
+      expect(paginateMock).toHaveBeenCalledWith({
+        numItems: 10,
+        cursor: null,
+        maximumBytesRead: 4 * 1024 * 1024,
+      });
+    },
+  );
 
   it("should include messages where is_hidden is undefined or false", async () => {
     const msg1 = makeMessage({
@@ -939,6 +943,33 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     );
     return paginateMock;
   }
+
+  it("rehydrates takeover context for a new Agent run while excluding auto-continue signals", async () => {
+    setupPaginatedMessages([
+      makeMessage({ id: "task" }),
+      makeMessage({
+        id: "note",
+        is_hidden: true,
+        is_browser_handoff: true,
+        parts: [{ type: "text", text: "STOP! /LAB?X=YES café 日本語 😀" }],
+      }),
+      makeMessage({ id: "signal", is_hidden: true }),
+    ]);
+    const { getMessagesPageForBackend } = await import("../messages");
+    const result = await getMessagesPageForBackend.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(result.page.map((message: any) => message.id)).toEqual([
+      "task",
+      "note",
+    ]);
+    expect(result.page[1].parts).toEqual([
+      { type: "text", text: "STOP! /LAB?X=YES café 日本語 😀" },
+    ]);
+  });
 
   it("returns routing provenance only for visible assistant messages, outside prompt parts", async () => {
     const seed = {

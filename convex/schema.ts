@@ -405,6 +405,8 @@ export default defineSchema({
     trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
+    // Private takeover context is retained in model history, never client history.
+    is_browser_handoff: v.optional(v.boolean()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])

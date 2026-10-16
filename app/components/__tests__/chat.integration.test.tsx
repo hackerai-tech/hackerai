@@ -266,14 +266,25 @@ jest.mock("../ChatInput", () => ({
   ChatInput: () => <div data-testid="chat-input">ChatInput</div>,
 }));
 
+let mockBrowserContinue: (message: {
+  id: string;
+  text: string;
+}) => Promise<void>;
 jest.mock("../ComputerSidebar", () => ({
-  ComputerSidebar: () => (
-    <div data-testid="computer-sidebar">
-      Sidebar
-      <button type="button">First computer action</button>
-      <button type="button">Last computer action</button>
-    </div>
-  ),
+  ComputerSidebar: ({
+    onBrowserContinue,
+  }: {
+    onBrowserContinue: typeof mockBrowserContinue;
+  }) => {
+    mockBrowserContinue = onBrowserContinue;
+    return (
+      <div data-testid="computer-sidebar">
+        Sidebar
+        <button type="button">First computer action</button>
+        <button type="button">Last computer action</button>
+      </div>
+    );
+  },
 }));
 
 jest.mock("../ChatHeader", () => ({
@@ -1449,6 +1460,41 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      await screen.findByTestId("computer-sidebar");
+      // An older backend may still return the note; never echo or overwrite it.
+      await act(async () => {
+        await expect(
+          mockBrowserContinue({
+            id: "private-note-id",
+            text: "STOP! /LAB?X=YES café 日本語 😀",
+          }),
+        ).rejects.toThrow("Your note is saved");
+      });
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "private-note-id-continue",
+          role: "user",
+          metadata: { isAutoContinue: true },
+          parts: [{ type: "text", text: "Continue after browser takeover." }],
+        }),
+        {
+          body: expect.objectContaining({
+            mode: "agent",
+            isAutoContinue: true,
+          }),
+        },
+      );
+      expect(JSON.stringify(mockSendMessage.mock.calls)).not.toContain("STOP!");
+    });
+
     it("should render sidebar on desktop", () => {
       render(
         <TestWrapper>

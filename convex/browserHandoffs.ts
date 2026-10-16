@@ -503,7 +503,7 @@ export const closeForBackend = mutation({
   },
 });
 
-/** Save the exit intent and its user-visible message atomically, including after run cleanup. */
+/** Save private Agent context atomically, including after run cleanup. */
 export const saveExitNoteForBackend = mutation({
   args: { ...serviceSessionArgs, requestId: v.string(), note: v.string() },
   returns: v.object({
@@ -526,7 +526,11 @@ export const saveExitNoteForBackend = mutation({
     if (existing) {
       if (existing.user_id !== args.userId || existing.chat_id !== row.chat_id)
         throw new Error("Invalid handoff message");
-      return { id, text: existing.content ?? "", runActive };
+      await ctx.db.patch(existing._id, {
+        is_hidden: true,
+        is_browser_handoff: true,
+      });
+      return { id, text: "Continue after browser takeover.", runActive };
     }
     if (runActive && row.state !== "resuming")
       throw new Error("Exit takeover must claim resume first");
@@ -543,6 +547,8 @@ export const saveExitNoteForBackend = mutation({
       content: text,
       mode: "agent",
       trigger_run_id: row.run_id,
+      is_hidden: true,
+      is_browser_handoff: true,
       update_time: Date.now(),
     });
     await ctx.db.patch(row._id, {
@@ -553,7 +559,8 @@ export const saveExitNoteForBackend = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
       .first();
     if (chat) await ctx.db.patch(chat._id, { update_time: Date.now() });
-    return { id, text, runActive };
+    // The browser only needs a continuation signal, never the saved note.
+    return { id, text: "Continue after browser takeover.", runActive };
   },
 });
 

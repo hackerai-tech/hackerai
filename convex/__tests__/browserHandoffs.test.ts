@@ -261,11 +261,16 @@ it("saves exit context once, exposes it to the owning runner, and retains it aft
     ctx as never,
     args,
   );
-  expect(saved.text).toContain("I signed in.");
+  expect(saved.text).toBe("Continue after browser takeover.");
+  expect(rows.messages[0]).toMatchObject({
+    is_hidden: true,
+    is_browser_handoff: true,
+    content: "I've finished browser takeover.\n\nI signed in.",
+  });
   expect(rows.messages).toHaveLength(1);
   expect(
     await browser.getExitNotesForBackend.handler(ctx as never, scope),
-  ).toEqual([{ id: saved.id, text: saved.text }]);
+  ).toEqual([{ id: saved.id, text: rows.messages[0].content }]);
   await browser.closeForBackend.handler(ctx as never, {
     serviceKey: "key",
     sessionId: scope.sessionId,
@@ -298,7 +303,7 @@ it("accepts an empty note after completion while rejecting another user or a rep
     await browser.saveExitNoteForBackend.handler(ctx as never, args),
   ).toMatchObject({
     runActive: false,
-    text: expect.stringContaining("No additional details"),
+    text: "Continue after browser takeover.",
   });
   await expect(
     browser.saveExitNoteForBackend.handler(ctx as never, {
@@ -342,7 +347,7 @@ it.each(["parent", "child"])(
     expect(await browser.getForBackend.handler(ctx as never, scope)).toBeNull();
     expect(
       await browser.getExitNotesForBackend.handler(ctx as never, scope),
-    ).toEqual([{ id: saved.id, text: saved.text }]);
+    ).toEqual([{ id: saved.id, text: rows.messages[0].content }]);
     expect(
       await browser.getExitNotesForBackend.handler(ctx as never, {
         ...scope,
@@ -377,7 +382,8 @@ it.each([" \n\t", "A.b@C-d! \n日本語 😀", "A".repeat(4000)])(
       ctx as never,
       args,
     );
-    expect(saved.text).toBe(
+    expect(saved.text).toBe("Continue after browser takeover.");
+    expect(rows.messages[0].content).toBe(
       note.trim()
         ? `I've finished browser takeover.\n\n${note.trim()}`
         : "I've finished browser takeover. No additional details to add; please continue the task.",
