@@ -72,9 +72,13 @@ beforeEach(async () => {
     }),
   );
   await writeFile(join(directory, "lease"), String(Date.now() + 30_000));
-  child = spawn(process.execPath, ["-e", browserRelayProgram(), directory], {
-    stdio: "ignore",
-  });
+  child = spawn(
+    process.execPath,
+    ["--experimental-websocket", "-e", browserRelayProgram(), directory],
+    {
+      stdio: "ignore",
+    },
+  );
   for (let i = 0; i < 100; i++) {
     try {
       url = `http://127.0.0.1:${await readFile(join(directory, "port"), "utf8")}`;

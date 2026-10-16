@@ -157,7 +157,7 @@ process.stdin.on('end', async () => {
   fs.mkdirSync(directory, {mode: 0o700});
   fs.writeFileSync(directory + '/config', JSON.stringify(config), {mode: 0o600});
   fs.writeFileSync(directory + '/lease', String(lease), {mode: 0o600});
-  const child = spawn(process.execPath, ['-e', program, directory], {detached: true, stdio: 'ignore'});
+  const child = spawn(process.execPath, ['--experimental-websocket', '-e', program, directory], {detached: true, stdio: 'ignore'});
   child.unref();
   for (let i = 0; i < 100; i++) {
     try { const port = fs.readFileSync(directory + '/port', 'utf8'); process.stdout.write(port); return; } catch {}
