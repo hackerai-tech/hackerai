@@ -71,6 +71,7 @@ export function AgentBrowserPreview({
   const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pasteError, setPasteError] = useState<string | null>(null);
   const grantRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -127,6 +128,7 @@ export function AgentBrowserPreview({
     setHasTakenControl(false);
     setBusy(false);
     setError(null);
+    setPasteError(null);
     setGrant(null);
     setRelayUrl(null);
     relaySequence.current = 0;
@@ -296,6 +298,10 @@ export function AgentBrowserPreview({
       (!session && hasTakenControl) ||
       (effectiveState === "agent" && !!exitRequestId.current));
 
+  useLayoutEffect(() => {
+    if (grant && fullScreen) inputRef.current?.focus({ preventScroll: true });
+  }, [grant, fullScreen]);
+
   const takeControl = async () => {
     if (!canTake || !frame) return;
     setBusy(true);
@@ -320,8 +326,10 @@ export function AgentBrowserPreview({
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
       setExitOpen(false);
-      setNote("");
-      exitRequestId.current = null;
+      if (!hasTakenControl) {
+        setNote("");
+        exitRequestId.current = null;
+      }
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -617,11 +625,17 @@ export function AgentBrowserPreview({
             onPaste={(event) => {
               if (!human) return;
               event.preventDefault();
+              if (frameStale || resumingRef.current) return;
               const text = event.clipboardData
                 .getData("text")
-                .replace(/\r\n?/g, "\n")
-                .slice(0, 2048)
-                .replace(/[\uD800-\uDBFF]$/, "");
+                .replace(/\r\n?/g, "\n");
+              if (text.length > 2048) {
+                setPasteError(
+                  "Nothing was pasted. Paste a smaller section (up to 2,048 characters) at a time.",
+                );
+                return;
+              }
+              setPasteError(null);
               const chars = [...text];
               for (let i = 0; i < chars.length; i += 32) {
                 sendInput({
@@ -733,9 +747,30 @@ export function AgentBrowserPreview({
             Return to live browser
           </button>
         )}
-        {error && (
-          <span role="alert" className="text-destructive">
-            {error}
+        {fullScreen && session && !human && hasTakenControl && (
+          <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-center text-sm shadow-lg">
+            <p role="status" className="text-muted-foreground">
+              {effectiveState === "human" || effectiveState === "claiming"
+                ? "Waiting for the previous control session to release…"
+                : "Browser control disconnected. Reconnect to click and type."}
+            </p>
+            <button
+              type="button"
+              onClick={() => void takeControl()}
+              disabled={!canTake || busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw size={14} aria-hidden />
+              {busy ? "Reconnecting…" : "Reconnect control"}
+            </button>
+          </div>
+        )}
+        {(error || pasteError) && (
+          <span
+            role="alert"
+            className={`text-sm text-destructive ${fullScreen ? "max-w-sm rounded-xl border border-border bg-background px-4 py-3 text-center shadow-lg" : ""}`}
+          >
+            {error || pasteError}
           </span>
         )}
         {session && frameStale && (
@@ -794,7 +829,7 @@ export function AgentBrowserPreview({
         }}
       >
         <DialogContent
-          className="sm:max-w-lg"
+          className="grid max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto sm:max-w-lg"
           onEscapeKeyDown={(event) => {
             if (busy) event.preventDefault();
           }}
@@ -802,7 +837,7 @@ export function AgentBrowserPreview({
             if (busy) event.preventDefault();
           }}
         >
-          <DialogTitle className="text-xl">
+          <DialogTitle className="pr-6 text-xl">
             Tell HackerAI what you did
           </DialogTitle>
           <DialogDescription>

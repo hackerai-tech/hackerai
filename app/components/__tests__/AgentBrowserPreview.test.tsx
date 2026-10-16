@@ -440,7 +440,7 @@ it("batches rapid typing in order and drains the entire burst before resuming", 
 
 it.each([
   ["chunk boundary", "a".repeat(31) + "😀Z", "a".repeat(31) + "😀Z"],
-  ["size limit", "a".repeat(2047) + "😀Z", "a".repeat(2047)],
+  ["size limit", "a".repeat(2046) + "😀", "a".repeat(2046) + "😀"],
 ])(
   "preserves complete Unicode characters at the %s",
   async (_label, text, expected) => {
@@ -643,3 +643,75 @@ it("sends ordered takeover input directly to the relay instead of the command AP
   ]);
   expect(actions.some((body) => body.action === "input")).toBe(false);
 });
+
+it("reconnects lost control in full screen and preserves the unsent exit note", async () => {
+  await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Filled the form." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  mockSession!.state = "human";
+  mockSession!.grantExpiresAt = Date.now() + 30_000;
+  handleAction = async (body) =>
+    body.action === "input"
+      ? response({ state: "expired" }, false)
+      : response({ grant: "grant-b", frame });
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "x",
+    });
+  });
+  expect(
+    screen.getByRole("button", { name: "Reconnect control" }),
+  ).toBeDisabled();
+  await act(async () => {
+    jest.advanceTimersByTime(31_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(1600);
+  });
+  expect(
+    screen.getByRole("button", { name: "Reconnect control" }),
+  ).toBeEnabled();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect control" }));
+  });
+  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
+  expect(
+    screen.queryByRole("button", { name: "Reconnect control" }),
+  ).not.toBeInTheDocument();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "A",
+    });
+  });
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-b" });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Filled the form.");
+});
+
+it.each(["x".repeat(2049), "a".repeat(2047) + "😀"])(
+  "rejects an oversized paste without partially entering it",
+  async (text) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => text },
+      });
+    });
+    expect(actions.some((body) => body.action === "input")).toBe(false);
+    expect(screen.getByRole("alert")).toHaveTextContent("Nothing was pasted");
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => "A.b@C-d!\r\n日本語 😀" },
+      });
+    });
+    expect(actions.at(-1)).toMatchObject({
+      inputs: [{ kind: "text", text: "A.b@C-d!\n日本語 😀" }],
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  },
+);

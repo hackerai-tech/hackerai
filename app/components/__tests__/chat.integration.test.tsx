@@ -58,6 +58,7 @@ let mockRouteParams: Record<string, string> = {};
 const mockBranchChat = jest.fn<() => Promise<string | null>>();
 const mockRouterPush = jest.fn();
 let mockComputerOverlayMedia = false;
+const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
@@ -481,6 +482,7 @@ describe("Chat Component Integration", () => {
     mockUseRealChatHandlers = false;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
+    mockOverlayListeners.clear();
     window.matchMedia = jest.fn(
       (query: string) =>
         ({
@@ -489,7 +491,10 @@ describe("Chat Component Integration", () => {
           },
           media: query,
           onchange: null,
-          addEventListener: jest.fn(),
+          addEventListener: jest.fn((_event: string, listener: () => void) => {
+            if (query === "(max-width: 949px)")
+              mockOverlayListeners.add(listener);
+          }),
           removeEventListener: jest.fn(),
           addListener: jest.fn(),
           removeListener: jest.fn(),
@@ -1478,6 +1483,27 @@ describe("Chat Component Integration", () => {
       );
     });
 
+    it("preserves the Computer controller across responsive layout changes", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      const controller = await screen.findByTestId("computer-sidebar");
+      for (const overlay of [true, false]) {
+        act(() => {
+          mockComputerOverlayMedia = overlay;
+          mockOverlayListeners.forEach((listener) => listener());
+        });
+        expect(
+          screen.getByTestId("computer-sidebar-container"),
+        ).toHaveAttribute("data-layout", overlay ? "overlay" : "split");
+        expect(screen.getByTestId("computer-sidebar")).toBe(controller);
+      }
+    });
+
     it("uses an accessible Computer overlay on narrow workspaces", async () => {
       mockComputerOverlayMedia = true;
 
@@ -1510,6 +1536,23 @@ describe("Chat Component Integration", () => {
         name: "Last computer action",
       });
       await waitFor(() => expect(firstAction).toHaveFocus());
+
+      // Portal dialogs (browser takeover / exit prompt) own their keyboard focus.
+      const portal = document.createElement("div");
+      portal.setAttribute("role", "dialog");
+      const portalInput = document.createElement("input");
+      portal.append(portalInput);
+      document.body.append(portal);
+      try {
+        portalInput.focus();
+        fireEvent.keyDown(portalInput, { key: "Escape" });
+        expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+          "open",
+        );
+        expect(portalInput).toHaveFocus();
+      } finally {
+        portal.remove();
+      }
 
       lastAction.focus();
       fireEvent.keyDown(document, { key: "Tab" });
