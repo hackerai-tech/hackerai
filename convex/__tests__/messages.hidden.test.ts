@@ -34,6 +34,7 @@ jest.mock("convex/values", () => {
       }
     },
     getDocumentSize: actualValues.getDocumentSize,
+    getConvexSize: actualValues.getConvexSize,
   };
 });
 jest.mock("../_generated/api", () => ({
@@ -1154,6 +1155,7 @@ describe("client stop-save routing provenance", () => {
 
   it("rejects aggregate oversized parts before native insert with bounded diagnostics", async () => {
     const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
     const ctx = makeClientContext();
     const parts = [
       { type: "text", text: "private-first" + "x".repeat(510 * 1024) },
@@ -1174,10 +1176,73 @@ describe("client stop-save routing provenance", () => {
         failureStage: "prepare_insert_message",
         maxDocumentSizeBytes: 1024 * 1024,
         targetDocumentSizeBytes: 960 * 1024,
+        partCount: 2,
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "text",
+          largestPartSizeBytes: getConvexSize(parts[1]),
+          categories: {
+            text: { count: 2, sizeBytes: getConvexSize(parts) - 2 },
+          },
+        },
       },
     });
     expect(JSON.stringify(error)).not.toContain("private-first");
     expect(JSON.stringify(error)).not.toContain("private-second");
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("reports UTF-8 part bytes without leaking arbitrary names or values", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const parts = [
+      { type: "reasoning", text: "🙂".repeat(270_000) },
+      { type: "tool-private-tool", output: "private-output" },
+      {
+        type: "dynamic-tool",
+        toolName: "private-name",
+        input: "private-input",
+      },
+      { type: "data-private-data", data: { privateKey: "private-value" } },
+      { type: "private-unknown", value: 1n },
+      { type: 123, value: new ArrayBuffer(10) },
+      { type: "file", url: "private-url" },
+      { type: "step-start" },
+      {},
+    ];
+    const error = await saveAssistantMessage
+      .handler(ctx as any, {
+        id: "private-message-id",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts,
+      })
+      .catch((reason: any) => reason);
+    expect(error).toMatchObject({
+      message: "Message is too large to save",
+      data: {
+        code: "MESSAGE_TOO_LARGE",
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "reasoning",
+          largestPartSizeBytes: getConvexSize(parts[0]),
+          categories: {
+            reasoning: { count: 1, sizeBytes: getConvexSize(parts[0]) },
+            tool: { count: 2 },
+            data: { count: 1 },
+            other: { count: 3 },
+            file: { count: 1 },
+            "step-start": { count: 1 },
+          },
+        },
+      },
+    });
+    expect(error.data.partDiagnostics.partsSizeBytes).toBeGreaterThan(
+      1_080_000,
+    );
+    expect(JSON.stringify(error)).not.toMatch(/private|🙂/);
+    expect(JSON.stringify(error).length).toBeLessThan(1500);
     expect(ctx.db.insert).not.toHaveBeenCalled();
   });
 
