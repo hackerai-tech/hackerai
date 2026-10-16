@@ -186,7 +186,42 @@ export async function terminateCloudSandboxesForUser(
   userId: string,
   options: { permanent?: boolean } = {},
 ): Promise<{ total: number; killed: number; alreadyGone: number }> {
-  const cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
+  const cleanupId = randomUUID();
+  const startedAt = Date.now();
+  const recordCleanup = (
+    phase: "claim" | "provider_cleanup" | "finalize",
+    outcome: "started" | "success" | "error",
+    providerCleanupSucceeded?: boolean,
+  ) => {
+    // Diagnostics must not affect ownership, deletion or finalization. Never
+    // include the persisted fence, sandbox identifiers or provider errors.
+    try {
+      const fields = {
+        userId,
+        cleanup_id: cleanupId,
+        permanent: !!options.permanent,
+        phase,
+        outcome,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+        ...(providerCleanupSucceeded !== undefined
+          ? { provider_cleanup_succeeded: providerCleanupSucceeded }
+          : {}),
+      };
+      console.info("Cloud sandbox cleanup lifecycle", fields);
+      phLogger.event("cloud_sandbox_cleanup_lifecycle", fields);
+    } catch {
+      // Best-effort telemetry only; preserve the cleanup operation's result.
+    }
+  };
+  recordCleanup("claim", "started");
+  let cleanup: Awaited<ReturnType<typeof claimCloudWorkspaceCleanup>>;
+  try {
+    cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
+  } catch (error) {
+    recordCleanup("claim", "error");
+    throw error;
+  }
+  recordCleanup("claim", "success");
   let success = false;
   try {
     if (cleanup.migration && !process.env.E2B_API_KEY?.trim())
@@ -245,6 +280,14 @@ export async function terminateCloudSandboxesForUser(
     success = true;
     return totals;
   } finally {
-    await cleanup.finish(success);
+    recordCleanup("provider_cleanup", success ? "success" : "error", success);
+    recordCleanup("finalize", "started", success);
+    try {
+      await cleanup.finish(success);
+      recordCleanup("finalize", "success", success);
+    } catch (error) {
+      recordCleanup("finalize", "error", success);
+      throw error;
+    }
   }
 }
