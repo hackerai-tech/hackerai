@@ -539,9 +539,14 @@ export function AgentBrowserPreview({
               const text = event.clipboardData
                 .getData("text")
                 .replace(/\r\n?/g, "\n")
-                .slice(0, 2048);
-              for (let i = 0; i < text.length; i += 32) {
-                sendInput({ kind: "text", text: text.slice(i, i + 32) });
+                .slice(0, 2048)
+                .replace(/[\uD800-\uDBFF]$/, "");
+              const chars = [...text];
+              for (let i = 0; i < chars.length; i += 32) {
+                sendInput({
+                  kind: "text",
+                  text: chars.slice(i, i + 32).join(""),
+                });
               }
             }}
           >

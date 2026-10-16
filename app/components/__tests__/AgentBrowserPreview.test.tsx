@@ -409,3 +409,27 @@ it("batches rapid typing in order and drains the entire burst before resuming", 
   });
   expect(actions.at(-1)?.action).toBe("resume");
 });
+
+it.each([
+  ["chunk boundary", "a".repeat(31) + "😀Z", "a".repeat(31) + "😀Z"],
+  ["size limit", "a".repeat(2047) + "😀Z", "a".repeat(2047)],
+])(
+  "preserves complete Unicode characters at the %s",
+  async (_label, text, expected) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application"), {
+        clipboardData: { getData: () => text },
+      });
+    });
+    const chunks = actions
+      .filter((body) => body.action === "input")
+      .flatMap((body) => body.inputs as Array<{ text: string }>);
+    expect(chunks.map((chunk) => chunk.text).join("")).toBe(expected);
+    for (const chunk of chunks) {
+      expect([...chunk.text].length).toBeLessThanOrEqual(32);
+      expect(chunk.text).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
+    }
+  },
+);
