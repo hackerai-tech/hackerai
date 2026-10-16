@@ -4,6 +4,7 @@ import type { ScopeSnapshot } from "@/lib/engagement-scope/policy";
 let mockScope: ScopeSnapshot | null;
 const mockSave = jest.fn();
 jest.mock("convex/react", () => ({
+  useConvexAuth: () => ({ isAuthenticated: true }),
   useQuery: () => mockScope,
   useMutation: () => mockSave,
 }));
