@@ -543,14 +543,15 @@ async function recordAbliterationSeed(
   chat: Doc<"chats">,
   at: number,
 ) {
-  const recentSeedCount =
+  const previousSeedAt =
     typeof chat.abliteration_last_seed_at === "number" &&
     at >= chat.abliteration_last_seed_at &&
     at - chat.abliteration_last_seed_at <= 24 * 60 * 60 * 1000
-      ? (chat.abliteration_seed_count ?? 0)
-      : 0;
+      ? chat.abliteration_last_seed_at
+      : undefined;
   await ctx.db.patch(chat._id, {
-    abliteration_seed_count: Math.min(2, recentSeedCount + 1),
+    abliteration_seed_count: previousSeedAt === undefined ? 1 : 2,
+    abliteration_previous_seed_at: previousSeedAt,
     abliteration_last_seed_at: at,
   });
 }

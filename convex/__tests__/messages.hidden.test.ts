@@ -208,12 +208,13 @@ describe("saveMessage — is_hidden handling", () => {
   });
 
   it("records only a completed server-verified Abliteration seed on the owned chat", async () => {
+    const priorSeedAt = Date.now() - 16 * 60 * 60 * 1000;
     setupExistingMessage(null, {
       _id: "chat-doc-1",
       id: CHAT_ID,
       user_id: USER_ID,
       abliteration_seed_count: 1,
-      abliteration_last_seed_at: Date.now() - 16 * 60 * 60 * 1000,
+      abliteration_last_seed_at: priorSeedAt,
     });
     const { saveMessage } = await import("../messages");
     await saveMessage.handler(mockCtx, {
@@ -236,6 +237,7 @@ describe("saveMessage — is_hidden handling", () => {
       "chat-doc-1",
       expect.objectContaining({
         abliteration_seed_count: 2,
+        abliteration_previous_seed_at: priorSeedAt,
         abliteration_last_seed_at: expect.any(Number),
       }),
     );
@@ -268,7 +270,10 @@ describe("saveMessage — is_hidden handling", () => {
     });
     expect(mockCtx.db.patch).toHaveBeenCalledWith(
       "chat-doc-1",
-      expect.objectContaining({ abliteration_seed_count: 1 }),
+      expect.objectContaining({
+        abliteration_seed_count: 1,
+        abliteration_previous_seed_at: undefined,
+      }),
     );
   });
 

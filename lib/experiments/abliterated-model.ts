@@ -104,6 +104,7 @@ export async function evaluateAbliteratedModel({
   moderationChecked = true,
   allowsAbliterationContinuation = false,
   independentAbliterationSeedCount = 0,
+  previousIndependentAbliterationSeedAt,
   lastIndependentAbliterationSeedAt,
   continuationTurn = false,
   now = Date.now(),
@@ -121,6 +122,7 @@ export async function evaluateAbliteratedModel({
   moderationChecked?: boolean;
   allowsAbliterationContinuation?: boolean;
   independentAbliterationSeedCount?: number;
+  previousIndependentAbliterationSeedAt?: number;
   lastIndependentAbliterationSeedAt?: number;
   continuationTurn?: boolean;
   now?: number;
@@ -134,8 +136,14 @@ export async function evaluateAbliteratedModel({
     allowsAbliterationContinuation &&
     continuationTurn &&
     independentAbliterationSeedCount >= 2 &&
+    typeof previousIndependentAbliterationSeedAt === "number" &&
+    Number.isFinite(previousIndependentAbliterationSeedAt) &&
+    now >= previousIndependentAbliterationSeedAt &&
+    now - previousIndependentAbliterationSeedAt <= FOLLOWUP_SEED_WINDOW_MS &&
     typeof lastIndependentAbliterationSeedAt === "number" &&
     Number.isFinite(lastIndependentAbliterationSeedAt) &&
+    lastIndependentAbliterationSeedAt >=
+      previousIndependentAbliterationSeedAt &&
     now >= lastIndependentAbliterationSeedAt &&
     now - lastIndependentAbliterationSeedAt <= FOLLOWUP_SEED_WINDOW_MS &&
     isShortTextFollowup(messages);

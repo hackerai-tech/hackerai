@@ -242,6 +242,7 @@ export default defineSchema({
     // Server-verified completed Abliteration responses can seed bounded
     // same-chat follow-ups. Never copied to a branched or shared chat.
     abliteration_seed_count: v.optional(v.number()),
+    abliteration_previous_seed_at: v.optional(v.number()),
     abliteration_last_seed_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),

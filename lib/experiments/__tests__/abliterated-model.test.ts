@@ -286,6 +286,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
       moderationEligible: false,
       allowsAbliterationContinuation: true,
       independentAbliterationSeedCount: 2,
+      previousIndependentAbliterationSeedAt: now - 20 * 60 * 60 * 1000,
       lastIndependentAbliterationSeedAt: now - 16 * 60 * 60 * 1000,
       continuationTurn: true,
       messages: shortFollowup,
@@ -334,6 +335,17 @@ describe("paid moderation-gated three-step Abliteration", () => {
 
     it.each([
       ["one seed", { independentAbliterationSeedCount: 1 }],
+      [
+        "missing earlier seed timestamp",
+        { previousIndependentAbliterationSeedAt: undefined },
+      ],
+      [
+        "only the newer seed is within 24 hours",
+        {
+          previousIndependentAbliterationSeedAt: now - 46 * 60 * 60 * 1000,
+          lastIndependentAbliterationSeedAt: now - 23 * 60 * 60 * 1000,
+        },
+      ],
       [
         "expired seed",
         { lastIndependentAbliterationSeedAt: now - 25 * 60 * 60 * 1000 },
