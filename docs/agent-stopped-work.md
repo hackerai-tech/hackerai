@@ -19,10 +19,13 @@ Private chat fields hold the bounded history (32 directives, 128,000 serialized
 characters) and source snapshot. Directives retain message IDs and verbatim quotes;
 full source text is stored once in the current source snapshot, not copied into
 every directive. Historical sourceText fields remain readable for compatibility.
-Capacity errors preserve existing restrictions and the pending instruction. This
-bounded implementation does not support in-chat recovery once history is full:
-the actionable error explains that retry cannot help and a new chat requires the
-user to explicitly restate scope and exclusions. Long messages receive an
+Capacity errors preserve existing restrictions and the pending instruction. The
+user can recover in the same chat by sending exactly: `Reopen all stopped work
+and clear this chat's stop history.` Only the authenticated visible user source
+can perform this reset; it clears every saved exclusion and the pending
+instruction, advances the revision, and records the reset's message ID/text.
+Cancelled workers are not restarted. Quoted text, hidden messages, generic
+continuation and actor tools cannot reset the history. Long messages receive an
 actionable 24,000-character validation error directing logs to file attachments.
 Pending-review failures instruct the user to retry the saved turn after any usage
 limit or outage clears. These errors survive both HTTP and durable-stream error

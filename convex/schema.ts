@@ -240,6 +240,7 @@ export default defineSchema({
   chats: defineTable({
     agent_work_revision: v.optional(v.number()),
     agent_work_source: v.optional(stoppedWorkSourceValidator),
+    agent_work_last_reset: v.optional(stoppedWorkSourceValidator),
     agent_work_directives: v.optional(v.array(stoppedWorkDirectiveValidator)),
     id: v.string(),
     title: v.string(),

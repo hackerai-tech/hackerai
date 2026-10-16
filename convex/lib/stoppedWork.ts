@@ -8,6 +8,7 @@ import {
 import { validateServiceKey } from "./utils";
 import { isUserDeletionFenced } from "./userDeletionFence";
 import type { Doc } from "../_generated/dataModel";
+import { STOPPED_WORK_RESET_INSTRUCTION } from "../../lib/chat/stopped-work";
 
 export const stoppedWorkDirectiveValidator = v.object({
   id: v.string(),
@@ -97,6 +98,18 @@ export async function registerStoppedWorkSource(
     .filter((p) => p?.type === "text" && typeof p.text === "string")
     .map((p) => p.text)
     .join("\n");
+  // An exact authenticated user instruction is the bounded recovery path. Never
+  // infer this from a model response, quoted passage, generic continuation or tool.
+  if (text.trim() === STOPPED_WORK_RESET_INSTRUCTION) {
+    if (chat.agent_work_last_reset?.messageId === source.id) return null;
+    await ctx.db.patch(chat._id, {
+      agent_work_directives: [],
+      agent_work_source: { messageId: source.id, text, processed: true },
+      agent_work_revision: (chat.agent_work_revision ?? 0) + 1,
+      agent_work_last_reset: { messageId: source.id, text, processed: true },
+    });
+    return null;
+  }
   if (text.length > 24_000)
     throw new ConvexError({ code: "STOPPED_WORK_SOURCE_TOO_LARGE" });
   if (

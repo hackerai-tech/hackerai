@@ -278,6 +278,7 @@ describe("projects", () => {
         ...chat,
         agent_work_revision: 9,
         agent_work_source: { text: "private source" },
+        agent_work_last_reset: { text: "private reset" },
         agent_work_directives: [{ instruction: "private restriction" }],
       })),
     });

@@ -586,6 +586,7 @@ export const getChatByIdFromClient = query({
         objective_checkpoint: _privateObjectiveCheckpoint,
         agent_work_directives: _privateWorkDirectives,
         agent_work_source: _privateWorkSource,
+        agent_work_last_reset: _privateWorkReset,
         agent_work_revision: _privateWorkRevision,
         ...chatPublic
       } = chat;
@@ -694,6 +695,7 @@ export const getChatById = query({
         objective_checkpoint: _privateObjectiveCheckpoint,
         agent_work_directives: _privateWorkDirectives,
         agent_work_source: _privateWorkSource,
+        agent_work_last_reset: _privateWorkReset,
         agent_work_revision: _privateWorkRevision,
         ...chatPublic
       } = chat;
@@ -1178,6 +1180,7 @@ export const getUserChats = query({
           objective_checkpoint: _privateObjectiveCheckpoint,
           agent_work_directives: _privateWorkDirectives,
           agent_work_source: _privateWorkSource,
+          agent_work_last_reset: _privateWorkReset,
           agent_work_revision: _privateWorkRevision,
           ...chat
         }) => {

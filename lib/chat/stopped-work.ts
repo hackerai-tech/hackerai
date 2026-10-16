@@ -1,12 +1,14 @@
 import { ChatSDKError } from "@/lib/errors";
 
+export const STOPPED_WORK_RESET_INSTRUCTION =
+  "Reopen all stopped work and clear this chat's stop history.";
+
 export const STOPPED_WORK_ERRORS = {
   STOPPED_WORK_SOURCE_TOO_LARGE:
     "Agent instructions must be 24,000 characters or fewer so stop requests can be reviewed in full. Shorten the instructions and attach scan output or logs as a file.",
   STOPPED_WORK_PENDING:
     "Your previous message is still awaiting stopped-work review. Use Retry on that turn before sending another message. If a usage limit or service outage prevents retry, wait until it clears. Your saved restrictions have been preserved.",
-  STOPPED_WORK_CAPACITY:
-    "This chat has reached its stopped-work history limit. Existing restrictions and the pending instruction were preserved, and new work is blocked. Retrying cannot increase this limit. Start a new chat with the intended scope and all exclusions explicitly stated; restrictions do not transfer automatically.",
+  STOPPED_WORK_CAPACITY: `This chat has reached its stopped-work history limit. Existing restrictions and the pending instruction were preserved, and new work is blocked. Retrying cannot increase this limit. To explicitly reopen ALL stopped work and clear the history, send this exact message: ${STOPPED_WORK_RESET_INSTRUCTION} This removes every saved exclusion, including the pending instruction; cancelled workers will not restart automatically.`,
 } as const;
 
 /** Private, chat-owned user constraints. Never reconstructed from model history. */

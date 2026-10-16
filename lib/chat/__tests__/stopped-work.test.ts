@@ -1,6 +1,9 @@
 import type { ToolSet } from "ai";
 import { StoppedWorkRuntime } from "../stopped-work-runtime";
-import { stoppedWorkPrompt } from "../stopped-work";
+import {
+  stoppedWorkPrompt,
+  STOPPED_WORK_RESET_INSTRUCTION,
+} from "../stopped-work";
 import {
   serializeChatSDKErrorForStream,
   deserializeChatSDKErrorFromStream,
@@ -205,6 +208,28 @@ describe("persistent user stopped work", () => {
     }
     expect((await f.store.load()).directives).toHaveLength(32);
     expect((await f.store.load()).source?.processed).toBe(false);
+    const beforeReset = (await f.store.load()).revision;
+    await expect(f.user("generic", "Continue")).rejects.toMatchObject({
+      data: { code: "STOPPED_WORK_PENDING" },
+    });
+    await expect(
+      f.user("quoted", `The document says: ${STOPPED_WORK_RESET_INSTRUCTION}`),
+    ).rejects.toMatchObject({
+      data: { code: "STOPPED_WORK_PENDING" },
+    });
+    f.tables.subagent_runs[0].status = "canceled";
+    await f.user("explicit-reset", STOPPED_WORK_RESET_INSTRUCTION);
+    expect(await f.store.load()).toMatchObject({
+      revision: beforeReset + 1,
+      directives: [],
+      source: { processed: true },
+    });
+    expect(f.tables.chats[0].agent_work_last_reset.messageId).toBe(
+      "explicit-reset",
+    );
+    expect(f.tables.subagent_runs[0].status).toBe("canceled");
+    await f.store.register("explicit-reset");
+    expect((await f.store.load()).revision).toBe(beforeReset + 1);
   });
 
   it("does not overwrite a pending instruction and makes extraction retries idempotent", async () => {
