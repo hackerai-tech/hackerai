@@ -72,6 +72,19 @@ export function AgentBrowserPreview({
   const bufferedInputs = useRef<BrowserInput[]>([]);
   const drainingInputs = useRef(false);
   const lastMoveAt = useRef(0);
+  const wheelHandlerRef = useRef<
+    ((event: WheelEvent, element: HTMLImageElement) => void) | null
+  >(null);
+  const attachWheelListener = useCallback(
+    (element: HTMLImageElement | null) => {
+      if (!element) return;
+      const listener = (event: WheelEvent) =>
+        wheelHandlerRef.current?.(event, element);
+      element.addEventListener("wheel", listener, { passive: false });
+      return () => element.removeEventListener("wheel", listener);
+    },
+    [],
+  );
   const resumeButtonRef = useRef<HTMLButtonElement>(null);
   const resumingRef = useRef(false);
   const sessionId = session?.sessionId;
@@ -316,7 +329,7 @@ export function AgentBrowserPreview({
         while (buffer.length && grantRef.current === activeGrant) {
           const inputs: BrowserInput[] = [];
           let eventCount = 0;
-          while (buffer.length && inputs.length < 32) {
+          while (buffer.length && inputs.length < 16) {
             const next = buffer[0];
             const cost =
               next.kind === "text"
@@ -374,6 +387,30 @@ export function AgentBrowserPreview({
       ),
     };
   };
+
+  useLayoutEffect(() => {
+    // Keep the native non-passive listener stable while using the latest grant,
+    // frame and input queue. React's delegated wheel listener is passive.
+    wheelHandlerRef.current = (event, element) => {
+      if (!human) return;
+      event.preventDefault();
+      if (frameStale || !frame) return;
+      const xy = point({
+        currentTarget: element,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+      if (!xy) return;
+      const unit =
+        event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.height : 1;
+      sendInput({
+        kind: "wheel",
+        ...xy,
+        deltaX: Math.max(-2000, Math.min(2000, event.deltaX * unit)),
+        deltaY: Math.max(-2000, Math.min(2000, event.deltaY * unit)),
+      });
+    };
+  });
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!human || frameStale) return;
@@ -550,41 +587,7 @@ export function AgentBrowserPreview({
                 const xy = point(event);
                 if (xy) sendInput({ kind: "move", ...xy });
               }}
-              ref={(element) => {
-                if (!element || !human) return;
-                // React delegates wheel events with a passive listener. Use a
-                // non-passive listener so scrolling only reaches the remote page.
-                const onWheel = (event: WheelEvent) => {
-                  event.preventDefault();
-                  if (frameStale) return;
-                  const xy = point({
-                    currentTarget: element,
-                    clientX: event.clientX,
-                    clientY: event.clientY,
-                  });
-                  if (!xy) return;
-                  const unit =
-                    event.deltaMode === 1
-                      ? 16
-                      : event.deltaMode === 2
-                        ? frame.height
-                        : 1;
-                  sendInput({
-                    kind: "wheel",
-                    ...xy,
-                    deltaX: Math.max(
-                      -2000,
-                      Math.min(2000, event.deltaX * unit),
-                    ),
-                    deltaY: Math.max(
-                      -2000,
-                      Math.min(2000, event.deltaY * unit),
-                    ),
-                  });
-                };
-                element.addEventListener("wheel", onWheel, { passive: false });
-                return () => element.removeEventListener("wheel", onWheel);
-              }}
+              ref={attachWheelListener}
             />
           </div>
         )}

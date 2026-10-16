@@ -175,7 +175,7 @@ it("validates an entire ordered input batch before dispatch", () => {
   ).toBeNull();
   expect(normalizeBrowserInputBatch([])).toBeNull();
   expect(
-    normalizeBrowserInputBatch(Array(33).fill({ kind: "down", x: 1, y: 1 })),
+    normalizeBrowserInputBatch(Array(17).fill({ kind: "down", x: 1, y: 1 })),
   ).toBeNull();
   expect(
     normalizeBrowserInputBatch([
@@ -183,4 +183,12 @@ it("validates an entire ordered input batch before dispatch", () => {
       { kind: "key", key: "Enter", code: "Enter" },
     ]),
   ).toBeNull();
+});
+
+it("keeps a maximum editing batch within the bridge stdin limit", () => {
+  const events = normalizeBrowserInputBatch(
+    Array(16).fill({ kind: "key", key: "Enter", code: "Enter" }),
+  )!;
+  expect(events).not.toBeNull();
+  expect(JSON.stringify(events).length).toBeLessThanOrEqual(8192);
 });

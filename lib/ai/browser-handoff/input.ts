@@ -213,7 +213,7 @@ export function normalizeBrowserInput(
 
 /** Bound both user actions and expanded wire events for one ordered batch. */
 export function normalizeBrowserInputBatch(inputs: unknown) {
-  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 32)
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 16)
     return null;
   const events: Record<string, unknown>[] = [];
   for (const input of inputs) {
@@ -221,5 +221,5 @@ export function normalizeBrowserInputBatch(inputs: unknown) {
     if (!normalized || events.length + normalized.length > 64) return null;
     events.push(...normalized);
   }
-  return events;
+  return JSON.stringify(events).length <= 8192 ? events : null;
 }
