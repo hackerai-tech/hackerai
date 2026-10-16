@@ -20,6 +20,9 @@ export const PAID_FIRST_STEP_TASK_OUTCOME_PHASE =
 export const PAID_MODERATED_TASK_OUTCOME_PHASE =
   "abliterated_paid_moderated_default_feedback_v1";
 
+export const SHORT_FOLLOWUP_TASK_OUTCOME_PHASE =
+  "abliterated_short_followup_feedback_v1";
+
 // Keep historical reservations readable while new assignments use their own
 // immutable phase. A routing change must never relabel the old cohort.
 export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
@@ -30,10 +33,11 @@ export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
       return PAID_FIRST_STEP_TASK_OUTCOME_PHASE;
     case ABLITERATED_PAID_MODERATED_DEFAULT_KEY:
       return PAID_MODERATED_TASK_OUTCOME_PHASE;
+    case ABLITERATED_SHORT_FOLLOWUP_KEY:
+      return SHORT_FOLLOWUP_TASK_OUTCOME_PHASE;
     case ABLITERATED_EXPERIMENT_KEY:
     case ABLITERATED_PAID_THREE_STEPS_KEY:
     case ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY:
-    case ABLITERATED_SHORT_FOLLOWUP_KEY:
       // These routing policies measure operational outcomes; do not reuse an old
       // survey cohort or relabel its historical reservations.
       return undefined;

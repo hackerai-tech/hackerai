@@ -126,6 +126,7 @@ export async function evaluateAbliteratedModel({
   const providerConfigured = isAbliterationConfigured();
   const shortFollowupEligible =
     !moderationEligible &&
+    moderationChecked &&
     allowsAbliterationContinuation &&
     continuationTurn &&
     independentAbliterationSeedCount >= 2 &&
@@ -141,7 +142,9 @@ export async function evaluateAbliteratedModel({
         userId,
         chatId: diagnosticContext.chatId,
         requestId: diagnosticContext.requestId,
-        experiment_key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        experiment_key: shortFollowupEligible
+          ? ABLITERATED_SHORT_FOLLOWUP_KEY
+          : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -179,18 +182,20 @@ export async function evaluateAbliteratedModel({
 
   if (shortFollowupEligible && posthog) {
     try {
-      const enabled = await getPostHogFlagWithoutExposure(
+      const variant = await getPostHogFlagWithoutExposure(
         posthog,
         ABLITERATED_SHORT_FOLLOWUP_KEY,
         userId,
         { subscription, subscription_tier: subscription },
       );
-      if (enabled === true) {
-        reportDecision("short_followup_continuity", "test");
+      // Only explicit variants enroll. Off, missing and legacy boolean flags
+      // must not create a control cohort or silently enable treatment.
+      if (variant === "control" || variant === "test") {
+        reportDecision("short_followup_continuity", variant);
         return {
           key: ABLITERATED_SHORT_FOLLOWUP_KEY,
-          variant: "test",
-          modelKey: ABLITERATION_MODEL_KEY,
+          variant,
+          modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
           baselineModel: selectedModel,
           generationStepLimit: 1,
           selectionSource: "history",

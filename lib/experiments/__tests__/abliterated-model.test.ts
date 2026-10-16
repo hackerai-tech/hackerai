@@ -292,7 +292,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
     it.each(["ask", "agent"] as const)(
       "uses same-chat preference on %s without timestamps and returns to baseline on step two",
       async (mode) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
         const assignment = await evaluateAbliteratedModel({
           ...continuity,
           mode,
@@ -333,6 +333,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
       ["new or branched chat", { independentAbliterationSeedCount: 0 }],
       ["one seed", { independentAbliterationSeedCount: 1 }],
       ["failed moderation", { allowsAbliterationContinuation: false }],
+      ["unchecked moderation", { moderationChecked: false }],
       ["regeneration or auto-run", { continuationTurn: false }],
       ["free plan", { subscription: "free" as const }],
       ["rescue", { limitRescue: true }],
@@ -365,7 +366,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
         },
       ],
     ])("keeps the baseline for %s", async (_label, overrides) => {
-      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
       expect(
         await evaluateAbliteratedModel({
           ...continuity,
@@ -374,6 +375,28 @@ describe("paid moderation-gated three-step Abliteration", () => {
       ).toBeUndefined();
     });
 
+    it.each(["ask", "agent"] as const)(
+      "enrolls %s control without changing its model",
+      async (mode) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
+        expect(
+          await evaluateAbliteratedModel({ ...continuity, mode }),
+        ).toMatchObject({
+          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          variant: "control",
+          modelKey: defaults.selectedModel,
+          baselineModel: defaults.selectedModel,
+          selectionSource: "history",
+        });
+      },
+    );
+    it.each([false, undefined, true, "unexpected"])(
+      "does not enroll invalid/off flag value %s",
+      async (value) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
+        expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+      },
+    );
     it("keeps the baseline when the flag is off or unavailable", async () => {
       jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValueOnce(false);
       expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();

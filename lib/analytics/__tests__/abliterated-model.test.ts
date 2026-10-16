@@ -3,6 +3,7 @@ import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
@@ -88,6 +89,50 @@ describe("Abliteration stream telemetry", () => {
       mode: "ask",
       subscription: "pro",
     });
+  it.each(["control", "test"] as const)(
+    "keeps %s assignment and request linkage through failed attempts and fallback",
+    async (variant) => {
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+        assignment: {
+          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          variant,
+          modelKey:
+            variant === "test"
+              ? "model-abliterated"
+              : "model-deepseek-v4-flash-0731",
+          baselineModel: "model-deepseek-v4-flash-0731",
+          selectionSource: "history",
+          generationStepLimit: 1,
+        },
+        messageId: "original",
+        chatId: "chat",
+        mode: "agent",
+        subscription: "pro",
+      });
+      expect(events("abliterated_model_eligible")).toHaveLength(1);
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await expect(consume(telemetry, model([], true))).rejects.toThrow();
+      telemetry.setMessageId("replacement");
+      await consume(
+        telemetry,
+        model(answer, false, "deepseek/deepseek-v4-flash-0731"),
+      );
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_variant: variant,
+        experiment_request_id: "original",
+        message_id: "replacement",
+        followup_measurement_version: 1,
+        response_model: "deepseek/deepseek-v4-flash-0731",
+      });
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_attempt_count: 2,
+        provider_error_count: 1,
+        provider_completed_count: 1,
+        provider_pending_count: 0,
+      });
+      expect(telemetry.getRoutingMarker(true).completed).toBe(false);
+    },
+  );
   beforeEach(() => capture.mockClear());
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);

@@ -187,6 +187,18 @@ describe("current Pro/Max experiment feedback", () => {
       "test",
       "abliterated_paid_moderated_default_feedback_v1",
     ],
+    [
+      "abliterated_short_followup_v1",
+      "history",
+      "control",
+      "abliterated_short_followup_feedback_v1",
+    ],
+    [
+      "abliterated_short_followup_v1",
+      "history",
+      "test",
+      "abliterated_short_followup_feedback_v1",
+    ],
   ] as const)(
     "reserves %s/%s/%s with its own phase",
     async (key, selectionSource, variant, phase) => {
