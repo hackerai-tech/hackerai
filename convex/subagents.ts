@@ -1,3 +1,4 @@
+import { assertStoppedWorkAdmission } from "./lib/stoppedWork";
 import { objectiveCheckpointSchema } from "../lib/chat/legacy-objective-checkpoint";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -248,6 +249,7 @@ const toSummary = (row: {
 
 export const reserveForBackend = mutation({
   args: {
+    stoppedWorkRevision: v.optional(v.number()),
     serviceKey: v.string(),
     subagentId: v.string(),
     userId: v.string(),
@@ -310,6 +312,13 @@ export const reserveForBackend = mutation({
       return { outcome: "chat_missing" as const };
     }
 
+    const policyChat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!policyChat) throw new ConvexError("Stopped-work chat unavailable");
+    assertStoppedWorkAdmission(policyChat, args.stoppedWorkRevision);
+
     const exact = await ctx.db
       .query("subagent_runs")
       .withIndex("by_parent_run_and_tool_call", (q) =>
@@ -319,6 +328,11 @@ export const reserveForBackend = mutation({
       )
       .first();
     if (exact) {
+      assertStoppedWorkAdmission(
+        policyChat,
+        args.stoppedWorkRevision,
+        exact.subagent_id,
+      );
       return {
         outcome: "existing" as const,
         subagentId: exact.subagent_id,
@@ -353,6 +367,11 @@ export const reserveForBackend = mutation({
         (isActiveStatus(row.status) || row.status === "completed"),
     );
     if (reusable) {
+      assertStoppedWorkAdmission(
+        policyChat,
+        args.stoppedWorkRevision,
+        reusable.subagent_id,
+      );
       return {
         outcome: "existing" as const,
         subagentId: reusable.subagent_id,
@@ -1929,6 +1948,7 @@ export const listWorkLedgerForParentBackend = query({
 
 export const resumeForBackend = mutation({
   args: {
+    stoppedWorkRevision: v.optional(v.number()),
     serviceKey: v.string(),
     userId: v.string(),
     chatId: v.string(),
@@ -1945,6 +1965,13 @@ export const resumeForBackend = mutation({
     if (!(await isSubagentChatAvailable(ctx, args.userId, args.chatId))) {
       return { outcome: "not_found" as const };
     }
+    const policyChat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!policyChat) throw new ConvexError("Stopped-work chat unavailable");
+    assertStoppedWorkAdmission(policyChat, args.stoppedWorkRevision);
+
     const rows = await ctx.db
       .query("subagent_runs")
       .withIndex("by_user_chat_and_parent_run", (q) =>
@@ -1960,6 +1987,11 @@ export const resumeForBackend = mutation({
         toSubagentHandle(candidate.subagent_id) === args.targetAgentId,
     );
     if (!row) return { outcome: "not_found" as const };
+    assertStoppedWorkAdmission(
+      policyChat,
+      args.stoppedWorkRevision,
+      row.subagent_id,
+    );
     if (row.profile !== "general" || row.status !== "completed")
       return { outcome: "not_resumable" as const };
     if (

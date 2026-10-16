@@ -223,6 +223,7 @@ export const createDelegateTaskTool = (
       });
       const proposedSubagentId = createSubagentId();
       const reservation = await reserveSubagent({
+        stoppedWorkRevision: context.stoppedWorkRevision?.(),
         subagentId: proposedSubagentId,
         userId: context.userID,
         organizationId: config.organizationId,
@@ -452,6 +453,7 @@ export const createContinueAgentTool = (
         };
       }
       const outcome = (await resumeSubagentForParent({
+        stoppedWorkRevision: context.stoppedWorkRevision?.(),
         userId: context.userID,
         chatId: context.chatId,
         parentTriggerRunId,

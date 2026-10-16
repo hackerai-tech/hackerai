@@ -1,3 +1,4 @@
+import { createStoppedWorkRuntime } from "@/lib/chat/stopped-work-runtime";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
@@ -616,6 +617,34 @@ export const subagentTask = task({
       .set("selectedModel", selectedModel)
       .set("activeModel", activeModelName);
 
+    const stoppedWork = createStoppedWorkRuntime(row.user_id, row.chat_id, {
+      taskId: row.subagent_id,
+      signal: activeAbort.signal,
+      onCost: (cost) => {
+        usageTracker.providerCost += cost;
+        usageTracker.nonModelCost += cost;
+      },
+    });
+    let stopPollPending = false;
+    const stoppedWorkPoll = setInterval(() => {
+      if (stopPollPending || activeAbort.signal.aborted) return;
+      stopPollPending = true;
+      void getSubagent(row.subagent_id)
+        .then(async (current) => {
+          if (current?.cancel_reason === "user_stopped_work") {
+            runtimeAuthorizationRevoked = true;
+            activeAbort.abort();
+            await ptySessionManager.closeAll(row.subagent_id);
+            await cleanupBrowserSessions();
+          }
+        })
+        .catch(() => {
+          /* Tool admission still fails closed on unavailable state. */
+        })
+        .finally(() => {
+          stopPollPending = false;
+        });
+    }, 2000);
     const assertRuntimeAuthorized = async (): Promise<void> => {
       try {
         await assertSubagentRuntimeAuthorized({
@@ -1086,6 +1115,7 @@ export const subagentTask = task({
               ctx.run.id,
               undefined,
               {
+                stoppedWork,
                 allowedToolNames: [
                   ...allowedToolNames,
                   profile.finalResultTool.name,
@@ -1335,7 +1365,7 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt,
+                system: systemPrompt + stoppedWork.prompt,
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1353,6 +1383,7 @@ export const subagentTask = task({
                 prepareStep: async ({ messages, steps }) => {
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
+                  await stoppedWork.refresh();
                   if (freeDailySettlement) {
                     await checkFreeCostBudget(
                       row.free_quota_subject ?? row.user_id,
@@ -1491,6 +1522,7 @@ export const subagentTask = task({
                       steps.length,
                     ),
                     messages: compacted.messages as ModelMessage[],
+                    system: systemPrompt + stoppedWork.prompt,
                   };
                 },
                 onError: ({ error }) => {
@@ -2167,6 +2199,7 @@ export const subagentTask = task({
         .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
+      clearInterval(stoppedWorkPoll);
       providerHistory.flush(activeAbort.signal.aborted);
       activeRuntimeBudget.dispose();
       triggerSignal.removeEventListener("abort", abortFromParent);

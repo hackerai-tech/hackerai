@@ -998,6 +998,7 @@ export async function saveChat({
   }
 }
 export async function saveMessage({
+  captureStoppedWork,
   chatId,
   userId,
   message,
@@ -1016,6 +1017,7 @@ export async function saveMessage({
   userInitiatedAbort,
   abliterationRouting,
 }: {
+  captureStoppedWork?: boolean;
   chatId: string;
   userId: string;
   message: {
@@ -1125,6 +1127,7 @@ export async function saveMessage({
     ) as Record<string, unknown> | undefined;
 
     const mutationArgs = {
+      ...(captureStoppedWork ? { captureStoppedWork: true } : {}),
       serviceKey,
       id: message.id,
       chatId,
@@ -1204,6 +1207,7 @@ export async function saveMessage({
 }
 
 export async function handleInitialChatAndUserMessage({
+  captureStoppedWork,
   chatId,
   userId,
   messages,
@@ -1212,6 +1216,7 @@ export async function handleInitialChatAndUserMessage({
   isHidden,
   projectId,
 }: {
+  captureStoppedWork?: boolean;
   chatId: string;
   userId: string;
   messages: { id: string; parts: UIMessagePart<any, any>[] }[];
@@ -1266,6 +1271,7 @@ export async function handleInitialChatAndUserMessage({
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
     await saveMessage({
+      captureStoppedWork,
       chatId,
       userId,
       message: {

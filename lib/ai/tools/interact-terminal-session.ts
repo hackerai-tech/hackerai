@@ -379,6 +379,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         // Tmux key names (C-c, Up, Enter, ...) were translated before review;
         // raw text has a trailing newline normalized to CR for submission.
         try {
+          await context.assertStoppedWorkAuthorized?.();
           await session.handle.sendInput(bytes);
         } catch (err) {
           // sendInput may have raced with a natural exit between the

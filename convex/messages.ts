@@ -1,3 +1,4 @@
+import { registerStoppedWorkSource } from "./lib/stoppedWork";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
@@ -581,6 +582,7 @@ async function ensureChatWritableForMessageInsert(
 export const saveMessage = mutation({
   args: {
     serviceKey: v.string(),
+    captureStoppedWork: v.optional(v.boolean()),
     id: v.string(),
     chatId: v.string(),
     userId: v.string(),
@@ -609,6 +611,17 @@ export const saveMessage = mutation({
     let chatForInsert: Doc<"chats"> | null = null;
 
     try {
+      const captureUserSource = async () => {
+        if (!args.captureStoppedWork) return;
+        if (args.role !== "user" || args.isHidden)
+          throw new ConvexError("Stopped work requires a visible user message");
+        await registerStoppedWorkSource(ctx, {
+          serviceKey: args.serviceKey,
+          userId: args.userId,
+          chatId: args.chatId,
+          messageId: args.id,
+        });
+      };
       const ensureOwnedFiles = async (
         fileIds: Id<"files">[] | undefined,
       ): Promise<Doc<"files">[]> => {
@@ -799,6 +812,7 @@ export const saveMessage = mutation({
           await ctx.db.patch(existingMessage._id, patch);
         }
 
+        await captureUserSource();
         return null;
       } else {
         // updateOnly: only patch existing messages, don't create new ones.
@@ -933,6 +947,7 @@ export const saveMessage = mutation({
         }
       }
 
+      await captureUserSource();
       return null;
     } catch (error) {
       const causeData = getConvexErrorData(error);

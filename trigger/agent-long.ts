@@ -1,3 +1,4 @@
+import { createStoppedWorkRuntime } from "@/lib/chat/stopped-work-runtime";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -2732,6 +2733,23 @@ export const agentLongTask = task({
                 stopSignal.abort("post_wait_authorization_denied"),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
+            const stoppedWork = createStoppedWorkRuntime(userId, chatId, {
+              signal: userStopSignal.signal,
+              onCost: (cost) => {
+                usageTracker.providerCost += cost;
+                usageTracker.nonModelCost += cost;
+                chatLogger?.getBuilder().addToolCost(cost);
+              },
+            });
+            await stoppedWork.capture();
+            if (stoppedWork.activeCount > 0) {
+              phLogger.event("agent_stopped_work_exposed", {
+                userId,
+                chat_id: chatId,
+                trigger_run_id: ctx.run.id,
+                active_directive_count: stoppedWork.activeCount,
+              });
+            }
             const {
               tools,
               ensureSandbox,
@@ -2776,6 +2794,7 @@ export const agentLongTask = task({
               ctx.run.id,
               auxiliaryVision,
               {
+                stoppedWork,
                 cloudSandboxProvider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
@@ -3703,6 +3722,7 @@ export const agentLongTask = task({
               },
               trackedProvider,
               currentSystemPrompt,
+              stoppedWork,
               tools,
               mode,
               endpoint,
