@@ -2733,6 +2733,7 @@ export const agentLongTask = task({
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
+              engagementScope,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -3703,6 +3704,7 @@ export const agentLongTask = task({
               },
               trackedProvider,
               currentSystemPrompt,
+              engagementScope,
               tools,
               mode,
               endpoint,

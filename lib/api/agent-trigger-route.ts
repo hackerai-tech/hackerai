@@ -1,3 +1,4 @@
+import { recordUserScope } from "@/lib/engagement-scope/admission";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -708,6 +709,14 @@ export const createAgentTriggerPost =
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
       });
+      if (!isAutoContinue && !regenerate && messagesForPersistence.length > 0) {
+        await recordUserScope({
+          userId,
+          chatId,
+          messageId:
+            messagesForPersistence[messagesForPersistence.length - 1].id,
+        });
+      }
 
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
