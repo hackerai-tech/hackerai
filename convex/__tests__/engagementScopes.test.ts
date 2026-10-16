@@ -1,4 +1,5 @@
 import {
+  initializeBranchedScope,
   beginUserMessage,
   commitUserMessage,
   getForBackend,
@@ -114,6 +115,22 @@ describe("persisted engagement scope", () => {
       mutation: (_ref: unknown, args: any) =>
         call(claimClarification, db.ctx, args),
     });
+  });
+  it("blocks copied transcript regeneration immediately after branching and accepts an explicit scope edit", async () => {
+    await initializeBranchedScope(db.ctx, "chat", "owner");
+    const runtime = createScopeRuntime("owner", "chat");
+    await runtime.prompt();
+    expect((await runtime.checkUrl("https://api.example.test")).outcome).toBe(
+      "deny",
+    );
+    await expect(runtime.checkTool("run_terminal_cmd")).rejects.toThrow(
+      "No active targets",
+    );
+    await call(edit, db.ctx, { chatId: "chat", expectedRevision: 0, policy });
+    await runtime.prompt();
+    expect((await runtime.checkUrl("https://api.example.test")).outcome).toBe(
+      "allow",
+    );
   });
   it("persists a real message once and reloads the same policy in parent and restarted child", async () => {
     await message();

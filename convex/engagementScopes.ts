@@ -324,6 +324,27 @@ export const edit = mutation({
   },
 });
 
+/** A copied transcript never grants authority, even if regenerated before a new user turn. */
+export async function initializeBranchedScope(
+  ctx: MutationCtx,
+  chatId: string,
+  userId: string,
+) {
+  await ctx.db.insert("engagement_scopes", {
+    chat_id: chatId,
+    user_id: userId,
+    active: true,
+    revision: 0,
+    status: "ambiguous",
+    rules: [],
+    restrictions: [],
+    clarification:
+      "This branched task has no saved scope. Specify its targets or edit scope before active testing.",
+    clarificationRequested: false,
+    source_id: "branch",
+  });
+}
+
 export async function deleteScopeBatch(
   ctx: MutationCtx,
   chatId: string,
