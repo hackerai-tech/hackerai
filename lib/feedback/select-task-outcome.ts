@@ -12,6 +12,7 @@ import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
   type AbliteratedAssignment,
 } from "../experiments/abliterated-model";
 
@@ -80,7 +81,12 @@ export async function selectTaskOutcomeSurvey(args: {
         selector === "hackerai-max") &&
       ["pro", "pro-plus", "ultra", "team"].includes(args.subscription);
     // Never fall through to a different cohort for an assigned trial request.
-    if (args.assignment && !experimentEligible) return;
+    if (
+      args.assignment &&
+      !experimentEligible &&
+      args.assignment.key !== ABLITERATED_SHORT_FOLLOWUP_KEY
+    )
+      return;
     if (!experimentEligible && !paidEligible) return;
     if (
       (await getPostHogFlagWithoutExposure(

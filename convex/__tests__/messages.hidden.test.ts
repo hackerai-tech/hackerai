@@ -207,6 +207,136 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it("records only a completed server-verified Abliteration seed on the owned chat", async () => {
+    setupExistingMessage(null, {
+      _id: "chat-doc-1",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      abliteration_seed_count: 1,
+      abliteration_last_seed_at: Date.now() - 16 * 60 * 60 * 1000,
+    });
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "completed-abliteration",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "bounded response" }],
+      finishReason: "stop",
+      usage: {
+        abliterationRouting: {
+          version: 1,
+          source: "moderation",
+          completed: true,
+        },
+      },
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        abliteration_seed_count: 2,
+        abliteration_last_seed_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("starts a new seed pair after the 24-hour window", async () => {
+    setupExistingMessage(null, {
+      _id: "chat-doc-1",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      abliteration_seed_count: 2,
+      abliteration_last_seed_at: Date.now() - 25 * 60 * 60 * 1000,
+    });
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "completed-after-gap",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "bounded response" }],
+      finishReason: "stop",
+      usage: {
+        abliterationRouting: {
+          version: 1,
+          source: "moderation",
+          completed: true,
+        },
+      },
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ abliteration_seed_count: 1 }),
+    );
+  });
+
+  it("never seeds from hidden, incomplete, inherited, or already recorded responses", async () => {
+    const { saveMessage } = await import("../messages");
+    for (const [id, finishReason, source, isHidden] of [
+      ["hidden", "stop", "moderation", true],
+      ["aborted", "aborted", "moderation", false],
+      ["inherited", "stop", "history", false],
+    ] as const) {
+      setupExistingMessage(null);
+      mockCtx.db.patch.mockClear();
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [{ type: "text", text: "response" }],
+        finishReason,
+        isHidden,
+        usage: {
+          abliterationRouting: { version: 1, source, completed: true },
+        },
+      });
+      expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+        "chat-doc-1",
+        expect.objectContaining({
+          abliteration_seed_count: expect.any(Number),
+        }),
+      );
+    }
+    setupExistingMessage(
+      makeMessage({
+        role: "assistant",
+        finish_reason: "stop",
+        usage: {
+          abliterationRouting: {
+            version: 1,
+            source: "moderation",
+            completed: true,
+          },
+        },
+      }),
+    );
+    mockCtx.db.patch.mockClear();
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "response" }],
+      finishReason: "stop",
+      usage: {
+        abliterationRouting: {
+          version: 1,
+          source: "moderation",
+          completed: true,
+        },
+      },
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({ abliteration_seed_count: expect.any(Number) }),
+    );
+  });
+
   it("does not bump chat activity when an existing user message is retried", async () => {
     setupExistingMessage(makeMessage());
 
