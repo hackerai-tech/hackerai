@@ -1,5 +1,10 @@
 import { useQuery } from "convex/react";
-import { MousePointerClick, RefreshCw } from "lucide-react";
+import {
+  ArrowLeft,
+  Maximize2,
+  MousePointerClick,
+  RefreshCw,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -7,6 +12,12 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/convex/_generated/api";
 
 type BrowserFrame = {
@@ -45,6 +56,10 @@ export function AgentBrowserPreview({
   const [frameSeenAt, setFrameSeenAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
+  const [fullScreen, setFullScreen] = useState(false);
+  const inputRef = useRef<HTMLDivElement>(null);
+  const backButtonRef = useRef<HTMLButtonElement>(null);
+  const openButtonRef = useRef<HTMLButtonElement>(null);
   const [grant, setGrant] = useState<string | null>(null);
   const [confirmedIdentity, setConfirmedIdentity] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -75,6 +90,7 @@ export function AgentBrowserPreview({
   }, [sessionId]);
 
   useEffect(() => {
+    setFullScreen(false);
     setFrame(null);
     setFrameSeenAt(0);
     setPreviewState("loading");
@@ -219,6 +235,7 @@ export function AgentBrowserPreview({
       }
       grantRef.current = data.grant;
       setGrant(data.grant);
+      setFullScreen(true);
       setFrame(data.frame);
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
@@ -259,6 +276,7 @@ export function AgentBrowserPreview({
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       grantRef.current = null;
       setGrant(null);
+      setFullScreen(false);
       setConfirmedIdentity(false);
       setFrame(data.frame);
       setFrameSeenAt(Date.now());
@@ -307,10 +325,11 @@ export function AgentBrowserPreview({
       });
   };
 
-  const point = (
-    event:
-      React.PointerEvent<HTMLImageElement> | React.WheelEvent<HTMLImageElement>,
-  ) => {
+  const point = (event: {
+    currentTarget: HTMLImageElement;
+    clientX: number;
+    clientY: number;
+  }) => {
     if (!frame) return null;
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
@@ -333,7 +352,8 @@ export function AgentBrowserPreview({
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!human || frameStale) return;
     if (event.key === "Escape") {
-      resumeButtonRef.current?.focus();
+      event.preventDefault();
+      (fullScreen ? backButtonRef : resumeButtonRef).current?.focus();
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v")
@@ -384,19 +404,45 @@ export function AgentBrowserPreview({
                 ? "Controlled in another window"
                 : "Live preview";
 
-  return (
+  const browserContent = (
     <section
-      className="mt-3 overflow-hidden rounded-xl border border-border bg-background"
+      className={
+        fullScreen
+          ? "flex h-full min-h-0 flex-col bg-background"
+          : "mt-3 overflow-hidden rounded-xl border border-border bg-background"
+      }
       aria-label="Agent browser preview"
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
-        <span className="font-medium text-foreground">Agent browser</span>
+        {fullScreen ? (
+          <button
+            ref={backButtonRef}
+            type="button"
+            onClick={() => setFullScreen(false)}
+            className="inline-flex items-center gap-2 rounded-md px-2 py-2 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowLeft size={16} aria-hidden /> Back to chat
+          </button>
+        ) : (
+          <span className="font-medium text-foreground">Agent browser</span>
+        )}
         <span className="text-muted-foreground" role="status">
           {statusLabel}
         </span>
+        {human && !fullScreen && (
+          <button
+            ref={openButtonRef}
+            type="button"
+            onClick={() => setFullScreen(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Maximize2 size={14} aria-hidden /> Open browser
+          </button>
+        )}
         {!human && (
           <button
             type="button"
+            ref={openButtonRef}
             onClick={() => void takeControl()}
             disabled={!canTake || busy}
             aria-label="Take control of Agent browser"
@@ -408,22 +454,21 @@ export function AgentBrowserPreview({
         )}
       </div>
       <div
-        className={`relative max-h-[38vh] overflow-auto bg-muted/30 ${session && !frame ? "min-h-24" : ""}`}
+        className={`relative bg-muted/30 ${fullScreen ? "flex min-h-0 flex-1 items-center justify-center overflow-hidden" : "max-h-[38vh] overflow-auto"} ${session && !frame ? "min-h-24" : ""}`}
       >
         {frame && (
           <div
+            ref={inputRef}
             role={human ? "application" : undefined}
             tabIndex={human ? 0 : -1}
             aria-label={
               human
-                ? "Control Agent browser. Escape moves focus to Resume agent."
+                ? fullScreen
+                  ? "Control Agent browser. Escape moves focus to Back to chat."
+                  : "Control Agent browser. Escape moves focus to Resume agent."
                 : undefined
             }
-            className={
-              human
-                ? "cursor-crosshair focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                : ""
-            }
+            className={`${fullScreen ? "flex h-full w-full min-h-0 items-center justify-center" : ""} ${human ? "cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" : ""}`}
             onKeyDown={onKeyDown}
             onPaste={(event) => {
               if (!human) return;
@@ -440,7 +485,11 @@ export function AgentBrowserPreview({
               src={frame.image}
               alt="Current Agent browser viewport"
               draggable={false}
-              className="block h-auto w-full select-none"
+              className={
+                fullScreen
+                  ? "block h-auto max-h-full w-auto max-w-full select-none"
+                  : "block h-auto w-full select-none"
+              }
               onLoad={() => {
                 if (exposedRef.current === sessionId) return;
                 exposedRef.current = sessionId ?? null;
@@ -448,6 +497,8 @@ export function AgentBrowserPreview({
               }}
               onPointerDown={(event) => {
                 if (!human || frameStale) return;
+                event.preventDefault();
+                inputRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
                 event.currentTarget.setPointerCapture(event.pointerId);
@@ -470,17 +521,40 @@ export function AgentBrowserPreview({
                 const xy = point(event);
                 if (xy) sendInput({ kind: "move", ...xy });
               }}
-              onWheel={(event) => {
-                if (!human || frameStale) return;
-                event.preventDefault();
-                const xy = point(event);
-                if (xy)
+              ref={(element) => {
+                if (!element || !human) return;
+                // React delegates wheel events with a passive listener. Use a
+                // non-passive listener so scrolling only reaches the remote page.
+                const onWheel = (event: WheelEvent) => {
+                  event.preventDefault();
+                  if (frameStale) return;
+                  const xy = point({
+                    currentTarget: element,
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                  });
+                  if (!xy) return;
+                  const unit =
+                    event.deltaMode === 1
+                      ? 16
+                      : event.deltaMode === 2
+                        ? frame.height
+                        : 1;
                   sendInput({
                     kind: "wheel",
                     ...xy,
-                    deltaX: event.deltaX,
-                    deltaY: event.deltaY,
+                    deltaX: Math.max(
+                      -2000,
+                      Math.min(2000, event.deltaX * unit),
+                    ),
+                    deltaY: Math.max(
+                      -2000,
+                      Math.min(2000, event.deltaY * unit),
+                    ),
                   });
+                };
+                element.addEventListener("wheel", onWheel, { passive: false });
+                return () => element.removeEventListener("wheel", onWheel);
               }}
             />
           </div>
@@ -497,7 +571,15 @@ export function AgentBrowserPreview({
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-2 px-3 py-2 text-xs text-muted-foreground">
+      <div
+        className={`flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground ${fullScreen ? "border-t border-border sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-4 sm:py-3" : ""}`}
+      >
+        {fullScreen && human && (
+          <span className="w-full">
+            Agent paused. Click, type, paste, or scroll in the page. Back to
+            chat keeps the Agent paused.
+          </span>
+        )}
         {human || effectiveState === "recovery" ? (
           <>
             <label className="flex items-start gap-2">
@@ -564,5 +646,38 @@ export function AgentBrowserPreview({
         )}
       </div>
     </section>
+  );
+
+  // Keep the controller mounted while switching views. A route navigation
+  // would release the grant and interrupt queued input and the Agent pause.
+  return (
+    <Dialog open={fullScreen} onOpenChange={setFullScreen}>
+      {!fullScreen && browserContent}
+      <DialogContent
+        showCloseButton={false}
+        className="inset-0 top-0 left-0 flex h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 duration-0 sm:max-w-none"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          inputRef.current?.focus({ preventScroll: true });
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          openButtonRef.current?.focus({ preventScroll: true });
+        }}
+        onEscapeKeyDown={(event) => {
+          // Escape leaves remote keyboard control, rather than silently
+          // dismissing the workspace or resuming the Agent.
+          event.preventDefault();
+          backButtonRef.current?.focus();
+        }}
+      >
+        <DialogTitle className="sr-only">Browser control</DialogTitle>
+        <DialogDescription className="sr-only">
+          Interact with the Agent browser while the Agent is paused. Return to
+          chat at any time, or confirm the site and account to resume the Agent.
+        </DialogDescription>
+        {fullScreen && browserContent}
+      </DialogContent>
+    </Dialog>
   );
 }

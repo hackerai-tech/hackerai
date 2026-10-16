@@ -282,3 +282,91 @@ it("ignores old resume failures before the new session's passive effects run", a
     view.unmount();
   }
 });
+
+it("opens focused full-screen control and returns to chat without resuming", async () => {
+  await mount();
+  await takeControl();
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
+  expect(screen.getByRole("application")).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("application"), { key: "Escape" });
+  expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(actions.map((body) => body.action)).toEqual(["take"]);
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  expect(screen.getByRole("application")).toHaveFocus();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application"), { key: "A" });
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "input",
+    grant: "grant-a",
+    input: { kind: "text", text: "A" },
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(actions.map((body) => body.action)).toEqual([
+    "take",
+    "input",
+    "resume",
+  ]);
+});
+
+it("keeps the user in chat when takeover fails", async () => {
+  handleAction = async () => response({ state: "unavailable" }, false);
+  await mount();
+  await takeControl();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("unavailable");
+});
+
+it("maps full-screen clicks and scrolling to the displayed browser pixels", async () => {
+  await mount();
+  await takeControl();
+  const image = screen.getByRole("img", {
+    name: "Current Agent browser viewport",
+  });
+  image.getBoundingClientRect = () =>
+    ({ left: 100, top: 50, width: 400, height: 300 }) as DOMRect;
+  Object.defineProperty(image, "naturalWidth", { value: 800 });
+  Object.defineProperty(image, "naturalHeight", { value: 600 });
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  // jsdom does not implement PointerEvent; provide mouse coordinates directly.
+  const down = new MouseEvent("pointerdown", {
+    bubbles: true,
+    clientX: 300,
+    clientY: 200,
+  });
+  const up = new MouseEvent("pointerup", {
+    bubbles: true,
+    clientX: 300,
+    clientY: 200,
+  });
+  const wheel = new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    clientX: 300,
+    clientY: 200,
+    deltaY: 3,
+    deltaMode: 1,
+  });
+  screen.getByRole("checkbox").focus();
+  await act(async () => {
+    fireEvent(image, down);
+    fireEvent(image, up);
+    fireEvent(image, wheel);
+  });
+  expect(screen.getByRole("application")).toHaveFocus();
+  expect(wheel.defaultPrevented).toBe(true);
+  expect(
+    actions.filter((body) => body.action === "input").map((body) => body.input),
+  ).toEqual([
+    { kind: "down", x: 400, y: 300 },
+    { kind: "up", x: 400, y: 300 },
+    { kind: "wheel", x: 400, y: 300, deltaX: 0, deltaY: 48 },
+  ]);
+});
