@@ -190,9 +190,14 @@ describe("proxy", () => {
     );
   });
 
-  it.each(["/robots.txt", "/sitemap.xml"])(
-    "bypasses AuthKit for the public SEO route %s",
+  it.each(["/robots.txt", "/sitemap.xml", "/examples/access-control-lab.py"])(
+    "bypasses AuthKit for the public discovery resource %s",
     async (pathname) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: null },
+        headers: new Headers(),
+        authorizationUrl: "https://signin.hackerai.co/login",
+      });
       const { default: proxy } = await import("../proxy");
 
       const response = await proxy(createRequest({ pathname }));

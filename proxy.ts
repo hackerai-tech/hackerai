@@ -38,6 +38,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/internal/influencers/partners",
   "/robots.txt",
   "/sitemap.xml",
+  "/examples/access-control-lab.py",
 ]);
 const ROOT_PAGE_PATHS = new Set(["/", "/index"]);
 const NEXT_ACTION_HEADER = "next-action";
