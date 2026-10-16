@@ -155,10 +155,10 @@ export function normalizeBrowserInput(
     return [
       {
         ...event,
-        eventType: "keyDown",
-        ...(input.key === "Enter" ? { text: "\r" } : {}),
+        eventType: input.key === "Enter" ? "keyDown" : "rawKeyDown",
+        text: input.key === "Enter" ? "\r" : "",
       },
-      { ...event, eventType: "keyUp" },
+      { ...event, eventType: "keyUp", text: "" },
     ];
   }
   if (input.kind === "text") {
@@ -200,6 +200,7 @@ export function normalizeBrowserInput(
         {
           type: "input_keyboard",
           eventType: "keyUp",
+          text: "",
           key: text,
           code,
           modifiers,

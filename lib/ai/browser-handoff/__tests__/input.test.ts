@@ -60,6 +60,7 @@ describe("browser input boundary", () => {
       {
         type: "input_keyboard",
         eventType: "keyUp",
+        text: "",
         key: "h",
         code: "KeyH",
         modifiers: 0,
@@ -75,6 +76,7 @@ describe("browser input boundary", () => {
       {
         type: "input_keyboard",
         eventType: "keyUp",
+        text: "",
         key: "i",
         code: "KeyI",
         modifiers: 0,
@@ -120,13 +122,15 @@ it.each([
     })!;
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({
-      eventType: "keyDown",
+      eventType: key === "Enter" ? "keyDown" : "rawKeyDown",
+      text: key === "Enter" ? "\r" : "",
       key,
       code,
       windowsVirtualKeyCode: virtualKey,
     });
     expect(events[1]).toMatchObject({
       eventType: "keyUp",
+      text: "",
       key,
       code,
       windowsVirtualKeyCode: virtualKey,
