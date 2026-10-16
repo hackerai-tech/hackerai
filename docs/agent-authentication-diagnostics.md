@@ -47,9 +47,10 @@ Choose the credential format explicitly:
 
 The helper uses Python Requests already installed in the Cloud sandbox. Local
 and Desktop connections need existing `python3` and Requests; the tool does not
-install dependencies. It performs one GET with verified TLS, no redirects,
-ambient `.netrc` credentials, environment proxies, automatic retry, or persisted
-session state. It caps response reads and imposes a 20-second total deadline.
+install dependencies. It performs one GET with verified TLS. It does not follow
+redirects, use ambient `.netrc` credentials or environment proxies, retry
+automatically, or persist session state. It caps response reads and imposes a
+20-second total deadline.
 No response body, cookie name/value, or observed identity is returned or saved.
 
 `client_request_verified` means the client request object that received the
