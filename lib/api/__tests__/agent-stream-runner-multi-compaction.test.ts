@@ -4,6 +4,7 @@ import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
 import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
 import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
+import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -2699,50 +2700,68 @@ describe("createAgentStream repeated compaction", () => {
     expect(onProviderRequestStart).toHaveBeenCalledTimes(1);
   });
 
-  it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
-    const checkAfterStep = jest.fn(() => undefined);
-    const settleUsageAfterStep = jest.fn(async () => undefined);
-    const usageTracker = {
-      accumulateStep: jest.fn(() => 0),
-      setAuthoritativeModelCostForStep: jest.fn(),
-      computeCostDollars: jest.fn(() => 0.2),
-    };
-    const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
-      usedTokens: 1_000,
-      maxTokens: 128_000,
-    });
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        budgetMonitor: { checkAfterStep },
-        getSandboxCostDollars: () => 0.05,
-        getTriggerRunCostDollars: () => 0.03,
-        settleUsageAfterStep,
-        summarizationTracker: {
-          hasSummarized: false,
-          summarizationCount: 0,
-          recordSummarization: jest.fn(),
-        },
-        usageTracker,
-      }) as any,
-      state,
-    )) as any;
+  it.each([undefined, "abort", "abort-agent-run-spend-cap"] as const)(
+    "settles all runtime costs and attributes the shared budget stop (%s)",
+    async (decision) => {
+      const checkAfterStep = jest.fn(() =>
+        decision ? { type: decision, details: {} } : undefined,
+      );
+      const settleUsageAfterStep = jest.fn(async () => undefined);
+      const usageTracker = {
+        accumulateStep: jest.fn(() => 0),
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: jest.fn(() => 0.2),
+      };
+      const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const onAbort = jest.fn();
+      const stop = createAgentStopSignal({
+        onAbort,
+        getStreamState: () => state,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          budgetMonitor: { checkAfterStep },
+          abortController: stop.controller,
+          getSandboxCostDollars: () => 0.05,
+          getTriggerRunCostDollars: () => 0.03,
+          settleUsageAfterStep,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker,
+        }) as any,
+        state,
+      )) as any;
 
-    await stream.onStepFinish({
-      usage: { inputTokens: 10, outputTokens: 5 },
-      response: { modelId: "test-model" },
-      providerMetadata: undefined,
-    });
+      await stream.onStepFinish({
+        usage: { inputTokens: 10, outputTokens: 5 },
+        response: { modelId: "test-model" },
+        providerMetadata: undefined,
+      });
 
-    expect(checkAfterStep).toHaveBeenCalledWith(0.28);
-    expect(settleUsageAfterStep).toHaveBeenCalledWith({
-      currentCostDollars: 0.28,
-      sandboxCostDollars: 0.05,
-      triggerRunCostDollars: 0.03,
-      force: false,
-      model: "test-model",
-    });
-  });
+      expect(checkAfterStep).toHaveBeenCalledWith(0.28);
+      expect(settleUsageAfterStep).toHaveBeenCalledWith({
+        currentCostDollars: 0.28,
+        sandboxCostDollars: 0.05,
+        triggerRunCostDollars: 0.03,
+        force: decision !== undefined,
+        model: "test-model",
+      });
+      expect(onAbort.mock.calls).toEqual(
+        decision
+          ? [[decision === "abort" ? "budget_monitor" : "agent_run_spend_cap"]]
+          : [],
+      );
+      expect(stop.controller.signal.aborted).toBe(decision !== undefined);
+      stop.dispose();
+    },
+  );
 
   it("forces durable waiting, injects the claimed result, and consumes it after synthesis", async () => {
     let completionState = {

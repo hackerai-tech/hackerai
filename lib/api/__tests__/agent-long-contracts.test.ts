@@ -897,7 +897,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "runtimeSettlementWatchdog?.arm()",
       budgetIdx,
     );
-    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const abortIdx = taskSrc.indexOf(
+      'stopSignal.abort("active_runtime_budget")',
+      armIdx,
+    );
     const stalledEventIdx = taskSrc.indexOf(
       'event: "agent_long_runtime_settlement_stalled"',
       abortIdx,
