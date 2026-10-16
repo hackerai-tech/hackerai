@@ -2794,8 +2794,8 @@ export const agentLongTask = task({
               ctx.run.id,
               auxiliaryVision,
               {
-                stoppedWork,
                 cloudSandboxProvider,
+                stoppedWork,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 environment: ctx.environment.type,
