@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ConvexError } from "convex/values";
 import { useQuery, useMutation, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -86,7 +87,11 @@ export function EngagementScope({ chatId }: { chatId: string }) {
       setEditing(null);
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Could not save scope. Try again.",
+        e instanceof ConvexError && typeof e.data === "string"
+          ? e.data
+          : e instanceof Error
+            ? e.message
+            : "Could not save scope. Try again.",
       );
     } finally {
       setSaving(false);

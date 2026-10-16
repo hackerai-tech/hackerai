@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EngagementScope } from "../EngagementScope";
 import type { ScopeSnapshot } from "@/lib/engagement-scope/policy";
@@ -76,7 +77,7 @@ it("keeps edits visible on a conflict and never silently saves invalid scope", a
     target: { value: "allow example.test" },
   });
   mockSave.mockRejectedValue(
-    new Error("Scope changed. Reopen it before saving."),
+    new ConvexError("Scope changed. Reopen it before saving."),
   );
   fireEvent.click(screen.getByRole("button", { name: "Save scope" }));
   await waitFor(() =>
