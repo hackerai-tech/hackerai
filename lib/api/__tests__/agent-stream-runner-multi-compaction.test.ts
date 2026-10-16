@@ -905,10 +905,16 @@ describe("createAgentStream repeated compaction", () => {
     expect((await stream.prepareStep(step)).system).toContain(
       stoppedWork.prompt,
     );
-    state.currentMessages = [uiMessage("summary", "Unrelated summary")];
-    expect(
-      (await stream.prepareStep({ ...step, stepNumber: 1 })).system,
-    ).toContain(stoppedWork.prompt);
+    state.finalMessages = [uiMessage("summary", "Unrelated summary")];
+    const replacedHistory = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [{ role: "user", content: "Unrelated summary" }],
+    });
+    expect(replacedHistory.messages).toEqual([
+      { role: "user", content: "Unrelated summary" },
+    ]);
+    expect(replacedHistory.system).toContain(stoppedWork.prompt);
     const unavailable = new Error("Restriction store unavailable");
     stoppedWork.refresh.mockRejectedValueOnce(unavailable);
     await expect(stream.prepareStep({ ...step, stepNumber: 2 })).rejects.toBe(
