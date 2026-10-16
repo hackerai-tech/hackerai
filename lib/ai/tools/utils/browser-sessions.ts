@@ -152,6 +152,8 @@ export class BrowserSessions {
   async getExitNotes(): Promise<Array<{ id: string; text: string }>> {
     if (!this.handoffScope || this.closed) return [];
     const scope = this.handoffScope;
+    // Preview registration is optional, but saved notes are user instructions.
+    // A failed read must not silently let the Agent act without those updates.
     const notes = await Promise.all(
       [...this.sessions.values()]
         .filter((session) => session.registered)
