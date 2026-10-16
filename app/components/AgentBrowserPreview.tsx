@@ -1,10 +1,5 @@
 import { useQuery } from "convex/react";
-import {
-  ArrowLeft,
-  Maximize2,
-  MousePointerClick,
-  RefreshCw,
-} from "lucide-react";
+import { Maximize2, MousePointerClick, RefreshCw } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -19,6 +14,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { api } from "@/convex/_generated/api";
+import {
+  readBrowserRelay,
+  sendBrowserRelayInput,
+} from "@/lib/ai/browser-handoff/relay-client";
 
 type BrowserFrame = {
   image: string;
@@ -60,8 +59,10 @@ export function AgentBrowserPreview({
   const [previewState, setPreviewState] = useState("loading");
   const [fullScreen, setFullScreen] = useState(false);
   const inputRef = useRef<HTMLDivElement>(null);
-  const backButtonRef = useRef<HTMLButtonElement>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
+  const relaySequence = useRef(0);
+  const [relayReconnect, setRelayReconnect] = useState(0);
   const [grant, setGrant] = useState<string | null>(null);
   const [exitOpen, setExitOpen] = useState(false);
   const [note, setNote] = useState("");
@@ -127,6 +128,8 @@ export function AgentBrowserPreview({
     setBusy(false);
     setError(null);
     setGrant(null);
+    setRelayUrl(null);
+    relaySequence.current = 0;
     grantRef.current = null;
     exposedRef.current = null;
     resumingRef.current = false;
@@ -154,7 +157,7 @@ export function AgentBrowserPreview({
   );
 
   useEffect(() => {
-    if (!endpoint || !activeSessionId) return;
+    if (!endpoint || !activeSessionId || (grant && relayUrl)) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -183,7 +186,42 @@ export function AgentBrowserPreview({
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [endpoint, activeSessionId]);
+  }, [endpoint, activeSessionId, grant, relayUrl]);
+
+  useEffect(() => {
+    if (!relayUrl || !grant || !activeSessionId) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stream = async () => {
+      try {
+        await readBrowserRelay(
+          relayUrl,
+          grant,
+          controller.signal,
+          (nextFrame) => {
+            if (controller.signal.aborted) return;
+            setFrame(nextFrame);
+            setFrameSeenAt(Date.now());
+            setPreviewState("ready");
+          },
+          () => {
+            if (controller.signal.aborted) return;
+            setFrameSeenAt(Date.now());
+            setPreviewState("ready");
+          },
+        );
+      } catch {
+        if (controller.signal.aborted) return;
+        setPreviewState("disconnected");
+        timer = setTimeout(stream, 500);
+      }
+    };
+    void stream();
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [relayUrl, grant, activeSessionId, relayReconnect]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -275,6 +313,8 @@ export function AgentBrowserPreview({
       }
       grantRef.current = data.grant;
       setGrant(data.grant);
+      setRelayUrl(data.relayUrl ?? null);
+      relaySequence.current = 0;
       setFullScreen(true);
       setFrame(data.frame);
       setFrameSeenAt(Date.now());
@@ -384,7 +424,16 @@ export function AgentBrowserPreview({
             inputs.push(buffer.shift()!);
             eventCount += cost;
           }
-          await post({ action: "input", grant: activeGrant, inputs });
+          if (relayUrl) {
+            await sendBrowserRelayInput(
+              relayUrl,
+              activeGrant,
+              ++relaySequence.current,
+              inputs,
+            );
+          } else {
+            await post({ action: "input", grant: activeGrant, inputs });
+          }
         }
       })
       .catch(() => {
@@ -459,7 +508,7 @@ export function AgentBrowserPreview({
     if (!human || frameStale) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      (fullScreen ? backButtonRef : resumeButtonRef).current?.focus();
+      resumeButtonRef.current?.focus();
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v")
@@ -519,46 +568,37 @@ export function AgentBrowserPreview({
       }
       aria-label="Agent browser preview"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
-        {fullScreen ? (
-          <button
-            ref={backButtonRef}
-            type="button"
-            onClick={() => setFullScreen(false)}
-            className="inline-flex items-center gap-2 rounded-md px-2 py-2 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ArrowLeft size={16} aria-hidden /> Back to chat
-          </button>
-        ) : (
+      {!fullScreen && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
           <span className="font-medium text-foreground">Agent browser</span>
-        )}
-        <span className="text-muted-foreground" role="status">
-          {statusLabel}
-        </span>
-        {human && !fullScreen && (
-          <button
-            ref={openButtonRef}
-            type="button"
-            onClick={() => setFullScreen(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Maximize2 size={14} aria-hidden /> Open browser
-          </button>
-        )}
-        {!human && (
-          <button
-            type="button"
-            ref={openButtonRef}
-            onClick={() => void takeControl()}
-            disabled={!canTake || busy}
-            aria-label="Take control of Agent browser"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <MousePointerClick className="h-3.5 w-3.5" aria-hidden />
-            {busy ? "Taking control…" : "Take control"}
-          </button>
-        )}
-      </div>
+          <span className="text-muted-foreground" role="status">
+            {statusLabel}
+          </span>
+          {human && !fullScreen && (
+            <button
+              ref={openButtonRef}
+              type="button"
+              onClick={() => setFullScreen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Maximize2 size={14} aria-hidden /> Open browser
+            </button>
+          )}
+          {!human && (
+            <button
+              type="button"
+              ref={openButtonRef}
+              onClick={() => void takeControl()}
+              disabled={!canTake || busy}
+              aria-label="Take control of Agent browser"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <MousePointerClick className="h-3.5 w-3.5" aria-hidden />
+              {busy ? "Taking control…" : "Take control"}
+            </button>
+          )}
+        </div>
+      )}
       <div
         className={`relative bg-muted/30 ${fullScreen ? "flex min-h-0 flex-1 items-center justify-center overflow-hidden" : "max-h-[38vh] overflow-auto"} ${session && !frame ? "min-h-24" : ""}`}
       >
@@ -569,9 +609,7 @@ export function AgentBrowserPreview({
             tabIndex={human ? 0 : -1}
             aria-label={
               human
-                ? fullScreen
-                  ? "Control Agent browser. Escape moves focus to Back to chat."
-                  : "Control Agent browser. Escape moves focus to Exit takeover."
+                ? "Control Agent browser. Escape moves focus to Exit takeover."
                 : undefined
             }
             className={`${fullScreen ? "flex h-full w-full min-h-0 items-center justify-center" : ""} ${human ? "cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" : ""}`}
@@ -652,14 +690,12 @@ export function AgentBrowserPreview({
         )}
       </div>
       <div
-        className={`flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground ${fullScreen ? "border-t border-border sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-4 sm:py-3" : ""}`}
+        className={
+          fullScreen
+            ? "pointer-events-none absolute inset-x-0 top-4 z-20 flex flex-col items-center gap-2 px-4"
+            : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
+        }
       >
-        {fullScreen && human && (
-          <span className="w-full">
-            Agent paused. Click, type, paste, or scroll in the page. Back to
-            chat keeps the Agent paused.
-          </span>
-        )}
         {human || effectiveState === "recovery" || hasTakenControl ? (
           <button
             ref={resumeButtonRef}
@@ -669,11 +705,11 @@ export function AgentBrowserPreview({
               setError(null);
             }}
             disabled={busy}
-            className="self-start rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            className={`${fullScreen ? "pointer-events-auto shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
           >
             Exit takeover
           </button>
-        ) : (
+        ) : !fullScreen ? (
           <span>
             {!session
               ? session === undefined
@@ -687,7 +723,7 @@ export function AgentBrowserPreview({
                   ? "Take control will be available when the live browser preview connects."
                   : "Take control to click and type. The Agent’s browser actions pause until you resume."}
           </span>
-        )}
+        ) : null}
         {session && !liveSelection && onJumpToLive && (
           <button
             type="button"
@@ -708,8 +744,9 @@ export function AgentBrowserPreview({
             onClick={() => {
               setFrameSeenAt(0);
               setPreviewState("loading");
+              setRelayReconnect((value) => value + 1);
             }}
-            className="inline-flex self-start items-center gap-1 text-foreground underline-offset-2 hover:underline"
+            className="pointer-events-auto inline-flex self-start items-center gap-1 text-foreground underline-offset-2 hover:underline"
           >
             <RefreshCw size={12} aria-hidden /> Reconnect preview
           </button>
@@ -739,13 +776,13 @@ export function AgentBrowserPreview({
             // Escape leaves remote keyboard control, rather than silently
             // dismissing the workspace or resuming the Agent.
             event.preventDefault();
-            backButtonRef.current?.focus();
+            resumeButtonRef.current?.focus();
           }}
         >
           <DialogTitle className="sr-only">Browser control</DialogTitle>
           <DialogDescription className="sr-only">
-            Interact with the Agent browser while the Agent is paused. Return to
-            chat at any time, or exit takeover to continue the Agent.
+            Interact with the Agent browser while the Agent is paused. Choose
+            Exit takeover to continue the Agent.
           </DialogDescription>
           {fullScreen && browserContent}
         </DialogContent>

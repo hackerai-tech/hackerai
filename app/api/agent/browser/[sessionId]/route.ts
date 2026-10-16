@@ -15,6 +15,9 @@ import {
   getActiveBrowserSessionName,
   sendBrowserInput,
   setAgentBrowserPaused,
+  startBrowserRelay,
+  renewBrowserRelay,
+  stopBrowserRelays,
 } from "@/lib/ai/browser-handoff/server";
 
 export const maxDuration = 30;
@@ -187,6 +190,7 @@ export async function POST(
         body.browserSessionName,
         true,
       );
+      const relayLease = Date.now() + 25_000;
       const active = await convex.mutation(
         api.browserHandoffs.finishTakeoverForBackend,
         {
@@ -196,6 +200,14 @@ export async function POST(
         },
       );
       if (!active) throw new BrowserPreviewUnavailable("closed");
+      const relayUrl = await startBrowserRelay(
+        sandbox,
+        session,
+        body.browserSessionName,
+        grant,
+        origin,
+        relayLease,
+      );
       phLogger.event("agent_browser_human_control_started", {
         userId,
         chat_id: session.chatId,
@@ -203,11 +215,12 @@ export async function POST(
         agent_id: session.agentId,
       });
       after(() => phLogger.flush());
-      return json({ state: "human", grant, frame });
+      return json({ state: "human", grant, frame, relayUrl });
     } catch (error) {
       if (paused && !wasPaused) {
         try {
           const sandbox = await connectBrowserSandbox(session);
+          await stopBrowserRelays(sandbox, session, grant);
           await setAgentBrowserPaused(sandbox, session, false);
           paused = false;
         } catch {
@@ -268,6 +281,7 @@ export async function POST(
     let unpaused = false;
     try {
       const sandbox = await connectBrowserSandbox(session);
+      await stopBrowserRelays(sandbox, session);
       if (
         (await getActiveBrowserSessionName(sandbox, session)) !==
         body.browserSessionName
@@ -323,12 +337,24 @@ export async function POST(
         grant: body.grant,
       },
     );
+    if (released) {
+      try {
+        await stopBrowserRelays(
+          await connectBrowserSandbox(session),
+          session,
+          body.grant,
+        );
+      } catch {
+        return json({ state: "recovery" }, 503);
+      }
+    }
     return json(
       { state: released ? "recovery" : "stale" },
       released ? 200 : 409,
     );
   }
   if (body.action === "heartbeat") {
+    const lease = Date.now() + 25_000;
     const valid = await convex.mutation(
       api.browserHandoffs.assertGrantForBackend,
       {
@@ -337,6 +363,18 @@ export async function POST(
         renew: true,
       },
     );
+    if (valid) {
+      try {
+        await renewBrowserRelay(
+          await connectBrowserSandbox(session),
+          session,
+          body.grant,
+          lease,
+        );
+      } catch {
+        return json({ state: "recovery" }, 503);
+      }
+    }
     return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
   }
   if (body.action === "input") {

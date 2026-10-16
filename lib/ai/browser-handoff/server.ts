@@ -1,5 +1,5 @@
 import "server-only";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { Sandbox } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
@@ -7,6 +7,7 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { browserBridgeCommand } from "./bridge-program";
+import { browserRelayProgram, RELAY_START_PROGRAM } from "./relay-program";
 
 export type BrowserSessionLocation = {
   userId: string;
@@ -114,6 +115,99 @@ async function getPrivateStreamPort(
   )
     throw new BrowserPreviewUnavailable("loading");
   return port as number;
+}
+
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const relayDirectory = (session: BrowserSessionLocation, grant: string) =>
+  `${session.directory}/relay-${createHash("sha256").update(grant).digest("hex").slice(0, 24)}`;
+
+export async function startBrowserRelay(
+  sandbox: Sandbox,
+  session: BrowserSessionLocation,
+  browserSessionName: string,
+  grant: string,
+  origin: string,
+  lease: number,
+) {
+  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const handle = await sandbox.commands.run(
+    `node -e ${quote(RELAY_START_PROGRAM)}`,
+    {
+      ...buildSandboxCommandOptions(sandbox),
+      background: true,
+      stdin: true,
+      timeoutMs: 8000,
+    },
+  );
+  await handle.sendStdin(
+    JSON.stringify({
+      directory: relayDirectory(session, grant),
+      config: {
+        root: session.directory,
+        port,
+        browserSessionName,
+        grant,
+        origin,
+        expiresAt: session.expiresAt,
+      },
+      program: browserRelayProgram(),
+      lease,
+    }),
+  );
+  await handle.closeStdin();
+  const result = await handle.wait();
+  const relayPort = Number(result.stdout.trim());
+  if (
+    result.exitCode !== 0 ||
+    !Number.isInteger(relayPort) ||
+    relayPort < 1 ||
+    relayPort > 65535
+  )
+    throw new BrowserPreviewUnavailable("disconnected");
+  return `https://${sandbox.getHost(relayPort)}`;
+}
+
+export async function renewBrowserRelay(
+  sandbox: Sandbox,
+  session: BrowserSessionLocation,
+  grant: string,
+  lease: number,
+) {
+  const directory = relayDirectory(session, grant);
+  // Atomic replacement avoids a transient empty lease read in the relay.
+  const program = `const fs=require('node:fs');const d=process.argv[1];if(fs.existsSync(d)){if(fs.existsSync(d+'/revoked')||fs.existsSync(d+'/closed'))process.exit(1);fs.writeFileSync(d+'/lease.next',process.argv[2],{mode:384});fs.renameSync(d+'/lease.next',d+'/lease');}`;
+  const result = await sandbox.commands.run(
+    `node -e ${quote(program)} ${quote(directory)} ${lease}`,
+    {
+      ...buildSandboxCommandOptions(sandbox),
+      timeoutMs: 5000,
+    },
+  );
+  if (result.exitCode !== 0)
+    throw new BrowserPreviewUnavailable("disconnected");
+}
+
+export async function stopBrowserRelays(
+  sandbox: Sandbox,
+  session: BrowserSessionLocation,
+  grant?: string,
+) {
+  // A permanent tombstone prevents a late heartbeat from resurrecting control.
+  // Wait for the stream close handshake to drain accepted input before resume.
+  const program = String.raw`const fs=require('node:fs');const root=process.argv[1],only=process.argv[2];
+    (async()=>{const dirs=only?[only]:fs.readdirSync(root).filter(n=>/^relay-[a-f0-9]{24}$/.test(n)).map(n=>root+'/'+n);
+    await Promise.all(dirs.map(async d=>{if(!fs.existsSync(d))return;fs.writeFileSync(d+'/revoked','1',{mode:384});
+    for(let i=0;i<100&&!fs.existsSync(d+'/closed');i++)await new Promise(r=>setTimeout(r,50));
+    if(!fs.existsSync(d+'/closed'))process.exitCode=1;}));})().catch(()=>{process.exitCode=1;});`;
+  const result = await sandbox.commands.run(
+    `node -e ${quote(program)} ${quote(session.directory)}${grant ? ` ${quote(relayDirectory(session, grant))}` : ""}`,
+    {
+      ...buildSandboxCommandOptions(sandbox),
+      timeoutMs: 7000,
+    },
+  );
+  if (result.exitCode !== 0)
+    throw new BrowserPreviewUnavailable("disconnected");
 }
 
 export async function captureBrowserFrame(

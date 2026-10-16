@@ -1,5 +1,8 @@
 import type { NextRequest } from "next/server";
 
+const mockStopRelay = jest.fn(async () => {
+  if (mockFailure === "relay-stop") throw new Error("Relay still draining");
+});
 const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
@@ -63,6 +66,9 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
     }
   },
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
+  startBrowserRelay: async () => "https://relay.example",
+  renewBrowserRelay: async () => undefined,
+  stopBrowserRelays: () => mockStopRelay(),
   connectBrowserSandbox: async () => ({}),
   getActiveBrowserSessionName: async () =>
     mockFailure === "identity" ? "another-browser" : "default",
@@ -247,4 +253,18 @@ it("allows retry after an active run finished resuming without unpausing twice",
     "saveExitNoteForBackend",
   ]);
   expect(mockPause).not.toHaveBeenCalled();
+});
+
+it("drains the relay before unpausing and stays paused if shutdown is unconfirmed", async () => {
+  mockFailure = "none";
+  expect((await exitTakeover()).status).toBe(200);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockPause.mock.invocationCallOrder[0],
+  );
+  jest.clearAllMocks();
+  mockPaused = true;
+  mockFailure = "relay-stop";
+  expect((await exitTakeover()).status).toBe(503);
+  expect(mockPause).not.toHaveBeenCalled();
+  expect(mockPaused).toBe(true);
 });

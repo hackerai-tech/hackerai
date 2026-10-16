@@ -298,7 +298,7 @@ it("ignores old resume failures before the new session's passive effects run", a
   }
 });
 
-it("opens focused full-screen control and returns to chat without resuming", async () => {
+it("opens full-screen control with only an Exit takeover overlay and restores focus on cancel", async () => {
   await mount();
   await takeControl();
   expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
@@ -306,12 +306,17 @@ it("opens focused full-screen control and returns to chat without resuming", asy
   fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
     key: "Escape",
   });
-  expect(screen.getByRole("button", { name: "Back to chat" })).toHaveFocus();
-  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
-  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toHaveFocus();
+  expect(
+    screen.queryByRole("button", { name: "Back to chat" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/Agent paused. Click, type/),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
   expect(actions.map((body) => body.action)).toEqual(["take"]);
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
-  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
   await act(async () => {
     fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
       key: "A",
@@ -602,4 +607,39 @@ it("keeps a new takeover and its draft when an old continuation finishes late", 
   expect(
     screen.getByRole("button", { name: "Send and continue" }),
   ).toBeEnabled();
+});
+
+it("sends ordered takeover input directly to the relay instead of the command API", async () => {
+  handleAction = async (body) =>
+    response(
+      body.action === "take"
+        ? { grant: "grant-a", frame, relayUrl: "https://relay.example" }
+        : {},
+    );
+  const originalMock = global.fetch as jest.Mock;
+  const defaultFetch = originalMock.getMockImplementation()!;
+  const relayInputs: Array<{ sequence: number; inputs: unknown[] }> = [];
+  originalMock.mockImplementation(async (url, options) => {
+    if (url === "https://relay.example/frames") return new Promise(() => {});
+    if (url === "https://relay.example/input") {
+      relayInputs.push(JSON.parse(options.body));
+      return response({ ok: true });
+    }
+    return defaultFetch(url, options);
+  });
+  await mount();
+  await takeControl();
+  for (const key of ["A", "@", "!"]) {
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key,
+      });
+    });
+  }
+  expect(relayInputs).toEqual([
+    { sequence: 1, inputs: [{ kind: "text", text: "A" }] },
+    { sequence: 2, inputs: [{ kind: "text", text: "@" }] },
+    { sequence: 3, inputs: [{ kind: "text", text: "!" }] },
+  ]);
+  expect(actions.some((body) => body.action === "input")).toBe(false);
 });
