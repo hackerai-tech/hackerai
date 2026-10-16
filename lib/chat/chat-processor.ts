@@ -178,6 +178,7 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-web",
   "tool-shell",
   "tool-run_terminal_cmd",
+  "tool-verify_authentication",
   "tool-interact_terminal_session",
   "tool-http_request",
   "tool-get_terminal_files",

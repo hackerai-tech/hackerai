@@ -43,6 +43,7 @@ export type SubagentProfileDefinition = {
 
 const SHARED_SUBAGENT_TOOLS = [
   "run_terminal_cmd",
+  "verify_authentication",
   "interact_terminal_session",
   "get_terminal_files",
   "file",

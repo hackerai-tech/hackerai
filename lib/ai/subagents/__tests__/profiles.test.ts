@@ -54,6 +54,7 @@ describe("subagent profiles", () => {
     }
     expect(profile.allowedToolNames).toEqual([
       "run_terminal_cmd",
+      "verify_authentication",
       "interact_terminal_session",
       "get_terminal_files",
       "file",
