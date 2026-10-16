@@ -13,6 +13,10 @@ import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import {
+  appendProviderEmptyResponseFailure,
+  getProviderOutputDiagnostics,
+  hasUncertainProviderToolOutcome,
+  isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -2007,6 +2011,20 @@ export const createChatHandler = () => {
                           detectAssistantContentLoop: !isAborted,
                         },
                       );
+                    const terminalEmptyResponse =
+                      isTerminalEmptyAssistantResponse(
+                        lastAssistantMessageParts,
+                        state.streamFinishReason,
+                      );
+                    const emptyResponseContinuation =
+                      terminalEmptyResponse &&
+                      !hasUncertainProviderToolOutcome(
+                        lastAssistantMessageParts,
+                      )
+                        ? prepareProviderDisconnectContinuation(messages, {
+                            allowCompletedTail: true,
+                          })
+                        : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
                         ? omitImageViewToolResultsForProviderRetry(messages)
@@ -2036,6 +2054,7 @@ export const createChatHandler = () => {
                     if (
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
+                        emptyResponseContinuation ||
                         shouldRetryWithoutImageToolResults ||
                         shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
@@ -2043,23 +2062,28 @@ export const createChatHandler = () => {
                       const loopTriggeredRetry =
                         stoppedDueToAssistantContentLoop ||
                         state.stoppedDueToDoomLoop;
-                      const retryReason = shouldRetryWithVisionSummary
-                        ? "vision_summary_recovery"
-                        : shouldRetryWithoutImageToolResults
-                          ? "image_tool_result_rejection"
-                          : providerContentBlocked
-                            ? "content_filter"
-                            : stoppedDueToAssistantContentLoop
-                              ? "assistant_content_loop"
-                              : state.stoppedDueToDoomLoop
-                                ? "doom_loop"
-                                : shouldRetryInterruptedToolInput
-                                  ? "interrupted_tool_input"
-                                  : shouldRetryNonDurableOutputLimit
-                                    ? "non_durable_output_limit"
-                                    : shouldRetryReasoningOnlyProviderError
-                                      ? "reasoning_only_provider_error"
-                                      : "incomplete_stream";
+                      const retryReason =
+                        terminalEmptyResponse && emptyResponseContinuation
+                          ? "empty_answer_continuation"
+                          : terminalEmptyResponse
+                            ? "empty_answer"
+                            : shouldRetryWithVisionSummary
+                              ? "vision_summary_recovery"
+                              : shouldRetryWithoutImageToolResults
+                                ? "image_tool_result_rejection"
+                                : providerContentBlocked
+                                  ? "content_filter"
+                                  : stoppedDueToAssistantContentLoop
+                                    ? "assistant_content_loop"
+                                    : state.stoppedDueToDoomLoop
+                                      ? "doom_loop"
+                                      : shouldRetryInterruptedToolInput
+                                        ? "interrupted_tool_input"
+                                        : shouldRetryNonDurableOutputLimit
+                                          ? "non_durable_output_limit"
+                                          : shouldRetryReasoningOnlyProviderError
+                                            ? "reasoning_only_provider_error"
+                                            : "incomplete_stream";
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
@@ -2095,6 +2119,7 @@ export const createChatHandler = () => {
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         !userStopSignal.signal.aborted &&
                         (isAutoModel ||
+                          Boolean(emptyResponseContinuation) ||
                           shouldRecoverAbliterationStreamError ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
@@ -2174,7 +2199,9 @@ export const createChatHandler = () => {
                           userId,
                           subscription,
                           messageCount: messages.length,
-                          parts: lastAssistantMessage?.parts,
+                          ...getProviderOutputDiagnostics(
+                            lastAssistantMessageParts,
+                          ),
                           isRetryWithFallback,
                           assistantMessageId,
                           retryReason,
@@ -2238,8 +2265,12 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (shouldRecoverAbliterationStreamError) {
+                        if (
+                          emptyResponseContinuation ||
+                          shouldRecoverAbliterationStreamError
+                        ) {
                           const continuation =
+                            emptyResponseContinuation ??
                             prepareProviderDisconnectContinuation(messages, {
                               allowCompletedTail: true,
                             });
@@ -2317,6 +2348,27 @@ export const createChatHandler = () => {
                               isAborted: retryAborted,
                             }) => {
                               try {
+                                const retryAssistant = retryMessages.findLast(
+                                  (message) => message.role === "assistant",
+                                );
+                                const retryEmptyResponse =
+                                  !retryAborted &&
+                                  !userStopSignal.signal.aborted &&
+                                  isTerminalEmptyAssistantResponse(
+                                    retryAssistant?.parts ?? [],
+                                    state.streamFinishReason,
+                                  );
+                                if (retryEmptyResponse) {
+                                  state.streamFinishReason = "error";
+                                  state.providerError = new Error(
+                                    "Provider completed without a usable answer",
+                                  );
+                                  appendProviderEmptyResponseFailure(
+                                    retryMessages,
+                                    retryMessageId,
+                                    writer,
+                                  );
+                                }
                                 // Cleanup for retry
                                 preemptiveTimeout?.clear();
                                 if (!subscriberStopped) {
@@ -2362,7 +2414,7 @@ export const createChatHandler = () => {
                                   );
                                 const outcome = retryAborted
                                   ? "aborted"
-                                  : providerContentBlocked
+                                  : providerContentBlocked || retryEmptyResponse
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
@@ -2372,10 +2424,12 @@ export const createChatHandler = () => {
                                     usageTracker.measurementProperties(
                                       selectedModel,
                                     ),
-                                  hasResponseContent: hasCompletedAssistantText(
-                                    retryMessages,
-                                    retryMessageId,
-                                  ),
+                                  hasResponseContent:
+                                    !retryEmptyResponse &&
+                                    hasCompletedAssistantText(
+                                      retryMessages,
+                                      retryMessageId,
+                                    ),
                                   abliteratedProviderSummary:
                                     abliteratedTelemetry?.getSummary(),
                                   posthog,
@@ -2422,7 +2476,10 @@ export const createChatHandler = () => {
                                         getTodoManager().getRunMetrics(),
                                     }),
                                 });
-                                if (providerContentBlocked) {
+                                if (
+                                  providerContentBlocked ||
+                                  retryEmptyResponse
+                                ) {
                                   chatLogger!.emitUnexpectedError(
                                     state.providerError ??
                                       createProviderContentBlockedFinishReasonError(),
@@ -2541,7 +2598,8 @@ export const createChatHandler = () => {
                                   fallbackAssistantMessageId: retryMessageId,
                                   fallbackDurationMs:
                                     Date.now() - fallbackStartTime,
-                                  fallbackSuccess: fallbackHasContent,
+                                  fallbackSuccess:
+                                    fallbackHasContent && !retryEmptyResponse,
                                   fallbackWasAborted: retryAborted,
                                   fallbackMessageCount: retryMessages.length,
                                   fallbackPartTypes,
@@ -2574,6 +2632,22 @@ export const createChatHandler = () => {
                         retryScheduled = true;
                         return; // Skip normal cleanup - retry handles it
                       }
+                    }
+
+                    if (
+                      terminalEmptyResponse &&
+                      !isAborted &&
+                      !userStopSignal.signal.aborted
+                    ) {
+                      state.streamFinishReason = "error";
+                      state.providerError = new Error(
+                        "Provider completed without a usable answer",
+                      );
+                      appendProviderEmptyResponseFailure(
+                        messages,
+                        assistantMessageId,
+                        writer,
+                      );
                     }
 
                     const isPreemptiveAbort =
@@ -2707,17 +2781,18 @@ export const createChatHandler = () => {
                     const outcome = isAborted
                       ? "aborted"
                       : finalProviderContentBlocked ||
-                          visionSummaryRecoveryFailure
+                          visionSummaryRecoveryFailure ||
+                          (terminalEmptyResponse &&
+                            state.streamFinishReason === "error")
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),
-                      hasResponseContent: hasCompletedAssistantText(
-                        messages,
-                        assistantMessageId,
-                      ),
+                      hasResponseContent:
+                        outcome === "success" &&
+                        hasCompletedAssistantText(messages, assistantMessageId),
                       abliteratedProviderSummary:
                         abliteratedTelemetry?.getSummary(),
                       posthog,
@@ -2762,7 +2837,11 @@ export const createChatHandler = () => {
                       chatLogger!.emitUnexpectedError(
                         visionSummaryRecoveryFailure,
                       );
-                    } else if (finalProviderContentBlocked) {
+                    } else if (
+                      finalProviderContentBlocked ||
+                      (terminalEmptyResponse &&
+                        state.streamFinishReason === "error")
+                    ) {
                       chatLogger!.emitUnexpectedError(
                         state.providerError ??
                           createProviderContentBlockedFinishReasonError(),

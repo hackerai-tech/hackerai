@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
 
 // Execute the actual catch block without booting the Trigger worker or its
 // remote services. This keeps cleanup/return ordering covered by behavior.
@@ -11,7 +12,25 @@ const source = ts.createSourceFile(
   true,
 );
 let outerCatch: ts.Block | undefined;
+let stopSetup: ts.Statement[] | undefined;
 function visit(node: ts.Node) {
+  if (ts.isBlock(node)) {
+    const start = node.statements.findIndex(
+      (statement) =>
+        ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.some(
+          (declaration) =>
+            declaration.name.getText(source) === "terminalAgentState",
+        ),
+    );
+    const end = node.statements.findIndex(
+      (statement) =>
+        ts.isIfStatement(statement) &&
+        statement.expression.getText(source) === "triggerSignal.aborted",
+    );
+    if (start >= 0 && end > start)
+      stopSetup = [...node.statements.slice(start, end + 1)];
+  }
   if (
     ts.isCatchClause(node) &&
     node.block
@@ -23,6 +42,53 @@ function visit(node: ts.Node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
+if (!stopSetup) throw new Error("Agent stop setup not found");
+const stopSetupBody = ts.transpileModule(
+  `${stopSetup.map((statement) => statement.getText(source)).join("\n")}
+   return { userStopSignal, stopSignal, forwardTriggerAbort };`,
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+).outputText;
+
+it.each([false, true])(
+  "attributes the actual Trigger forwarding path, including startup cancellation (already=%s)",
+  (alreadyAborted) => {
+    const trigger = new AbortController();
+    const privateReason = { message: "synthetic private platform detail" };
+    const warn = jest.fn();
+    if (alreadyAborted) trigger.abort(privateReason);
+    const setup = new Function(
+      "createAgentStopSignal",
+      "triggerSignal",
+      "triggerLogger",
+      "ctx",
+      "chatId",
+      stopSetupBody,
+    )(
+      createAgentStopSignal,
+      trigger.signal,
+      { warn },
+      { run: { id: "run-test" } },
+      "chat-test",
+    );
+    if (!alreadyAborted) trigger.abort(privateReason);
+    expect(setup.userStopSignal.signal.reason).toBe(privateReason);
+    expect(warn.mock.calls).toEqual([
+      [
+        "[agent-long] stop signal aborted",
+        {
+          event: "agent_long_stop_signal_aborted",
+          run_id: "run-test",
+          chat_id: "chat-test",
+          stop_source: "trigger_platform",
+        },
+      ],
+    ]);
+    setup.stopSignal.abort("active_runtime_budget");
+    expect(warn).toHaveBeenCalledTimes(1);
+    trigger.signal.removeEventListener("abort", setup.forwardTriggerAbort);
+    setup.stopSignal.dispose();
+  },
+);
 if (!outerCatch) throw new Error("Agent run catch block not found");
 const catchBody = ts.transpileModule(
   `return (async () => ${outerCatch.getText(source)})();`,

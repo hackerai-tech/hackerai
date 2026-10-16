@@ -897,7 +897,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "runtimeSettlementWatchdog?.arm()",
       budgetIdx,
     );
-    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const abortIdx = taskSrc.indexOf(
+      'stopSignal.abort("active_runtime_budget")',
+      armIdx,
+    );
     const stalledEventIdx = taskSrc.indexOf(
       'event: "agent_long_runtime_settlement_stalled"',
       abortIdx,
@@ -1678,7 +1681,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
     );
     expect(taskSrc).toMatch(
-      /hasTerminalProviderStreamError\s*&&\s*\(shouldRecoverAbliterationStreamError \|\|\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+      /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
+    );
+    expect(taskSrc).toMatch(
+      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
     expect(taskSrc).toMatch(
       /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,

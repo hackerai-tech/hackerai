@@ -1,3 +1,4 @@
+import { getCompactionSections } from "./structured-summary";
 import { randomUUID } from "node:crypto";
 import {
   ABLITERATION_MODEL_KEY,
@@ -31,29 +32,7 @@ export type CompactionSelection = {
 
 // Missing sections catch plain refusal prose; headings cannot prove fidelity.
 export function hasStructuredCompactionSummary(text: string, mode: ChatMode) {
-  const sections =
-    mode === "agent"
-      ? [
-          "Target & Scope",
-          "Key Findings",
-          "User Directives",
-          "Progress & Decisions",
-          "Current State",
-          "Runtime & Execution State",
-          "Errors & Recovery",
-          "Failed Attempts",
-          "Next Steps",
-          "Relevant Files & Artifacts",
-        ]
-      : [
-          "Context & Goal",
-          "Key Exchanges",
-          "Decisions & Conclusions",
-          "Current State",
-          "User Preferences & Corrections",
-          "Relevant Files & Artifacts",
-          "Open Threads",
-        ];
+  const sections = getCompactionSections(mode);
   return sections.every((section) =>
     text.split("\n").some((line) => line.trim() === `## ${section}`),
   );
@@ -127,7 +106,7 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      telemetry_version: 5,
+      telemetry_version: 7,
       $process_person_profile: false,
     };
     phLogger.event("compaction_model_started", properties);
