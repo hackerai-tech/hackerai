@@ -301,7 +301,7 @@ it("opens focused full-screen control and returns to chat without resuming", asy
   expect(actions.at(-1)).toMatchObject({
     action: "input",
     grant: "grant-a",
-    input: { kind: "text", text: "A" },
+    inputs: [{ kind: "text", text: "A" }],
   });
   fireEvent.click(screen.getByRole("checkbox"));
   await act(async () => {
@@ -363,10 +363,49 @@ it("maps full-screen clicks and scrolling to the displayed browser pixels", asyn
   expect(screen.getByRole("application")).toHaveFocus();
   expect(wheel.defaultPrevented).toBe(true);
   expect(
-    actions.filter((body) => body.action === "input").map((body) => body.input),
+    actions
+      .filter((body) => body.action === "input")
+      .flatMap((body) => body.inputs),
   ).toEqual([
     { kind: "down", x: 400, y: 300 },
     { kind: "up", x: 400, y: 300 },
     { kind: "wheel", x: 400, y: 300, deltaX: 0, deltaY: 48 },
   ]);
+});
+
+it("batches rapid typing in order and drains the entire burst before resuming", async () => {
+  const finish: Array<(value: Response) => void> = [];
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((resolve) => finish.push(resolve))
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application"), { key: "a" });
+  });
+  await act(async () => {
+    for (const key of ".b@c-d!AZ")
+      fireEvent.keyDown(screen.getByRole("application"), { key });
+  });
+  expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("checkbox"));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+  });
+  await act(async () => {
+    finish[0](response({ ok: true }));
+  });
+  expect(actions.map((body) => body.action)).toEqual([
+    "take",
+    "input",
+    "input",
+  ]);
+  expect(actions[2].inputs).toEqual(
+    [...".b@c-d!AZ"].map((text) => ({ kind: "text", text })),
+  );
+  await act(async () => {
+    finish[1](response({ ok: true }));
+  });
+  expect(actions.at(-1)?.action).toBe("resume");
 });

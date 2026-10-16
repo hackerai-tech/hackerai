@@ -41,6 +41,33 @@ const shiftedCodes: Record<string, string> = {
   "~": "Backquote",
 };
 
+// CDP requires native virtual key codes for editing/navigation defaults.
+const editingKeyCodes: Record<string, number> = {
+  Backspace: 8,
+  Tab: 9,
+  Enter: 13,
+  Escape: 27,
+  Space: 32,
+  PageUp: 33,
+  PageDown: 34,
+  End: 35,
+  Home: 36,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Insert: 45,
+  Delete: 46,
+};
+
+const virtualKeyCode = (code: string) =>
+  editingKeyCodes[code] ??
+  (/^Key[A-Z]$/.test(code)
+    ? code.charCodeAt(3)
+    : /^Digit[0-9]$/.test(code)
+      ? code.charCodeAt(5)
+      : 0);
+
 const coordinate = (value: unknown) =>
   typeof value === "number" &&
   Number.isFinite(value) &&
@@ -123,9 +150,14 @@ export function normalizeBrowserInput(
       key: input.key,
       code: input.code,
       modifiers: input.modifiers ?? 0,
+      windowsVirtualKeyCode: virtualKeyCode(input.code),
     };
     return [
-      { ...event, eventType: "keyDown" },
+      {
+        ...event,
+        eventType: "keyDown",
+        ...(input.key === "Enter" ? { text: "\r" } : {}),
+      },
       { ...event, eventType: "keyUp" },
     ];
   }
@@ -141,6 +173,13 @@ export function normalizeBrowserInput(
     // The pinned stream needs a physical code and a balanced key pair. Bare
     // char events and keyDown without code are accepted but do not edit input.
     return chars.flatMap((text) => {
+      if (text === "\n" || text === "\r") {
+        return normalizeBrowserInput({
+          kind: "key",
+          key: "Enter",
+          code: "Enter",
+        })!;
+      }
       const code = /^[a-z]$/i.test(text)
         ? `Key${text.toUpperCase()}`
         : /^[0-9]$/.test(text)
@@ -169,4 +208,17 @@ export function normalizeBrowserInput(
     });
   }
   return null;
+}
+
+/** Bound both user actions and expanded wire events for one ordered batch. */
+export function normalizeBrowserInputBatch(inputs: unknown) {
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 32)
+    return null;
+  const events: Record<string, unknown>[] = [];
+  for (const input of inputs) {
+    const normalized = normalizeBrowserInput(input);
+    if (!normalized || events.length + normalized.length > 64) return null;
+    events.push(...normalized);
+  }
+  return events;
 }

@@ -1,4 +1,4 @@
-import { normalizeBrowserInput } from "../input";
+import { normalizeBrowserInput, normalizeBrowserInputBatch } from "../input";
 
 describe("browser input boundary", () => {
   it("preserves physical keys and Shift for email punctuation and uppercase text", () => {
@@ -100,4 +100,83 @@ describe("browser input boundary", () => {
       normalizeBrowserInput({ kind: "text", text: "x".repeat(65) }),
     ).toBeNull();
   });
+});
+
+it.each([
+  ["Enter", "Enter", 13],
+  ["Tab", "Tab", 9],
+  ["Backspace", "Backspace", 8],
+  ["Delete", "Delete", 46],
+  ["ArrowLeft", "ArrowLeft", 37],
+  ["a", "KeyA", 65],
+])(
+  "sends the native key code for %s editing actions",
+  (key, code, virtualKey) => {
+    const events = normalizeBrowserInput({
+      kind: "key",
+      key,
+      code,
+      modifiers: key === "a" ? 2 : 0,
+    })!;
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      eventType: "keyDown",
+      key,
+      code,
+      windowsVirtualKeyCode: virtualKey,
+    });
+    expect(events[1]).toMatchObject({
+      eventType: "keyUp",
+      key,
+      code,
+      windowsVirtualKeyCode: virtualKey,
+    });
+    if (key === "Enter") expect(events[0].text).toBe("\r");
+  },
+);
+
+it("translates pasted line breaks into Enter input", () => {
+  const events = normalizeBrowserInput({ kind: "text", text: "a\nb" })!;
+  expect(events.slice(2, 4)).toMatchObject([
+    {
+      eventType: "keyDown",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+      text: "\r",
+    },
+    {
+      eventType: "keyUp",
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+    },
+  ]);
+});
+
+it("validates an entire ordered input batch before dispatch", () => {
+  const inputs = [
+    { kind: "down", x: 10, y: 20 },
+    { kind: "up", x: 10, y: 20 },
+    { kind: "text", text: "A.b@C-d!" },
+  ];
+  expect(normalizeBrowserInputBatch(inputs)).toEqual(
+    inputs.flatMap((input) => normalizeBrowserInput(input)!),
+  );
+  expect(
+    normalizeBrowserInputBatch([
+      ...inputs,
+      { type: "cdp", method: "Network.getAllCookies" },
+    ]),
+  ).toBeNull();
+  expect(normalizeBrowserInputBatch([])).toBeNull();
+  expect(
+    normalizeBrowserInputBatch(Array(33).fill({ kind: "down", x: 1, y: 1 })),
+  ).toBeNull();
+  expect(
+    normalizeBrowserInputBatch([
+      { kind: "text", text: "a".repeat(32) },
+      { kind: "key", key: "Enter", code: "Enter" },
+    ]),
+  ).toBeNull();
 });

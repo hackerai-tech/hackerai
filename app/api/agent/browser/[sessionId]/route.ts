@@ -4,7 +4,10 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
-import { normalizeBrowserInput } from "@/lib/ai/browser-handoff/input";
+import {
+  normalizeBrowserInput,
+  normalizeBrowserInputBatch,
+} from "@/lib/ai/browser-handoff/input";
 import {
   BrowserPreviewUnavailable,
   captureBrowserFrame,
@@ -85,6 +88,7 @@ type BrowserAction = {
   browserSessionName?: unknown;
   grant?: unknown;
   input?: unknown;
+  inputs?: unknown;
   confirmedIdentity?: unknown;
 };
 
@@ -301,7 +305,10 @@ export async function POST(
     return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
   }
   if (body.action === "input") {
-    const events = normalizeBrowserInput(body.input);
+    const events =
+      body.inputs !== undefined
+        ? normalizeBrowserInputBatch(body.inputs)
+        : normalizeBrowserInput(body.input);
     if (!events) return json({ error: "Invalid browser input" }, 400);
     if (!session.controlledSessionName) return json({ state: "recovery" }, 409);
     const inputId = randomBytes(16).toString("hex");

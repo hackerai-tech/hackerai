@@ -69,7 +69,8 @@ export function AgentBrowserPreview({
   const mountedRef = useRef(true);
   const exposedRef = useRef<string | null>(null);
   const inputQueue = useRef<Promise<void>>(Promise.resolve());
-  const pendingInputs = useRef(0);
+  const bufferedInputs = useRef<BrowserInput[]>([]);
+  const drainingInputs = useRef(false);
   const lastMoveAt = useRef(0);
   const resumeButtonRef = useRef<HTMLButtonElement>(null);
   const resumingRef = useRef(false);
@@ -101,6 +102,8 @@ export function AgentBrowserPreview({
     grantRef.current = null;
     exposedRef.current = null;
     resumingRef.current = false;
+    bufferedInputs.current = [];
+    drainingInputs.current = false;
   }, [sessionId]);
 
   const post = useCallback(
@@ -145,7 +148,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped) setPreviewState("disconnected");
       } finally {
-        if (!stopped) timer = setTimeout(poll, 1600);
+        if (!stopped) timer = setTimeout(poll, grantRef.current ? 200 : 1600);
       }
     };
     void poll();
@@ -300,13 +303,33 @@ export function AgentBrowserPreview({
     const activeGrant = grantRef.current;
     if (!activeGrant || frameStale || resumingRef.current) return;
     // Moves are advisory; do not let them delay clicks or keystrokes.
-    if (input.kind === "move" && pendingInputs.current > 0) return;
-    pendingInputs.current += 1;
+    if (input.kind === "move" && drainingInputs.current) return;
+    const buffer = bufferedInputs.current;
+    buffer.push(input);
+    if (drainingInputs.current) return;
+    drainingInputs.current = true;
+    // Keep one ordered request in flight. Input arriving during its round trip
+    // is sent together next, rather than adding a round trip per character.
     inputQueue.current = inputQueue.current
       .catch(() => undefined)
       .then(async () => {
-        if (grantRef.current !== activeGrant) return;
-        await post({ action: "input", grant: activeGrant, input });
+        while (buffer.length && grantRef.current === activeGrant) {
+          const inputs: BrowserInput[] = [];
+          let eventCount = 0;
+          while (buffer.length && inputs.length < 32) {
+            const next = buffer[0];
+            const cost =
+              next.kind === "text"
+                ? [...next.text].length * 2
+                : next.kind === "key"
+                  ? 2
+                  : 1;
+            if (eventCount + cost > 64) break;
+            inputs.push(buffer.shift()!);
+            eventCount += cost;
+          }
+          await post({ action: "input", grant: activeGrant, inputs });
+        }
       })
       .catch(() => {
         if (
@@ -321,7 +344,10 @@ export function AgentBrowserPreview({
         setError("Browser input disconnected. Reconnect before continuing.");
       })
       .finally(() => {
-        pendingInputs.current -= 1;
+        if (bufferedInputs.current === buffer) {
+          bufferedInputs.current = [];
+          drainingInputs.current = false;
+        }
       });
   };
 
@@ -373,8 +399,8 @@ export function AgentBrowserPreview({
         code: event.code,
         modifiers:
           (event.altKey ? 1 : 0) +
-          (event.ctrlKey ? 2 : 0) +
-          (event.metaKey ? 4 : 0) +
+          // The Cloud browser runs on Linux, so Cmd shortcuts use Ctrl.
+          (event.ctrlKey || event.metaKey ? 2 : 0) +
           (event.shiftKey ? 8 : 0),
       });
     }
@@ -473,7 +499,10 @@ export function AgentBrowserPreview({
             onPaste={(event) => {
               if (!human) return;
               event.preventDefault();
-              const text = event.clipboardData.getData("text").slice(0, 2048);
+              const text = event.clipboardData
+                .getData("text")
+                .replace(/\r\n?/g, "\n")
+                .slice(0, 2048);
               for (let i = 0; i < text.length; i += 32) {
                 sendInput({ kind: "text", text: text.slice(i, i + 32) });
               }
