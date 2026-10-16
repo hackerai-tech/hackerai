@@ -180,6 +180,8 @@ describe("cloud cleanup lifecycle diagnostics", () => {
         terminateCloudSandboxesForUser("user-test"),
       ).resolves.toEqual({ total: 0, killed: 0, alreadyGone: 0 });
       expect(finish).toHaveBeenCalledWith(true);
+      if (sink === "console") expect(records()).toHaveLength(5);
+      else expect(jest.mocked(console.info)).toHaveBeenCalledTimes(5);
     },
   );
 });

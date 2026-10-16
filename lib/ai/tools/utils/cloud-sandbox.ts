@@ -182,6 +182,11 @@ export async function ensureCloudSandboxConnection(options: {
   }
 }
 
+/**
+ * Keep the cleanup fence until every configured cluster has been checked,
+ * then finalize ownership even when provider cleanup fails. Lifecycle records
+ * are best effort and never contain the persisted ownership state.
+ */
 export async function terminateCloudSandboxesForUser(
   userId: string,
   options: { permanent?: boolean } = {},
@@ -195,19 +200,23 @@ export async function terminateCloudSandboxesForUser(
   ) => {
     // Diagnostics must not affect ownership, deletion or finalization. Never
     // include the persisted fence, sandbox identifiers or provider errors.
+    const fields = {
+      userId,
+      cleanup_id: cleanupId,
+      permanent: !!options.permanent,
+      phase,
+      outcome,
+      duration_ms: Math.max(0, Date.now() - startedAt),
+      ...(providerCleanupSucceeded !== undefined
+        ? { provider_cleanup_succeeded: providerCleanupSucceeded }
+        : {}),
+    };
     try {
-      const fields = {
-        userId,
-        cleanup_id: cleanupId,
-        permanent: !!options.permanent,
-        phase,
-        outcome,
-        duration_ms: Math.max(0, Date.now() - startedAt),
-        ...(providerCleanupSucceeded !== undefined
-          ? { provider_cleanup_succeeded: providerCleanupSucceeded }
-          : {}),
-      };
       console.info("Cloud sandbox cleanup lifecycle", fields);
+    } catch {
+      // A failed console sink must not prevent independent event capture.
+    }
+    try {
       phLogger.event("cloud_sandbox_cleanup_lifecycle", fields);
     } catch {
       // Best-effort telemetry only; preserve the cleanup operation's result.
