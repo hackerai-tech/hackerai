@@ -16,6 +16,8 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 function extractionFailureReason(error: unknown) {
   try {
     if (!(error instanceof Error)) return "non_error";
+    if (error.name === "AI_NoOutputGeneratedError")
+      return "no_output_generated";
     if (error.name === "AI_NoObjectGeneratedError")
       return "no_object_generated";
     if (error.name === "ZodError") return "invalid_extraction_schema";

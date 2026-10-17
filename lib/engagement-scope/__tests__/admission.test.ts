@@ -93,7 +93,8 @@ it("persists unavailable state after extraction failure while retaining the prev
 });
 
 it.each([
-  ["output getter", "no_object_generated"],
+  ["output getter", "no_output_generated"],
+  ["object generation", "no_object_generated"],
   ["schema", "invalid_extraction_schema"],
   ["evidence", "scope_evidence_missing"],
   ["unknown", "unclassified"],
@@ -115,14 +116,20 @@ it.each([
         })
         .mockResolvedValueOnce(true);
       const error = new Error(privateText);
-      if (failure === "output getter") error.name = "AI_NoObjectGeneratedError";
+      if (failure === "output getter") error.name = "AI_NoOutputGeneratedError";
+      if (failure === "object generation")
+        error.name = "AI_NoObjectGeneratedError";
       if (failure === "hostile error")
         Object.defineProperty(error, "name", {
           get: () => {
             throw new Error(privateText);
           },
         });
-      if (failure === "unknown" || failure === "hostile error") {
+      if (
+        failure === "unknown" ||
+        failure === "hostile error" ||
+        failure === "object generation"
+      ) {
         (generateText as jest.Mock).mockRejectedValue(error);
       } else {
         (generateText as jest.Mock).mockResolvedValue({
@@ -150,7 +157,9 @@ it.each([
       await recordUserScope({ userId: "owner", chatId, messageId });
       expect(warn).toHaveBeenCalledWith("engagement_scope_extraction_failed", {
         stage:
-          failure === "unknown" || failure === "hostile error"
+          failure === "unknown" ||
+          failure === "hostile error" ||
+          failure === "object generation"
             ? "generation"
             : "validation",
         timedOut: false,
