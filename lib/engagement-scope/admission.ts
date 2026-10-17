@@ -12,6 +12,39 @@ import { MAX_SCOPE_TEXT } from "./policy";
 import { phLogger } from "@/lib/posthog/server";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
+// Never log exception text or Zod issues: both can contain scope/model content.
+function extractionFailureReason(error: unknown) {
+  try {
+    if (!(error instanceof Error)) return "non_error";
+    if (error.name === "AI_NoOutputGeneratedError")
+      return "no_output_generated";
+    if (error.name === "AI_NoObjectGeneratedError")
+      return "no_object_generated";
+    if (error.name === "ZodError") return "invalid_extraction_schema";
+    switch (error.message) {
+      case "Scope change lacks source evidence":
+        return "scope_evidence_missing";
+      case "Restriction lacks source evidence":
+        return "restriction_evidence_missing";
+      case "Scope removal does not match a saved rule":
+        return "scope_removal_unmatched";
+      default:
+        return error instanceof TypeError ? "type_error" : "unclassified";
+    }
+  } catch {
+    // Even an unusual thrown value must not interrupt persisting unavailable.
+    return "unclassified";
+  }
+}
+
+function opaqueUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    value,
+  )
+    ? value
+    : null;
+}
+
 /** Only request admission calls this. Workers and agent tools cannot propose scope changes. */
 async function recordScope(args: {
   userId: string;
@@ -81,12 +114,15 @@ async function recordScope(args: {
           result.output.restrictions.length > 0,
       });
     }
-  } catch {
+  } catch (error) {
     // Persist the failure independently of transcript/model state. No raw input in logs.
     unavailable = true;
     console.warn("engagement_scope_extraction_failed", {
       stage: failureStage,
       timedOut: extractionSignal.aborted,
+      reason: extractionFailureReason(error),
+      chat_id: opaqueUuid(args.chatId),
+      message_id: opaqueUuid(args.messageId),
     });
   }
   const applied = await client.mutation(
