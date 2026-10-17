@@ -6,7 +6,17 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "@/app/hooks/useUpgrade";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  REGIONAL_PAYWALL_KEY,
+  type RegionalPaywallVariant,
+} from "@/lib/experiments/regional-paywall";
 import {
   ArrowRight,
   Check,
@@ -29,10 +39,13 @@ import { PRICING } from "@/lib/pricing/config";
 
 function SubscriptionOffer({
   assignment,
+  paywallVariant,
 }: {
   assignment: RegionalSubscriptionAssignment;
+  paywallVariant: RegionalPaywallVariant | null;
 }) {
   const { handleUpgrade, upgradeLoading } = useUpgrade();
+  const paywallVersion = paywallVariant === "test" ? 2 : 1;
   const [price, setPrice] = useState<ProMonthlyPricePresentation>();
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -90,7 +103,10 @@ function SubscriptionOffer({
           ...regionalSubscriptionProperties(assignment),
           exposure_surface: "composer",
           subscription_tier: "free",
-          paywall_version: 2,
+          paywall_version: paywallVersion,
+          ...(paywallVariant && {
+            [`$feature/${REGIONAL_PAYWALL_KEY}`]: paywallVariant,
+          }),
           displayed_amount_dollars: price.displayedAmountDollars,
         },
       );
@@ -101,7 +117,7 @@ function SubscriptionOffer({
       if (capture()) clearInterval(timer);
     }, 500);
     return () => clearInterval(timer);
-  }, [assignment, price]);
+  }, [assignment, price, paywallVariant, paywallVersion]);
 
   const captureAction = (
     action: "checkout" | "compare_plans" | "view_example",
@@ -109,11 +125,109 @@ function SubscriptionOffer({
     captureAuthenticatedEvent("regional_subscription_paywall_action", {
       ...regionalSubscriptionProperties(assignment),
       displayed_amount_dollars: price?.displayedAmountDollars,
-      paywall_version: 2,
+      paywall_version: paywallVersion,
+      ...(paywallVariant && {
+        [`$feature/${REGIONAL_PAYWALL_KEY}`]: paywallVariant,
+      }),
       exposure_surface: "composer",
       action,
     });
   };
+
+  if (paywallVariant !== "test")
+    return (
+      <Card
+        className="mx-auto my-3 w-full max-w-xl text-left"
+        data-testid="regional-subscription-offer"
+      >
+        <CardHeader>
+          <CardTitle className="text-xl">
+            Choose a subscription to start
+          </CardTitle>
+          <CardDescription>
+            Ask security questions and run Agent tasks with a paid plan.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div aria-live="polite">
+            {price ? (
+              <>
+                <p className="text-sm font-medium">Pro</p>
+                <p>
+                  <span className="text-3xl font-semibold">
+                    ${price.displayedAmountDollars}
+                  </span>
+                  <span className="text-sm text-muted-foreground">
+                    {" "}
+                    USD / month
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Billed monthly. Renews until canceled. Usage limits apply.
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {failed
+                  ? "Pricing is temporarily unavailable. Please try again."
+                  : "Loading subscription price…"}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {failed ? (
+              <Button
+                onClick={() => {
+                  setFailed(false);
+                  setAttempt((value) => value + 1);
+                }}
+              >
+                Retry pricing
+              </Button>
+            ) : (
+              <Button
+                disabled={!price || upgradeLoading}
+                onClick={() => {
+                  captureAction("checkout");
+                  void handleUpgrade(
+                    "pro-monthly-plan",
+                    undefined,
+                    undefined,
+                    "free",
+                    {
+                      source: "regional_subscription_first",
+                      surface: "composer",
+                      reason: "subscription_required",
+                    },
+                  );
+                }}
+              >
+                {upgradeLoading ? "Opening checkout…" : "Subscribe to Pro"}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              disabled={upgradeLoading}
+              onClick={() => {
+                captureAction("compare_plans");
+                redirectToPricing({
+                  source: "regional_subscription_first",
+                  surface: "composer",
+                  from_tier: "free",
+                  reason: "subscription_required",
+                });
+              }}
+            >
+              Compare plans
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Your existing conversations stay available. Subscribe to send a new
+            request.
+          </p>
+        </CardContent>
+      </Card>
+    );
 
   return (
     <Card
@@ -320,6 +434,7 @@ export function RegionalSubscriptionGate({
   const [result, setResult] = useState<{
     userId: string;
     assignment: RegionalSubscriptionAssignment | null;
+    paywallVariant: RegionalPaywallVariant | null;
   }>();
   const capturedControl = useRef<string | null>(null);
 
@@ -340,18 +455,25 @@ export function RegionalSubscriptionGate({
       })
         .then(async (response) => {
           if (!response.ok) throw new Error("Experiment unavailable");
-          const { assignment } = await response.json();
+          const { assignment, paywallVariant } = await response.json();
           const valid =
             assignment &&
             (assignment.variant === "test" ||
               assignment.variant === "control") &&
             isSubscriptionFirstCountry(assignment.country);
           if (active && controller === request)
-            setResult({ userId, assignment: valid ? assignment : null });
+            setResult({
+              userId,
+              assignment: valid ? assignment : null,
+              paywallVariant:
+                paywallVariant === "test" || paywallVariant === "control"
+                  ? paywallVariant
+                  : null,
+            });
         })
         .catch(() => {
           if (active && controller === request)
-            setResult({ userId, assignment: null });
+            setResult({ userId, assignment: null, paywallVariant: null });
         })
         .finally(() => {
           if (controller === request) clearTimeout(timeout);
@@ -405,6 +527,12 @@ export function RegionalSubscriptionGate({
       </p>
     );
   if (assignment?.variant === "test")
-    return <SubscriptionOffer assignment={assignment} />;
+    return (
+      <SubscriptionOffer
+        key={userId}
+        assignment={assignment}
+        paywallVariant={current.paywallVariant}
+      />
+    );
   return children;
 }

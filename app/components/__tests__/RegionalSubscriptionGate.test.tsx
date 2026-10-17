@@ -63,7 +63,10 @@ describe("subscription before task presentation", () => {
         response(
           url.includes("pro-monthly")
             ? price
-            : { assignment: { variant: "test", country: "IN" } },
+            : {
+                assignment: { variant: "test", country: "IN" },
+                paywallVariant: "test",
+              },
         ),
       ),
     );
@@ -90,9 +93,50 @@ describe("subscription before task presentation", () => {
         regional_subscription_variant: "test",
         exposure_surface: "composer",
         paywall_version: 2,
+        "$feature/regional-paywall-v2": "test",
       }),
     );
   });
+
+  it.each(["control", null, "invalid"])(
+    "keeps the old paid offer for presentation %s",
+    async (paywallVariant) => {
+      mockFetch.mockImplementation((url: string) =>
+        Promise.resolve(
+          response(
+            url.includes("pro-monthly")
+              ? price
+              : {
+                  assignment: { variant: "test", country: "IN" },
+                  paywallVariant,
+                },
+          ),
+        ),
+      );
+      render(view());
+      await screen.findByText("$29");
+      expect(screen.getByText("Choose a subscription to start")).toBeVisible();
+      expect(screen.queryByText("Send task")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("See an example workflow"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Subscribe to Pro" }));
+      expect(mockUpgrade).toHaveBeenCalledWith(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        expect.objectContaining({ reason: "subscription_required" }),
+      );
+      const exposure = mockCapture.mock.calls.find(
+        ([event]) => event === "regional_subscription_first_exposed",
+      )[1];
+      expect(exposure.paywall_version).toBe(1);
+      if (paywallVariant === "control")
+        expect(exposure["$feature/regional-paywall-v2"]).toBe("control");
+      else expect(exposure).not.toHaveProperty("$feature/regional-paywall-v2");
+    },
+  );
 
   it("shows a static example without sending a task or opening checkout", async () => {
     render(view());
@@ -142,7 +186,10 @@ describe("subscription before task presentation", () => {
           response(
             url.includes("pro-monthly")
               ? { ...price, ...invalidPrice }
-              : { assignment: { variant: "test", country: "IN" } },
+              : {
+                  assignment: { variant: "test", country: "IN" },
+                  paywallVariant: "test",
+                },
           ),
         ),
       );
@@ -164,7 +211,10 @@ describe("subscription before task presentation", () => {
             resolvePrice = resolve;
           })
         : Promise.resolve(
-            response({ assignment: { variant: "test", country: "IN" } }),
+            response({
+              assignment: { variant: "test", country: "IN" },
+              paywallVariant: "test",
+            }),
           ),
     );
     render(view());
@@ -206,7 +256,10 @@ describe("subscription before task presentation", () => {
     await screen.findByText("Send task");
     await act(async () =>
       resolveOldAccount(
-        response({ assignment: { variant: "test", country: "IN" } }),
+        response({
+          assignment: { variant: "test", country: "IN" },
+          paywallVariant: "test",
+        }),
       ),
     );
     expect(screen.getByText("Send task")).toBeVisible();
@@ -227,7 +280,10 @@ describe("subscription before task presentation", () => {
               ),
             )
           : Promise.resolve(
-              response({ assignment: { variant: "test", country: "IN" } }),
+              response({
+                assignment: { variant: "test", country: "IN" },
+                paywallVariant: "test",
+              }),
             ),
       );
       render(view());
