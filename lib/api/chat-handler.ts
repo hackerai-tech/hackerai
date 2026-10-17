@@ -564,6 +564,7 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -594,6 +595,7 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
         subscription,
@@ -601,11 +603,17 @@ export const createChatHandler = () => {
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
+        independentAbliterationSeedCount:
+          chat?.user_id === userId ? chat.abliteration_seed_count : 0,
+        continuationTurn: !regenerate && !isAutoContinue,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
-        ...(process.env.VERCEL_ENV === "preview" && {
-          previewDiagnosticContext: { chatId, requestId },
-        }),
+        diagnosticContext: {
+          chatId,
+          requestId,
+          logAll: process.env.VERCEL_ENV === "preview",
+        },
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 

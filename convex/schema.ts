@@ -239,6 +239,12 @@ export default defineSchema({
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
     last_run_finished_at: v.optional(v.number()),
+    // Server-verified completed Abliteration responses can seed bounded
+    // same-chat follow-ups. Never copied to a branched or shared chat.
+    abliteration_seed_count: v.optional(v.number()),
+    // Audit timestamps only; elapsed time does not expire chat preference.
+    abliteration_previous_seed_at: v.optional(v.number()),
+    abliteration_last_seed_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
     // Legacy checkpoint data remains readable until existing rows are migrated.

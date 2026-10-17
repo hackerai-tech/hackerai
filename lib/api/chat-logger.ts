@@ -52,6 +52,7 @@ import {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
 } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -1793,7 +1794,9 @@ export function captureAgentCompletionAnalytics(
     args.experiment?.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
     args.experiment?.key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY ||
     args.experiment?.key === ABLITERATED_PAID_THREE_STEPS_KEY ||
-    args.experiment?.key === ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
+    args.experiment?.key ===
+      ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ||
+    args.experiment?.key === ABLITERATED_SHORT_FOLLOWUP_KEY
   ) {
     try {
       posthog?.capture({

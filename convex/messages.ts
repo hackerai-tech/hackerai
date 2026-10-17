@@ -575,6 +575,38 @@ async function ensureChatWritableForMessageInsert(
   return chat;
 }
 
+const isCompletedAbliterationSeed = ({
+  id,
+  role,
+  finishReason,
+  usage,
+  isHidden,
+}: {
+  id: string;
+  role: "user" | "assistant" | "system";
+  finishReason?: string;
+  usage?: unknown;
+  isHidden?: boolean;
+}): boolean =>
+  role === "assistant" &&
+  isHidden !== true &&
+  getAbliterationHistoryEntry({ id, finish_reason: finishReason, usage })
+    .independent;
+
+async function recordAbliterationSeed(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  at: number,
+) {
+  // A pause does not change the task. Keep evidence on this owned chat;
+  // inherited replies cannot add evidence and new/branched chats start without it.
+  await ctx.db.patch(chat._id, {
+    abliteration_seed_count: (chat.abliteration_seed_count ?? 0) >= 1 ? 2 : 1,
+    abliteration_previous_seed_at: chat.abliteration_last_seed_at,
+    abliteration_last_seed_at: at,
+  });
+}
+
 /**
  * Save a single message to a chat
  */
@@ -789,6 +821,22 @@ export const saveMessage = mutation({
           patch.is_hidden = args.isHidden;
         }
 
+        const newIndependentSeed =
+          !isCompletedAbliterationSeed({
+            id: existingMessage.id,
+            role: existingMessage.role,
+            finishReason: existingMessage.finish_reason,
+            usage: existingMessage.usage,
+            isHidden: existingMessage.is_hidden,
+          }) &&
+          isCompletedAbliterationSeed({
+            id: args.id,
+            role: args.role,
+            finishReason: args.finishReason ?? existingMessage.finish_reason,
+            usage: patch.usage ?? existingMessage.usage,
+            isHidden: args.isHidden ?? existingMessage.is_hidden,
+          });
+
         // Apply patch if there are changes
         if (Object.keys(patch).length > 0) {
           if (existingMessage.role !== "assistant" && patch.parts) {
@@ -797,6 +845,12 @@ export const saveMessage = mutation({
           patch.update_time = Date.now();
           failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
+        }
+
+        if (newIndependentSeed) {
+          failureStage = "record_abliteration_seed";
+          const chat = await loadOwnedChat(ctx, args.chatId, args.userId);
+          await recordAbliterationSeed(ctx, chat, Date.now());
         }
 
         return null;
@@ -914,6 +968,20 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+
+      if (
+        chatForInsert &&
+        isCompletedAbliterationSeed({
+          id: args.id,
+          role: args.role,
+          finishReason: args.finishReason,
+          usage: args.usage,
+          isHidden: args.isHidden,
+        })
+      ) {
+        failureStage = "record_abliteration_seed";
+        await recordAbliterationSeed(ctx, chatForInsert, now);
+      }
 
       // Move the chat to the top of the sidebar as soon as the user submits a
       // visible message. Existing-message retries return above, so they do not

@@ -584,6 +584,9 @@ export const getChatByIdFromClient = query({
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        abliteration_seed_count: _privateAbliterationSeedCount,
+        abliteration_previous_seed_at: _privateAbliterationPreviousSeedAt,
+        abliteration_last_seed_at: _privateAbliterationLastSeedAt,
         ...chatPublic
       } = chat;
 
@@ -629,6 +632,9 @@ export const getChatById = query({
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
       last_run_finished_at: v.optional(v.number()),
+      abliteration_seed_count: v.optional(v.number()),
+      abliteration_previous_seed_at: v.optional(v.number()),
+      abliteration_last_seed_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       deletion_started_at: v.optional(v.number()),

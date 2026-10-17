@@ -24,14 +24,17 @@ export const getErrorMessage = (err: unknown): string => {
   }
   if (err && typeof err === "object" && "message" in err) {
     const msg = (err as { message: unknown }).message;
-    return typeof msg === "string"
-      ? msg
-      : (JSON.stringify(msg) ?? "Unknown error occurred");
+    if (typeof msg === "string") return msg;
+    try {
+      return JSON.stringify(msg) ?? "Unknown error occurred";
+    } catch {
+      return "Unknown error occurred";
+    }
   }
   try {
     return JSON.stringify(err) ?? "Unknown error occurred";
   } catch {
-    return String(err);
+    return "Unknown error occurred";
   }
 };
 

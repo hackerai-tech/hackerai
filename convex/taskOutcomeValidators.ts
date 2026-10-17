@@ -1,10 +1,12 @@
 import { v } from "convex/values";
 import {
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "../lib/experiments/abliteration-keys";
 import {
+  SHORT_FOLLOWUP_TASK_OUTCOME_PHASE,
   EXPERIMENT_TASK_OUTCOME_PHASE,
   PAID_FIRST_STEP_TASK_OUTCOME_PHASE,
   PAID_MODERATED_TASK_OUTCOME_PHASE,
@@ -39,6 +41,7 @@ export const experimentTaskOutcomeContext = {
   ...taskOutcomeContext,
   survey_kind: v.literal("current_experiment"),
   experiment_key: v.union(
+    v.literal(ABLITERATED_SHORT_FOLLOWUP_KEY),
     v.literal(ABLITERATED_MAX_EXPERIMENT_KEY),
     v.literal(ABLITERATED_PAID_FIRST_STEP_KEY),
     v.literal(ABLITERATED_PAID_MODERATED_DEFAULT_KEY),
@@ -54,6 +57,7 @@ export const experimentTaskOutcomeContext = {
   assigned_model: v.string(),
   baseline_model: v.string(),
   feedback_phase: v.union(
+    v.literal(SHORT_FOLLOWUP_TASK_OUTCOME_PHASE),
     v.literal(EXPERIMENT_TASK_OUTCOME_PHASE),
     v.literal(PAID_FIRST_STEP_TASK_OUTCOME_PHASE),
     v.literal(PAID_MODERATED_TASK_OUTCOME_PHASE),
