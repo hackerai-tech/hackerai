@@ -91,6 +91,27 @@ it("limits even short lists to ten displayed entries", () => {
   expect(countTokens(prompt)).toBeLessThanOrEqual(CLOUD_NETWORK_PROMPT_TOKENS);
 });
 
+it.each(["applying", "failed"] as const)(
+  "does not claim a %s update is enforced for any access mode",
+  (status) => {
+    for (const mode of ["offline", "unrestricted", "restricted"] as const) {
+      const prompt = cloudNetworkPrompt(
+        settings(mode, mode === "restricted" ? ["example.test"] : [], status),
+      );
+      expect(prompt).toContain("Desired access:");
+      expect(prompt).toContain("may still use its previous policy");
+      expect(prompt).not.toContain("Saved access:");
+      expect(prompt).not.toContain("is disabled");
+      expect(prompt).not.toContain(
+        "No additional destination restrictions are configured",
+      );
+      expect(countTokens(prompt)).toBeLessThanOrEqual(
+        CLOUD_NETWORK_PROMPT_TOKENS,
+      );
+    }
+  },
+);
+
 it("reloads settings for each generation and recovers after unavailable or invalid data", async () => {
   query
     .mockResolvedValueOnce(settings("offline"))
