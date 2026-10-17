@@ -1,3 +1,4 @@
+import { evaluateRegionalPaywall } from "@/lib/experiments/regional-paywall.server";
 import type { NextRequest } from "next/server";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
@@ -14,9 +15,13 @@ export async function GET(req: NextRequest) {
       subscription,
       country: subscriptionFirstCountryFromRequest(req),
     });
+    const paywallVariant = await evaluateRegionalPaywall({
+      userId,
+      assignment,
+    });
     // Lookup is not exposure: the browser records exposure when it renders.
     return Response.json(
-      { assignment: assignment ?? null },
+      { assignment: assignment ?? null, paywallVariant },
       {
         headers: { "Cache-Control": "private, no-store" },
       },
