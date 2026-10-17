@@ -38,13 +38,13 @@ Managed URL dispatch reads the current policy and checks the submitted URL.
 Terminal/delegation dispatch holds on unavailable policy or a revision changed
 since model preparation. Existing approval modes remain separate.
 
-This is not a firewall. Arbitrary shell commands, scanner traffic, browser CLI
-navigation/subresources and requests already sent remain outside complete
-network enforcement. The Jina reader controls downstream redirects; checking
+Chat scope alone does not enforce arbitrary shell, scanner, or browser traffic.
+The separate cloud workspace network setting below adds E2B egress controls
+within its documented protocol limits. Requests already sent remain outside
+complete revocation. The Jina reader controls downstream redirects; checking
 its submitted URL cannot block every redirect hop. Cancellation of an existing
 process is not an atomic scope revocation. Passive search results and observed
-redirect/CDN/login relationships do not modify grants. A later managed transport
-or egress boundary needs separate design and acceptance.
+redirect/CDN/login relationships do not modify grants. Broader managed transport enforcement needs separate design and acceptance.
 
 Source records are deleted in batches with their owning chat. No target,
 prompt, rule, or restriction is included in the extraction cost/count telemetry.
