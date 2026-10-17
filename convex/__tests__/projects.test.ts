@@ -272,7 +272,16 @@ describe("projects", () => {
       isDone: true,
       continueCursor: "",
     };
-    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const paginate = jest.fn<any>().mockResolvedValue({
+      ...page,
+      page: page.page.map((chat) => ({
+        ...chat,
+        agent_work_revision: 9,
+        agent_work_source: { text: "private source" },
+        agent_work_last_reset: { text: "private reset" },
+        agent_work_directives: [{ instruction: "private restriction" }],
+      })),
+    });
     const order = jest.fn<any>().mockReturnValue({ paginate });
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {

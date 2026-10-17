@@ -686,6 +686,8 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
+  stoppedWorkRevision?: () => number | undefined;
+  assertStoppedWorkAuthorized?: () => Promise<void>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

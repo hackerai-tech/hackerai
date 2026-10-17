@@ -736,6 +736,7 @@ export type AgentStreamContext = {
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
+  stoppedWork?: { refresh: () => Promise<void>; readonly prompt: string };
   tools: ToolSet;
   mode: ChatMode;
   endpoint: ChatApiEndpoint;
@@ -1590,7 +1591,8 @@ export async function createAgentStream(
   };
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
-      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
+      (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
+        (ctx.stoppedWork?.prompt ?? ""),
       name,
     );
   const initialProviderOptions = getStepProviderOptions(
@@ -1661,6 +1663,7 @@ export async function createAgentStream(
     prepareStep: async ({ steps, messages, stepNumber }) => {
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
+      await ctx.stoppedWork?.refresh();
       await ctx.checkBudgetBeforeStep?.();
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
@@ -2226,7 +2229,7 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
+            ctx.currentSystemPrompt + (ctx.stoppedWork?.prompt ?? ""),
             fallbackModelInfo.modelName,
           ),
         };

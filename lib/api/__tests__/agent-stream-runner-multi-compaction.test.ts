@@ -880,6 +880,48 @@ describe("createAgentStream repeated compaction", () => {
     expect(checkBudgetBeforeStep).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps stopped work outside replaced history and fails closed when its refresh fails", async () => {
+    const stoppedWork = {
+      refresh: jest.fn().mockResolvedValue(undefined),
+      prompt: "\nDo not resume the synthetic SSRF task.",
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        stoppedWork,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = {
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    };
+    expect((await stream.prepareStep(step)).system).toContain(
+      stoppedWork.prompt,
+    );
+    state.finalMessages = [uiMessage("summary", "Unrelated summary")];
+    const replacedHistory = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [{ role: "user", content: "Unrelated summary" }],
+    });
+    expect(replacedHistory.messages).toEqual([
+      { role: "user", content: "Unrelated summary" },
+    ]);
+    expect(replacedHistory.system).toContain(stoppedWork.prompt);
+    const unavailable = new Error("Restriction store unavailable");
+    stoppedWork.refresh.mockRejectedValueOnce(unavailable);
+    await expect(stream.prepareStep({ ...step, stepNumber: 2 })).rejects.toBe(
+      unavailable,
+    );
+  });
+
   it.each(["ask", "agent"])(
     "omits retained provider request bodies in %s streams",
     async (mode) => {

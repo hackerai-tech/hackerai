@@ -8,6 +8,7 @@ import {
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
+import { STOPPED_WORK_ERRORS, StoppedWorkError } from "@/lib/chat/stopped-work";
 import { getConvexClient, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
@@ -555,6 +556,12 @@ const databaseError = (
   const { message: dbErrorMessage, upstreamHttpError } =
     getDatabaseErrorDiagnostic(error);
   const dbErrorData = getErrorData(error);
+  if (operation === "messages.saveMessage") {
+    for (const [code, message] of Object.entries(STOPPED_WORK_ERRORS)) {
+      if (hasDatabaseErrorCode(dbErrorData, code))
+        return new StoppedWorkError(message);
+    }
+  }
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);
@@ -998,6 +1005,7 @@ export async function saveChat({
   }
 }
 export async function saveMessage({
+  captureStoppedWork,
   chatId,
   userId,
   message,
@@ -1016,6 +1024,7 @@ export async function saveMessage({
   userInitiatedAbort,
   abliterationRouting,
 }: {
+  captureStoppedWork?: boolean;
   chatId: string;
   userId: string;
   message: {
@@ -1125,6 +1134,7 @@ export async function saveMessage({
     ) as Record<string, unknown> | undefined;
 
     const mutationArgs = {
+      ...(captureStoppedWork ? { captureStoppedWork: true } : {}),
       serviceKey,
       id: message.id,
       chatId,
@@ -1204,6 +1214,7 @@ export async function saveMessage({
 }
 
 export async function handleInitialChatAndUserMessage({
+  captureStoppedWork,
   chatId,
   userId,
   messages,
@@ -1212,6 +1223,7 @@ export async function handleInitialChatAndUserMessage({
   isHidden,
   projectId,
 }: {
+  captureStoppedWork?: boolean;
   chatId: string;
   userId: string;
   messages: { id: string; parts: UIMessagePart<any, any>[] }[];
@@ -1266,6 +1278,7 @@ export async function handleInitialChatAndUserMessage({
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
     await saveMessage({
+      captureStoppedWork,
       chatId,
       userId,
       message: {

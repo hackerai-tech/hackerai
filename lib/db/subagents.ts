@@ -86,6 +86,7 @@ export type PersistedSubagent = {
 };
 
 export const reserveSubagent = async (args: {
+  stoppedWorkRevision?: number;
   subagentId: string;
   userId: string;
   organizationId?: string;
@@ -399,6 +400,7 @@ export const listSubagentWorkLedgerForParent = async (args: {
   });
 
 export const resumeSubagentForParent = async (args: {
+  stoppedWorkRevision?: number;
   userId: string;
   chatId: string;
   parentTriggerRunId: string;

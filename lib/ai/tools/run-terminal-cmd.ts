@@ -1,3 +1,4 @@
+import { StoppedWorkError } from "@/lib/chat/stopped-work";
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
@@ -477,6 +478,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 : undefined
               : buildSandboxCommandOptions(sandbox).cwd,
             createHandle: async () => {
+              await context.assertStoppedWorkAuthorized?.();
               if (isCentrifugo) {
                 const { createCentrifugoPtyHandle } =
                   await import("./utils/centrifugo-pty-adapter");
@@ -503,6 +505,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // so the shell actually runs it. For Centrifugo, the command is
           // passed in pty_create and the local runner spawns it directly.
           if (!isCentrifugo) {
+            await context.assertStoppedWorkAuthorized?.();
             await session.handle.sendInput(
               new TextEncoder().encode(
                 (context.browserSessions && agentBrowserEnv
@@ -1196,7 +1199,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               jitterMs: 50,
               signal: abortSignal,
               isPermanentError: (error: unknown) =>
-                resolved || isPermanentError(error),
+                resolved ||
+                error instanceof StoppedWorkError ||
+                isPermanentError(error),
               // Retry logs are too noisy - they're expected behavior
               logger: () => {},
             };
@@ -1211,6 +1216,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
               if (is_background) {
                 return retryWithBackoff(async () => {
+                  await context.assertStoppedWorkAuthorized?.();
                   const result = await sandboxInstance.commands.run(
                     effectiveCommand,
                     {
@@ -1233,14 +1239,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // Start it through the SDK's background handle, retain that
                 // exact handle/PID for lifecycle operations, then wait here
                 // to preserve foreground behavior for the caller.
-                const started = (await retryWithBackoff(
-                  () =>
-                    sandboxInstance.commands.run(effectiveCommand, {
-                      ...runOptions,
-                      background: true,
-                    }),
-                  retryOptions,
-                )) as unknown as E2BCommandHandle;
+                const started = (await retryWithBackoff(async () => {
+                  await context.assertStoppedWorkAuthorized?.();
+                  return sandboxInstance.commands.run(effectiveCommand, {
+                    ...runOptions,
+                    background: true,
+                  });
+                }, retryOptions)) as unknown as E2BCommandHandle;
                 execution = started;
                 processId = started.pid;
                 commandHandle?.setPid(started.pid);
@@ -1249,11 +1254,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               }
 
               return measureTerminalWait(() =>
-                retryWithBackoff(
-                  () =>
-                    sandboxInstance.commands.run(effectiveCommand, runOptions),
-                  retryOptions,
-                ),
+                retryWithBackoff(async () => {
+                  await context.assertStoppedWorkAuthorized?.();
+                  return sandboxInstance.commands.run(
+                    effectiveCommand,
+                    runOptions,
+                  );
+                }, retryOptions),
               );
             });
 

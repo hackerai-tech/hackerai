@@ -700,6 +700,7 @@ export const createAgentTriggerPost =
 
       stage = "persist_user_message";
       await handleInitialChatAndUserMessage({
+        captureStoppedWork: !isAutoContinue,
         chatId,
         userId,
         messages: messagesForPersistence,

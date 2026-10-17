@@ -71,6 +71,7 @@ import {
 export { isE2BSandbox };
 
 export type CreateToolsRuntimePolicy = {
+  stoppedWork?: import("@/lib/chat/stopped-work-runtime").StoppedWorkRuntime;
   signal?: AbortSignal;
   allowedToolNames?: readonly string[];
   additionalTools?: (context: ToolContext) => ToolSet;
@@ -238,6 +239,14 @@ export const createTools = (
           cloudSandboxContext,
         );
 
+  if (runtimePolicy.stoppedWork) {
+    const getSandbox = sandboxManager.getSandbox.bind(sandboxManager);
+    sandboxManager.getSandbox = async () => {
+      const result = await getSandbox();
+      await runtimePolicy.stoppedWork!.revalidate();
+      return result;
+    };
+  }
   const todoManager = new TodoManager(initialTodos);
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
@@ -275,14 +284,23 @@ export const createTools = (
     appendMetadataStream,
     onToolCost,
     onToolFailure,
-    requestToolApproval,
+    stoppedWorkRevision: () => runtimePolicy.stoppedWork?.revision,
+    assertStoppedWorkAuthorized: () =>
+      runtimePolicy.stoppedWork?.revalidate() ?? Promise.resolve(),
+    requestToolApproval: requestToolApproval
+      ? async (...args) => {
+          const result = await requestToolApproval(...args);
+          await runtimePolicy.stoppedWork?.revalidate();
+          return result;
+        }
+      : undefined,
     autoReviewEvidenceEnabled,
     measureAgentActiveTime,
     onSandboxResourceMetrics,
     auxiliaryVision,
   };
 
-  const buildTools = (): ToolSet => {
+  const buildUnguardedTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
     // one-time object so model-specific tool schemas can be rebuilt for
     // provider fallback legs.
@@ -343,6 +361,9 @@ export const createTools = (
       : allTools;
   };
 
+  const buildTools = () =>
+    runtimePolicy.stoppedWork?.guard(buildUnguardedTools()) ??
+    buildUnguardedTools();
   const tools = buildTools();
 
   const getSandbox = () => sandbox;
