@@ -86,8 +86,9 @@ revision and bounded operation fence. Failures retain the desired policy and
 report uncertain/partial application; an interrupted update can be retried after
 the fence expires. Failures before any provider write release the fence immediately
 so canceled reads do not delay the next attempt. A provider operation already dispatched is not an atomic
-revocation of existing traffic. Externally managed egress proxies or credential
-transforms are rejected rather than cleared by this editor.
+revocation of existing traffic. Externally managed egress proxies remain protected until the user explicitly
+configures a managed proxy. Credential transforms are always rejected rather than
+cleared by this editor.
 
 Only hostnames/wildcards and IPv4 addresses/CIDRs are supported. E2B hostname
 filtering covers HTTP 80 and TLS 443 and allows its DNS resolver. IP grants cover
@@ -104,3 +105,40 @@ not prove traffic passed E2B's filter. Verify the same ID/checksum after updatin
 and reconnecting, test offline execution, then restore the test account's
 original network policy. The default behavior stays unchanged until a user
 explicitly saves this setting.
+
+### Optional cloud proxy
+
+Settings supports a public SOCKS5 `hostname:port` or IPv4 endpoint with optional
+username/password. E2B BYOP currently requires team beta access. Set the server
+capability `E2B_BYOP_ENABLED=true` only after verifying that access and the Preview
+acceptance below. The default hides new setup. Disabling the capability prevents
+new configuration but continues honoring saved proxies; users can still remove
+one. Never interpret this flag as permission to bypass a saved proxy.
+
+Proxy credentials live in WorkOS Vault (not sandbox environment variables).
+Vercel and Trigger workers must independently have `WORKOS_API_KEY` and
+`WORKOS_CLIENT_ID` for the same environment: WorkOS Staging for Preview and
+Production for Production. Convex stores address, authentication presence, and an
+opaque revision only. Vault object names derive from the authenticated user;
+readback checks owner and revision. Encryption context is a stable purpose label,
+not an authorization boundary. Version checks protect rotations and deletion.
+Account deletion fences settings writes, waits for active writers, then removes
+the Vault object before removing its Convex cleanup marker.
+
+Every E2B create or network update includes both access rules and proxy settings:
+E2B replaces the complete network configuration. Missing credentials or provider
+failure blocks acquisition without a direct-connection fallback. Passwords never
+appear in provider readback, so credential rotations always write the new config.
+The Agent's bounded network summary includes routing limitations without the
+address or credentials. Local/Desktop and server-side fetches are unaffected.
+TCP traverses the proxy after access-rule evaluation; UDP and DNS are not tunneled.
+This does not provide general VPN or private-network connectivity.
+
+For acceptance, use an owned public SOCKS5 endpoint and disposable Preview user.
+Verify no-auth and authenticated traffic at the proxy, credential rotation,
+wrong-password/unreachable-proxy failure without direct fallback, preservation of
+allow/deny rules, in-place update and reconnect with unchanged file checksum,
+creation with the saved proxy, and removal. Exercise a Preview Agent through its
+actual Trigger worker. Verify Vault contains no orphan object after disabling the
+proxy or deleting the disposable account. Do not enable Production setup until
+these provider-backed checks pass.

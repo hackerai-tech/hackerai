@@ -56,6 +56,7 @@ it("derives ownership from the session and validates unsupported destinations be
     "authenticated-owner",
     { mode: "offline", allow: [] },
     0,
+    undefined,
   );
   (saveNetworkSettings as jest.Mock).mockClear();
   expect(
@@ -81,5 +82,60 @@ it("rejects unauthenticated and ineligible requests", async () => {
   });
   expect((await PUT(request({}))).status).toBe(403);
   expect(readNetworkSettings).not.toHaveBeenCalled();
+  expect(saveNetworkSettings).not.toHaveBeenCalled();
+});
+
+it("accepts proxy credentials for the authenticated owner without returning or tracking them", async () => {
+  const proxy = {
+    address: "proxy.example.test:1080",
+    credentials: { username: "synthetic-user", password: "synthetic-secret" },
+  };
+  const settings = {
+    policy: { mode: "offline", allow: [] },
+    revision: 1,
+    status: "ready",
+    proxy: { address: proxy.address, authenticated: true, revision: "opaque" },
+  };
+  jest.mocked(saveNetworkSettings).mockResolvedValueOnce(settings as any);
+  const response = await PUT(
+    request({
+      policy: settings.policy,
+      expectedRevision: 0,
+      proxy,
+      userId: "other",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(saveNetworkSettings).toHaveBeenCalledWith(
+    "authenticated-owner",
+    settings.policy,
+    0,
+    proxy,
+  );
+  expect(JSON.stringify(await response.json())).not.toContain(
+    "synthetic-secret",
+  );
+  expect(
+    JSON.stringify(require("@/lib/posthog/server").phLogger.event.mock.calls),
+  ).not.toContain("synthetic-secret");
+});
+it("rejects embedded credentials and oversize credentials before saving", async () => {
+  for (const proxy of [
+    { address: "user:secret@proxy.test:1080" },
+    {
+      address: "proxy.test:1080",
+      credentials: { username: "u", password: "x".repeat(256) },
+    },
+  ]) {
+    const response = await PUT(
+      request({
+        policy: { mode: "offline", allow: [] },
+        expectedRevision: 0,
+        proxy,
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(await response.json())).not.toContain("user:secret");
+  }
   expect(saveNetworkSettings).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { deleteCloudProxyForAccount } from "@/lib/cloud-network/service";
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
@@ -460,6 +461,9 @@ export const POST = async (req: NextRequest) => {
     // Keep below-threshold lifecycle events on both success and failure paths.
     after(() => phLogger.flush());
     await terminateCloudSandboxesForUser(userId, { permanent: true });
+
+    stage = "delete_cloud_proxy_credentials";
+    await deleteCloudProxyForAccount(userId);
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.

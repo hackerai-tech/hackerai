@@ -21,9 +21,14 @@ export function cloudNetworkPrompt(settings: NetworkSettings | null): string {
   );
   const verified = !settings || settings.status === "ready";
   const accessLabel = verified ? "Saved access" : "Desired access";
-  const status = !verified
-    ? `Update ${settings.status}: application is not fully verified. The workspace may still use its previous policy. Do not claim the update is enforced.\n`
+  const proxySection = settings?.proxy
+    ? "Desired routing: user-configured SOCKS5 proxy for allowed TCP connections. DNS/UDP are not tunneled. Do not infer private-network reachability or ask for proxy credentials.\n"
     : "";
+  const status =
+    proxySection +
+    (!verified
+      ? `Update ${settings.status}: application is not fully verified. The workspace may still use its previous policy. Do not claim the update is enforced.\n`
+      : "");
   if (policy.mode === "offline")
     return wrap(
       `${status}${accessLabel}: No internet. ${verified ? "Outbound internet from E2B is disabled by the saved policy." : "The requested policy disables outbound internet from E2B."} Continue offline work; do not repeatedly retry network commands or ask the user to reconfirm the setting.`,

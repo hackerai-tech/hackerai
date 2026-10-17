@@ -1,3 +1,18 @@
+const originalEnv = { ...process.env };
+afterEach(() => {
+  process.env = { ...originalEnv };
+});
+jest.mock("../proxy-vault", () => ({
+  readProxySecret: jest.fn(),
+  writeProxySecret: jest.fn(),
+  deleteProxySecret: jest.fn(),
+}));
+import {
+  readProxySecret,
+  writeProxySecret,
+  deleteProxySecret,
+} from "../proxy-vault";
+import { networkForCreation, deleteCloudProxyForAccount } from "../service";
 import { Sandbox } from "@e2b/code-interpreter";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { ensureCloudNetwork, saveNetworkSettings } from "../service";
@@ -37,6 +52,9 @@ function workspace(owner = "owner") {
 }
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(readProxySecret).mockReset();
+  jest.mocked(writeProxySecret).mockReset();
+  jest.mocked(deleteProxySecret).mockReset();
   (getConvexClient as jest.Mock).mockReturnValue({ mutation, query });
   mutation
     .mockReset()
@@ -218,4 +236,174 @@ it("releases a failed reconciliation when canceled before the first provider wri
     success: false,
     releaseLease: true,
   });
+});
+
+const proxySettings = {
+  address: "proxy.example.test:1080",
+  authenticated: true,
+  revision: "proxy-rev",
+};
+const proxySecret = {
+  address: proxySettings.address,
+  username: "test-user",
+  password: "synthetic-password",
+};
+it("retains the complete proxy when changing destination rules, even with new setup disabled", async () => {
+  delete process.env.E2B_BYOP_ENABLED;
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest.mocked(readProxySecret).mockResolvedValue(proxySecret);
+  const sandbox = workspace();
+  jest.mocked(Sandbox.connect).mockResolvedValue(sandbox as any);
+  await saveNetworkSettings("owner", policy, 2);
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    {
+      allowOut: policy.allow,
+      denyOut: ["0.0.0.0/0"],
+      egressProxy: proxySecret,
+    },
+    expect.anything(),
+  );
+  expect(writeProxySecret).not.toHaveBeenCalled();
+});
+it("does not acquire or publish direct access when Vault cannot resolve a configured proxy", async () => {
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest
+    .mocked(readProxySecret)
+    .mockRejectedValue(new Error("synthetic-password"));
+  await expect(saveNetworkSettings("owner", policy, 2)).rejects.toThrow(
+    "could not be verified",
+  );
+  expect(Sandbox.list).not.toHaveBeenCalled();
+  expect(mutation.mock.calls.at(-1)[1]).toMatchObject({
+    success: false,
+    releaseLease: true,
+  });
+  await expect(
+    networkForCreation("owner", {
+      policy,
+      revision: 3,
+      status: "ready",
+      proxy: proxySettings,
+    }),
+  ).rejects.toThrow();
+});
+it("writes rotated credentials even when visible proxy metadata already matches", async () => {
+  process.env.E2B_BYOP_ENABLED = "true";
+  query.mockResolvedValue({
+    policy,
+    revision: 2,
+    status: "ready",
+    proxy: proxySettings,
+    proxyManaged: true,
+  });
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest.mocked(writeProxySecret).mockResolvedValue(proxySecret);
+  const sandbox = workspace();
+  await sandbox.updateNetwork({
+    allowOut: policy.allow,
+    denyOut: ["0.0.0.0/0"],
+    egressProxy: proxySecret,
+  });
+  sandbox.updateNetwork.mockClear();
+  jest.mocked(Sandbox.connect).mockResolvedValue(sandbox as any);
+  await saveNetworkSettings("owner", policy, 2, {
+    address: proxySettings.address,
+    credentials: {
+      username: proxySecret.username,
+      password: proxySecret.password,
+    },
+  });
+  expect(sandbox.updateNetwork).toHaveBeenCalledTimes(1);
+  expect(writeProxySecret).toHaveBeenCalled();
+  // The persistence mutation must never receive credentials.
+  expect(JSON.stringify(mutation.mock.calls)).not.toContain(
+    "synthetic-password",
+  );
+  delete process.env.E2B_BYOP_ENABLED;
+});
+it("removes a managed proxy while preserving destination rules and deletes its Vault object", async () => {
+  query.mockResolvedValue({
+    policy,
+    revision: 2,
+    status: "ready",
+    proxy: proxySettings,
+    proxyManaged: true,
+  });
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: null,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  const sandbox = workspace();
+  await sandbox.updateNetwork({
+    allowOut: policy.allow,
+    denyOut: ["0.0.0.0/0"],
+    egressProxy: proxySecret,
+  });
+  sandbox.updateNetwork.mockClear();
+  jest.mocked(Sandbox.connect).mockResolvedValue(sandbox as any);
+  await saveNetworkSettings("owner", policy, 2, null);
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    { allowOut: policy.allow, denyOut: ["0.0.0.0/0"] },
+    expect.anything(),
+  );
+  expect(deleteProxySecret).toHaveBeenCalledWith("owner");
+});
+it("rejects new proxy setup before persisting anything when capability is disabled", async () => {
+  delete process.env.E2B_BYOP_ENABLED;
+  await expect(
+    saveNetworkSettings("owner", policy, 2, {
+      address: proxySettings.address,
+      credentials: null,
+    }),
+  ).rejects.toMatchObject({ status: 403 });
+  expect(mutation).not.toHaveBeenCalled();
+  expect(writeProxySecret).not.toHaveBeenCalled();
+});
+it("waits for fenced network writers before account secret cleanup and clears the marker only after deletion", async () => {
+  query.mockResolvedValueOnce({
+    managed: true,
+    leaseUntil: Date.now() + 120_000,
+  });
+  await expect(deleteCloudProxyForAccount("owner")).rejects.toThrow(
+    "finishing",
+  );
+  expect(deleteProxySecret).not.toHaveBeenCalled();
+  query.mockResolvedValueOnce({ managed: true });
+  jest.mocked(deleteProxySecret).mockResolvedValueOnce(undefined);
+  await deleteCloudProxyForAccount("owner");
+  expect(deleteProxySecret).toHaveBeenCalledWith("owner");
+  expect(mutation).toHaveBeenCalledTimes(1);
 });

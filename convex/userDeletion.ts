@@ -466,6 +466,10 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "cloud_network_settings", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  if (cloudNetworkBatch.docs.some((row) => row.proxyManaged))
+    throw new Error(
+      "Cloud proxy credentials must be removed through account deletion before clearing user data.",
+    );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>

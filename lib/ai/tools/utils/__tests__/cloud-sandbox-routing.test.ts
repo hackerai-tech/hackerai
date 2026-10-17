@@ -1,5 +1,8 @@
 jest.mock("@/lib/cloud-network/service", () => ({
   readNetworkSettings: jest.fn(async () => null),
+  networkForCreation: jest.fn(async (_userId, settings) =>
+    require("@/lib/cloud-network/policy").e2bNetwork(settings.policy),
+  ),
   ensureCloudNetwork: jest.fn(async () => {}),
 }));
 import { ensureCloudNetwork } from "@/lib/cloud-network/service";

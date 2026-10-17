@@ -1,3 +1,7 @@
+import { deleteCloudProxyForAccount } from "@/lib/cloud-network/service";
+jest.mock("@/lib/cloud-network/service", () => ({
+  deleteCloudProxyForAccount: jest.fn(async () => {}),
+}));
 import { after } from "next/server";
 import { phLogger } from "@/lib/posthog/server";
 import { POST } from "../route";
@@ -611,6 +615,15 @@ describe("POST /api/delete-account", () => {
     const response = await POST(request() as any);
 
     expect(response.status).toBe(200);
+    expect(deleteCloudProxyForAccount).toHaveBeenCalledWith("user_123");
+    expect(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      jest.mocked(deleteCloudProxyForAccount).mock.invocationCallOrder[0],
+    );
+    expect(
+      jest.mocked(deleteCloudProxyForAccount).mock.invocationCallOrder[0],
+    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[2]);
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
       "userDeletion.beginUserDataDeletionByService",
@@ -640,6 +653,22 @@ describe("POST /api/delete-account", () => {
     expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
+  });
+
+  it("preserves identity and settings when proxy credential cleanup fails", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    jest
+      .mocked(deleteCloudProxyForAccount)
+      .mockRejectedValueOnce(new Error("Proxy cleanup unavailable"));
+    expect((await POST(request() as any)).status).toBe(500);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+    expect(
+      mockConvexMutation.mock.calls.some(
+        ([ref]) => ref === "userDeletion.deleteAllUserDataByService",
+      ),
+    ).toBe(false);
   });
 
   it("treats an already-missing WorkOS user as a completed deletion", async () => {

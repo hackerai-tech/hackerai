@@ -1,5 +1,8 @@
 jest.mock("@/lib/cloud-network/service", () => ({
   readNetworkSettings: jest.fn(async () => null),
+  networkForCreation: jest.fn(async (_userId, settings) =>
+    require("@/lib/cloud-network/policy").e2bNetwork(settings.policy),
+  ),
   ensureCloudNetwork: jest.fn(async () => {}),
 }));
 jest.mock("@e2b/code-interpreter", () => {
@@ -557,13 +560,11 @@ describe("E2B sandbox lease lifecycle", () => {
   });
 
   it("creates a new workspace with its stored network restrictions already applied", async () => {
-    jest
-      .mocked(readNetworkSettings)
-      .mockResolvedValueOnce({
-        policy: { mode: "restricted", allow: ["example.test"] },
-        revision: 3,
-        status: "ready",
-      });
+    jest.mocked(readNetworkSettings).mockResolvedValueOnce({
+      policy: { mode: "restricted", allow: ["example.test"] },
+      revision: 3,
+      status: "ready",
+    });
     sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
     sandboxApi.create.mockResolvedValue({ sandboxId: "restricted-workspace" });
     await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });

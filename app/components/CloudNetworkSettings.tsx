@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { normalizeProxyInput } from "@/lib/cloud-network/proxy";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -19,18 +22,34 @@ import {
 import { usePostHog } from "posthog-js/react";
 import { toast } from "sonner";
 
+type SettingsResponse = NetworkSettings & { proxyAvailable?: boolean };
+
 export function CloudNetworkSettings() {
-  const [saved, setSaved] = useState<NetworkSettings | null>(null);
+  const [saved, setSaved] = useState<SettingsResponse | null>(null);
   const [mode, setMode] = useState<NetworkPolicy["mode"]>("unrestricted");
   const [allow, setAllow] = useState("");
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyAddress, setProxyAddress] = useState("");
+  const [proxyAuth, setProxyAuth] = useState(false);
+  const [replaceCredentials, setReplaceCredentials] = useState(false);
+  const [proxyUsername, setProxyUsername] = useState("");
+  const [proxyPassword, setProxyPassword] = useState("");
   const [operation, setOperation] = useState<"save" | "reload" | null>(null);
   const busy = operation !== null;
   const [error, setError] = useState("");
   const posthog = usePostHog();
-  function adopt(value: NetworkSettings) {
+  function adopt(value: SettingsResponse) {
     setSaved(value);
     setMode(value.policy.mode);
     setAllow(value.policy.allow.join("\n"));
+    setProxyEnabled(Boolean(value.proxy));
+    setProxyAddress(value.proxy?.address ?? "");
+    setProxyAuth(Boolean(value.proxy?.authenticated));
+    setReplaceCredentials(
+      value.status === "failed" && Boolean(value.proxy?.authenticated),
+    );
+    setProxyUsername("");
+    setProxyPassword("");
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -40,7 +59,11 @@ export function CloudNetworkSettings() {
         return response.json();
       })
       .then((value) => {
-        if (!controller.signal.aborted) adopt(value);
+        if (!controller.signal.aborted) {
+          adopt(value);
+          if (value.proxyAvailable || value.proxy)
+            posthog?.capture("cloud_proxy_settings_viewed");
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted)
@@ -68,7 +91,7 @@ export function CloudNetworkSettings() {
           signal: controller.signal,
         });
         if (!response.ok) throw new Error();
-        const value: NetworkSettings = await response.json();
+        const value: SettingsResponse = await response.json();
         if (controller.signal.aborted) return;
         adopt(value);
         if (value.status === "applying") timer = setTimeout(poll, 3_000);
@@ -121,11 +144,34 @@ export function CloudNetworkSettings() {
                 .filter(Boolean)
             : [],
       });
+      const proxyChanged =
+        (saved.status === "failed" && proxyEnabled && saved.proxyAvailable) ||
+        proxyEnabled !== Boolean(saved.proxy) ||
+        (proxyEnabled &&
+          (proxyAddress.trim() !== saved.proxy?.address ||
+            proxyAuth !== Boolean(saved.proxy?.authenticated) ||
+            replaceCredentials));
+      const proxy = !proxyChanged
+        ? undefined
+        : proxyEnabled
+          ? normalizeProxyInput({
+              address: proxyAddress,
+              credentials: !proxyAuth
+                ? null
+                : !saved.proxy?.authenticated || replaceCredentials
+                  ? { username: proxyUsername, password: proxyPassword }
+                  : undefined,
+            })
+          : null;
       submitted = true;
       const response = await fetch("/api/sandbox/network", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ policy, expectedRevision: saved.revision }),
+        body: JSON.stringify({
+          policy,
+          expectedRevision: saved.revision,
+          ...(proxy !== undefined ? { proxy } : {}),
+        }),
       });
       const result = await response.json();
       if (!response.ok) {
@@ -135,7 +181,7 @@ export function CloudNetworkSettings() {
             "Could not apply network settings. Reload and retry.",
         );
       }
-      adopt(result);
+      adopt({ ...result, proxyAvailable: saved.proxyAvailable });
       toast.success("Network settings updated.");
     } catch (e) {
       // Even a lost response may have persisted a new revision. Read it before
@@ -145,6 +191,10 @@ export function CloudNetworkSettings() {
         e instanceof Error ? e.message : "Could not apply network settings.",
       );
     } finally {
+      if (submitted) {
+        setProxyUsername("");
+        setProxyPassword("");
+      }
       setOperation(null);
     }
   }
@@ -190,6 +240,92 @@ export function CloudNetworkSettings() {
           <p className="text-xs text-muted-foreground">
             One domain, IP address, or IP range per line.
           </p>
+        </div>
+      )}
+      {(saved?.proxyAvailable || saved?.proxy) && (
+        <div className="space-y-3 pt-2 ph-no-capture ph-no-record">
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="cloud-proxy-enabled">Use your own proxy</Label>
+            <Switch
+              id="cloud-proxy-enabled"
+              checked={proxyEnabled}
+              onCheckedChange={setProxyEnabled}
+              disabled={
+                busy ||
+                !saved ||
+                updating ||
+                (!saved.proxyAvailable && !proxyEnabled)
+              }
+            />
+          </div>
+          {proxyEnabled && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label htmlFor="cloud-proxy-address">SOCKS5 address</Label>
+                <Input
+                  id="cloud-proxy-address"
+                  value={proxyAddress}
+                  onChange={(event) => setProxyAddress(event.target.value)}
+                  placeholder="proxy.example.com:1080"
+                  autoComplete="off"
+                  disabled={busy || updating || !saved?.proxyAvailable}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Routes cloud TCP traffic through your proxy. DNS and UDP use the
+                normal cloud connection. Your access rules still apply.
+              </p>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="cloud-proxy-auth">Proxy authentication</Label>
+                <Switch
+                  id="cloud-proxy-auth"
+                  checked={proxyAuth}
+                  onCheckedChange={setProxyAuth}
+                  disabled={busy || updating || !saved?.proxyAvailable}
+                />
+              </div>
+              {proxyAuth &&
+                (saved?.proxy?.authenticated && !replaceCredentials ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => setReplaceCredentials(true)}
+                    disabled={busy || updating || !saved?.proxyAvailable}
+                  >
+                    Change credentials
+                  </Button>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="cloud-proxy-username">Username</Label>
+                      <Input
+                        id="cloud-proxy-username"
+                        value={proxyUsername}
+                        onChange={(event) =>
+                          setProxyUsername(event.target.value)
+                        }
+                        autoComplete="off"
+                        data-ph-no-capture
+                        disabled={busy || updating}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="cloud-proxy-password">Password</Label>
+                      <Input
+                        id="cloud-proxy-password"
+                        type="password"
+                        value={proxyPassword}
+                        onChange={(event) =>
+                          setProxyPassword(event.target.value)
+                        }
+                        autoComplete="new-password"
+                        data-ph-no-capture
+                        disabled={busy || updating}
+                      />
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       )}
       {saved?.status === "failed" && (

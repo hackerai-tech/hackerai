@@ -1,3 +1,4 @@
+import type { ProxySettings, ProxySecret } from "./proxy";
 import { z } from "zod";
 import { normalizeTarget } from "../engagement-scope/policy";
 
@@ -63,14 +64,17 @@ export function normalizeNetworkPolicy(input: unknown): NetworkPolicy {
   };
 }
 
-export function e2bNetwork(policy: NetworkPolicy) {
+export function e2bNetwork(policy: NetworkPolicy, proxy?: ProxySecret) {
   return {
+    ...(proxy ? { egressProxy: proxy } : {}),
     allowOut: policy.mode === "restricted" ? policy.allow : [],
     denyOut: policy.mode === "unrestricted" ? [] : ["0.0.0.0/0"],
   };
 }
 
 export type NetworkSettings = {
+  proxy?: ProxySettings | null;
+  proxyManaged?: boolean;
   policy: NetworkPolicy;
   revision: number;
   status: "ready" | "applying" | "failed";

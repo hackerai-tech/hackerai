@@ -1,3 +1,7 @@
+import { isUserDeletionFenced } from "../lib/userDeletionFence";
+jest.mock("../lib/userDeletionFence", () => ({
+  isUserDeletionFenced: jest.fn(async () => false),
+}));
 import { begin, finish, get } from "../cloudNetwork";
 import { validateServiceKey } from "../lib/utils";
 import { assertUserCanAccessChatHistory } from "../lib/suspensionGuards";
@@ -131,4 +135,36 @@ it("allows immediate retry after failure before any provider write while retaini
   await expect(
     call(finish, ctx, { ...auth, token: "first", success: true }),
   ).rejects.toThrow("ownership changed");
+});
+
+it("keeps the proxy on network-only edits and rejects new writes once account deletion starts", async () => {
+  const proxy = {
+    address: "proxy.test:1080",
+    authenticated: true,
+    revision: "secret-revision",
+  };
+  await call(begin, ctx, {
+    ...auth,
+    token: "first",
+    policy,
+    proxy,
+    expectedRevision: 0,
+  });
+  await call(finish, ctx, { ...auth, token: "first", success: true });
+  await call(begin, ctx, {
+    ...auth,
+    token: "second",
+    policy,
+    expectedRevision: 1,
+  });
+  expect(await call(get, ctx, auth)).toMatchObject({
+    proxy,
+    proxyManaged: true,
+    revision: 2,
+  });
+  await call(finish, ctx, { ...auth, token: "second", success: true });
+  jest.mocked(isUserDeletionFenced).mockResolvedValueOnce(true);
+  await expect(
+    call(begin, ctx, { ...auth, token: "third", policy, expectedRevision: 2 }),
+  ).rejects.toThrow("deletion");
 });

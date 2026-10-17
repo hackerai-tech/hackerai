@@ -1,3 +1,9 @@
+import {
+  readProxySecret,
+  writeProxySecret,
+  deleteProxySecret,
+} from "./proxy-vault";
+import type { ProxyInput, ProxySecret, ProxySettings } from "./proxy";
 import { randomUUID } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
 import { ConvexError } from "convex/values";
@@ -43,20 +49,24 @@ async function matchesSandboxPolicy(
   userId: string,
   policy: NetworkPolicy,
   signal: AbortSignal,
+  proxy?: ProxySecret,
+  proxyManaged = false,
 ) {
   const info = await sandbox.getInfo({ signal, requestTimeoutMs: 15_000 });
   if (info.metadata?.userID !== userId)
     throw new Error("Workspace ownership mismatch");
   // Replacing egress must not clear an externally managed proxy or transform.
   if (
-    info.network?.egressProxy ||
+    (info.network?.egressProxy && !proxyManaged) ||
     Object.keys(info.network?.rules ?? {}).length
   )
     throw new Error("Externally managed network configuration");
-  const network = e2bNetwork(policy);
+  const network = e2bNetwork(policy, proxy);
   return (
     sameList(info.network?.allowOut, network.allowOut) &&
-    sameList(info.network?.denyOut, network.denyOut)
+    sameList(info.network?.denyOut, network.denyOut) &&
+    (info.network?.egressProxy?.address ?? "") === (proxy?.address ?? "") &&
+    (info.network?.egressProxy?.username ?? "") === (proxy?.username ?? "")
   );
 }
 async function applyToSandbox(
@@ -65,23 +75,50 @@ async function applyToSandbox(
   policy: NetworkPolicy,
   signal: AbortSignal,
   onWrite: () => void,
+  proxy?: ProxySecret,
+  proxyManaged = false,
 ) {
-  if (await matchesSandboxPolicy(sandbox, userId, policy, signal)) return;
+  const matches = await matchesSandboxPolicy(
+    sandbox,
+    userId,
+    policy,
+    signal,
+    proxy,
+    proxyManaged,
+  );
+  // E2B never returns the password. A new/retried proxy revision must be written
+  // even when its visible address and username already match.
+  if (matches && !proxy) return;
   onWrite();
-  await sandbox.updateNetwork(e2bNetwork(policy), {
+  await sandbox.updateNetwork(e2bNetwork(policy, proxy), {
     signal,
     requestTimeoutMs: 15_000,
   });
-  if (!(await matchesSandboxPolicy(sandbox, userId, policy, signal)))
+  if (
+    !(await matchesSandboxPolicy(
+      sandbox,
+      userId,
+      policy,
+      signal,
+      proxy,
+      proxyManaged,
+    ))
+  )
     throw new Error("Network readback mismatch");
 }
 
 /** One workspace-wide writer, shared by Settings and sandbox acquisition. */
 async function applyNetwork(
   userId: string,
-  input?: { policy: NetworkPolicy; expectedRevision: number },
+  input?: {
+    policy: NetworkPolicy;
+    expectedRevision: number;
+    proxy?: ProxySettings | null;
+  },
   connected?: Sandbox,
   parentSignal?: AbortSignal,
+  proxyInput?: ProxyInput,
+  previousProxy?: ProxySettings | null,
 ) {
   const client = getConvexClient();
   const token = randomUUID();
@@ -116,12 +153,32 @@ async function applyNetwork(
     const destinationId =
       workspace?.phase === "e2b" ? workspace.destinationId : undefined;
     await assertCloudWorkspaceAvailable(userId, destinationId);
+    const proxy = settings.proxy
+      ? proxyInput
+        ? await writeProxySecret(
+            userId,
+            settings.proxy,
+            proxyInput,
+            previousProxy,
+          )
+        : await readProxySecret(userId, settings.proxy)
+      : undefined;
+    signal.throwIfAborted();
+    await assertCloudWorkspaceAvailable(userId, destinationId);
     const clusters = getConfiguredE2BClustersForCleanup();
     if (!clusters.length) throw new Error("Cloud provider unavailable");
     const seen = new Set<string>();
     if (connected) {
       await assertCloudWorkspaceAvailable(userId, connected.sandboxId);
-      await applyToSandbox(connected, userId, settings.policy, signal, onWrite);
+      await applyToSandbox(
+        connected,
+        userId,
+        settings.policy,
+        signal,
+        onWrite,
+        proxy,
+        settings.proxyManaged,
+      );
       seen.add(connected.sandboxId);
     }
     for (const cluster of clusters) {
@@ -156,11 +213,16 @@ async function applyNetwork(
             settings.policy,
             signal,
             onWrite,
+            proxy,
+            settings.proxyManaged,
           );
           seen.add(info.sandboxId);
         }
       } while (pages.hasNext);
     }
+    signal.throwIfAborted();
+    if (settings.proxyManaged && !settings.proxy)
+      await deleteProxySecret(userId);
     signal.throwIfAborted();
     await client.mutation(api.cloudNetwork.finish, {
       ...auth(userId),
@@ -179,7 +241,7 @@ async function applyNetwork(
       })
       .catch(() => {});
     throw new NetworkSettingsError(
-      "Network settings were saved but could not be verified on every running cloud workspace. Some workspaces may already use them. Retry Apply; files were preserved.",
+      "Network settings were saved but could not be verified on every running cloud workspace. Some workspaces may already use them. Reload settings and retry Save.",
     );
   }
 }
@@ -187,8 +249,52 @@ export async function saveNetworkSettings(
   userId: string,
   policy: NetworkPolicy,
   expectedRevision: number,
+  proxyInput?: ProxyInput | null,
 ) {
-  return applyNetwork(userId, { policy, expectedRevision });
+  if (proxyInput === undefined)
+    return applyNetwork(userId, { policy, expectedRevision });
+  const previous = await readNetworkSettings(userId);
+  if (
+    previous?.revision !== expectedRevision &&
+    !(previous === null && expectedRevision === 0)
+  )
+    throw new NetworkSettingsError(
+      "Network settings changed. Reload them before saving.",
+      409,
+    );
+  if (proxyInput && process.env.E2B_BYOP_ENABLED !== "true")
+    throw new NetworkSettingsError(
+      "Cloud proxy setup is not available yet.",
+      403,
+    );
+  if (
+    proxyInput &&
+    proxyInput.credentials === undefined &&
+    previous?.proxy?.authenticated &&
+    proxyInput.address !== previous.proxy.address
+  )
+    throw new NetworkSettingsError(
+      "Enter the credentials again when changing the proxy address.",
+      400,
+    );
+  const proxy = proxyInput
+    ? {
+        address: proxyInput.address,
+        authenticated:
+          proxyInput.credentials === undefined
+            ? Boolean(previous?.proxy?.authenticated)
+            : Boolean(proxyInput.credentials),
+        revision: randomUUID(),
+      }
+    : null;
+  return applyNetwork(
+    userId,
+    { policy, expectedRevision, proxy },
+    undefined,
+    undefined,
+    proxyInput ?? undefined,
+    previous?.proxy,
+  );
 }
 export async function ensureCloudNetwork(
   sandbox: Sandbox,
@@ -211,6 +317,10 @@ export async function ensureCloudNetwork(
         userId,
         settings.policy,
         verificationSignal,
+        settings.proxy
+          ? await readProxySecret(userId, settings.proxy)
+          : undefined,
+        settings.proxyManaged,
       )
     ) {
       const current = await readNetworkSettings(userId);
@@ -231,3 +341,29 @@ export const defaultNetworkSettings = (): NetworkSettings => ({
   revision: 0,
   status: "ready",
 });
+
+/** Resolve secrets only in trusted server memory immediately before E2B create. */
+export async function networkForCreation(
+  userId: string,
+  settings: NetworkSettings,
+) {
+  const proxy = settings.proxy
+    ? await readProxySecret(userId, settings.proxy)
+    : undefined;
+  return e2bNetwork(settings.policy, proxy);
+}
+
+export async function deleteCloudProxyForAccount(userId: string) {
+  const client = getConvexClient();
+  const state = await client.query(
+    api.cloudNetwork.proxyCleanupState,
+    auth(userId),
+  );
+  if (!state.managed) return;
+  if (state.leaseUntil && state.leaseUntil > Date.now())
+    throw new NetworkSettingsError(
+      "A cloud network update is finishing. Retry account deletion shortly.",
+    );
+  await deleteProxySecret(userId);
+  await client.mutation(api.cloudNetwork.finishProxyCleanup, auth(userId));
+}

@@ -1,5 +1,7 @@
-import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { e2bNetwork } from "@/lib/cloud-network/policy";
+import {
+  readNetworkSettings,
+  networkForCreation,
+} from "@/lib/cloud-network/service";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
@@ -297,6 +299,7 @@ export const ensureSandboxConnection = async (
     let lastError: unknown;
     phase = "create";
     options.reportStage?.("create");
+    let proxyCreation = false;
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       signal?.throwIfAborted();
       if (attempt > 0) {
@@ -309,9 +312,10 @@ export const ensureSandboxConnection = async (
       signal?.throwIfAborted();
       try {
         const networkSettings = await readNetworkSettings(userID);
+        proxyCreation = Boolean(networkSettings?.proxy);
         const sandbox = await Sandbox.create(createCluster.template, {
           ...(networkSettings
-            ? { network: e2bNetwork(networkSettings.policy) }
+            ? { network: await networkForCreation(userID, networkSettings) }
             : {}),
           ...createCluster.connectionOptions,
           ...requestOptions,
@@ -332,6 +336,10 @@ export const ensureSandboxConnection = async (
         reportBoot(createPath, attempt + 1);
         return { sandbox };
       } catch (createError) {
+        if (proxyCreation)
+          throw new Error(
+            "Cloud workspace could not start with its saved proxy. Check cloud network settings and retry.",
+          );
         lastError = createError;
         const isRateLimit =
           createError instanceof Error &&

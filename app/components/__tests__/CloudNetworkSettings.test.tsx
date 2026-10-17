@@ -187,3 +187,61 @@ it("cancels a pending refresh when the settings panel closes", async () => {
   await act(() => jest.advanceTimersByTimeAsync(120_000));
   expect(fetchMock).toHaveBeenCalledTimes(completedReads);
 });
+
+it("saves proxy credentials once and clears the secret fields after a verified save", async () => {
+  fetchMock.mockResolvedValueOnce(response({ ...saved, proxyAvailable: true }));
+  render(<CloudNetworkSettings />);
+  await screen.findByRole("switch", { name: "Use your own proxy" });
+  fireEvent.click(screen.getByRole("switch", { name: "Use your own proxy" }));
+  fireEvent.change(screen.getByLabelText("SOCKS5 address"), {
+    target: { value: "proxy.example.test:1080" },
+  });
+  fireEvent.click(screen.getByRole("switch", { name: "Proxy authentication" }));
+  fireEvent.change(screen.getByLabelText("Username"), {
+    target: { value: "test-user" },
+  });
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: "synthetic-password" },
+  });
+  fetchMock.mockResolvedValueOnce(
+    response({
+      ...saved,
+      revision: 3,
+      proxy: {
+        address: "proxy.example.test:1080",
+        authenticated: true,
+        revision: "proxy-rev",
+      },
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalled());
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).proxy).toEqual({
+    address: "proxy.example.test:1080",
+    credentials: { username: "test-user", password: "synthetic-password" },
+  });
+  expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Change credentials" }));
+  expect(screen.getByLabelText("Password")).toHaveValue("");
+});
+it("preserves a saved proxy during network-only edits without sending its secret again", async () => {
+  fetchMock.mockResolvedValueOnce(
+    response({
+      ...saved,
+      proxyAvailable: false,
+      proxy: {
+        address: "proxy.example.test:1080",
+        authenticated: true,
+        revision: "proxy-rev",
+      },
+    }),
+  );
+  render(<CloudNetworkSettings />);
+  const field = await screen.findByLabelText("Allowed destinations");
+  fireEvent.change(field, { target: { value: "other.example.test" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalled());
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty(
+    "proxy",
+  );
+});

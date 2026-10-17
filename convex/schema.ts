@@ -1,4 +1,4 @@
-import { networkPolicy } from "./cloudNetworkValidators";
+import { networkPolicy, cloudProxy } from "./cloudNetworkValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -191,6 +191,8 @@ const agentAutoReviewConversationContextValidator = v.object({
 
 export default defineSchema({
   cloud_network_settings: defineTable({
+    proxy: v.optional(v.union(v.null(), cloudProxy)),
+    proxyManaged: v.optional(v.boolean()),
     user_id: v.string(),
     policy: networkPolicy,
     revision: v.number(),
