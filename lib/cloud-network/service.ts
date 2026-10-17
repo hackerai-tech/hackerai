@@ -124,10 +124,14 @@ async function applyNetwork(
   const client = getConvexClient();
   const token = randomUUID();
   let settings: NetworkSettings | null;
+  const deadline = AbortSignal.timeout(45_000);
+  const signal = parentSignal
+    ? AbortSignal.any([deadline, parentSignal])
+    : deadline;
   try {
     const waitDeadline = Date.now() + 15_000;
     for (;;) {
-      parentSignal?.throwIfAborted();
+      signal.throwIfAborted();
       try {
         settings = await client.mutation(api.cloudNetwork.begin, {
           ...auth(userId),
@@ -146,7 +150,7 @@ async function applyNetwork(
             "A network update is already running. Try again shortly."
         )
           throw error;
-        await wait(500, undefined, { signal: parentSignal });
+        await wait(500, undefined, { signal });
       }
     }
   } catch (error) {
@@ -160,10 +164,6 @@ async function applyNetwork(
     );
   }
   if (!settings) return null;
-  const deadline = AbortSignal.timeout(45_000);
-  const signal = parentSignal
-    ? AbortSignal.any([deadline, parentSignal])
-    : deadline;
   let wrote = false;
   const onWrite = () => {
     wrote = true;
@@ -173,6 +173,7 @@ async function applyNetwork(
     const destinationId =
       workspace?.phase === "e2b" ? workspace.destinationId : undefined;
     await assertCloudWorkspaceAvailable(userId, destinationId);
+    signal.throwIfAborted();
     const proxy = settings.proxy
       ? proxyInput
         ? await writeProxySecret(

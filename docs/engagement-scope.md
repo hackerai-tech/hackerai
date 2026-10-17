@@ -109,9 +109,9 @@ explicitly saves this setting.
 ### Optional cloud proxy
 
 Settings supports a public SOCKS5 `hostname:port` or IPv4 endpoint with optional
-username/password. E2B BYOP currently requires team beta access. Set the server
-capability `E2B_BYOP_ENABLED=true` only after verifying that access and the Preview
-acceptance below. The default hides new setup. Disabling the capability prevents
+username/password. E2B BYOP currently requires team beta access. Use the server capability `E2B_BYOP_ENABLED=true` for isolated Preview testing.
+Before enabling Production setup, verify beta access and complete the acceptance
+below. The default hides new setup. Disabling the capability prevents
 new configuration but continues honoring saved proxies; users can still remove
 one. Never interpret this flag as permission to bypass a saved proxy.
 

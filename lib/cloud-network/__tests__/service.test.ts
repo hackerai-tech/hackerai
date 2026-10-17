@@ -473,3 +473,39 @@ it("waits for a competing network writer when acquiring a proxy sandbox", async 
     expect.anything(),
   );
 });
+
+it("does not touch Vault when acquisition is canceled after the writer lease is acquired", async () => {
+  const controller = new AbortController();
+  query.mockResolvedValue({
+    policy,
+    revision: 3,
+    status: "failed",
+    proxy: proxySettings,
+    proxyManaged: true,
+  });
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  require("@/lib/ai/tools/utils/cloud-workspace-guard").assertCloudWorkspaceAvailable.mockImplementationOnce(
+    async () => {
+      controller.abort();
+    },
+  );
+  await expect(
+    ensureCloudNetwork(workspace() as any, "owner", controller.signal),
+  ).rejects.toThrow("could not be verified");
+  expect(readProxySecret).not.toHaveBeenCalled();
+  expect(writeProxySecret).not.toHaveBeenCalled();
+  expect(Sandbox.list).not.toHaveBeenCalled();
+  expect(mutation.mock.calls.at(-1)[1]).toMatchObject({
+    success: false,
+    releaseLease: true,
+  });
+});
