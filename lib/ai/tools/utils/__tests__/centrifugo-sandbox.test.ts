@@ -3397,6 +3397,19 @@ describe("CentrifugoSandbox", () => {
       const probe = new Promise<void>((resolve) => {
         releaseProbe = resolve;
       });
+      let secondDiagnosticEntered!: () => void;
+      const concurrentEntry = new Promise<void>((resolve) => {
+        secondDiagnosticEntered = resolve;
+      });
+      const diagnose = (sandbox as any).diagnoseUploadReadFailure.bind(sandbox);
+      let diagnosticEntries = 0;
+      const diagnostic = jest
+        .spyOn(sandbox as any, "diagnoseUploadReadFailure")
+        .mockImplementation(async (path: unknown) => {
+          diagnosticEntries += 1;
+          if (diagnosticEntries === 2) secondDiagnosticEntered();
+          await diagnose(path);
+        });
       let probes = 0;
       const run = jest.fn(async (command: string) => {
         if (command.includes("__HACKERAI_UPLOAD_READ_FLAGS__:")) {
@@ -3424,7 +3437,8 @@ describe("CentrifugoSandbox", () => {
             "text/plain",
           ),
         ]);
-        await Promise.resolve();
+        await concurrentEntry;
+        expect(probes).toBe(1);
         releaseProbe();
         expect(
           (await failures).every((result) => result.status === "rejected"),
@@ -3440,6 +3454,7 @@ describe("CentrifugoSandbox", () => {
         expect(run).toHaveBeenCalledTimes(4);
       } finally {
         releaseProbe();
+        diagnostic.mockRestore();
         warn.mockRestore();
       }
     });
