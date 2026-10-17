@@ -715,7 +715,7 @@ export function AgentBrowserPreview({
       <div
         className={
           fullScreen
-            ? "pointer-events-none absolute inset-x-0 top-4 z-20 flex flex-col items-center gap-2 px-4"
+            ? "pointer-events-none absolute inset-x-0 bottom-[calc(2rem+env(safe-area-inset-bottom))] z-20 flex flex-col-reverse items-center gap-2 px-4"
             : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
         }
       >
@@ -728,7 +728,7 @@ export function AgentBrowserPreview({
               setError(null);
             }}
             disabled={busy}
-            className={`${fullScreen ? "pointer-events-auto shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
+            className={`${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
           >
             Exit takeover
           </button>
