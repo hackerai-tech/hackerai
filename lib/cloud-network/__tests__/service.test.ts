@@ -133,3 +133,36 @@ it("normalizes destinations and clears stale allow entries when disabling intern
     normalizeNetworkPolicy({ mode: "offline", allow: ["api.example.test"] }),
   ).toEqual({ mode: "offline", allow: [] });
 });
+
+it("allows concurrent acquisitions of an already applied policy without taking the writer lease", async () => {
+  const a = workspace(),
+    b = workspace();
+  for (const sandbox of [a, b])
+    await sandbox.updateNetwork({
+      allowOut: policy.allow,
+      denyOut: ["0.0.0.0/0"],
+    });
+  await Promise.all([
+    ensureCloudNetwork(a as any, "owner"),
+    ensureCloudNetwork(b as any, "owner"),
+  ]);
+  expect(mutation).not.toHaveBeenCalled();
+});
+it("does not cache a provider match when its saved policy changed during verification", async () => {
+  const sandbox = workspace();
+  await sandbox.updateNetwork({
+    allowOut: policy.allow,
+    denyOut: ["0.0.0.0/0"],
+  });
+  query
+    .mockResolvedValueOnce({ policy, revision: 2, status: "ready" })
+    .mockResolvedValueOnce({ policy, revision: 3, status: "applying" });
+  mutation
+    .mockReset()
+    .mockRejectedValueOnce(
+      new ConvexError("A network update is already running."),
+    );
+  await expect(ensureCloudNetwork(sandbox as any, "owner")).rejects.toThrow(
+    "already running",
+  );
+});

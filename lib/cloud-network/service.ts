@@ -38,7 +38,7 @@ function sameList(a: string[] | undefined, b: string[]) {
     JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...b].sort())
   );
 }
-async function applyToSandbox(
+async function matchesSandboxPolicy(
   sandbox: Sandbox,
   userId: string,
   policy: NetworkPolicy,
@@ -47,25 +47,30 @@ async function applyToSandbox(
   const info = await sandbox.getInfo({ signal, requestTimeoutMs: 15_000 });
   if (info.metadata?.userID !== userId)
     throw new Error("Workspace ownership mismatch");
-  // These features are not configured by HackerAI. Do not clear an externally
-  // managed proxy or credential transform when replacing the egress config.
+  // Replacing egress must not clear an externally managed proxy or transform.
   if (
     info.network?.egressProxy ||
     Object.keys(info.network?.rules ?? {}).length
   )
     throw new Error("Externally managed network configuration");
   const network = e2bNetwork(policy);
-  if (
-    !sameList(info.network?.allowOut, network.allowOut) ||
-    !sameList(info.network?.denyOut, network.denyOut)
-  ) {
-    await sandbox.updateNetwork(network, { signal, requestTimeoutMs: 15_000 });
-  }
-  const after = await sandbox.getInfo({ signal, requestTimeoutMs: 15_000 });
-  if (
-    !sameList(after.network?.allowOut, network.allowOut) ||
-    !sameList(after.network?.denyOut, network.denyOut)
-  )
+  return (
+    sameList(info.network?.allowOut, network.allowOut) &&
+    sameList(info.network?.denyOut, network.denyOut)
+  );
+}
+async function applyToSandbox(
+  sandbox: Sandbox,
+  userId: string,
+  policy: NetworkPolicy,
+  signal: AbortSignal,
+) {
+  if (await matchesSandboxPolicy(sandbox, userId, policy, signal)) return;
+  await sandbox.updateNetwork(e2bNetwork(policy), {
+    signal,
+    requestTimeoutMs: 15_000,
+  });
+  if (!(await matchesSandboxPolicy(sandbox, userId, policy, signal)))
     throw new Error("Network readback mismatch");
 }
 
@@ -181,6 +186,31 @@ export async function ensureCloudNetwork(
   if (!settings) return;
   if (settings.status === "ready" && checked.get(sandbox) === settings.revision)
     return;
+  // Parent and delegated runs may acquire the same workspace concurrently.
+  // A matching, stable ready policy needs no writer lease or provider mutation.
+  if (settings.status === "ready") {
+    const verificationSignal = signal
+      ? AbortSignal.any([AbortSignal.timeout(15_000), signal])
+      : AbortSignal.timeout(15_000);
+    if (
+      await matchesSandboxPolicy(
+        sandbox,
+        userId,
+        settings.policy,
+        verificationSignal,
+      )
+    ) {
+      const current = await readNetworkSettings(userId);
+      if (
+        current?.status === "ready" &&
+        current.revision === settings.revision
+      ) {
+        verificationSignal.throwIfAborted();
+        checked.set(sandbox, settings.revision);
+        return;
+      }
+    }
+  }
   await applyNetwork(userId, undefined, sandbox, signal);
 }
 export const defaultNetworkSettings = (): NetworkSettings => ({
