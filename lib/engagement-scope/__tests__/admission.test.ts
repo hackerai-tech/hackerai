@@ -91,6 +91,119 @@ it("persists unavailable state after extraction failure while retaining the prev
     policy: { rules: current.rules },
   });
 });
+
+it.each([
+  ["output getter", "no_object_generated"],
+  ["schema", "invalid_extraction_schema"],
+  ["evidence", "scope_evidence_missing"],
+  ["unknown", "unclassified"],
+  ["hostile error", "unclassified"],
+] as const)(
+  "logs a bounded reason for %s failures without leaking content or losing the previous policy",
+  async (failure, reason) => {
+    const privateText = "private-scope.example.test secret-model-output";
+    const chatId = "7a9b7541-4280-4670-b9b3-2d0442f5e68a";
+    const messageId = "60655972-17c4-46cb-b827-7ee81caf040b";
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mutate
+        .mockResolvedValueOnce({
+          complete: false,
+          revision: 3,
+          sourceText: privateText,
+          current,
+        })
+        .mockResolvedValueOnce(true);
+      const error = new Error(privateText);
+      if (failure === "output getter") error.name = "AI_NoObjectGeneratedError";
+      if (failure === "hostile error")
+        Object.defineProperty(error, "name", {
+          get: () => {
+            throw new Error(privateText);
+          },
+        });
+      if (failure === "unknown" || failure === "hostile error") {
+        (generateText as jest.Mock).mockRejectedValue(error);
+      } else {
+        (generateText as jest.Mock).mockResolvedValue({
+          get output() {
+            if (failure === "output getter") throw error;
+            if (failure === "schema") return { privateText };
+            return {
+              changes: [
+                {
+                  operation: "add",
+                  rule: {
+                    target: "another-private.example.test",
+                    effect: "allow",
+                    activity: "active_testing",
+                  },
+                  evidence: privateText,
+                },
+              ],
+              restrictions: [],
+              clarification: "",
+            };
+          },
+        });
+      }
+      await recordUserScope({ userId: "owner", chatId, messageId });
+      expect(warn).toHaveBeenCalledWith("engagement_scope_extraction_failed", {
+        stage:
+          failure === "unknown" || failure === "hostile error"
+            ? "generation"
+            : "validation",
+        timedOut: false,
+        reason,
+        chat_id: chatId,
+        message_id: messageId,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(privateText);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        "another-private.example.test",
+      );
+      expect(mutate.mock.calls[1][1]).toMatchObject({
+        unavailable: true,
+        policy: { rules: current.rules, restrictions: current.restrictions },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  },
+);
+
+it("omits non-UUID identifiers rather than logging arbitrary caller strings", async () => {
+  const privateText = "private identifier or target";
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    mutate
+      .mockResolvedValueOnce({
+        complete: false,
+        revision: 3,
+        sourceText: privateText,
+        current,
+      })
+      .mockResolvedValueOnce(true);
+    (generateText as jest.Mock).mockRejectedValue(privateText);
+    await recordUserScope({
+      userId: "owner",
+      chatId: privateText,
+      messageId: privateText,
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "engagement_scope_extraction_failed",
+      expect.objectContaining({
+        reason: "non_error",
+        chat_id: null,
+        message_id: null,
+      }),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(privateText);
+    expect(mutate.mock.calls[1][1]).toMatchObject({ unavailable: true });
+  } finally {
+    warn.mockRestore();
+  }
+});
 it("does not extract again for a duplicate or ordinary continuation", async () => {
   mutate.mockResolvedValueOnce({ complete: true });
   await recordUserScope({ userId: "owner", chatId: "chat", messageId: "m1" });
