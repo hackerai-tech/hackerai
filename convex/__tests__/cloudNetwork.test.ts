@@ -168,3 +168,53 @@ it("keeps the proxy on network-only edits and rejects new writes once account de
     call(begin, ctx, { ...auth, token: "third", policy, expectedRevision: 2 }),
   ).rejects.toThrow("deletion");
 });
+
+it("clears the Vault cleanup marker only after owned successful removal and preserves explicit proxy removal", async () => {
+  await call(begin, ctx, {
+    ...auth,
+    token: "setup",
+    policy,
+    proxy: { address: "proxy.test:1080", authenticated: false, revision: "r" },
+    expectedRevision: 0,
+  });
+  await call(finish, ctx, {
+    ...auth,
+    token: "setup",
+    success: true,
+    proxyRemoved: true,
+  });
+  expect((await call(get, ctx, auth)).proxyManaged).toBe(true);
+  await call(begin, ctx, {
+    ...auth,
+    token: "remove",
+    policy,
+    proxy: null,
+    expectedRevision: 1,
+  });
+  await call(finish, ctx, {
+    ...auth,
+    token: "remove",
+    success: false,
+    releaseLease: true,
+    proxyRemoved: true,
+  });
+  expect((await call(get, ctx, auth)).proxyManaged).toBe(true);
+  await call(begin, ctx, { ...auth, token: "retry" });
+  await call(finish, ctx, {
+    ...auth,
+    token: "retry",
+    success: true,
+    proxyRemoved: true,
+  });
+  const saved = await call(get, ctx, auth);
+  expect(saved.proxy).toBeNull();
+  expect(saved.proxyManaged).toBeFalsy();
+  expect(
+    await call(begin, ctx, {
+      ...auth,
+      token: "ordinary",
+      policy,
+      expectedRevision: 2,
+    }),
+  ).not.toHaveProperty("proxyManaged", true);
+});

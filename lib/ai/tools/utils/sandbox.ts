@@ -299,7 +299,6 @@ export const ensureSandboxConnection = async (
     let lastError: unknown;
     phase = "create";
     options.reportStage?.("create");
-    let proxyCreation = false;
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       signal?.throwIfAborted();
       if (attempt > 0) {
@@ -312,11 +311,20 @@ export const ensureSandboxConnection = async (
       signal?.throwIfAborted();
       try {
         const networkSettings = await readNetworkSettings(userID);
-        proxyCreation = Boolean(networkSettings?.proxy);
+        let network;
+        try {
+          network = networkSettings
+            ? await networkForCreation(userID, networkSettings)
+            : undefined;
+        } catch (error) {
+          if (!networkSettings?.proxy) throw error;
+          throw new E2BAcquisitionError(
+            "Cloud proxy credentials are unavailable. Update the proxy in Settings and retry.",
+            { e2b_phase: "create", e2b_error_category: "unknown" },
+          );
+        }
         const sandbox = await Sandbox.create(createCluster.template, {
-          ...(networkSettings
-            ? { network: await networkForCreation(userID, networkSettings) }
-            : {}),
+          ...(network ? { network } : {}),
           ...createCluster.connectionOptions,
           ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
@@ -336,10 +344,6 @@ export const ensureSandboxConnection = async (
         reportBoot(createPath, attempt + 1);
         return { sandbox };
       } catch (createError) {
-        if (proxyCreation)
-          throw new Error(
-            "Cloud workspace could not start with its saved proxy. Check cloud network settings and retry.",
-          );
         lastError = createError;
         const isRateLimit =
           createError instanceof Error &&
@@ -390,7 +394,10 @@ export const ensureSandboxConnection = async (
     if (error instanceof E2BRegionUnavailableError) throw error;
 
     // Surface specific error messages for known E2B errors
-    const userMessage = getUserFacingE2BErrorMessage(error);
+    const userMessage =
+      error instanceof E2BAcquisitionError
+        ? error.message
+        : getUserFacingE2BErrorMessage(error);
     if (userMessage) {
       throw new E2BAcquisitionError(userMessage, diagnostics);
     }

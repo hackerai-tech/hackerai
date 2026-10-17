@@ -378,6 +378,10 @@ it("removes a managed proxy while preserving destination rules and deletes its V
     expect.anything(),
   );
   expect(deleteProxySecret).toHaveBeenCalledWith("owner");
+  expect(mutation.mock.calls.at(-1)[1]).toMatchObject({
+    success: true,
+    proxyRemoved: true,
+  });
 });
 it("rejects new proxy setup before persisting anything when capability is disabled", async () => {
   delete process.env.E2B_BYOP_ENABLED;
@@ -537,4 +541,36 @@ it("retains the writer fence after an uncertain Vault write even before E2B is c
     success: false,
     releaseLease: false,
   });
+});
+
+it("clears an old proxy on a paused workspace after secret cleanup without depending on Vault", async () => {
+  const settings = {
+    policy,
+    revision: 3,
+    status: "ready",
+    proxy: null,
+    proxyManaged: false,
+  };
+  query.mockResolvedValue(settings);
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({ ...settings, status: "applying" })
+    .mockResolvedValue(null);
+  jest
+    .mocked(deleteProxySecret)
+    .mockRejectedValueOnce(new Error("Vault unavailable"));
+  const sandbox = workspace();
+  await sandbox.updateNetwork({
+    allowOut: policy.allow,
+    denyOut: ["0.0.0.0/0"],
+    egressProxy: proxySecret,
+  });
+  sandbox.updateNetwork.mockClear();
+  await ensureCloudNetwork(sandbox as any, "owner");
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    { allowOut: policy.allow, denyOut: ["0.0.0.0/0"] },
+    expect.anything(),
+  );
+  expect(deleteProxySecret).not.toHaveBeenCalled();
+  expect(readProxySecret).not.toHaveBeenCalled();
 });

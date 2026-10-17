@@ -109,6 +109,7 @@ export const finish = mutation({
     token: v.string(),
     success: v.boolean(),
     releaseLease: v.optional(v.boolean()),
+    proxyRemoved: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -124,6 +125,11 @@ export const finish = mutation({
       status: args.success ? "ready" : "failed",
       token: releaseLease ? undefined : saved.token,
       leaseUntil: releaseLease ? undefined : saved.leaseUntil,
+      // Keep proxy:null as the explicit desired provider state, including for
+      // paused workspaces. The Vault cleanup marker can now be cleared.
+      ...(args.success && args.proxyRemoved && saved.proxy === null
+        ? { proxyManaged: false }
+        : {}),
     });
     return null;
   },

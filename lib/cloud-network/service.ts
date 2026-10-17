@@ -204,7 +204,7 @@ async function applyNetwork(
         signal,
         onWrite,
         proxy,
-        settings.proxyManaged,
+        settings.proxy !== undefined || settings.proxyManaged,
       );
       seen.add(connected.sandboxId);
     }
@@ -241,14 +241,15 @@ async function applyNetwork(
             signal,
             onWrite,
             proxy,
-            settings.proxyManaged,
+            settings.proxy !== undefined || settings.proxyManaged,
           );
           seen.add(info.sandboxId);
         }
       } while (pages.hasNext);
     }
     signal.throwIfAborted();
-    if (settings.proxyManaged && !settings.proxy) {
+    const proxyRemoved = Boolean(settings.proxyManaged && !settings.proxy);
+    if (proxyRemoved) {
       onWrite();
       await deleteProxySecret(userId);
     }
@@ -257,9 +258,14 @@ async function applyNetwork(
       ...auth(userId),
       token,
       success: true,
+      ...(proxyRemoved ? { proxyRemoved: true } : {}),
     });
     if (connected) checked.set(connected, settings.revision);
-    return { ...settings, status: "ready" as const };
+    return {
+      ...settings,
+      ...(proxyRemoved ? { proxyManaged: false } : {}),
+      status: "ready" as const,
+    };
   } catch {
     await client
       .mutation(api.cloudNetwork.finish, {
@@ -348,10 +354,8 @@ export async function ensureCloudNetwork(
         userId,
         settings.policy,
         verificationSignal,
-        settings.proxy
-          ? await readProxySecret(userId, settings.proxy)
-          : undefined,
-        settings.proxyManaged,
+        undefined,
+        settings.proxy !== undefined || settings.proxyManaged,
       )
     ) {
       const current = await readNetworkSettings(userId);

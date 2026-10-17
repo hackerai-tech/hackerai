@@ -122,6 +122,9 @@ Production for Production. Convex stores address, authentication presence, and a
 opaque revision only. Vault object names derive from the authenticated user;
 readback checks owner and revision. Encryption context is a stable purpose label,
 not an authorization boundary. Version checks protect rotations and deletion.
+After removal, a persisted `proxy: null` continues to clear old proxy settings on
+paused workspaces; the separate Vault cleanup marker is cleared after deletion,
+so later network-only saves do not depend on Vault.
 Account deletion fences settings writes, waits for active writers, then removes
 the Vault object before removing its Convex cleanup marker.
 

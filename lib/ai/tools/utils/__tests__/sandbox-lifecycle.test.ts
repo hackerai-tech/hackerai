@@ -35,8 +35,11 @@ jest.mock("../cloud-workspace-guard", () => ({
   refreshE2BWorkspaceLease: jest.fn(async () => {}),
 }));
 
-import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { Sandbox } from "@e2b/code-interpreter";
+import {
+  readNetworkSettings,
+  networkForCreation,
+} from "@/lib/cloud-network/service";
+import { Sandbox, RateLimitError, TemplateError } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -575,6 +578,88 @@ describe("E2B sandbox lease lifecycle", () => {
       }),
     );
   });
+
+  it("retries proxy creation on rate limits without dropping proxy credentials", async () => {
+    jest.useFakeTimers();
+    const settings = {
+      policy: { mode: "offline" as const, allow: [] },
+      revision: 1,
+      status: "ready" as const,
+      proxy: { address: "proxy.test:1080", authenticated: true, revision: "r" },
+    };
+    const network = {
+      allowOut: [],
+      denyOut: ["0.0.0.0/0"],
+      egressProxy: {
+        address: "proxy.test:1080",
+        username: "u",
+        password: "synthetic-secret",
+      },
+    };
+    jest
+      .mocked(readNetworkSettings)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce(settings);
+    jest
+      .mocked(networkForCreation)
+      .mockResolvedValueOnce(network)
+      .mockResolvedValueOnce(network);
+    sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+    sandboxApi.create
+      .mockRejectedValueOnce(new RateLimitError("429 rate limit"))
+      .mockResolvedValueOnce({ sandboxId: "proxy-created" });
+    const pending = ensureSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect((await pending).sandbox.sandboxId).toBe("proxy-created");
+    expect(sandboxApi.create).toHaveBeenCalledTimes(2);
+    for (const [, options] of sandboxApi.create.mock.calls)
+      expect(options.network).toEqual(network);
+  });
+
+  it.each(["vault", "template"])(
+    "keeps %s creation failures safe and specific for proxy users",
+    async (failure) => {
+      jest.mocked(readNetworkSettings).mockResolvedValueOnce({
+        policy: { mode: "offline", allow: [] },
+        revision: 1,
+        status: "ready",
+        proxy: {
+          address: "proxy.test:1080",
+          authenticated: true,
+          revision: "r",
+        },
+      });
+      sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+      const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        if (failure === "vault")
+          jest
+            .mocked(networkForCreation)
+            .mockRejectedValueOnce(new Error("synthetic-secret"));
+        else
+          sandboxApi.create.mockRejectedValueOnce(
+            new TemplateError("synthetic-secret"),
+          );
+        await expect(
+          ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+        ).rejects.toThrow(
+          failure === "vault"
+            ? "Cloud proxy credentials are unavailable"
+            : "Sandbox template is incompatible",
+        );
+        if (failure === "vault")
+          expect(sandboxApi.create).not.toHaveBeenCalled();
+        expect(JSON.stringify(errors.mock.calls)).not.toContain(
+          "synthetic-secret",
+        );
+      } finally {
+        errors.mockRestore();
+      }
+    },
+  );
 
   it("logs the failing E2B phase and allowlisted code without a response body", async () => {
     const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
