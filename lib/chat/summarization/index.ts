@@ -616,9 +616,9 @@ const generateSummaryTextWithRetry = async ({
               summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                // GLM failures cluster at the 60s total deadline. Allow longer
-                // checkpoints to finish while keeping recovery bounded.
-                timeout: isTreatmentGlm ? 90_000 : 60_000,
+                // Allow longer checkpoints to finish, but start recovery before
+                // a stalled GLM request consumes the former 90s deadline.
+                timeout: isTreatmentGlm ? 75_000 : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
                 maxOutputTokens: isTreatmentGlm ? 16384 : 8192,
                 structuredSummary: isTreatmentGlm,
