@@ -1,3 +1,4 @@
+import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
@@ -736,6 +737,7 @@ export type AgentStreamContext = {
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
+  engagementScope?: ScopeRuntime;
   tools: ToolSet;
   mode: ChatMode;
   endpoint: ChatApiEndpoint;
@@ -1420,7 +1422,10 @@ export async function createAgentStream(
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
+  const engagementScope = ctx.engagementScope;
+  let scopeSection = (await engagementScope?.prompt(false)) ?? "";
   const historyEligible =
+    !scopeSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
   const historyDecision = historyEligible
@@ -1590,7 +1595,8 @@ export async function createAgentStream(
   };
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
-      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
+      (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
+        scopeSection,
       name,
     );
   const initialProviderOptions = getStepProviderOptions(
@@ -1662,6 +1668,12 @@ export async function createAgentStream(
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      const nextScopeSection = (await engagementScope?.prompt()) ?? "";
+      if (nextScopeSection !== scopeSection && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      scopeSection = nextScopeSection;
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -2226,7 +2238,7 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
+            ctx.currentSystemPrompt + scopeSection,
             fallbackModelInfo.modelName,
           ),
         };

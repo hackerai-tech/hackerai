@@ -1054,6 +1054,7 @@ export const subagentTask = task({
                 permissionMode,
               );
             const {
+              engagementScope,
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
               ensureSandbox,
@@ -1335,7 +1336,7 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt,
+                system: systemPrompt + (await engagementScope.prompt(false)),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1490,6 +1491,7 @@ export const subagentTask = task({
                       generationAttempt,
                       steps.length,
                     ),
+                    system: systemPrompt + (await engagementScope.prompt()),
                     messages: compacted.messages as ModelMessage[],
                   };
                 },
