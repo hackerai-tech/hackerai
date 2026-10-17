@@ -1,3 +1,4 @@
+import { setTimeout as wait } from "node:timers/promises";
 import {
   readProxySecret,
   writeProxySecret,
@@ -124,11 +125,30 @@ async function applyNetwork(
   const token = randomUUID();
   let settings: NetworkSettings | null;
   try {
-    settings = await client.mutation(api.cloudNetwork.begin, {
-      ...auth(userId),
-      token,
-      ...input,
-    });
+    const waitDeadline = Date.now() + 15_000;
+    for (;;) {
+      parentSignal?.throwIfAborted();
+      try {
+        settings = await client.mutation(api.cloudNetwork.begin, {
+          ...auth(userId),
+          token,
+          ...input,
+        });
+        break;
+      } catch (error) {
+        // Parent and children may reconnect together. Serialize their proxy
+        // refreshes without turning a short competing write into a failed run.
+        if (
+          !connected ||
+          Date.now() >= waitDeadline ||
+          !(error instanceof ConvexError) ||
+          error.data !==
+            "A network update is already running. Try again shortly."
+        )
+          throw error;
+        await wait(500, undefined, { signal: parentSignal });
+      }
+    }
   } catch (error) {
     const message =
       error instanceof ConvexError && typeof error.data === "string"
@@ -307,7 +327,9 @@ export async function ensureCloudNetwork(
     return;
   // Parent and delegated runs may acquire the same workspace concurrently.
   // A matching, stable ready policy needs no writer lease or provider mutation.
-  if (settings.status === "ready") {
+  // A resumed sandbox may still have an older password, which E2B readback
+  // cannot reveal. Reapply a proxy once per acquired handle/revision.
+  if (settings.status === "ready" && !settings.proxy) {
     const verificationSignal = signal
       ? AbortSignal.any([AbortSignal.timeout(15_000), signal])
       : AbortSignal.timeout(15_000);

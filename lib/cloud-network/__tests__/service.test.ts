@@ -1,3 +1,6 @@
+jest.mock("node:timers/promises", () => ({
+  setTimeout: jest.fn(async () => {}),
+}));
 const originalEnv = { ...process.env };
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -220,22 +223,17 @@ it.each(["*.127.0.0.1", "bad host", "999.1.1.1/24"])(
   },
 );
 
-it("releases a failed reconciliation when canceled before the first provider write", async () => {
+it("does not acquire a writer or contact E2B when acquisition is already canceled", async () => {
   const sandbox = workspace();
   const controller = new AbortController();
   controller.abort();
   query.mockResolvedValueOnce({ policy, revision: 2, status: "failed" });
-  sandbox.getInfo.mockRejectedValueOnce(
-    new DOMException("Canceled", "AbortError"),
-  );
   await expect(
     ensureCloudNetwork(sandbox as any, "owner", controller.signal),
-  ).rejects.toThrow("could not be verified");
+  ).rejects.toThrow();
+  expect(mutation).not.toHaveBeenCalled();
+  expect(sandbox.getInfo).not.toHaveBeenCalled();
   expect(sandbox.updateNetwork).not.toHaveBeenCalled();
-  expect(mutation.mock.calls[1][1]).toMatchObject({
-    success: false,
-    releaseLease: true,
-  });
 });
 
 const proxySettings = {
@@ -406,4 +404,72 @@ it("waits for fenced network writers before account secret cleanup and clears th
   await deleteCloudProxyForAccount("owner");
   expect(deleteProxySecret).toHaveBeenCalledWith("owner");
   expect(mutation).toHaveBeenCalledTimes(1);
+});
+
+it("reapplies credentials on reconnect even when a paused sandbox has matching public metadata", async () => {
+  query.mockResolvedValue({
+    policy,
+    revision: 3,
+    status: "ready",
+    proxy: proxySettings,
+    proxyManaged: true,
+  });
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest.mocked(readProxySecret).mockResolvedValue(proxySecret);
+  const sandbox = workspace();
+  await sandbox.updateNetwork({
+    allowOut: policy.allow,
+    denyOut: ["0.0.0.0/0"],
+    egressProxy: { ...proxySecret, password: "old-password" },
+  });
+  sandbox.updateNetwork.mockClear();
+  await ensureCloudNetwork(sandbox as any, "owner");
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    expect.objectContaining({ egressProxy: proxySecret }),
+    expect.anything(),
+  );
+  sandbox.updateNetwork.mockClear();
+  await ensureCloudNetwork(sandbox as any, "owner");
+  expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+});
+
+it("waits for a competing network writer when acquiring a proxy sandbox", async () => {
+  query.mockResolvedValue({
+    policy,
+    revision: 3,
+    status: "ready",
+    proxy: proxySettings,
+    proxyManaged: true,
+  });
+  mutation
+    .mockReset()
+    .mockRejectedValueOnce(
+      new ConvexError(
+        "A network update is already running. Try again shortly.",
+      ),
+    )
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest.mocked(readProxySecret).mockResolvedValue(proxySecret);
+  const sandbox = workspace();
+  await ensureCloudNetwork(sandbox as any, "owner");
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    expect.objectContaining({ egressProxy: proxySecret }),
+    expect.anything(),
+  );
 });

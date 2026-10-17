@@ -245,3 +245,31 @@ it("preserves a saved proxy during network-only edits without sending its secret
     "proxy",
   );
 });
+
+it("recovers a failed proxy save by asking for fresh credentials and submitting them again", async () => {
+  fetchMock.mockResolvedValueOnce(
+    response({
+      ...saved,
+      status: "failed",
+      proxyAvailable: true,
+      proxy: {
+        address: "proxy.example.test:1080",
+        authenticated: true,
+        revision: "failed-revision",
+      },
+    }),
+  );
+  render(<CloudNetworkSettings />);
+  await screen.findByLabelText("Password");
+  fireEvent.change(screen.getByLabelText("Username"), {
+    target: { value: "retry-user" },
+  });
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: "retry-secret" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalled());
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).proxy.credentials).toEqual(
+    { username: "retry-user", password: "retry-secret" },
+  );
+});

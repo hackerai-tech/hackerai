@@ -46,7 +46,8 @@ export function CloudNetworkSettings() {
     setProxyAddress(value.proxy?.address ?? "");
     setProxyAuth(Boolean(value.proxy?.authenticated));
     setReplaceCredentials(
-      value.status === "failed" && Boolean(value.proxy?.authenticated),
+      value.status === "failed" &&
+        Boolean(value.proxyAvailable && value.proxy?.authenticated),
     );
     setProxyUsername("");
     setProxyPassword("");
