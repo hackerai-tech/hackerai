@@ -1,3 +1,4 @@
+import { networkPolicy } from "./cloudNetworkValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -189,6 +190,18 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  cloud_network_settings: defineTable({
+    user_id: v.string(),
+    policy: networkPolicy,
+    revision: v.number(),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("applying"),
+      v.literal("failed"),
+    ),
+    token: v.optional(v.string()),
+    leaseUntil: v.optional(v.number()),
+  }).index("by_user_id", ["user_id"]),
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
     "by_visitor",
     ["visitor_id"],

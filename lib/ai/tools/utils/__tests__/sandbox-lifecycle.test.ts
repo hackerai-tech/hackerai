@@ -1,3 +1,7 @@
+jest.mock("@/lib/cloud-network/service", () => ({
+  readNetworkSettings: jest.fn(async () => null),
+  ensureCloudNetwork: jest.fn(async () => {}),
+}));
 jest.mock("@e2b/code-interpreter", () => {
   class E2BError extends Error {}
   return {

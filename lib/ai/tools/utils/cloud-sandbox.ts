@@ -1,3 +1,4 @@
+import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import type { AnySandbox, SandboxBootInfo, SubscriptionTier } from "@/types";
 import { randomUUID } from "node:crypto";
@@ -151,6 +152,7 @@ export async function ensureCloudSandboxConnection(options: {
       options.userId,
       result.sandbox.sandboxId,
     );
+    await ensureCloudNetwork(result.sandbox, options.userId, options.signal);
     registerE2BWorkspaceLease(result.sandbox, options.userId);
     options.signal?.throwIfAborted();
     options.setSandbox(result.sandbox);
