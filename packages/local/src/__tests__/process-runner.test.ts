@@ -117,6 +117,82 @@ describe("ProcessRunner", () => {
     runner.dispose();
   });
 
+  it("keeps another session's pending batch when a session exits early", () => {
+    const first = makePtyProcess();
+    const second = makePtyProcess();
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const runner = new ProcessRunner();
+    const events: string[] = [];
+    runner.on("data", (id, data) => events.push(`${id}:${data}`));
+    runner.on("exit", (id) => events.push(`${id}:exit`));
+    runner.run("first", "echo first");
+    runner.run("second", "echo second");
+    first.__data("final");
+    second.__data("pending");
+    jest.advanceTimersByTime(8);
+    first.__exit();
+    expect(events).toEqual(["first:final", "first:exit"]);
+    jest.advanceTimersByTime(8);
+    expect(events).toEqual(["first:final", "first:exit", "second:pending"]);
+    expect(jest.getTimerCount()).toBe(0);
+    second.__exit();
+    runner.dispose();
+  });
+
+  it("does not starve continuous output or lose text across batching boundaries", () => {
+    const proc = makePtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const runner = new ProcessRunner();
+    const chunks: string[] = [];
+    runner.on("data", (_id, data) => chunks.push(data));
+    runner.run("session-1", "stream output");
+    const input = [
+      "\u001b[",
+      "31m",
+      "\ud83d",
+      "\udd12",
+      "é",
+      "\r",
+      "done",
+      "\u001b[0m",
+    ];
+    for (const chunk of input) {
+      proc.__data(chunk);
+      jest.advanceTimersByTime(4);
+    }
+    // A debounce reset on every chunk would never deliver until output stops.
+    expect(chunks).toHaveLength(2);
+    expect(chunks.join("")).toBe(input.join(""));
+    proc.__data("last");
+    proc.__exit();
+    expect(chunks.join("")).toBe(input.join("") + "last");
+    expect(jest.getTimerCount()).toBe(0);
+    runner.dispose();
+  });
+
+  it("keeps delivering output after a shutdown timeout until exit is confirmed", async () => {
+    const proc = makePtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const runner = new ProcessRunner();
+    const onData = jest.fn();
+    runner.on("data", onData);
+    runner.run("session-1", "long command");
+    const shutdown = expect(runner.shutdown(50)).rejects.toThrow(
+      "Timed out terminating 1 PTY process",
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    await shutdown;
+    proc.__data("still alive");
+    await jest.advanceTimersByTimeAsync(16);
+    expect(onData).toHaveBeenCalledWith("session-1", "still alive");
+    expect(runner.isRunning("session-1")).toBe(true);
+    proc.__data("final");
+    proc.__exit();
+    await runner.shutdown();
+    expect(onData).toHaveBeenNthCalledWith(2, "session-1", "final");
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it("does not restart flush timers after disposal and still flushes on exit", () => {
     const proc = makePtyProcess();
     mockSpawn.mockReturnValue(proc);

@@ -195,14 +195,16 @@ describe("SubagentsSidebar", () => {
     jest.useFakeTimers();
     jest.setSystemTime(activeChild.started_at + 4_000);
     const { unmount } = render(
-      <SubagentsSidebar
-        content={{
-          kind: "subagents",
-          parentMessageId: "parent-message",
-          toolCallId: "tool-1",
-        }}
-        closeSidebar={jest.fn()}
-      />,
+      <React.StrictMode>
+        <SubagentsSidebar
+          content={{
+            kind: "subagents",
+            parentMessageId: "parent-message",
+            toolCallId: "tool-1",
+          }}
+          closeSidebar={jest.fn()}
+        />
+      </React.StrictMode>,
     );
     const activeRow = screen.getByRole("button", {
       name: "Open Active candidate, Working",
@@ -248,15 +250,84 @@ describe("SubagentsSidebar", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  it("stops ticking on completion and uses the persisted final duration", () => {
+  it.each(["completed", "failed", "canceled", "timed_out"])(
+    "stops ticking when %s and uses the persisted final duration",
+    (status) => {
+      jest.useFakeTimers();
+      jest.setSystemTime(activeChild.started_at + 4_000);
+      let child = {
+        ...activeChild,
+        completed_at: undefined as number | undefined,
+      };
+      mockUseQuery.mockImplementation((query) =>
+        query === "listForParentMessage" ? [child] : undefined,
+      );
+      const props = {
+        content: {
+          kind: "subagents" as const,
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+        },
+        closeSidebar: jest.fn(),
+      };
+      const { rerender, unmount } = render(<SubagentsSidebar {...props} />);
+      act(() => jest.advanceTimersByTime(2_000));
+      expect(screen.getByText("6s", { exact: true })).toBeVisible();
+      child = {
+        ...child,
+        status,
+        completed_at: child.started_at + 5_000,
+      };
+      rerender(<SubagentsSidebar {...props} />);
+      expect(screen.getByText("5s", { exact: true })).toBeVisible();
+      expect(jest.getTimerCount()).toBe(0);
+      act(() => jest.advanceTimersByTime(10_000));
+      expect(screen.getByText("5s", { exact: true })).toBeVisible();
+      unmount();
+    },
+  );
+
+  it("ticks a selected child while the parent list is still loading", () => {
     jest.useFakeTimers();
     jest.setSystemTime(activeChild.started_at + 4_000);
-    let child = {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return undefined;
+      if (query === "getOwned")
+        return args === "skip" ? undefined : activeChild;
+      return [];
+    });
+    const { unmount } = render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: activeChild.subagent_id,
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+    expect(screen.getByText("4s", { exact: true })).toBeVisible();
+    act(() => jest.advanceTimersByTime(1_000));
+    expect(screen.getByText("5s", { exact: true })).toBeVisible();
+    unmount();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("uses the new start time when queued work begins without disturbing another clock", () => {
+    jest.useFakeTimers();
+    const now = activeChild.started_at + 4_000;
+    jest.setSystemTime(now);
+    let queued = {
       ...activeChild,
-      completed_at: undefined as number | undefined,
+      subagent_id: "sa_queued",
+      title: "Queued task",
+      status: "queued",
+      created_at: now - 65_000,
+      started_at: undefined as number | undefined,
     };
     mockUseQuery.mockImplementation((query) =>
-      query === "listForParentMessage" ? [child] : undefined,
+      query === "listForParentMessage" ? [queued, activeChild] : undefined,
     );
     const props = {
       content: {
@@ -267,19 +338,23 @@ describe("SubagentsSidebar", () => {
       closeSidebar: jest.fn(),
     };
     const { rerender, unmount } = render(<SubagentsSidebar {...props} />);
+    const queuedRow = screen.getByRole("button", {
+      name: "Open Queued task, Queued",
+    });
+    expect(within(queuedRow).getByText("1m 5s")).toBeVisible();
     act(() => jest.advanceTimersByTime(2_000));
-    expect(screen.getByText("6s", { exact: true })).toBeVisible();
-    child = {
-      ...child,
-      status: "completed",
-      completed_at: child.started_at + 5_000,
-    };
+    expect(within(queuedRow).getByText("1m 7s")).toBeVisible();
+    queued = { ...queued, status: "running", started_at: Date.now() };
     rerender(<SubagentsSidebar {...props} />);
-    expect(screen.getByText("5s", { exact: true })).toBeVisible();
-    expect(jest.getTimerCount()).toBe(0);
-    act(() => jest.advanceTimersByTime(10_000));
-    expect(screen.getByText("5s", { exact: true })).toBeVisible();
+    expect(within(queuedRow).getByText("0s")).toBeVisible();
+    act(() => jest.advanceTimersByTime(1_000));
+    expect(within(queuedRow).getByText("1s")).toBeVisible();
+    const activeRow = screen.getByRole("button", {
+      name: "Open Active candidate, Working",
+    });
+    expect(within(activeRow).getByText("7s")).toBeVisible();
     unmount();
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it("shows persisted evidence warnings after reopening a completed worker", () => {
