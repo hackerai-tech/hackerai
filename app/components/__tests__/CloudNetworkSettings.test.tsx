@@ -61,3 +61,16 @@ it("retains a failed save message and requires a fresh revision before retry", a
   );
   expect(screen.queryByText(/Applied to running/)).not.toBeInTheDocument();
 });
+
+it("shows readable network validation without submitting invalid input", async () => {
+  render(<CloudNetworkSettings />);
+  const field = await screen.findByLabelText("Allowed destinations");
+  fireEvent.change(field, { target: { value: "bad host" } });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Apply network settings" }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Use a valid hostname",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

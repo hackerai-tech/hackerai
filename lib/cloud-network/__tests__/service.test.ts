@@ -78,7 +78,10 @@ it.each(["provider failure", "readback mismatch", "wrong owner"])(
     await expect(saveNetworkSettings("owner", policy, 1)).rejects.toThrow(
       "could not be verified",
     );
-    expect(mutation.mock.calls[1][1]).toMatchObject({ success: false });
+    expect(mutation.mock.calls[1][1]).toMatchObject({
+      success: false,
+      releaseLease: failure === "wrong owner",
+    });
   },
 );
 it("does not contact the provider after a concurrent-save conflict", async () => {
@@ -165,4 +168,54 @@ it("does not cache a provider match when its saved policy changed during verific
   await expect(ensureCloudNetwork(sandbox as any, "owner")).rejects.toThrow(
     "already running",
   );
+});
+
+it("releases the writer lease after an inventory failure before any provider write", async () => {
+  (Sandbox.list as jest.Mock).mockReturnValue({
+    nextItems: async () => {
+      throw new Error("inventory unavailable");
+    },
+    hasNext: false,
+  });
+  await expect(saveNetworkSettings("owner", policy, 1)).rejects.toThrow(
+    "could not be verified",
+  );
+  expect(mutation.mock.calls[1][1]).toMatchObject({
+    success: false,
+    releaseLease: true,
+  });
+});
+it.each([
+  { allow: Array(101).fill("example.test") },
+  { allow: ["x".repeat(254)] },
+])("gives readable destination size limits", ({ allow }) => {
+  expect(() => normalizeNetworkPolicy({ mode: "restricted", allow })).toThrow(
+    "at most 100 destinations",
+  );
+});
+it.each(["*.127.0.0.1", "bad host", "999.1.1.1/24"])(
+  "keeps destination errors specific to networking: %s",
+  (entry) => {
+    expect(() =>
+      normalizeNetworkPolicy({ mode: "restricted", allow: [entry] }),
+    ).toThrow("Use a valid hostname");
+  },
+);
+
+it("releases a failed reconciliation when canceled before the first provider write", async () => {
+  const sandbox = workspace();
+  const controller = new AbortController();
+  controller.abort();
+  query.mockResolvedValueOnce({ policy, revision: 2, status: "failed" });
+  sandbox.getInfo.mockRejectedValueOnce(
+    new DOMException("Canceled", "AbortError"),
+  );
+  await expect(
+    ensureCloudNetwork(sandbox as any, "owner", controller.signal),
+  ).rejects.toThrow("could not be verified");
+  expect(sandbox.updateNetwork).not.toHaveBeenCalled();
+  expect(mutation.mock.calls[1][1]).toMatchObject({
+    success: false,
+    releaseLease: true,
+  });
 });

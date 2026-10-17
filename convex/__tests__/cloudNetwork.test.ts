@@ -105,3 +105,30 @@ it("does not expose or change another user's settings", async () => {
   expect(validateServiceKey).toHaveBeenCalledWith("test");
   expect(assertUserCanAccessChatHistory).toHaveBeenCalledWith(ctx, "other");
 });
+
+it("allows immediate retry after failure before any provider write while retaining the desired policy", async () => {
+  await call(begin, ctx, {
+    ...auth,
+    token: "first",
+    policy,
+    expectedRevision: 0,
+  });
+  await call(finish, ctx, {
+    ...auth,
+    token: "first",
+    success: false,
+    releaseLease: true,
+  });
+  expect(await call(get, ctx, auth)).toMatchObject({
+    policy,
+    revision: 1,
+    status: "failed",
+  });
+  expect(await call(begin, ctx, { ...auth, token: "retry" })).toMatchObject({
+    policy,
+    revision: 1,
+  });
+  await expect(
+    call(finish, ctx, { ...auth, token: "first", success: true }),
+  ).rejects.toThrow("ownership changed");
+});

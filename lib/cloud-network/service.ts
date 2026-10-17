@@ -64,8 +64,10 @@ async function applyToSandbox(
   userId: string,
   policy: NetworkPolicy,
   signal: AbortSignal,
+  onWrite: () => void,
 ) {
   if (await matchesSandboxPolicy(sandbox, userId, policy, signal)) return;
+  onWrite();
   await sandbox.updateNetwork(e2bNetwork(policy), {
     signal,
     requestTimeoutMs: 15_000,
@@ -105,6 +107,10 @@ async function applyNetwork(
   const signal = parentSignal
     ? AbortSignal.any([deadline, parentSignal])
     : deadline;
+  let wrote = false;
+  const onWrite = () => {
+    wrote = true;
+  };
   try {
     const workspace = await readCloudWorkspaceState(userId);
     const destinationId =
@@ -115,7 +121,7 @@ async function applyNetwork(
     const seen = new Set<string>();
     if (connected) {
       await assertCloudWorkspaceAvailable(userId, connected.sandboxId);
-      await applyToSandbox(connected, userId, settings.policy, signal);
+      await applyToSandbox(connected, userId, settings.policy, signal, onWrite);
       seen.add(connected.sandboxId);
     }
     for (const cluster of clusters) {
@@ -144,7 +150,13 @@ async function applyNetwork(
             signal,
             requestTimeoutMs: 15_000,
           });
-          await applyToSandbox(sandbox, userId, settings.policy, signal);
+          await applyToSandbox(
+            sandbox,
+            userId,
+            settings.policy,
+            signal,
+            onWrite,
+          );
           seen.add(info.sandboxId);
         }
       } while (pages.hasNext);
@@ -163,6 +175,7 @@ async function applyNetwork(
         ...auth(userId),
         token,
         success: false,
+        releaseLease: !wrote,
       })
       .catch(() => {});
     throw new NetworkSettingsError(

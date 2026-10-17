@@ -75,7 +75,12 @@ export const begin = mutation({
   },
 });
 export const finish = mutation({
-  args: { ...auth, token: v.string(), success: v.boolean() },
+  args: {
+    ...auth,
+    token: v.string(),
+    success: v.boolean(),
+    releaseLease: v.optional(v.boolean()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -84,10 +89,12 @@ export const finish = mutation({
       throw new ConvexError(
         "Network update ownership changed. Reload settings.",
       );
+    // Failed reads/cancellation before a provider write need no uncertainty fence.
+    const releaseLease = args.success || args.releaseLease === true;
     await ctx.db.patch(saved._id, {
       status: args.success ? "ready" : "failed",
-      token: args.success ? undefined : saved.token,
-      leaseUntil: args.success ? undefined : saved.leaseUntil,
+      token: releaseLease ? undefined : saved.token,
+      leaseUntil: releaseLease ? undefined : saved.leaseUntil,
     });
     return null;
   },

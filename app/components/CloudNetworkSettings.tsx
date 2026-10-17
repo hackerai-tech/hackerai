@@ -162,7 +162,8 @@ export function CloudNetworkSettings() {
       {saved?.status === "failed" && (
         <p role="status" className="text-sm text-amber-600 dark:text-amber-400">
           The last update was not fully verified. Some workspaces may already
-          use these rules. Retry after two minutes.
+          use these rules. Retry Apply. If an update is still in progress, wait
+          up to two minutes.
         </p>
       )}
       {saved?.status === "applying" && (

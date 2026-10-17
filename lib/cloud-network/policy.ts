@@ -13,8 +13,22 @@ export const DEFAULT_NETWORK_POLICY: NetworkPolicy = {
   allow: [],
 };
 
+function networkHost(value: string): string {
+  try {
+    return normalizeTarget(value);
+  } catch {
+    throw new Error(
+      "Use a valid hostname, wildcard, IPv4 address, or IPv4 CIDR. URLs and ports are not supported.",
+    );
+  }
+}
 export function normalizeNetworkPolicy(input: unknown): NetworkPolicy {
-  const policy = networkPolicySchema.parse(input);
+  const parsed = networkPolicySchema.safeParse(input);
+  if (!parsed.success)
+    throw new Error(
+      "Choose a network mode and use at most 100 destinations of up to 253 characters each.",
+    );
+  const policy = parsed.data;
   const allow = [
     ...new Set(
       policy.allow.map((entry) => {
@@ -30,11 +44,11 @@ export function normalizeNetworkPolicy(input: unknown): NetworkPolicy {
             throw new Error(
               "Use a hostname, wildcard, IPv4 address, or IPv4 CIDR. URLs and ports are not supported.",
             );
-          if (normalizeTarget(match[1]) !== match[1])
+          if (networkHost(match[1]) !== match[1])
             throw new Error("Use a canonical IPv4 address.");
           return value;
         }
-        const host = normalizeTarget(value);
+        const host = networkHost(value);
         if (host.includes(":") || host.startsWith("["))
           throw new Error("IPv6 is not supported by this setting.");
         return host;

@@ -75,7 +75,8 @@ writes its files. Paused workspaces receive the saved policy on acquisition;
 new workspaces are created with it. Provider writes are serialized with a
 revision and bounded operation fence. Failures retain the desired policy and
 report uncertain/partial application; an interrupted update can be retried after
-the fence expires. A provider operation already dispatched is not an atomic
+the fence expires. Failures before any provider write release the fence immediately
+so canceled reads do not delay the next attempt. A provider operation already dispatched is not an atomic
 revocation of existing traffic. Externally managed egress proxies or credential
 transforms are rejected rather than cleared by this editor.
 
