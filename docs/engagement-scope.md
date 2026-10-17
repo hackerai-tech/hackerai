@@ -87,7 +87,10 @@ report uncertain/partial application; an interrupted update can be retried after
 the fence expires. Failures before any provider write release the fence immediately
 so canceled reads do not delay the next attempt. A provider operation already dispatched is not an atomic
 revocation of existing traffic. Externally managed egress proxies remain protected until the user explicitly
-configures a managed proxy. Credential transforms are always rejected rather than
+configures a managed proxy. From then on, Settings owns the desired proxy state,
+including removal (`proxy: null`); reconnect reconciles that state. Out-of-band
+proxy edits after adoption are not supported. Disabling the proxy does not hand
+ownership back to external writers. Credential transforms are always rejected rather than
 cleared by this editor.
 
 Only hostnames/wildcards and IPv4 addresses/CIDRs are supported. E2B hostname

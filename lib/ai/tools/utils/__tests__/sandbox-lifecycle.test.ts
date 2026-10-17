@@ -1,3 +1,5 @@
+import { format } from "node:util";
+
 jest.mock("@/lib/cloud-network/service", () => ({
   readNetworkSettings: jest.fn(async () => null),
   networkForCreation: jest.fn(async (_userId, settings) =>
@@ -643,18 +645,29 @@ describe("E2B sandbox lease lifecycle", () => {
           sandboxApi.create.mockRejectedValueOnce(
             new TemplateError("synthetic-secret"),
           );
-        await expect(
-          ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
-        ).rejects.toThrow(
+        const failureResult = await ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }).then(
+          () => {
+            throw new Error("Expected sandbox acquisition to fail");
+          },
+          (error: unknown) => error,
+        );
+        expect(failureResult).toBeInstanceOf(Error);
+        expect((failureResult as Error).message).toContain(
           failure === "vault"
             ? "Cloud proxy credentials are unavailable"
             : "Sandbox template is incompatible",
         );
-        if (failure === "vault")
-          expect(sandboxApi.create).not.toHaveBeenCalled();
-        expect(JSON.stringify(errors.mock.calls)).not.toContain(
+        expect((failureResult as Error).message).not.toContain(
           "synthetic-secret",
         );
+        if (failure === "vault")
+          expect(sandboxApi.create).not.toHaveBeenCalled();
+        expect(
+          errors.mock.calls.map((args) => format(...args)).join("\n"),
+        ).not.toContain("synthetic-secret");
       } finally {
         errors.mockRestore();
       }
