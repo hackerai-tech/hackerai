@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 
 let mockUser: { id: string } | null = { id: "user-1" };
@@ -33,9 +34,9 @@ jest.mock("@/lib/analytics/client", () => ({
 
 const price = {
   priceLookupKey: "pro-monthly-plan",
-  displayedAmountDollars: 29,
   currency: "usd",
   billingInterval: "month",
+  displayedAmountDollars: 29,
   stripePriceId: "price_29",
 };
 const response = (body: unknown) => ({ ok: true, json: async () => body });
@@ -63,12 +64,12 @@ describe("subscription before task presentation", () => {
     );
   });
 
-  it("shows the $29 price before allowing a task and uses the established checkout", async () => {
+  it("shows the assigned price before allowing a task and uses the established checkout", async () => {
     render(view());
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     await screen.findByText("$29");
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Subscribe to Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get Pro" }));
     expect(mockUpgrade).toHaveBeenCalledWith(
       "pro-monthly-plan",
       undefined,
@@ -83,8 +84,62 @@ describe("subscription before task presentation", () => {
       expect.objectContaining({
         regional_subscription_variant: "test",
         exposure_surface: "composer",
+        paywall_version: 2,
       }),
     );
+  });
+
+  it("shows a static example without sending a task or opening checkout", async () => {
+    render(view());
+    await screen.findByText("$29");
+    const callsBefore = mockFetch.mock.calls.length;
+    const example = screen
+      .getByText("See an example workflow")
+      .closest("details")!;
+    example.open = true;
+    fireEvent(example, new Event("toggle"));
+    expect(
+      screen.getByText("Illustrative example. No task is running."),
+    ).toBeVisible();
+    expect(mockFetch).toHaveBeenCalledTimes(callsBefore);
+    expect(mockUpgrade).not.toHaveBeenCalled();
+    expect(screen.queryByText("Send task")).not.toBeInTheDocument();
+    expect(mockCapture).toHaveBeenCalledWith(
+      "regional_subscription_paywall_action",
+      expect.objectContaining({ action: "view_example", paywall_version: 2 }),
+    );
+  });
+
+  it("keeps plan comparison in the subscription-required flow", async () => {
+    render(view());
+    await screen.findByText("$29");
+    fireEvent.click(screen.getByRole("button", { name: "Compare plans" }));
+    expect(redirectToPricing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "regional_subscription_first",
+        from_tier: "free",
+      }),
+    );
+    expect(mockUpgrade).not.toHaveBeenCalled();
+  });
+
+  it("does not enable checkout or record an offer exposure for malformed pricing", async () => {
+    mockFetch.mockImplementation((url: string) =>
+      Promise.resolve(
+        response(
+          url.includes("pro-monthly")
+            ? { ...price, displayedAmountDollars: 1 }
+            : { assignment: { variant: "test", country: "IN" } },
+        ),
+      ),
+    );
+    render(view());
+    await screen.findByText("Retry pricing");
+    expect(
+      screen.queryByRole("button", { name: "Get Pro" }),
+    ).not.toBeInTheDocument();
+    expect(mockUpgrade).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it("renders controls and retains zero-usage accounts in the exposure denominator", async () => {
@@ -115,7 +170,7 @@ describe("subscription before task presentation", () => {
     mockSubscription = "pro";
     rerender(view());
     expect(screen.getByText("Send task")).toBeVisible();
-    expect(screen.queryByText("Subscribe to Pro")).not.toBeInTheDocument();
+    expect(screen.queryByText("Get Pro")).not.toBeInTheDocument();
   });
 
   it("keeps active task controls available", () => {
@@ -141,7 +196,7 @@ describe("subscription before task presentation", () => {
     );
     render(view());
     await screen.findByText("Retry pricing");
-    expect(screen.queryByText("$29")).not.toBeInTheDocument();
+    expect(screen.queryByText("$25")).not.toBeInTheDocument();
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     mockFetch.mockResolvedValue(response(price));
     fireEvent.click(screen.getByText("Retry pricing"));
