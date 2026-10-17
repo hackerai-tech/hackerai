@@ -89,6 +89,7 @@ export async function PUT(request: NextRequest) {
       userId,
       mode: policy.mode,
       destination_count: policy.allow.length,
+      proxy_enabled: Boolean(saved?.proxy),
     });
     return NextResponse.json(saved);
   } catch (error) {

@@ -509,3 +509,32 @@ it("does not touch Vault when acquisition is canceled after the writer lease is 
     releaseLease: true,
   });
 });
+
+it("retains the writer fence after an uncertain Vault write even before E2B is contacted", async () => {
+  process.env.E2B_BYOP_ENABLED = "true";
+  query.mockResolvedValue({ policy, revision: 2, status: "ready" });
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy,
+      revision: 3,
+      status: "applying",
+      proxy: proxySettings,
+      proxyManaged: true,
+    })
+    .mockResolvedValue(null);
+  jest
+    .mocked(writeProxySecret)
+    .mockRejectedValueOnce(new Error("Vault timeout"));
+  await expect(
+    saveNetworkSettings("owner", policy, 2, {
+      address: proxySettings.address,
+      credentials: { username: "u", password: "p" },
+    }),
+  ).rejects.toThrow("could not be verified");
+  expect(Sandbox.list).not.toHaveBeenCalled();
+  expect(mutation.mock.calls.at(-1)[1]).toMatchObject({
+    success: false,
+    releaseLease: false,
+  });
+});

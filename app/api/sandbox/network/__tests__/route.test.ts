@@ -115,9 +115,20 @@ it("accepts proxy credentials for the authenticated owner without returning or t
   expect(JSON.stringify(await response.json())).not.toContain(
     "synthetic-secret",
   );
-  expect(
-    JSON.stringify(require("@/lib/posthog/server").phLogger.event.mock.calls),
-  ).not.toContain("synthetic-secret");
+  const events = require("@/lib/posthog/server").phLogger.event;
+  expect(events).toHaveBeenCalledWith("cloud_network_settings_saved", {
+    userId: "authenticated-owner",
+    mode: "offline",
+    destination_count: 0,
+    proxy_enabled: true,
+  });
+  for (const privateValue of [
+    "synthetic-secret",
+    "synthetic-user",
+    proxy.address,
+  ]) {
+    expect(JSON.stringify(events.mock.calls)).not.toContain(privateValue);
+  }
 });
 it("rejects embedded credentials and oversize credentials before saving", async () => {
   for (const proxy of [

@@ -174,16 +174,22 @@ async function applyNetwork(
       workspace?.phase === "e2b" ? workspace.destinationId : undefined;
     await assertCloudWorkspaceAvailable(userId, destinationId);
     signal.throwIfAborted();
-    const proxy = settings.proxy
-      ? proxyInput
-        ? await writeProxySecret(
-            userId,
-            settings.proxy,
-            proxyInput,
-            previousProxy,
-          )
-        : await readProxySecret(userId, settings.proxy)
-      : undefined;
+    let proxy: ProxySecret | undefined;
+    if (settings.proxy) {
+      if (proxyInput) {
+        // A timed-out Vault write may still complete. Keep the same uncertainty
+        // fence as E2B writes so rotation/deletion cannot race a late response.
+        onWrite();
+        proxy = await writeProxySecret(
+          userId,
+          settings.proxy,
+          proxyInput,
+          previousProxy,
+        );
+      } else {
+        proxy = await readProxySecret(userId, settings.proxy);
+      }
+    }
     signal.throwIfAborted();
     await assertCloudWorkspaceAvailable(userId, destinationId);
     const clusters = getConfiguredE2BClustersForCleanup();
@@ -242,8 +248,10 @@ async function applyNetwork(
       } while (pages.hasNext);
     }
     signal.throwIfAborted();
-    if (settings.proxyManaged && !settings.proxy)
+    if (settings.proxyManaged && !settings.proxy) {
+      onWrite();
       await deleteProxySecret(userId);
+    }
     signal.throwIfAborted();
     await client.mutation(api.cloudNetwork.finish, {
       ...auth(userId),
