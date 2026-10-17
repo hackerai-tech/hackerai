@@ -1,5 +1,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { CloudNetworkSettings } from "../CloudNetworkSettings";
+import { toast } from "sonner";
+jest.mock("sonner", () => ({ toast: { success: jest.fn() } }));
 const capture = jest.fn();
 // Stable provider identity prevents an unrelated provider replacement from remounting the effect.
 const posthog = { capture };
@@ -22,11 +24,20 @@ it("loads and edits the workspace allowlist and only reports applied after serve
   fireEvent.change(field, {
     target: { value: "api.example.test\n*.another.test" },
   });
-  fetchMock.mockResolvedValueOnce(response({ ...saved, revision: 3 }));
+  let finishSave!: (value: ReturnType<typeof response>) => void;
+  fetchMock.mockReturnValueOnce(
+    new Promise((resolve) => {
+      finishSave = resolve;
+    }),
+  );
   fireEvent.click(
     screen.getByRole("button", { name: "Apply network settings" }),
   );
-  await screen.findByText(/Applied to running cloud workspaces/);
+  expect(toast.success).not.toHaveBeenCalled();
+  finishSave(response({ ...saved, revision: 3 }));
+  await waitFor(() =>
+    expect(toast.success).toHaveBeenCalledWith("Network settings updated."),
+  );
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
     expectedRevision: 2,
     policy: {
@@ -59,7 +70,7 @@ it("retains a failed save message and requires a fresh revision before retry", a
       screen.getByRole("button", { name: "Apply network settings" }),
     ).toBeEnabled(),
   );
-  expect(screen.queryByText(/Applied to running/)).not.toBeInTheDocument();
+  expect(toast.success).not.toHaveBeenCalled();
 });
 
 it("shows readable network validation without submitting invalid input", async () => {

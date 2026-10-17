@@ -17,6 +17,7 @@ import {
   type NetworkPolicy,
 } from "@/lib/cloud-network/policy";
 import { usePostHog } from "posthog-js/react";
+import { toast } from "sonner";
 
 export function CloudNetworkSettings() {
   const [saved, setSaved] = useState<NetworkSettings | null>(null);
@@ -24,7 +25,6 @@ export function CloudNetworkSettings() {
   const [allow, setAllow] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const posthog = usePostHog();
   function adopt(value: NetworkSettings) {
     setSaved(value);
@@ -51,7 +51,6 @@ export function CloudNetworkSettings() {
   async function reload() {
     setBusy(true);
     setError("");
-    setNotice("");
     try {
       const response = await fetch("/api/sandbox/network");
       if (!response.ok) throw new Error();
@@ -66,7 +65,6 @@ export function CloudNetworkSettings() {
     if (!saved) return;
     setBusy(true);
     setError("");
-    setNotice("");
     try {
       const policy = normalizeNetworkPolicy({
         mode,
@@ -95,9 +93,7 @@ export function CloudNetworkSettings() {
         );
       }
       adopt(result);
-      setNotice(
-        "Applied to running cloud workspaces. Files preserved. Paused and new workspaces use these settings on their next connection.",
-      );
+      toast.success("Network settings updated.");
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Could not apply network settings.",
@@ -165,11 +161,6 @@ export function CloudNetworkSettings() {
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
-        </p>
-      )}
-      {notice && (
-        <p role="status" className="text-sm">
-          {notice}
         </p>
       )}
       <div className="flex gap-2">
