@@ -116,11 +116,10 @@ export function CloudNetworkSettings() {
           Cloud network access
         </h3>
         <p className="text-sm text-muted-foreground">
-          Applies to all tasks in your cloud workspace. Changing access keeps
-          your files and sandbox. Local and Desktop connections are unaffected.
+          Choose what all tasks in your cloud workspace can access.
         </p>
       </div>
-      <Label htmlFor="cloud-network-mode">Internet access</Label>
+      <Label htmlFor="cloud-network-mode">Access</Label>
       <Select
         value={mode}
         onValueChange={(value) => setMode(value as NetworkPolicy["mode"])}
@@ -143,22 +142,14 @@ export function CloudNetworkSettings() {
             value={allow}
             onChange={(e) => setAllow(e.target.value)}
             disabled={busy || !saved}
-            placeholder={"api.example.com\n*.example.org\n192.0.2.0/24"}
+            placeholder={"example.com\n*.example.com\n192.0.2.0/24"}
             rows={4}
           />
           <p className="text-xs text-muted-foreground">
-            One hostname, wildcard, IPv4 address or CIDR per line. Hostnames
-            filter HTTP on port 80 and TLS on port 443; IP ranges allow other
-            ports too. URL paths and domain exclusions are not supported here.
-            DNS remains available with hostname rules. Shared CDN endpoints may
-            serve other destinations.
+            One domain, IP address, or IP range per line.
           </p>
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
-        This is a workspace network limit. Task scope still controls what agents
-        should test. Existing network connections may not stop immediately.
-      </p>
       {saved?.status === "failed" && (
         <p role="status" className="text-sm text-amber-600 dark:text-amber-400">
           The last update was not fully verified. Some workspaces may already
