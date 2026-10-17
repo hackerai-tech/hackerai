@@ -896,6 +896,46 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
+    const cloudNetworkPrompt = jest
+      .fn()
+      .mockResolvedValue("\nSaved access: Internet access");
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        cloudNetworkPrompt,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.system).toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue("\nSaved access: No internet");
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: [
+        { role: "user", content: "Old summary: cloud internet is available" },
+      ],
+    });
+    expect(next.system).toContain("Saved access: No internet");
+    expect(next.system).not.toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue(
+      "\nSaved access: Allowed destinations only; example.test",
+    );
+    const later = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: next.messages,
+    });
+    expect(later.system).toContain("Allowed destinations only; example.test");
+    expect(later.system).not.toContain("Saved access: No internet");
+  });
+
   it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
     const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {

@@ -1055,6 +1055,7 @@ export const subagentTask = task({
               );
             const {
               engagementScope,
+              cloudNetworkPrompt,
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
               ensureSandbox,
@@ -1336,7 +1337,14 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt + (await engagementScope.prompt(false)),
+                system:
+                  systemPrompt +
+                  (
+                    await Promise.all([
+                      engagementScope.prompt(false),
+                      cloudNetworkPrompt(),
+                    ])
+                  ).join(""),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1491,7 +1499,14 @@ export const subagentTask = task({
                       generationAttempt,
                       steps.length,
                     ),
-                    system: systemPrompt + (await engagementScope.prompt()),
+                    system:
+                      systemPrompt +
+                      (
+                        await Promise.all([
+                          engagementScope.prompt(),
+                          cloudNetworkPrompt(),
+                        ])
+                      ).join(""),
                     messages: compacted.messages as ModelMessage[],
                   };
                 },

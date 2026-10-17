@@ -69,6 +69,15 @@ is stored per user, because cloud workspaces are currently reused across chats.
 Chat scope never silently changes this shared setting. Local/Desktop connections
 and server-side reader requests are outside this E2B control.
 
+E2B Agent and delegated runs reload a network-settings system-prompt section
+each model step, independently of conversation compaction. It includes the
+saved mode and at most ten complete allowlist entries, capped at 400 tokens
+for the entire section using the application's tokenizer (provider tokenization
+may differ). Omitted entries are counted; the full saved list still governs
+E2B. Local/Desktop and Ask-only runs do not receive this section. Failed or
+pending updates are described as unverified desired settings; a failed read
+never becomes an unrestricted-access claim. This summary adds no network grants.
+
 The E2B adapter updates running workspaces in place and reads the resulting
 configuration back before reporting success. It never deletes a workspace or
 writes its files. Paused workspaces receive the saved policy on acquisition;

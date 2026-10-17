@@ -937,6 +937,7 @@ export const createChatHandler = () => {
 
             const {
               engagementScope,
+              cloudNetworkPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -1700,6 +1701,7 @@ export const createChatHandler = () => {
               trackedProvider,
               currentSystemPrompt,
               engagementScope,
+              cloudNetworkPrompt,
               tools,
               mode,
               endpoint,

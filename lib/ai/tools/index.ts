@@ -2,6 +2,7 @@ import {
   createScopeRuntime,
   guardScopeTools,
 } from "@/lib/engagement-scope/runtime";
+import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
@@ -448,6 +449,11 @@ export const createTools = (
 
   return {
     engagementScope,
+    cloudNetworkPrompt: createCloudNetworkPrompt(
+      userID,
+      () =>
+        isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
+    ),
     tools,
     cleanupBrowserSessions: () =>
       browserSessions?.cleanup() ?? Promise.resolve(),
