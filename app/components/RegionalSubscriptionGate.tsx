@@ -117,19 +117,18 @@ function SubscriptionOffer({
 
   return (
     <Card
-      className="@container mx-auto my-3 max-h-[70svh] w-full max-w-2xl gap-0 overflow-y-auto p-0 text-left"
+      className="@container mx-auto my-3 max-h-[80svh] w-full max-w-2xl gap-0 overflow-y-auto p-0 text-left"
       data-testid="regional-subscription-offer"
     >
-      <div className="space-y-3 p-5 pb-4 @min-[34rem]:px-6">
+      <div className="space-y-2 p-4 @min-[34rem]:space-y-3 @min-[34rem]:p-6 @min-[34rem]:pb-4">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           HackerAI Pro
         </p>
-        <h2 className="text-2xl font-semibold leading-tight tracking-tight">
-          Put AI to work on your next security task
+        <h2 className="text-xl font-semibold leading-tight tracking-tight @min-[34rem]:text-2xl">
+          Start your next security task
         </h2>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Investigate vulnerabilities, review code, and run tools with an AI
-          built for security work.
+          Review code, investigate vulnerabilities, and run tools with AI.
         </p>
         <p className="text-xs text-muted-foreground">
           A paid plan is required to send requests from your region.
@@ -137,7 +136,7 @@ function SubscriptionOffer({
       </div>
 
       <div className="grid border-t @min-[34rem]:grid-cols-[1fr_15rem]">
-        <div className="flex flex-col gap-4 @min-[34rem]:col-start-2 @min-[34rem]:row-start-1 bg-muted/30 p-5 @min-[34rem]:border-l @min-[34rem]:border-t-0 @min-[34rem]:p-6">
+        <div className="flex flex-col gap-3 @min-[34rem]:gap-4 @min-[34rem]:col-start-2 @min-[34rem]:row-start-1 bg-muted/30 p-4 @min-[34rem]:border-l @min-[34rem]:border-t-0 @min-[34rem]:p-6">
           <div aria-live="polite" aria-atomic="true">
             <p className="mb-2 text-sm font-medium">Start with Pro</p>
             {price ? (
@@ -167,7 +166,7 @@ function SubscriptionOffer({
           <div className="space-y-2">
             {failed ? (
               <Button
-                className="w-full"
+                className="h-11 w-full"
                 onClick={() => {
                   setFailed(false);
                   setAttempt((value) => value + 1);
@@ -177,7 +176,7 @@ function SubscriptionOffer({
               </Button>
             ) : (
               <Button
-                className="w-full"
+                className="h-11 w-full"
                 disabled={!price || upgradeLoading}
                 onClick={() => {
                   captureAction("checkout");
@@ -201,7 +200,7 @@ function SubscriptionOffer({
               </Button>
             )}
             <Button
-              className="w-full"
+              className="h-11 w-full"
               variant="ghost"
               disabled={upgradeLoading}
               onClick={() => {
