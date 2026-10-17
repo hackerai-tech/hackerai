@@ -4,6 +4,10 @@ const mockQuarantineLocalConnection = jest.fn();
 const mockIsE2BSandbox = jest.fn();
 const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
+const mockNetworkQuery = jest.fn();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ query: mockNetworkQuery }),
+}));
 
 jest.mock("../run-terminal-cmd", () => ({ createRunTerminalCmd: jest.fn() }));
 jest.mock("../interact-terminal-session", () => ({
@@ -26,9 +30,10 @@ jest.mock("../notes", () => ({
 jest.mock("../utils/hybrid-sandbox-manager", () => ({
   HybridSandboxManager: jest
     .fn()
-    .mockImplementation((_userId, trackSandboxUsage) => {
+    .mockImplementation((_userId, trackSandboxUsage, preference) => {
       mockTrackSandboxUsage = trackSandboxUsage;
       return {
+        getEffectivePreference: () => preference,
         resetSandbox: mockResetSandbox,
         quarantineLocalConnection: mockQuarantineLocalConnection,
       };
@@ -36,7 +41,9 @@ jest.mock("../utils/hybrid-sandbox-manager", () => ({
 }));
 
 jest.mock("../utils/sandbox-manager", () => ({
-  DefaultSandboxManager: jest.fn(),
+  DefaultSandboxManager: jest.fn(() => ({
+    getEffectivePreference: () => "e2b",
+  })),
 }));
 
 jest.mock("../utils/sandbox-types", () => ({
@@ -73,6 +80,41 @@ describe("sandbox acquisition serialization", () => {
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it.each([
+    ["agent", "e2b", true],
+    ["agent", undefined, true],
+    ["agent", "desktop", false],
+    ["agent", "connection-1", false],
+    ["ask", "e2b", false],
+  ] as const)(
+    "includes network context for %s/%s only when executing in E2B",
+    async (mode, preference, expected) => {
+      mockNetworkQuery.mockResolvedValue({
+        policy: { mode: "offline", allow: [] },
+        revision: 1,
+        status: "ready",
+      });
+      const { cloudNetworkPrompt } = createTools(
+        "user-1",
+        "chat-1",
+        {} as never,
+        mode,
+        {} as never,
+        [],
+        false,
+        undefined,
+        preference,
+        "test-service-key",
+      );
+      const prompt = await cloudNetworkPrompt();
+      if (expected) expect(prompt).toContain("Saved access: No internet");
+      else {
+        expect(prompt).toBe("");
+        expect(mockNetworkQuery).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("does not let a pre-reset acquisition replace the refreshed sandbox", async () => {
     let resolveFirst!: (value: { sandbox: { id: string } }) => void;

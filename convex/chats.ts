@@ -1,3 +1,4 @@
+import { deleteScopeBatch } from "./engagementScopes";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
 import { query, mutation, internalMutation } from "./lib/serviceFunctions";
@@ -441,6 +442,10 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     return;
   }
 
+  if (await deleteScopeBatch(ctx, chat.id)) {
+    await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
+    return;
+  }
   // Delete the chat itself
   await ctx.db.delete(chat._id);
 }
@@ -497,6 +502,10 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     return true;
   }
 
+  if (await deleteScopeBatch(ctx, chat.id)) {
+    await scheduleDeleteAllChatsBatch(ctx, userId);
+    return true;
+  }
   await ctx.db.delete(chat._id);
   await scheduleDeleteAllChatsBatch(ctx, userId);
   return true;
@@ -514,6 +523,7 @@ export const getChatByIdFromClient = query({
       id: v.string(),
       title: v.string(),
       user_id: v.string(),
+      engagement_scope_expected: v.optional(v.boolean()),
       finish_reason: v.optional(v.string()),
       last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
@@ -627,6 +637,7 @@ export const getChatById = query({
       id: v.string(),
       title: v.string(),
       user_id: v.string(),
+      engagement_scope_expected: v.optional(v.boolean()),
       finish_reason: v.optional(v.string()),
       last_run_finished_at: v.optional(v.number()),
       active_stream_id: v.optional(v.string()),
