@@ -15,7 +15,7 @@ export interface TestUser {
 
 const DEFAULTS = {
   free: {
-    email: "free@hackerai.com",
+    email: "free@hackerai.co",
   },
   pro: {
     email: "pro@hackerai.com",
