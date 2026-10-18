@@ -1,5 +1,7 @@
 import "server-only";
 
+import { getCompactionResponseFormat } from "./structured-summary";
+
 import {
   CompactionModelPolicy,
   COMPACTION_PRIMARY_MODEL,
@@ -31,6 +33,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
   isRecoverableStartupCompactionError,
+  isCompactionTimeout,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
   InvalidCompactionSummaryError,
@@ -262,10 +265,27 @@ const buildContextCompactionProviderOptions = (
 
 const buildStartupCompactionProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
+  structuredMode?: ChatMode,
 ): Record<string, Record<string, unknown>> => ({
   openrouter: {
     ...buildContextCompactionProviderOptions(providerOptions).openrouter,
-    provider: { sort: "throughput", data_collection: "deny" },
+    // Request JSON at the adapter boundary; validate after capturing billable usage.
+    ...(structuredMode
+      ? { response_format: getCompactionResponseFormat(structuredMode) }
+      : {}),
+    provider: {
+      sort: structuredMode ? "latency" : "throughput",
+      ...(structuredMode
+        ? {
+            require_parameters: true,
+            // Modal can stop with reasoning but no final checkpoint. Prefer the
+            // validated route, retaining other providers and model fallback.
+            order: ["baseten"],
+            ignore: ["modal"],
+          }
+        : {}),
+      data_collection: "deny",
+    },
   },
 });
 
@@ -565,6 +585,9 @@ const generateSummaryTextWithRetry = async ({
           abortSignal?.throwIfAborted();
           const languageModel = myProvider.languageModel(modelName);
           const attemptStartedAt = Date.now();
+          const isTreatmentGlm =
+            assignment.flagEnabled === true &&
+            modelName === "model-glm-5.3-flash";
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
             variant: assignment.policy,
@@ -584,14 +607,21 @@ const generateSummaryTextWithRetry = async ({
                       reasoningEffort: "low",
                     },
                   }
-                : buildStartupCompactionProviderOptions(providerOptions),
+                : buildStartupCompactionProviderOptions(
+                    providerOptions,
+                    isTreatmentGlm ? mode : undefined,
+                  ),
               abortSignal,
               modelMessages,
               summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                timeout: 60_000,
-                maxOutputTokens: 8192,
+                // Allow longer checkpoints to finish, but start recovery before
+                // a stalled GLM request consumes the former 90s deadline.
+                timeout: isTreatmentGlm ? 75_000 : 60_000,
+                // GLM shares this budget between mandatory reasoning and text.
+                maxOutputTokens: isTreatmentGlm ? 16384 : 8192,
+                structuredSummary: isTreatmentGlm,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
                 onDiscardedUsage: (usage) => {
@@ -620,6 +650,14 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ? "aborted" : "error",
               Date.now() - attemptStartedAt,
               discardedUsage,
+              abortSignal?.aborted
+                ? "canceled"
+                : error instanceof InvalidCompactionSummaryError
+                  ? error.reason
+                  : isCompactionTimeout(error)
+                    ? "timeout"
+                    : "provider_error",
+              error,
             );
             markSummarizationAttemptError(
               error,
@@ -631,6 +669,11 @@ const generateSummaryTextWithRetry = async ({
               index === models.length - 1 ||
               !(
                 modelName === COMPACTION_PRIMARY_MODEL ||
+                // A cheaper primary can reject a request with a non-retryable
+                // provider error (for example HTTP 400). Still try the assigned
+                // Abliteration fallback once; never retry caller cancellation.
+                (index === 0 &&
+                  assignment.fallbackModel === COMPACTION_PRIMARY_MODEL) ||
                 error instanceof InvalidCompactionSummaryError ||
                 isMalformedProviderJsonError(error) ||
                 isRecoverableStartupCompactionError(error)

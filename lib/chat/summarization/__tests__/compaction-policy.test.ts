@@ -123,7 +123,7 @@ describe("compaction model assignment and telemetry", () => {
             fallbackModel: platformAuthorized
               ? "model-glm-5.3-flash"
               : "model-abliterated",
-            policy: "moderation_glm53_abliteration_fallback_v1",
+            policy: "moderation_glm53_abliteration_recovery_v2",
             flagEnabled: true,
           });
           expect(mockEvent).not.toHaveBeenCalled();
@@ -156,6 +156,28 @@ describe("compaction model assignment and telemetry", () => {
       expect.objectContaining({ compaction_flag_enabled: null }),
     );
   });
+  it.each([
+    [false, true],
+    [true, false],
+  ])(
+    "does not report moderation routing for flag=%s configured=%s",
+    async (flagEnabled, configured) => {
+      mockFlag.mockResolvedValue(flagEnabled);
+      mockConfigured.mockReturnValue(configured);
+      const policy = new CompactionModelPolicy({
+        ...context,
+        platformAuthorized: true,
+      });
+      policy.start(await policy.resolve(), "durable");
+      expect(mockEvent).toHaveBeenLastCalledWith(
+        "compaction_model_started",
+        expect.objectContaining({
+          compaction_moderation_selected: true,
+          compaction_moderation_routed: false,
+        }),
+      );
+    },
+  );
   it("keeps GLM without an Abliteration fallback when credentials are absent", async () => {
     mockFlag.mockResolvedValue(true);
     mockConfigured.mockReturnValue(false);
@@ -176,7 +198,7 @@ describe("compaction model assignment and telemetry", () => {
     expect(await policy.resolve()).toBe(first);
     expect(mockFlag).toHaveBeenCalledTimes(1);
     expect(mockFlag).toHaveBeenCalledWith(
-      "moderation_compaction_v1",
+      "moderation_compaction_recovery_v2",
       "test-user",
       { subscription_tier: "pro" },
       { sendFeatureFlagEvents: false },

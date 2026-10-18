@@ -1,6 +1,73 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
+
+// Keep this preference out of customization payloads used to build model prompts.
+// A default-on preference must never be treated as consent or export eligibility.
+export const getModelImprovementPreference = query({
+  args: {},
+  returns: v.union(
+    v.null(),
+    v.object({
+      enabled: v.boolean(),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || (await isUserDeletionFenced(ctx.db, identity.subject))) {
+      return null;
+    }
+    const customization = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    return {
+      enabled: customization?.model_improvement_enabled ?? true,
+      updatedAt: customization?.model_improvement_updated_at ?? null,
+    };
+  },
+});
+
+export const setModelImprovementPreference = mutation({
+  args: { enabled: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { enabled }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Sign in to update this preference.",
+      });
+    }
+    if (await isUserDeletionFenced(ctx.db, identity.subject)) {
+      throw new ConvexError({
+        code: "ACCOUNT_DELETING",
+        message: "This account is being deleted.",
+      });
+    }
+    const customization = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    const now = Date.now();
+    const preference = {
+      model_improvement_enabled: enabled,
+      model_improvement_updated_at: now,
+      updated_at: now,
+    };
+    if (customization) {
+      await ctx.db.patch(customization._id, preference);
+    } else {
+      await ctx.db.insert("user_customization", {
+        user_id: identity.subject,
+        ...preference,
+      });
+    }
+    return null;
+  },
+});
 
 const shouldIncludeNotes = (customization: {
   include_notes?: boolean;

@@ -7,7 +7,7 @@ import {
   afterEach,
 } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config) => config),
 }));
 

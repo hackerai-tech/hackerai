@@ -1,4 +1,5 @@
-import { ConvexHttpClient } from "convex/browser";
+import type { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 
 // Shared singleton so Trigger.dev's setConvexUrl() override reaches every
 // caller. Lazy-init the client so this module is safe to import from code
@@ -20,7 +21,7 @@ export function getConvexUrl(): string {
 
 export function getConvexClient(): ConvexHttpClient {
   if (!client) {
-    client = new ConvexHttpClient(getConvexUrl());
+    client = createServiceConvexClient(getConvexUrl());
   }
   return client;
 }
@@ -32,5 +33,5 @@ export function getConvexClient(): ConvexHttpClient {
 // isolated worker process so mutation is safe.
 export function setConvexUrl(url: string) {
   overrideUrl = url;
-  client = new ConvexHttpClient(url);
+  client = createServiceConvexClient(url);
 }

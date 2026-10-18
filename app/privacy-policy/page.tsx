@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { canonicalMetadata } from "@/lib/seo/site";
+import {
+  PUBLIC_PAGE_LAST_MODIFIED,
+  canonicalMetadata,
+  formatPublicPageDate,
+} from "@/lib/seo/site";
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/privacy-policy"),
@@ -35,7 +39,10 @@ export default function PrivacyPolicyPage() {
         </h1>
 
         <p className="mt-3 text-center text-sm text-muted-foreground">
-          Last updated August 31, 2026
+          Last updated{" "}
+          <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.privacy}>
+            {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.privacy)}
+          </time>
         </p>
 
         <div className="mt-8 space-y-7 text-base leading-relaxed text-card-foreground sm:text-lg">
@@ -110,8 +117,9 @@ export default function PrivacyPolicyPage() {
               be processed by the provider supporting the selected model or
               tool. We may also disclose information at your direction, to
               protect users or the Service, in connection with a corporate
-              transaction, or when required by law. We do not sell personal
-              information.
+              transaction, or when required by law. We do not currently sell
+              personal information. Any future commercial data contribution
+              program would require the separate choices described below.
             </p>
             <p className="mt-2">
               Our{" "}
@@ -120,6 +128,37 @@ export default function PrivacyPolicyPage() {
               </Link>{" "}
               provides more information about the services we rely on and the
               data they process.
+            </p>
+          </section>
+
+          <section id="data-contributions">
+            <h2 className="mb-2 text-xl font-semibold">
+              Model improvement and data licensing
+            </h2>
+            <p>
+              We may introduce a program to use eligible future task content,
+              such as prompts, responses, files, and tool results, to train and
+              evaluate AI models. This may include licensing content to AI
+              partners for compensation. Partner data collection is not active.
+              We will provide program details before it starts and obtain any
+              required consent or agreement.
+            </p>
+            <p className="mt-2">
+              Improve the model for everyone is on by default in Settings &gt;
+              Data controls. You can turn it off anytime; your choice is saved
+              to your account. Turning it off excludes your content from future
+              program collection and new transfers without changing your plan or
+              the processing needed to answer your requests. Historical content
+              and tasks created while the setting was off remain excluded, even
+              if you later turn it back on.
+            </p>
+            <p className="mt-2">
+              Participation is subject to applicable law and the rights needed
+              to license the content. An enabled setting does not replace any
+              required consent. Before collection, we will explain the content
+              included, recipients, uses, retention, and applicable privacy
+              choices, including how withdrawal or deletion affects content
+              already shared. Your applicable privacy rights remain in effect.
             </p>
           </section>
 
@@ -201,7 +240,9 @@ export default function PrivacyPolicyPage() {
               We may update this policy as the Service or applicable
               requirements change. We will post the updated policy here and
               revise the date above. When appropriate, we may provide additional
-              notice through the Service or another reasonable channel.
+              notice through the Service or another reasonable channel. Policy
+              updates do not override your opt-out. We will provide additional
+              notice and obtain consent where required by law.
             </p>
           </section>
 

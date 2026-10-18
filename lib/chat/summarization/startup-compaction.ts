@@ -8,7 +8,7 @@ export const STARTUP_COMPACTION_FALLBACK_MODELS = [
 export type StartupCompactionVariant =
   | typeof STARTUP_COMPACTION_VARIANT
   | "abliteration_glm53_fallback_v1"
-  | "moderation_glm53_abliteration_fallback_v1";
+  | "moderation_glm53_abliteration_recovery_v2";
 export type StartupCompactionAttempt = {
   variant: StartupCompactionVariant;
   fallbackUsed: boolean;
@@ -18,10 +18,29 @@ export type StartupCompactionContext = {
 };
 
 export class InvalidCompactionSummaryError extends Error {
-  constructor() {
+  constructor(
+    readonly reason:
+      | "empty_summary"
+      | "reasoning_only"
+      | "non_stop_finish"
+      | "missing_sections"
+      | "invalid_summary" = "invalid_summary",
+  ) {
     super("Compaction returned an empty or incomplete summary");
     this.name = "InvalidCompactionSummaryError";
   }
+}
+
+/** SDK total deadlines can be nested in a retry or API error. */
+export function isCompactionTimeout(error: unknown, depth = 0): boolean {
+  if (depth > 5 || typeof error !== "object" || error === null) return false;
+  const value = error as { name?: string; cause?: unknown; errors?: unknown[] };
+  return (
+    value.name === "TimeoutError" ||
+    isCompactionTimeout(value.cause, depth + 1) ||
+    (Array.isArray(value.errors) &&
+      value.errors.some((nested) => isCompactionTimeout(nested, depth + 1)))
+  );
 }
 
 /** Only retry transient failures; caller cancellation is checked separately. */

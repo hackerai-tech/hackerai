@@ -7,6 +7,7 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Target, X } from "lucide-react";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { toast } from "sonner";
 
 export function AgentGoalEditor({
@@ -91,6 +92,9 @@ function GoalForm({
         throw new Error(
           (await response.json()).message ?? "Could not update goal",
         );
+      captureAuthenticatedEvent("agent_goal_user_control", {
+        action: "update",
+      });
       toast.success("Goal updated and paused. Resume when ready.");
       onClose();
     } catch (e) {

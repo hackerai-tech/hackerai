@@ -7,7 +7,7 @@ import {
 } from "../taskOutcomeSurveys";
 import { TASK_OUTCOME_COOLDOWN_MS } from "../../lib/feedback/task-outcome";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: (x: unknown) => x,
   query: (x: unknown) => x,
 }));

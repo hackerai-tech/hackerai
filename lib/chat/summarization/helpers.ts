@@ -1,4 +1,8 @@
 import {
+  getStructuredCompactionPrompt,
+  renderStructuredCompaction,
+} from "./structured-summary";
+import {
   UIMessage,
   generateText,
   convertToModelMessages,
@@ -36,6 +40,7 @@ import {
 import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
+import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -47,6 +52,11 @@ export interface SummarizationUsage {
   cacheWriteTokens?: number;
   cost?: number;
   model?: string;
+  /** Content-free provider diagnostics for completed and discarded checkpoints. */
+  upstreamProvider?: string;
+  generationId?: string;
+  finishReason?: string;
+  reasoningTokens?: number;
 }
 
 export interface SummaryPersistenceMetadata {
@@ -736,12 +746,15 @@ export const generateSummaryText = async (
     timeout?: number;
     maxRetries?: number;
     preservePrefix?: boolean;
+    structuredSummary?: boolean;
     maxOutputTokens?: number;
     onDiscardedUsage?: (usage: SummarizationUsage) => void;
     validateText?: (text: string) => boolean;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
-  const summarizationPrompt = getSummarizationPrompt(mode);
+  const summarizationPrompt = generationOptions?.structuredSummary
+    ? getStructuredCompactionPrompt(mode)
+    : getSummarizationPrompt(mode);
 
   const incrementalNote = hasExistingSummary
     ? `\n\n${INCREMENTAL_SUMMARIZATION_INSTRUCTIONS}`
@@ -821,6 +834,7 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
+  const routerMetadata = extractOpenRouterMetadata(result);
   const usage: SummarizationUsage = {
     inputTokens: result.usage?.inputTokens ?? 0,
     inputTokensReported:
@@ -846,20 +860,36 @@ export const generateSummaryText = async (
       : undefined),
     model:
       result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
+    upstreamProvider: routerMetadata.provider_name?.slice(0, 80),
+    generationId: routerMetadata.openrouter_generation_id?.slice(0, 128),
+    finishReason: result.finishReason,
+    reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens,
   };
+  const summaryText = generationOptions?.structuredSummary
+    ? renderStructuredCompaction(result.text, mode)
+    : result.text;
   // A discarded warm attempt can still be billable. Account for its reported
   // usage separately before trying a differently priced bounded fallback.
   if (
     abortSignal?.aborted ||
     !result.text.trim() ||
     result.finishReason !== "stop" ||
-    generationOptions?.validateText?.(result.text) === false
+    summaryText === null ||
+    generationOptions?.validateText?.(summaryText) === false
   ) {
     generationOptions?.onDiscardedUsage?.(usage);
     abortSignal?.throwIfAborted();
-    throw new InvalidCompactionSummaryError();
+    throw new InvalidCompactionSummaryError(
+      !result.text.trim()
+        ? usage.reasoningTokens && usage.reasoningTokens > 0
+          ? "reasoning_only"
+          : "empty_summary"
+        : result.finishReason !== "stop"
+          ? "non_stop_finish"
+          : "missing_sections",
+    );
   }
-  return { text: result.text, usage };
+  return { text: summaryText, usage };
 };
 
 export const buildSummaryPersistenceMetadata = ({

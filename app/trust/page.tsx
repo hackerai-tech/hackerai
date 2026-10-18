@@ -241,6 +241,20 @@ function TrustContent() {
             </p>
           </Section>
 
+          <Section icon={FileText} title="Model improvement and data licensing">
+            <p>
+              A future program may use eligible task content to train and
+              evaluate AI models, including paid licensing to AI partners.
+              Partner data collection is not active. Improve the model for
+              everyone is on by default and can be turned off in Settings &gt;
+              Data controls. See our{" "}
+              <InlineLink href="/privacy-policy#data-contributions">
+                Privacy Policy
+              </InlineLink>{" "}
+              for eligibility, notice, and privacy choices.
+            </p>
+          </Section>
+
           <div className="grid gap-6 md:grid-cols-2">
             <Section icon={Terminal} title="Execution environments">
               <p>

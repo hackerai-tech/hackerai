@@ -1,4 +1,5 @@
 import { AgentGoalEditor } from "./AgentGoalEditor";
+import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
@@ -935,12 +936,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     rel="noreferrer"
                                     className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
                                   >
-                                    <img
-                                      width={16}
-                                      height={16}
-                                      alt="favicon"
-                                      className="float-left mr-2 mt-0.5 rounded-full border border-border"
-                                      src={`https://s2.googleusercontent.com/s2/favicons?domain=${encodeURIComponent(result.url)}&sz=32`}
+                                    <SourceIcon
+                                      url={result.url}
+                                      size={16}
+                                      className="float-left mr-2 mt-0.5 text-muted-foreground"
                                     />
                                     {result.title}
                                   </a>

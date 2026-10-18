@@ -50,6 +50,7 @@ import {
   type MessageRecord,
 } from "@/lib/utils";
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
+import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -2275,7 +2276,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         router.push(`/c/${newChatId}`);
       } catch (error) {
         console.error("Failed to branch chat:", error);
-        toast.error("Failed to branch task. Please try again.");
+        toast.error(getBranchErrorMessage(error));
       }
     },
     [branchChatMutation, initializeChat, router],

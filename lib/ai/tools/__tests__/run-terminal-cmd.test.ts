@@ -48,11 +48,19 @@ jest.mock("@/lib/posthog/server", () => ({
   },
 }));
 
+jest.mock("../utils/sandbox-file-uploader", () => ({
+  uploadSandboxFileToConvex: jest.fn(),
+}));
+
 import { phLogger } from "@/lib/posthog/server";
 import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createGetTerminalFiles } from "../get-terminal-files";
+import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { spawn } from "node:child_process";
+import { setImmediate } from "node:timers";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
@@ -394,6 +402,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         workingDirectory: "/tmp/fixture",
       });
       expect(recovered.result.output).toContain("FINAL_EVIDENCE");
+      expect(running.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(recovered.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(sandbox.commands.run).toHaveBeenCalledTimes(countBeforeRecovery);
 
       const abort = new AbortController();
@@ -513,23 +523,55 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test("makes running session status explicit in model output", async () => {
+  test("keeps timing in saved results but excludes it from live and rebuilt model output", async () => {
     const { context } = makeContext({ sandbox: null });
     const tool = createRunTerminalCmd(context);
 
-    await expect(
-      getModelOutput(tool, {
-        result: {
-          session: "session-abc",
-          pid: 4321,
-          output: "server starting\n",
-          rawSnapshot: "raw terminal bytes",
+    const output = {
+      result: {
+        session: "session-abc",
+        pid: 4321,
+        output: "server starting\n",
+        rawSnapshot: "raw terminal bytes",
+        callTiming: {
+          startedAt: "fixture-start",
+          finishedAt: "fixture-end",
+          elapsedMs: 123,
         },
-      }),
-    ).resolves.toEqual({
+      },
+    };
+    const modelOutput = await getModelOutput(tool, output);
+    expect(modelOutput).toEqual({
       type: "text",
       value:
         'Process running with session ID session-abc\n{"result":{"session":"session-abc","pid":4321,"output":"server starting\\n"}}',
+    });
+    const history = await convertToModelMessages(
+      [
+        {
+          id: "assistant-fixture",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "fixture-call",
+              state: "output-available",
+              input: { command: "fixture" },
+              output,
+            },
+          ],
+        },
+      ] as UIMessage[],
+      { tools: { run_terminal_cmd: tool } },
+    );
+    expect(history[1]).toMatchObject({
+      role: "tool",
+      content: [{ output: modelOutput }],
+    });
+    expect(output.result.callTiming).toEqual({
+      startedAt: "fixture-start",
+      finishedAt: "fixture-end",
+      elapsedMs: 123,
     });
   });
 
@@ -1099,6 +1141,118 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       }),
     );
   });
+
+  test("owns a cloud shell's browser state before a later browser command", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+    const prepareBrowser = jest.fn(async () => ({
+      AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
+      AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+    }));
+    context.browserSessions = {
+      prepare: prepareBrowser,
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
+
+    setTimeout(() => fakeHandle.resolveExit(0), 10);
+    await runTool(createRunTerminalCmd(context), {
+      command: "python3 -c 'print(123)'",
+      brief: "open a shell before using the browser",
+      is_background: false,
+      timeout: 5,
+      interactive: true,
+    });
+
+    expect(prepareBrowser).toHaveBeenCalledWith(e2b);
+    expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
+      e2b,
+      expect.objectContaining({
+        envs: {
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
+          AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
+          AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+        },
+      }),
+    );
+    expect(fakeHandle.sendInput).toHaveBeenCalledWith(
+      new TextEncoder().encode(
+        "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
+      ),
+    );
+  });
+
+  test.each([false, true])(
+    "delivery waits for foreground creation (delivery listed first: %s)",
+    async (deliveryFirst) => {
+      let finishCreation!: () => void;
+      let started!: () => void;
+      let fileExists = false;
+      const creation = new Promise<void>((resolve) => {
+        finishCreation = resolve;
+      });
+      const commandStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(async (command: string) => {
+            if (command.includes("create-report")) {
+              started();
+              await creation;
+              fileExists = true;
+            }
+            return { stdout: "", stderr: "", exitCode: 0 };
+          }),
+        },
+      };
+      const { context, ptySessionManager } = makeContext({ sandbox });
+      Object.assign(context.backgroundProcessTracker, {
+        hasActiveProcessesForFiles: async () => ({
+          active: false,
+          processes: [],
+        }),
+      });
+      Object.assign(context.fileAccumulator, { add: jest.fn() });
+      const upload = jest.mocked(uploadSandboxFileToConvex);
+      upload.mockReset();
+      upload.mockImplementation(async () => {
+        if (!fileExists) throw new Error("File not found");
+        return {
+          fileId: "file-fixture",
+          name: "report.txt",
+          sizeBytes: 12,
+        } as never;
+      });
+      const deliver = () =>
+        (createGetTerminalFiles(context).execute as any)(
+          { files: ["/tmp/report.txt"] },
+          { toolCallId: "delivery", messages: [] },
+        );
+      let delivery = deliveryFirst ? deliver() : undefined;
+      const command = runTool(createRunTerminalCmd(context), {
+        command: "create-report",
+        timeout: 30,
+      });
+      await commandStarted;
+      delivery ??= deliver();
+      try {
+        // Drain ready work; only the explicitly held creation promise remains.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(upload).not.toHaveBeenCalled();
+      } finally {
+        finishCreation();
+        await command;
+        await ptySessionManager.closeAll(context.chatId);
+      }
+      expect(await delivery).toMatchObject({
+        files: [{ path: "/tmp/report.txt" }],
+        failedFiles: [],
+      });
+    },
+  );
 
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after

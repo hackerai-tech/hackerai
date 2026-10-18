@@ -1,7 +1,7 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
@@ -34,6 +34,7 @@ jest.mock("convex/values", () => {
       }
     },
     getDocumentSize: actualValues.getDocumentSize,
+    getConvexSize: actualValues.getConvexSize,
   };
 });
 jest.mock("../_generated/api", () => ({
@@ -1117,6 +1118,185 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
 });
 
 describe("client stop-save routing provenance", () => {
+  const makeClientContext = () => ({
+    auth: {
+      getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+    },
+    runQuery: jest.fn<any>().mockResolvedValue(true),
+    db: {
+      query: jest.fn().mockReturnValue({
+        withIndex: jest.fn().mockReturnValue({
+          first: jest.fn<any>().mockResolvedValue(null),
+        }),
+      }),
+      insert: jest.fn<any>().mockResolvedValue("doc"),
+    },
+  });
+
+  it("fits the whole insert without shortening canonical multibyte text", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getDocumentSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const text = "🙂".repeat(150_000);
+    const parts = [{ type: "text", text }];
+    await saveAssistantMessage.handler(ctx as any, {
+      id: "large-client-text",
+      chatId: CHAT_ID,
+      role: "assistant",
+      parts,
+    });
+    const document = ctx.db.insert.mock.calls[0][1];
+    expect(document.parts).toEqual(parts);
+    expect(document.content.length).toBeGreaterThan(256);
+    expect(document.content.length).toBeLessThan(text.length);
+    expect(document.content.endsWith("🙂")).toBe(true);
+    expect(getDocumentSize(document)).toBeLessThanOrEqual(960 * 1024);
+  });
+
+  it("rejects aggregate oversized parts before native insert with bounded diagnostics", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const parts = [
+      { type: "text", text: "private-first" + "x".repeat(510 * 1024) },
+      { type: "text", text: "private-second" + "x".repeat(510 * 1024) },
+    ];
+    const error = await saveAssistantMessage
+      .handler(ctx as any, {
+        id: "oversized-client-parts",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts,
+      })
+      .catch((reason: unknown) => reason);
+    expect(error).toMatchObject({
+      data: {
+        code: "MESSAGE_TOO_LARGE",
+        operation: "messages.saveAssistantMessage",
+        failureStage: "prepare_insert_message",
+        maxDocumentSizeBytes: 1024 * 1024,
+        targetDocumentSizeBytes: 960 * 1024,
+        partCount: 2,
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "text",
+          largestPartSizeBytes: getConvexSize(parts[1]),
+          categories: {
+            text: { count: 2, sizeBytes: getConvexSize(parts) - 2 },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("private-first");
+    expect(JSON.stringify(error)).not.toContain("private-second");
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("reports UTF-8 part bytes without leaking arbitrary names or values", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const parts = [
+      { type: "reasoning", text: "🙂".repeat(270_000) },
+      { type: "tool-private-tool", output: "private-output" },
+      {
+        type: "dynamic-tool",
+        toolName: "private-name",
+        input: "private-input",
+      },
+      { type: "data-private-data", data: { privateKey: "private-value" } },
+      { type: "private-unknown", value: 1n },
+      { type: 123, value: new ArrayBuffer(10) },
+      { type: "file", url: "private-url" },
+      { type: "step-start" },
+      {},
+    ];
+    const error = await saveAssistantMessage
+      .handler(ctx as any, {
+        id: "private-message-id",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts,
+      })
+      .catch((reason: any) => reason);
+    expect(error).toMatchObject({
+      message: "Message is too large to save",
+      data: {
+        code: "MESSAGE_TOO_LARGE",
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "reasoning",
+          largestPartSizeBytes: getConvexSize(parts[0]),
+          categories: {
+            reasoning: { count: 1, sizeBytes: getConvexSize(parts[0]) },
+            tool: { count: 2 },
+            data: { count: 1 },
+            other: { count: 3 },
+            file: { count: 1 },
+            "step-start": { count: 1 },
+          },
+        },
+      },
+    });
+    expect(error.data.partDiagnostics.partsSizeBytes).toBeGreaterThan(
+      1_080_000,
+    );
+    expect(JSON.stringify(error)).not.toMatch(/private|🙂/);
+    expect(JSON.stringify(error).length).toBeLessThan(1500);
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("keeps stop-save authentication and ownership ahead of insert", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const ctx = makeClientContext();
+    ctx.runQuery.mockResolvedValue(false);
+    await expect(
+      saveAssistantMessage.handler(ctx as any, {
+        id: "foreign-client",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts: [],
+      }),
+    ).rejects.toThrow("Chat not found");
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    ctx.auth.getUserIdentity.mockResolvedValue(null);
+    ctx.runQuery.mockClear();
+    await expect(
+      saveAssistantMessage.handler(ctx as any, {
+        id: "signed-out",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts: [],
+      }),
+    ).rejects.toThrow("Unauthorized");
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("includes metadata in the aggregate bound and keeps duplicate saves idempotent", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const ctx = makeClientContext();
+    const args = {
+      id: "metadata-heavy",
+      chatId: CHAT_ID,
+      role: "assistant" as const,
+      parts: [{ type: "text", text: "x".repeat(510 * 1024) }],
+      usage: { opaqueProviderMetadata: "y".repeat(510 * 1024) },
+    };
+    await expect(
+      saveAssistantMessage.handler(ctx as any, args),
+    ).rejects.toMatchObject({ data: { code: "MESSAGE_TOO_LARGE" } });
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    ctx.db.query.mockReturnValue({
+      withIndex: jest.fn().mockReturnValue({
+        first: jest.fn<any>().mockResolvedValue({ id: args.id }),
+      }),
+    });
+    await expect(
+      saveAssistantMessage.handler(ctx as any, args),
+    ).resolves.toBeNull();
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
   it("cannot insert routing evidence through client usage", async () => {
     const { saveAssistantMessage } = await import("../messages");
     const insert = jest.fn<any>().mockResolvedValue("doc");

@@ -1,5 +1,5 @@
 import { v, ConvexError } from "convex/values";
-import { query, mutation } from "./_generated/server";
+import { query, mutation } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import {
@@ -15,7 +15,7 @@ import {
   validGoalStart,
   verificationGatePassed,
 } from "../lib/goals/contracts";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./lib/serviceFunctions";
 
 async function owned(
   ctx: QueryCtx | MutationCtx,

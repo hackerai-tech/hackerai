@@ -25,6 +25,7 @@ jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class {},
 }));
 
+import { convertToModelMessages, type UIMessage } from "ai";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createCommandSessionHandle } from "../utils/command-session-handle";
@@ -282,6 +283,37 @@ describe("interact_terminal_session — PTY action dispatch", () => {
           );
           expect(modelOutput.value).not.toContain("private-fixture");
           expect(result).not.toHaveProperty("rawSnapshot");
+          expect(result).not.toHaveProperty("callTiming");
+          const savedTiming = (output as { result: { callTiming: unknown } })
+            .result.callTiming;
+          expect(savedTiming).toEqual(
+            expect.objectContaining({ elapsedMs: expect.any(Number) }),
+          );
+          const history = await convertToModelMessages(
+            [
+              {
+                id: "assistant-fixture",
+                role: "assistant",
+                parts: [
+                  {
+                    type: "tool-interact_terminal_session",
+                    toolCallId: "fixture-call",
+                    state: "output-available",
+                    input: { action, session: session.sessionId },
+                    output,
+                  },
+                ],
+              },
+            ] as UIMessage[],
+            { tools: { interact_terminal_session: tool } },
+          );
+          expect(history[1]).toMatchObject({
+            role: "tool",
+            content: [{ output: modelOutput }],
+          });
+          expect(
+            (output as { result: { callTiming: unknown } }).result.callTiming,
+          ).toEqual(savedTiming);
         }
       } finally {
         await ptySessionManager.closeAll("chat-1");

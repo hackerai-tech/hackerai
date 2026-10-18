@@ -185,3 +185,47 @@ describe("MessageActions branching", () => {
     ).toHaveClass("rotate-90");
   });
 });
+
+it("keeps public favicons while withholding private sources in actions and citations", () => {
+  const sources = [
+    {
+      title: "Public source",
+      url: "https://example.com/private?q=secret#fragment",
+    },
+    { title: "Internal source", url: "https://user:pass@internal.test/report" },
+    { title: "Malformed source", url: "not-a-url?secret=value" },
+  ];
+  render(
+    <MessageActions
+      messageText="Answer"
+      isUser={false}
+      isLastAssistantMessage
+      canRegenerate={false}
+      onRegenerate={jest.fn()}
+      onEdit={jest.fn()}
+      canEdit={false}
+      isHovered
+      isEditing={false}
+      status="ready"
+      sources={sources}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "View sources" });
+  expect(button.querySelectorAll("img")).toHaveLength(1);
+  expect(button.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://www.google.com/s2/favicons?domain=example.com&sz=32",
+  );
+  fireEvent.click(button);
+  const dialog = screen.getByRole("dialog", { name: "Citations" });
+  expect(dialog.querySelectorAll("img")).toHaveLength(1);
+  expect(dialog.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://www.google.com/s2/favicons?domain=example.com&sz=32",
+  );
+  for (const source of sources) {
+    expect(
+      screen.getByRole("link", { name: new RegExp(source.title) }),
+    ).toHaveAttribute("href", source.url);
+  }
+});

@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   query: (definition: unknown) => definition,
   mutation: (definition: unknown) => definition,
   internalMutation: (definition: unknown) => definition,

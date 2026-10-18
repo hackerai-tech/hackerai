@@ -4,6 +4,7 @@ import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
 import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
 import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
+import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -22,6 +23,7 @@ const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
 const mockHistoryFlag = jest.fn(async () => false);
 const mockAbliterationConfigured = jest.fn(() => false);
+const mockAppendAssistantDelta = jest.fn();
 jest.mock("@/lib/ai/abliteration", () => ({
   ...jest.requireActual("@/lib/ai/abliteration"),
   isAbliterationConfigured: () => mockAbliterationConfigured(),
@@ -101,7 +103,7 @@ jest.mock("@/lib/chat/doom-loop-detection", () => ({
 }));
 jest.mock("@/lib/chat/agent-long-provider-retry", () => ({
   createAssistantContentLoopMonitor: () => ({
-    appendDelta: () => ({ detected: false }),
+    appendDelta: (...args: unknown[]) => mockAppendAssistantDelta(...args),
   }),
 }));
 jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
@@ -125,12 +127,15 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
   }),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
-  isProviderMultimodalToolResultRejectionError: () => false,
+  isProviderMultimodalToolResultRejectionError: (error: unknown) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .isProviderMultimodalToolResultRejectionError(error),
   toolResultsContainImageViewResult: (toolResults: unknown[]) =>
     jest
       .requireActual("@/lib/chat/multimodal-tool-result-recovery")
       .toolResultsContainImageViewResult(toolResults),
-  uiMessagesContainImageViewResult: () => false,
+  uiMessagesContainImageViewResult: jest.fn(() => false),
 }));
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
@@ -662,6 +667,7 @@ describe("retry served-model telemetry", () => {
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAppendAssistantDelta.mockReset().mockReturnValue({ detected: false });
     mockHistoryFlag.mockResolvedValue(false);
     mockLoadHistory
       .mockReset()
@@ -683,6 +689,124 @@ describe("createAgentStream repeated compaction", () => {
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
   });
+
+  it.each([
+    { mode: "ask", inputRepair: false },
+    { mode: "agent", inputRepair: false },
+    { mode: "ask", inputRepair: true },
+    { mode: "agent", inputRepair: true },
+  ] as const)(
+    "repairs prompts across $mode steps (input repair: $inputRepair) while logging one bounded event",
+    async ({ mode, inputRepair }) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const ctx = createTestStreamContext({
+        mode,
+        userId: "PRIVATE_ID_CANARY",
+        chatId: "PRIVATE_CHAT_CANARY",
+        triggerRunId: "PRIVATE_RUN_CANARY",
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        trackedProvider: {
+          languageModel: () => ({
+            specificationVersion: "v3",
+            modelId: "test-model",
+            provider: "test",
+            supportedUrls: {},
+          }),
+        },
+      });
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const stream = (await createAgentStream(
+          "test-model",
+          ctx as any,
+          state,
+        )) as any;
+        await stream.prepareStep({
+          steps: [],
+          stepNumber: 0,
+          messages: [{ role: "user", content: "Continue" }],
+        });
+        const wraps = jest.mocked(require("ai").wrapLanguageModel).mock.calls;
+        const repairs = wraps
+          .map((call: any) => call[0].middleware.transformParams)
+          .filter(Boolean);
+        expect(repairs.length).toBeGreaterThanOrEqual(2);
+        const params = {
+          prompt: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
+                  toolCallId: "PRIVATE_CALL_CANARY",
+                  input: inputRepair
+                    ? '{"command":"PRIVATE_ARGUMENT_CANARY'
+                    : { value: "PRIVATE_ARGUMENT_CANARY" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
+                  toolCallId: "PRIVATE_CALL_CANARY",
+                  output: { type: "error-text", value: "PRIVATE_ERROR_CANARY" },
+                },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "Continue" }] },
+          ],
+        };
+        for (const transform of repairs)
+          expect((await transform({ params })).prompt).toEqual(
+            inputRepair
+              ? [
+                  {
+                    ...params.prompt[0],
+                    content: [{ ...params.prompt[0].content[0], input: {} }],
+                  },
+                  params.prompt[1],
+                  params.prompt[2],
+                ]
+              : [params.prompt[2]],
+          );
+        const events = warning.mock.calls
+          .map((call) => {
+            try {
+              return JSON.parse(String(call[0]));
+            } catch {
+              return undefined;
+            }
+          })
+          .filter(
+            (event) =>
+              event?.event ===
+              (inputRepair
+                ? "provider_prompt_tool_history_repaired"
+                : "provider_prompt_tool_name_repaired"),
+          );
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          mode,
+          reason: inputRepair ? "invalid_tool_input" : "empty_tool_name",
+          removed_tool_call_count: inputRepair ? 0 : 1,
+          removed_tool_result_count: inputRepair ? 0 : 1,
+          repaired_tool_input_count: inputRepair ? 1 : 0,
+        });
+        expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+        expect(params.prompt).toHaveLength(3);
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
 
   it.each(["ask", "agent"] as const)(
     "passes the original moderation signal into %s compaction instead of continuation eligibility",
@@ -727,6 +851,90 @@ describe("createAgentStream repeated compaction", () => {
       }
     },
   );
+
+  it.each(["ask", "agent"])(
+    "refreshes canonical scope independently of %s conversation history",
+    async (mode) => {
+      const prompt = jest
+        .fn()
+        .mockResolvedValue("\nSaved scope revision 1: example.test");
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          engagementScope: {
+            prompt,
+            checkUrl: jest.fn(),
+            checkTool: jest.fn(),
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      expect(stream.system).toContain("Saved scope revision 1");
+      prompt.mockResolvedValue(
+        "\nSaved scope revision 2: example.test; exclude admin.example.test",
+      );
+      const next = await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: [
+          {
+            role: "user",
+            content: "Old compacted summary says all subdomains are allowed",
+          },
+        ],
+      });
+      expect(next.system).toContain("Saved scope revision 2");
+      expect(next.system).toContain("exclude admin.example.test");
+      expect(next.system).not.toContain("Saved scope revision 1");
+    },
+  );
+
+  it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
+    const cloudNetworkPrompt = jest
+      .fn()
+      .mockResolvedValue("\nSaved access: Internet access");
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        cloudNetworkPrompt,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.system).toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue("\nSaved access: No internet");
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: [
+        { role: "user", content: "Old summary: cloud internet is available" },
+      ],
+    });
+    expect(next.system).toContain("Saved access: No internet");
+    expect(next.system).not.toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue(
+      "\nSaved access: Allowed destinations only; example.test",
+    );
+    const later = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: next.messages,
+    });
+    expect(later.system).toContain("Allowed destinations only; example.test");
+    expect(later.system).not.toContain("Saved access: No internet");
+  });
 
   it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
     const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
@@ -915,6 +1123,120 @@ describe("createAgentStream repeated compaction", () => {
     await stream.onError({ error: new TypeError("terminated") });
     expect(state.providerErrorMetadata).toEqual({});
   });
+
+  it.each([
+    ["ask", "/api/chat", true, false],
+    ["agent", "/api/agent-long", true, false],
+    ["ask", "/api/chat", false, false],
+    ["agent", "/api/agent-long", false, false],
+    ["agent", "/api/agent-long", true, true],
+  ])(
+    "handles HTTP415 in %s at %s (tool image: %s, cancelled: %s)",
+    async (mode, endpoint, hasToolImage, cancelled) => {
+      const mediaRecovery = jest.requireActual(
+        "@/lib/chat/multimodal-tool-result-recovery",
+      );
+      const containsImage = jest.mocked(
+        require("@/lib/chat/multimodal-tool-result-recovery")
+          .uiMessagesContainImageViewResult,
+      );
+      containsImage.mockImplementation(
+        mediaRecovery.uiMessagesContainImageViewResult,
+      );
+      const upload = {
+        id: "original-upload",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: "https://example.test/original.png",
+          },
+        ],
+      } as UIMessage;
+      const completedTool = {
+        type: "tool-terminal",
+        toolCallId: "completed-command",
+        state: "output-available",
+        output: { stdout: "Completed once", exitCode: 0 },
+      };
+      const messages = [
+        upload,
+        {
+          id: "assistant-tools",
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            completedTool,
+            ...(hasToolImage
+              ? [
+                  {
+                    type: "tool-file",
+                    toolCallId: "completed-image-view",
+                    state: "output-available",
+                    output: {
+                      action: "view",
+                      kind: "image",
+                      mediaType: "image/png",
+                      data: "synthetic-image",
+                    },
+                  },
+                ]
+              : []),
+          ],
+        },
+      ] as UIMessage[];
+      const state = initAgentStreamState(messages, {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const controller = new AbortController();
+      try {
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint,
+            abortController: controller,
+            usageTracker: { hasUsage: true },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        if (cancelled) controller.abort();
+        await stream.onError({
+          error: { code: 415, message: "URL did not return an image" },
+        });
+        expect(state.providerRejectedMultimodalToolResults).toBe(
+          hasToolImage && !cancelled,
+        );
+        if (!state.providerRejectedMultimodalToolResults) return;
+
+        const recovered =
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            state.finalMessages,
+          );
+        expect(recovered.omittedCount).toBe(1);
+        expect(recovered.messages[0]).toBe(upload);
+        expect(recovered.messages[1].parts[1]).toBe(completedTool);
+        expect(recovered.messages[1].parts[2]).toMatchObject({
+          toolCallId: "completed-image-view",
+          state: "output-available",
+          output: { imageOmittedAfterProviderRejection: true },
+        });
+        expect(
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            recovered.messages,
+          ).omittedCount,
+        ).toBe(0);
+      } finally {
+        containsImage.mockImplementation(() => false);
+      }
+    },
+  );
 
   it.each([true, false, null])(
     "samples one start across retries and keeps initial assignment %s",
@@ -2408,6 +2730,67 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each(["ask", "agent"] as const)(
+    "halts a repeated response in %s without logging its text",
+    async (mode) => {
+      const repeatedText = "PRIVATE_RESPONSE_CONTENT_CANARY";
+      const detection = {
+        detected: true,
+        reason: "repeated_text",
+        repeatedText,
+        repeatCount: 4,
+      };
+      mockAppendAssistantDelta.mockReturnValue(detection);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        });
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint: mode,
+            usageTracker: {},
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+
+        await stream.onChunk({
+          chunk: { type: "text-delta", id: "text-1", text: repeatedText },
+        });
+        await stream.onChunk({
+          chunk: { type: "text-delta", id: "text-1", text: repeatedText },
+        });
+
+        expect(state.stoppedDueToAssistantContentLoop).toBe(true);
+        expect(state.assistantContentLoopDetection).toBe(detection);
+        expect(stream.abortSignal.aborted).toBe(true);
+        const diagnostics = warn.mock.calls.filter(
+          ([, fields]) => fields?.event === "assistant_content_loop_detected",
+        );
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0][1]).toMatchObject({
+          event: "assistant_content_loop_detected",
+          chatId: "chat",
+          mode,
+          endpoint: mode,
+          reason: "repeated_text",
+          repeatCount: 4,
+        });
+        expect(diagnostics[0][1]).not.toHaveProperty("repeatedText");
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(repeatedText);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
     const stream = (await createAgentStream(
@@ -2464,50 +2847,68 @@ describe("createAgentStream repeated compaction", () => {
     expect(onProviderRequestStart).toHaveBeenCalledTimes(1);
   });
 
-  it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
-    const checkAfterStep = jest.fn(() => undefined);
-    const settleUsageAfterStep = jest.fn(async () => undefined);
-    const usageTracker = {
-      accumulateStep: jest.fn(() => 0),
-      setAuthoritativeModelCostForStep: jest.fn(),
-      computeCostDollars: jest.fn(() => 0.2),
-    };
-    const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
-      usedTokens: 1_000,
-      maxTokens: 128_000,
-    });
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        budgetMonitor: { checkAfterStep },
-        getSandboxCostDollars: () => 0.05,
-        getTriggerRunCostDollars: () => 0.03,
-        settleUsageAfterStep,
-        summarizationTracker: {
-          hasSummarized: false,
-          summarizationCount: 0,
-          recordSummarization: jest.fn(),
-        },
-        usageTracker,
-      }) as any,
-      state,
-    )) as any;
+  it.each([undefined, "abort", "abort-agent-run-spend-cap"] as const)(
+    "settles all runtime costs and attributes the shared budget stop (%s)",
+    async (decision) => {
+      const checkAfterStep = jest.fn(() =>
+        decision ? { type: decision, details: {} } : undefined,
+      );
+      const settleUsageAfterStep = jest.fn(async () => undefined);
+      const usageTracker = {
+        accumulateStep: jest.fn(() => 0),
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: jest.fn(() => 0.2),
+      };
+      const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const onAbort = jest.fn();
+      const stop = createAgentStopSignal({
+        onAbort,
+        getStreamState: () => state,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          budgetMonitor: { checkAfterStep },
+          abortController: stop.controller,
+          getSandboxCostDollars: () => 0.05,
+          getTriggerRunCostDollars: () => 0.03,
+          settleUsageAfterStep,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker,
+        }) as any,
+        state,
+      )) as any;
 
-    await stream.onStepFinish({
-      usage: { inputTokens: 10, outputTokens: 5 },
-      response: { modelId: "test-model" },
-      providerMetadata: undefined,
-    });
+      await stream.onStepFinish({
+        usage: { inputTokens: 10, outputTokens: 5 },
+        response: { modelId: "test-model" },
+        providerMetadata: undefined,
+      });
 
-    expect(checkAfterStep).toHaveBeenCalledWith(0.28);
-    expect(settleUsageAfterStep).toHaveBeenCalledWith({
-      currentCostDollars: 0.28,
-      sandboxCostDollars: 0.05,
-      triggerRunCostDollars: 0.03,
-      force: false,
-      model: "test-model",
-    });
-  });
+      expect(checkAfterStep).toHaveBeenCalledWith(0.28);
+      expect(settleUsageAfterStep).toHaveBeenCalledWith({
+        currentCostDollars: 0.28,
+        sandboxCostDollars: 0.05,
+        triggerRunCostDollars: 0.03,
+        force: decision !== undefined,
+        model: "test-model",
+      });
+      expect(onAbort.mock.calls).toEqual(
+        decision
+          ? [[decision === "abort" ? "budget_monitor" : "agent_run_spend_cap"]]
+          : [],
+      );
+      expect(stop.controller.signal.aborted).toBe(decision !== undefined);
+      stop.dispose();
+    },
+  );
 
   it("forces durable waiting, injects the claimed result, and consumes it after synthesis", async () => {
     let completionState = {

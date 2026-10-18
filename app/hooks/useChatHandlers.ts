@@ -1,4 +1,4 @@
-import { parseGoalCommand } from "@/lib/goals/commands";
+import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
 import { useRef, RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -490,6 +490,7 @@ export const useChatHandlers = ({
     // value out of this hook prevents each keystroke from rerendering Chat.
     const input = inputOverride ?? getInput();
     let goalCommand;
+    let resumeMessage: string | undefined;
     let goalSettings: Record<string, unknown> = {};
     try {
       goalCommand = parseGoalCommand(input);
@@ -563,6 +564,7 @@ export const useChatHandlers = ({
           const data = await r.json();
           if (!r.ok || !data.goal)
             throw new Error(data.message ?? "No saved goal in this chat.");
+          resumeMessage = goalResumeMessage(data.goal, goalCommand.input);
           goalSettings = {
             sandboxPreference: data.goal.sandboxPreference,
             agentPermissionMode: data.goal.permissionMode,
@@ -764,7 +766,7 @@ export const useChatHandlers = ({
             text:
               goalCommand?.action === "start"
                 ? goalCommand.objective
-                : input.trim() || undefined,
+                : (resumeMessage ?? (input.trim() || undefined)),
             files: validFiles.length > 0 ? validFiles : undefined,
             metadata: {
               createdAt: Date.now(),

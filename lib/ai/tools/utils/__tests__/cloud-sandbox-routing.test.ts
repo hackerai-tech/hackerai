@@ -1,3 +1,8 @@
+jest.mock("@/lib/cloud-network/service", () => ({
+  readNetworkSettings: jest.fn(async () => null),
+  ensureCloudNetwork: jest.fn(async () => {}),
+}));
+import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
@@ -108,6 +113,17 @@ describe("E2B cloud acquisition", () => {
         fallback_used: false,
       }),
     );
+  });
+
+  it("does not publish a workspace whose network policy could not be applied", async () => {
+    jest
+      .mocked(ensureCloudNetwork)
+      .mockRejectedValueOnce(new Error("network unavailable"));
+    const setSandbox = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox }),
+    ).rejects.toThrow("network unavailable");
+    expect(setSandbox).not.toHaveBeenCalled();
   });
 
   it("reconnects the exact recovered destination rather than discovering its stale source", async () => {

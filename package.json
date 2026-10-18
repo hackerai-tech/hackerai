@@ -121,6 +121,7 @@
     "convex": "1.46.0",
     "date-fns": "4.4.0",
     "e2b": "2.52.1",
+    "eventsource-parser": "3.0.8",
     "gpt-tokenizer": "^4.0.0",
     "iron-session": "^8.0.4",
     "isbinaryfile": "^6.0.0",
@@ -273,7 +274,8 @@
       "shell-quote@<1.11.0": "1.12.0",
       "source-map-js@<1.2.2": "1.2.2",
       "proxy-addr@<2.0.8": "2.0.8",
-      "@modelcontextprotocol/sdk@>=1.12.0 <1.31.0": "1.32.1"
+      "@modelcontextprotocol/sdk@>=1.12.0 <1.31.0": "1.32.1",
+      "handlebars@<4.7.10": "4.7.10"
     },
     "patchedDependencies": {
       "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",

@@ -1,6 +1,7 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import {
   assertCloudWorkspaceAvailable,
+  claimE2BDiskRecovery,
   claimCloudWorkspaceCleanup,
   CloudWorkspaceUnavailableError,
   readCloudWorkspaceState,
@@ -50,6 +51,101 @@ describe("cloud workspace guard", () => {
       ],
       ["900", "verified-destination"],
     );
+  });
+
+  it("fences normal connections and cleanup during a durable recovery", async () => {
+    const recovery = {
+      version: 1,
+      phase: "recovery",
+      token: "attempt-1",
+      operatorId: "ticket",
+      sandboxId: "verified-destination",
+      region: "us-east-1",
+      startedAt: "2026-10-15T00:00:00.000Z",
+      previous: recovered,
+    };
+    mockGet.mockResolvedValue(recovery);
+    await expect(readCloudWorkspaceState("user-1")).resolves.toEqual(recovery);
+    mockEval.mockResolvedValue(0);
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "verified-destination"),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+    await expect(
+      claimCloudWorkspaceCleanup("user-1", false),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+    await expect(
+      claimE2BDiskRecovery({
+        userId: "user-1",
+        sandboxId: "verified-destination",
+        region: "us-east-1",
+        token: "attempt-1",
+        operatorId: "ticket",
+      }),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+  });
+
+  it("claims only with the activity key absent and releases by exact ownership", async () => {
+    mockGet.mockResolvedValue(recovered);
+    const recovery = await claimE2BDiskRecovery({
+      userId: "user-1",
+      sandboxId: "verified-destination",
+      region: "us-east-1",
+      token: "attempt-2",
+      operatorId: "ticket",
+    });
+    expect(recovery.state).toMatchObject({
+      phase: "recovery",
+      previous: recovered,
+    });
+    expect(mockEval.mock.calls[0][1]).toEqual([
+      "cloud_workspace_migration:v1:user-1",
+      "cloud_workspace_activity:v1:user-1",
+      "cloud_workspace_recovery_result:v1:user-1",
+    ]);
+    await recovery.update({
+      step: "backup_created",
+      backupSnapshotId: "backup-1",
+    });
+    expect(JSON.parse(mockEval.mock.calls[1][2][1])).toMatchObject({
+      step: "backup_created",
+      backupSnapshotId: "backup-1",
+    });
+    await recovery.finish('{"token":"attempt-2","status":"verified_paused"}');
+    expect(mockEval.mock.calls[2][2][0]).toBe(mockEval.mock.calls[1][2][1]);
+    expect(mockEval.mock.calls[2][2][1]).toBe(JSON.stringify(recovered));
+    mockEval.mockResolvedValue(0);
+    await expect(
+      claimE2BDiskRecovery({
+        userId: "user-1",
+        sandboxId: "verified-destination",
+        region: "us-east-1",
+        token: "attempt-3",
+        operatorId: "ticket",
+      }),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+  });
+
+  it("will not claim a different migrated destination or region", async () => {
+    mockGet.mockResolvedValue(recovered);
+    await expect(
+      claimE2BDiskRecovery({
+        userId: "user-1",
+        sandboxId: "other",
+        region: "us-east-1",
+        token: "attempt",
+        operatorId: "ticket",
+      }),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+    await expect(
+      claimE2BDiskRecovery({
+        userId: "user-1",
+        sandboxId: "verified-destination",
+        region: "eu-central-1",
+        token: "attempt",
+        operatorId: "ticket",
+      }),
+    ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+    expect(mockEval).not.toHaveBeenCalled();
   });
 
   it.each([

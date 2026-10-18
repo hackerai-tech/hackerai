@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AgentGoalEditor } from "../AgentGoalEditor";
 import { setMockQueryResult } from "@/__mocks__/convex-react";
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: jest.fn(),
+}));
 jest.mock("sonner", () => ({ toast: { success: jest.fn() } }));
 const goal = {
   _id: "goal",

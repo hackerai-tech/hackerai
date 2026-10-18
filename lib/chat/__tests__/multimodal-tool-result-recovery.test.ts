@@ -163,6 +163,28 @@ describe("multimodal tool result recovery", () => {
       ),
     ).toBe(false);
   });
+
+  it("recognizes the observed HTTP 415 image URL rejection", () => {
+    expect(
+      isProviderMultimodalToolResultRejectionError({
+        code: 415,
+        message: "URL did not return an image: https://example.test/result",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    [415, "Unsupported media type"],
+    [415, "Provider rejected image input"],
+    [403, "URL did not return an image"],
+    [429, "URL did not return an image"],
+    [503, "URL did not return an image"],
+    [415, "URL did not return an image; image file too large"],
+  ])("leaves unrelated rejection %s visible: %s", (code, message) => {
+    expect(
+      isProviderMultimodalToolResultRejectionError({ code, message }),
+    ).toBe(false);
+  });
 });
 
 it("recognizes the Fireworks image format rejection without broadening generic 400s", () => {

@@ -84,15 +84,22 @@ describe("goal controls", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
     await waitFor(() =>
-      expect(send).toHaveBeenCalledWith(expect.any(Object), {
-        body: {
-          mode: "agent",
-          sandboxPreference: "desktop",
-          agentPermissionMode: "ask_approval",
-          selectedModel: "standard",
-          goal: { action: "resume", additionalRuns: 2 },
+      expect(send).toHaveBeenCalledWith(
+        {
+          text: expect.stringContaining(
+            "Goal: Create marker\nSuccess criteria:\n1. Marker exists",
+          ),
         },
-      }),
+        {
+          body: {
+            mode: "agent",
+            sandboxPreference: "desktop",
+            agentPermissionMode: "ask_approval",
+            selectedModel: "standard",
+            goal: { action: "resume", additionalRuns: 2 },
+          },
+        },
+      ),
     );
   });
   it("allows Pause and Stop while a submitted goal stream is still pending", async () => {

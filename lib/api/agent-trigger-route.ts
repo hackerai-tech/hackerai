@@ -4,6 +4,10 @@ import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
 import {
+  recordUserScope,
+  retryUserScope,
+} from "@/lib/engagement-scope/admission";
+import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
@@ -820,6 +824,19 @@ export const createAgentTriggerPost =
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
       });
+      if (
+        !isAutoContinue &&
+        (regenerate || messagesForPersistence.length > 0)
+      ) {
+        await retryUserScope({ userId, chatId });
+        if (!regenerate)
+          await recordUserScope({
+            userId,
+            chatId,
+            messageId:
+              messagesForPersistence[messagesForPersistence.length - 1].id,
+          });
+      }
 
       if (!existingChat) await reserveGoal();
       if (reservedGoal && goalRequest?.action === "start") {
@@ -935,6 +952,15 @@ export const createAgentTriggerPost =
       const triggerApiMethod = approvalSessionId
         ? "sessions.start"
         : "tasks.trigger";
+      const requestId = req.headers.get("x-vercel-id");
+      const webRequestId =
+        requestId &&
+        requestId.length <= 128 &&
+        /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+          requestId,
+        )
+          ? requestId
+          : undefined;
       const triggerMetadata = {
         status: "queued",
         chatId,
@@ -942,6 +968,9 @@ export const createAgentTriggerPost =
         subscription,
         loginRequired: false,
         endpoint,
+        // Task metadata identifies its creating request. Session metadata may
+        // reflect a later cached start; it does not prove that start made a run.
+        ...(webRequestId ? { webRequestId } : {}),
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,

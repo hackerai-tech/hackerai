@@ -5,6 +5,15 @@ import {
 } from "../error-redaction";
 
 describe("error redaction", () => {
+  it.each([
+    undefined,
+    () => "private-function-body",
+    Symbol("private-symbol"),
+    { toJSON: () => undefined },
+  ])("formats values without a JSON representation safely", (value) => {
+    expect(stringifyRedactedError(value)).toBe("Unknown error occurred");
+  });
+
   it("redacts service keys from Convex validation messages", () => {
     const message =
       'ArgumentValidationError: Object is missing the required field `userId`.\n\nObject: {fileIds: ["file1"], serviceKey: "secret-value"}';
@@ -38,6 +47,21 @@ describe("error redaction", () => {
     expect(redacted).toContain('STRIPE_SECRET_KEY="[Redacted]"');
     expect(redacted).not.toContain("super-secret");
     expect(redacted).not.toContain("stripe-secret");
+  });
+
+  it("redacts environment assignments for any provider and configuration", () => {
+    const message =
+      'TRIGGER_SECRET_KEY="trigger-fixture" REDIS_URL=redis://fixture NODE_ENV=production {"WORKOS_COOKIE_PASSWORD":"cookie-fixture"}';
+    const redacted = redactSensitiveErrorMessage(message);
+    for (const value of [
+      "trigger-fixture",
+      "redis://fixture",
+      "production",
+      "cookie-fixture",
+    ]) {
+      expect(redacted).not.toContain(value);
+    }
+    expect(redacted).toContain('NODE_ENV="[Redacted]"');
   });
 
   it("strips ANSI escapes and control bytes before redacting secrets", () => {

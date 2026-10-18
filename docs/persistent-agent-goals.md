@@ -1,8 +1,10 @@
 # Persistent Agent goals
 
-A goal keeps an objective and completion contract attached to one chat across bounded Agent runs. The user can set it from the goal panel or with `/goal start <objective>`. `/goal`, `/goal pause`, `/goal resume`, and `/goal stop` show or control the saved goal. A normal composer message pauses automatic goal work before it is queued.
+A goal keeps an objective and completion contract attached to one chat across bounded Agent runs. Typing `/goal` offers a goal composer; `/goal start <objective>` also starts directly. `/goal status`, `/goal pause`, `/goal resume`, `/goal stop`, and `/goal clear` inspect or control the saved goal. Clear removes its visible controls. A normal composer message pauses automatic goal work before it is queued.
 
-The completion contract has one to eight success criteria and optional verification command, constraints to preserve, scope boundaries, and conditions requiring user input. Multiline commands accept `criterion:`, `verify:`, `preserve:`, `scope:`, `stop when:`, and `runs:` fields. The panel exposes the same contract with labeled inputs.
+The completion contract has one to eight success criteria and optional verification command, constraints to preserve, scope boundaries, and conditions requiring user input. Multiline commands accept `criterion:`, `verify:`, `preserve:`, `scope:`, `stop when:`, and `runs:` fields. The goal bar sits above the composer. Editing opens the Computer sidebar on desktop and its full-screen overlay on mobile, with labeled objective and contract inputs. Saving pauses work, preserves the remaining budget, clears evidence for the old objective, and requires explicit Resume.
+
+Goal messages retain a sent-as-goal receipt. Verified completion saves elapsed time from goal creation on the final assistant message, including pauses and waiting. These receipts survive reload, goal deletion, and replacement; ordinary completed runs receive no achievement receipt. Older goals without a recorded start time do not receive an invented duration.
 
 ## Limits and completion
 
@@ -14,7 +16,7 @@ Goals can wait up to thirty minutes before another slice. Two consecutive slices
 
 ## Durable lifecycle
 
-Convex owns the goal, generation, budget, progress, and evidence references. Trigger runs claim one generation atomically before performing costly work. Stale or duplicate workers cannot claim it. Pause and Stop remain authoritative when a late worker settles. Goal state survives context compaction because each new run reads the canonical record alongside the existing chat history.
+Convex owns the goal, generation, budget, progress, and evidence references. Trigger runs claim one generation atomically before performing costly work. Stale or duplicate workers cannot claim it. Pause, edit, and delete remain authoritative when a late worker settles. Deleted goals retain an internal tombstone until replacement so stale generations cannot claim work and interrupted run leases can still reconcile. Goal state survives context compaction because each new run reads the canonical record alongside the existing chat history.
 
 A short dispatcher starts the next normal Agent run only after the preceding run has settled and cleaned up. Continuations retain the original sandbox, model, permission mode, region, Convex URL, and worker version. Approval modes open the existing approval session protocol. Fresh account, suspension, and feature eligibility checks run before each new slice. Failed runs and usage exhaustion require explicit resume.
 
@@ -22,7 +24,7 @@ If a worker terminates before saving its final state, loading goal status reconc
 
 ## Rollout and verification
 
-`persistent-agent-goals` gates paid Agent goal admission and continuation. Existing saved goals retain their Pause and Stop controls after the flag is disabled. Goal analytics contain identifiers, categorical states, and counts; they exclude objectives, criteria, prompts, commands, and evidence.
+`persistent-agent-goals` gates paid Agent goal admission and continuation. Existing saved goals retain their pause, edit, and delete controls after the flag is disabled. Goal analytics contain identifiers, categorical states, and counts; they exclude objectives, criteria, prompts, commands, and evidence.
 
 Deploy the Convex functions and Trigger worker before testing goal admission in the web Preview. Independently verify the Vercel, Trigger, Convex, and PostHog selections according to `AGENTS.md`. Preview uses the Developer account and development PostHog project; Production requires a separate rollout decision. A feature-flag definition alone does not prove that the worker uses the expected project.
 

@@ -1,11 +1,18 @@
+import { initializeBranchedScope } from "./engagementScopes";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
   stripClientAbliterationRouting,
 } from "../lib/experiments/abliteration-history";
-import { query, mutation, internalQuery } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
-import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
+import { query, mutation, internalQuery } from "./lib/serviceFunctions";
+import type { MutationCtx } from "./lib/serviceFunctions";
+import {
+  v,
+  ConvexError,
+  getConvexSize,
+  getDocumentSize,
+  type Value,
+} from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
@@ -136,6 +143,55 @@ const MIN_SEARCH_CONTENT_CHARS = 256;
 
 const getMessageDocumentSize = (document: Record<string, unknown>): number =>
   getDocumentSize(document as Record<string, Value>);
+
+const getClientPartSizeDiagnostics = (parts: Value[]) => {
+  const categories = {
+    text: { count: 0, sizeBytes: 0 },
+    reasoning: { count: 0, sizeBytes: 0 },
+    file: { count: 0, sizeBytes: 0 },
+    tool: { count: 0, sizeBytes: 0 },
+    data: { count: 0, sizeBytes: 0 },
+    "step-start": { count: 0, sizeBytes: 0 },
+    other: { count: 0, sizeBytes: 0 },
+  };
+  type Category = keyof typeof categories;
+  let largestPartCategory: Category | "none" = "none";
+  let largestPartSizeBytes = 0;
+  let partsSizeBytes = 2; // Convex array marker and terminator.
+  for (const part of parts) {
+    const type =
+      part && typeof part === "object" && "type" in part
+        ? part.type
+        : undefined;
+    // Never emit client-supplied type, tool or data names as telemetry keys.
+    const category: Category =
+      type === "text" ||
+      type === "reasoning" ||
+      type === "file" ||
+      type === "step-start"
+        ? type
+        : typeof type === "string" &&
+            (type.startsWith("tool-") || type === "dynamic-tool")
+          ? "tool"
+          : typeof type === "string" && type.startsWith("data-")
+            ? "data"
+            : "other";
+    const sizeBytes = getConvexSize(part);
+    categories[category].count++;
+    categories[category].sizeBytes += sizeBytes;
+    partsSizeBytes += sizeBytes;
+    if (sizeBytes > largestPartSizeBytes) {
+      largestPartSizeBytes = sizeBytes;
+      largestPartCategory = category;
+    }
+  }
+  return {
+    partsSizeBytes,
+    largestPartSizeBytes,
+    largestPartCategory,
+    categories,
+  };
+};
 
 const sliceValidUnicodePrefix = (value: string, end: number): string => {
   const sliced = value.slice(0, end);
@@ -1260,13 +1316,12 @@ export const saveAssistantMessage = mutation({
       // Save parts as-is - fixing happens at read time in chat-processor.ts
       const content = extractTextFromParts(args.parts);
 
-      await ctx.db.insert("messages", {
+      const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
         parts: args.parts,
-        content: content || undefined,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -1274,6 +1329,29 @@ export const saveAssistantMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: stripClientAbliterationRouting(args.usage),
+      };
+      const baseDocumentSizeBytes = getMessageDocumentSize(messageDocumentBase);
+      if (baseDocumentSizeBytes > MESSAGE_DOCUMENT_TARGET_BYTES) {
+        throw new ConvexError({
+          code: "MESSAGE_TOO_LARGE",
+          message: "Message is too large to save",
+          failureStage: "prepare_insert_message",
+          operation: "messages.saveAssistantMessage",
+          baseDocumentSizeBytes,
+          maxDocumentSizeBytes: CONVEX_DOCUMENT_MAX_BYTES,
+          targetDocumentSizeBytes: MESSAGE_DOCUMENT_TARGET_BYTES,
+          partCount: args.parts.length,
+          partDiagnostics: getClientPartSizeDiagnostics(args.parts),
+        });
+      }
+      // Match backend saves: canonical parts remain intact while the duplicated
+      // search text uses only the space left in the complete document.
+      const indexedContent = content
+        ? fitSearchContentToDocument(messageDocumentBase, content)
+        : null;
+      await ctx.db.insert("messages", {
+        ...messageDocumentBase,
+        content: indexedContent?.content,
       });
 
       return null;
@@ -1947,8 +2025,11 @@ export const branchChat = mutation({
         return null;
       }
 
-      // Get all messages up to and including this message using index range
-      const messagesToCopy = await ctx.db
+      // Branching is one atomic transaction. Bound the entire history read,
+      // leaving room for ownership reads, pagination lookahead and the summary.
+      // Never continue pages here: that would restore the transaction-wide
+      // byte overflow, and copying only the first page would lose history.
+      const branchPage = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) =>
           q
@@ -1956,7 +2037,35 @@ export const branchChat = mutation({
             .lte("_creationTime", message._creationTime),
         )
         .order("asc")
-        .collect();
+        .paginate({
+          cursor: null,
+          numItems: 1000,
+          maximumRowsRead: 1001,
+          maximumBytesRead: MESSAGE_PAGE_MAX_BYTES,
+        });
+
+      const messagesToCopy = branchPage.page;
+      const historyBytes = messagesToCopy.reduce(
+        (bytes, msg) => bytes + getMessageDocumentSize(msg),
+        0,
+      );
+      if (
+        !branchPage.isDone ||
+        branchPage.pageStatus === "SplitRequired" ||
+        historyBytes > MESSAGE_PAGE_MAX_BYTES
+      ) {
+        convexLogger.warn("branch_chat_history_limit", {
+          reason: "atomic_history_budget",
+          message_count: messagesToCopy.length,
+          history_bytes: historyBytes,
+          max_history_bytes: MESSAGE_PAGE_MAX_BYTES,
+        });
+        throw new ConvexError({
+          code: "BRANCH_HISTORY_TOO_LARGE",
+          message:
+            "This task is too large to branch at this message. Try branching from an earlier message. Your original task is unchanged.",
+        });
+      }
 
       // Create new chat with same title as original
       const newChatId = crypto.randomUUID();
@@ -1966,9 +2075,12 @@ export const branchChat = mutation({
         title: originalChat.title,
         user_id: user.subject,
         branched_from_chat_id: message.chat_id,
+        engagement_scope_expected: true,
         project_id: originalChat.project_id,
         update_time: Date.now(),
       });
+
+      await initializeBranchedScope(ctx, newChatId, user.subject);
 
       // Copy messages to new chat, tracking old→new ID mapping for summary remapping
       const messageIdMap = new Map<string, string>();

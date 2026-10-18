@@ -1,5 +1,5 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
-import { mutation, type MutationCtx } from "./_generated/server";
+import { mutation, type MutationCtx } from "./lib/serviceFunctions";
 import { getDocumentSize, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
@@ -23,6 +23,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "task_outcome_surveys",
     "notes",
     "user_customization",
+    "cloud_network_settings",
     "extra_usage",
     "team_member_usage",
     // Shared-organization rows are anonymized in place so the organization's
@@ -460,6 +461,11 @@ async function cleanupUserDataForUser(
     "by_user_and_latest",
     (q) => q.eq("user_id", userId),
   );
+  const cloudNetworkBatch = await collectByIndexBatch<
+    Doc<"cloud_network_settings">
+  >(ctx, budget, "cloud_network_settings", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -543,6 +549,7 @@ async function cleanupUserDataForUser(
     findingSourcesBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
+    cloudNetworkBatch,
     customizationBatch,
     messagesBatch,
     localSandboxTokensBatch,
@@ -635,6 +642,13 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "cloud_network_settings",
+    cloudNetworkBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(
     ctx,

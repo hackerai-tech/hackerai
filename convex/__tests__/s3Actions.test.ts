@@ -4,7 +4,7 @@ import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 jest.mock("../s3Utils");
 
 // Mock Convex server functions
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config) => config),
   query: jest.fn((config) => config),
   internalQuery: jest.fn((config) => config),

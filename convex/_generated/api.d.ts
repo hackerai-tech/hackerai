@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as cloudNetwork from "../cloudNetwork.js";
+import type * as engagementScopes from "../engagementScopes.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as agentGoals from "../agentGoals.js";
@@ -80,6 +82,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  cloudNetwork: typeof cloudNetwork;
+  engagementScopes: typeof engagementScopes;
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
   agentGoals: typeof agentGoals;

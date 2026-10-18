@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { ChevronDown, Target, Pause, Trash2, Pencil } from "lucide-react";
+import { goalResumeMessage } from "@/lib/goals/commands";
 import { GOAL_MAX_RUNS, type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
@@ -136,9 +137,7 @@ export function AgentGoalPanel({
     try {
       await send(
         {
-          text:
-            "Resume my saved goal from the latest progress within its original authorization and run budget.\n" +
-            reply,
+          text: goalResumeMessage(goal, reply),
         },
         {
           body: {

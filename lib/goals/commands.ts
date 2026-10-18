@@ -79,3 +79,14 @@ export function parseGoalCommand(text: string): GoalCommand | null {
     );
   return result;
 }
+
+export function goalResumeMessage(
+  goal: { objective: string; criteria: string[] },
+  reply = "",
+): string {
+  return `Resume my current saved goal. This objective replaces earlier goal objectives in this chat; preserve its authorization and remaining run budget.
+
+Goal: ${goal.objective}
+Success criteria:
+${goal.criteria.map((criterion, i) => `${i + 1}. ${criterion}`).join("\n")}${reply.trim() ? `\n\nAdditional information: ${reply.trim()}` : ""}`;
+}

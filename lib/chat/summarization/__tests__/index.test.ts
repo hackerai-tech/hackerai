@@ -288,7 +288,7 @@ describe("default compaction policy pipeline", () => {
       resolve.mockResolvedValue({
         model: "model-glm-5.3-flash",
         fallbackModel: "model-abliterated",
-        policy: "moderation_glm53_abliteration_fallback_v1",
+        policy: "moderation_glm53_abliteration_recovery_v2",
       });
       mockGenerateText
         .mockResolvedValueOnce({
@@ -317,11 +317,34 @@ describe("default compaction policy pipeline", () => {
       expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
     },
   );
+  it("preserves original history and never persists when every selective attempt refuses", async () => {
+    resolve.mockResolvedValue({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated",
+      policy: "moderation_glm53_abliteration_recovery_v2",
+    });
+    const original = JSON.stringify(fourMessagesAboveThreshold);
+    mockGenerateText.mockResolvedValue({
+      text: "Sorry, I cannot help summarize this conversation.",
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(false);
+    expect(JSON.stringify(fourMessagesAboveThreshold)).toBe(original);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(mockGenerateText).toHaveBeenCalledTimes(4);
+    expect(onDiscardedUsage).toHaveBeenCalledTimes(4);
+    expect(attempt.mock.calls.map((call) => call[4])).toEqual(
+      Array(4).fill("missing_sections"),
+    );
+    expect(finish).toHaveBeenLastCalledWith("error", undefined);
+  });
   it("retries a transient GLM failure but does not retry a canceled treatment", async () => {
     resolve.mockResolvedValue({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      policy: "moderation_glm53_abliteration_recovery_v2",
     });
     mockGenerateText
       .mockRejectedValueOnce({ statusCode: 503 })
@@ -348,7 +371,7 @@ describe("default compaction policy pipeline", () => {
     resolve.mockResolvedValue({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      policy: "moderation_glm53_abliteration_recovery_v2",
     });
     mockGenerateText
       .mockResolvedValueOnce({

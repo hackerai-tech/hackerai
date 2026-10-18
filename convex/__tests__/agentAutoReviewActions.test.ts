@@ -8,7 +8,7 @@ import {
   jest,
 } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config: unknown) => config),
 }));
 
