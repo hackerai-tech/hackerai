@@ -1,3 +1,4 @@
+import { goalResumeMessage } from "@/lib/goals/commands";
 import { judgeGoalCompletion } from "@/lib/goals/judge";
 import type { GoalJudgment } from "@/lib/goals/contracts";
 import { api as goalApi } from "@/convex/_generated/api";
@@ -1987,7 +1988,7 @@ export const agentLongTask = task({
             parts: [
               {
                 type: "text",
-                text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. Continue from the saved goal progress and latest chat history. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+                text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalResumeMessage(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
               },
             ],
           },
@@ -3150,7 +3151,14 @@ export const agentLongTask = task({
                   }) +
                   "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. If a verificationCommand is set, run that exact command as a separate terminal invocation without prepending or appending anything, including exit-code echoes; the terminal result records its exit code. An achieved checkpoint requests independent verification; describe completion as pending verification until the goal status confirms it. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
                 : "");
-            finalMessages = messagesWithNotes;
+            // Repeat the claimed goal at the latest user turn so old assistant plans
+            // and compacted summaries cannot silently reintroduce replaced work.
+            finalMessages = activeGoal
+              ? appendSystemReminderToLastUserMessage(
+                  messagesWithNotes,
+                  goalResumeMessage(activeGoal),
+                )
+              : messagesWithNotes;
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
             const contextUsageOn = isContextUsageEnabled(subscription, mode);

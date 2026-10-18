@@ -84,7 +84,7 @@ export function goalResumeMessage(
   goal: { objective: string; criteria: string[] },
   reply = "",
 ): string {
-  return `Resume my current saved goal. This objective replaces earlier goal objectives in this chat; preserve its authorization and remaining run budget.
+  return `Resume my current saved goal. This objective replaces earlier goal objectives in this chat. Discard unfinished steps and plans for superseded objectives, even if a previous assistant promised to finish them. Only perform work needed for the current objective and criteria. Preserve existing authorization boundaries and the remaining run budget.
 
 Goal: ${goal.objective}
 Success criteria:
