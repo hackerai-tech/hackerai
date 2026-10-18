@@ -102,6 +102,36 @@ describe("agent cancel route", () => {
     );
   });
 
+  it("still cancels the worker and clears its lease if goal pausing fails", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockPauseGoal.mockRejectedValueOnce(
+      new Error("Storage unavailable") as never,
+    );
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(await response.json()).toEqual({ canceled: true, runId: "run-1" });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-1",
+      }),
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: "agent_cancel_goal_pause_failed",
+      }),
+    );
+  });
+
   it("logs a distinct reason when a persisted chat belongs to another user", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
     mockGetChatById.mockResolvedValue({ user_id: "user-2" } as never);

@@ -164,12 +164,26 @@ export const createAgentCancelPost =
       };
       if (runId) {
         stage = "pause_goal";
-        await getConvexClient().mutation(api.agentGoals.pauseForCanceledRun, {
-          serviceKey: goalServiceKey(),
-          chatId,
-          userId,
-          runId,
-        });
+        try {
+          await getConvexClient().mutation(api.agentGoals.pauseForCanceledRun, {
+            serviceKey: goalServiceKey(),
+            chatId,
+            userId,
+            runId,
+          });
+        } catch {
+          // Stopping cost-incurring work must survive a goal-storage failure.
+          // Worker cleanup also resolves canceled goal slices to paused.
+          logger.warn(
+            "Could not persist goal pause before Agent cancellation",
+            {
+              event: "agent_cancel_goal_pause_failed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              request_id: requestId,
+            },
+          );
+        }
       }
       stage = "close_approval_session";
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
