@@ -49,7 +49,7 @@ Agent duration includes tool and approval waits.
 The PostHog experiment uses request-rate ratios for completion and cost per
 completion. Its negative-thumbs funnel is a user-level diagnostic that can
 include feedback on other messages. The request-joined SQL readout is the
-response-specific comparison. Keep missing terminal/cost events visible, and
+response-specific comparison in `paid-deepseek-1017-readout.sql` (freeze its UTC bounds and validate after the new events are ingested). Keep missing terminal/cost events visible, and
 segment Ask/Agent, selector, tier, baseline and sandbox transport. Exclude
 internal test identities using the project's test-account filters when running
 Production analysis; Preview QA is not evidence of user benefit. Check sample
