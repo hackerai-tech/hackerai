@@ -22,6 +22,8 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<target_request_limits>");
+      expect(ask).not.toContain("<target_request_limits>");
       expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
