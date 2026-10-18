@@ -1,10 +1,8 @@
 import type { ModelMessage } from "ai";
 import {
   getProviderPromptPressure,
-  PROVIDER_PRESSURE_MESSAGE_COUNT,
   PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES,
   PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS,
-  PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
 } from "../provider-pressure";
 
 const toolResultMessage = (index: number, output: unknown): ModelMessage =>
@@ -21,46 +19,70 @@ const toolResultMessage = (index: number, output: unknown): ModelMessage =>
   }) as unknown as ModelMessage;
 
 describe("getProviderPromptPressure", () => {
+  const historyWithBytes = (bytes: number): ModelMessage[] => {
+    const messages: ModelMessage[] = [{ role: "user", content: "" }];
+    const overhead = new TextEncoder().encode(JSON.stringify(messages)).length;
+    messages[0].content = "a".repeat(bytes - overhead);
+    return messages;
+  };
+
+  it("allows larger histories in Agent mode without a model selector", () => {
+    const messages = historyWithBytes(700_000);
+    expect(getProviderPromptPressure(messages, { mode: "agent" })).toBeNull();
+    expect(getProviderPromptPressure(messages, { mode: "ask" })).toMatchObject({
+      reason: "serialized_message_bytes",
+    });
+    expect(getProviderPromptPressure(messages)).toMatchObject({
+      reason: "serialized_message_bytes",
+    });
+  });
+
+  it.each([
+    { mode: "agent" as const, limit: 1_800_000 },
+    { mode: "ask" as const, limit: 600_000 },
+    { mode: undefined, limit: 600_000 },
+  ])("compacts exactly at the $mode byte ceiling", ({ mode, limit }) => {
+    expect(
+      getProviderPromptPressure(historyWithBytes(limit - 1), { mode }),
+    ).toBeNull();
+    expect(
+      getProviderPromptPressure(historyWithBytes(limit), { mode }),
+    ).toMatchObject({ reason: "serialized_message_bytes" });
+  });
+
+  it.each([undefined, { mode: "agent" as const }, { mode: "ask" as const }])(
+    "does not compact small histories merely because of their counts (%j)",
+    (route) => {
+      const results = Array.from({ length: 150 }, (_, index) =>
+        toolResultMessage(index, "short"),
+      );
+      expect(getProviderPromptPressure(results, route)).toBeNull();
+      const messages: ModelMessage[] = Array.from({ length: 200 }, () => ({
+        role: "user",
+        content: "short",
+      }));
+      expect(getProviderPromptPressure(messages, route)).toBeNull();
+    },
+  );
+
   it("triggers for large tool-heavy provider prompts", () => {
-    const messages = Array.from(
-      { length: PROVIDER_PRESSURE_TOOL_RESULT_COUNT },
-      (_, index) => toolResultMessage(index, "x".repeat(5_000)),
+    const messages = Array.from({ length: 100 }, (_, index) =>
+      toolResultMessage(index, "x".repeat(7_000)),
     );
 
     const pressure = getProviderPromptPressure(messages);
 
     expect(pressure).toMatchObject({
       reason: "serialized_message_bytes",
-      toolResultCount: PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
-      messageCount: PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
+      toolResultCount: 100,
+      messageCount: 100,
       summarizationMaxTokensOverride:
         PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS,
     });
-    expect(pressure?.reasons).toEqual([
-      "serialized_message_bytes",
-      "tool_result_count",
-    ]);
+    expect(pressure?.reasons).toEqual(["serialized_message_bytes"]);
     expect(pressure?.serializedMessageBytes).toBeGreaterThanOrEqual(
       PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES,
     );
-  });
-
-  it("triggers on provider message count even when content is small", () => {
-    const messages = Array.from(
-      { length: PROVIDER_PRESSURE_MESSAGE_COUNT },
-      (_, index) =>
-        ({
-          role: "user",
-          content: `small ${index}`,
-        }) as ModelMessage,
-    );
-
-    expect(getProviderPromptPressure(messages)).toMatchObject({
-      reason: "message_count",
-      reasons: ["message_count"],
-      toolResultCount: 0,
-      messageCount: PROVIDER_PRESSURE_MESSAGE_COUNT,
-    });
   });
 
   it("does not trigger serialized pressure for a single image tool result", () => {
