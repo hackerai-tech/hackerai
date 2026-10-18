@@ -2349,6 +2349,68 @@ describe("createChatLogger ChatSDKError metadata", () => {
 });
 
 describe("createChatLogger OpenRouter metadata", () => {
+  it.each([
+    {},
+    { openrouter_generation_id: "gen-current-error" },
+    {
+      provider_name: "CurrentProvider",
+      openrouter_generation_id: "gen-current-error",
+      openrouter_request_id: "req-current-error",
+      openrouter_upstream_id: "upstream-current-error",
+    },
+  ])(
+    "keeps failed-call attribution separate from the previous response: %j",
+    (metadata) => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const phSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
+      try {
+        const logger = createChatLogger({
+          chatId: "attribution",
+          endpoint: "/api/agent",
+        });
+        logger.setModelResponse("successful/model", {
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        logger.recordProviderError(
+          Object.assign(new Error("Bad gateway"), { statusCode: 502 }),
+          {
+            mode: "agent",
+            model: "test-model",
+            requestedModelSlug: "test/model",
+            openRouterMetadata: metadata,
+          },
+        );
+        const fields = phSpy.mock.calls.at(-1)![1];
+        expect(fields).toMatchObject({
+          provider_name: metadata.provider_name,
+          provider_name_source: metadata.provider_name
+            ? "openrouter_error_metadata"
+            : undefined,
+          provider_attribution_available: Boolean(metadata.provider_name),
+          openrouter_generation_id: metadata.openrouter_generation_id,
+          openrouter_request_id: metadata.openrouter_request_id,
+          openrouter_upstream_id: metadata.openrouter_upstream_id,
+        });
+        const emitted = JSON.stringify([errorSpy.mock.calls, phSpy.mock.calls]);
+        for (const previous of [
+          "PreviousProvider",
+          "gen-previous-success",
+          "req-previous-success",
+          "upstream-previous-success",
+        ])
+          expect(emitted).not.toContain(previous);
+      } finally {
+        errorSpy.mockRestore();
+        phSpy.mockRestore();
+      }
+    },
+  );
+
   it("records request and upstream IDs for failed provider streams", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});

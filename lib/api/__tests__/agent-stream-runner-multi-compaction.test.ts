@@ -1159,24 +1159,55 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("does not attribute a bare disconnect to the previous step's upstream", async () => {
-    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-      usedTokens: 1_000,
-      maxTokens: 128_000,
-    });
-    state.openRouterMetadata = { provider_name: "Together" };
-    state.providerErrorMetadata = { provider_name: "Together" };
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        usageTracker: { hasUsage: true },
-        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-      }) as any,
-      state,
-    )) as any;
-    await stream.onError({ error: new TypeError("terminated") });
-    expect(state.providerErrorMetadata).toEqual({});
-  });
+  it.each(["/api/chat", "/api/agent"])(
+    "does not attribute a bare disconnect on %s to the previous step's upstream",
+    async (endpoint) => {
+      const metadata = jest.requireMock("@/lib/api/openrouter-metadata");
+      const mergeSpy = jest
+        .spyOn(metadata, "mergeOpenRouterMetadata")
+        .mockImplementation(
+          jest.requireActual("@/lib/api/openrouter-metadata")
+            .mergeOpenRouterMetadata,
+        );
+      const recordProviderError = jest.fn();
+      const chatLogger = {
+        setModelResponse: jest.fn(),
+        recordProviderError,
+        recordProviderRequestDiagnostics: jest.fn(),
+      };
+      try {
+        const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        });
+        state.openRouterMetadata = { provider_name: "Together" };
+        state.providerErrorMetadata = { provider_name: "Together" };
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            endpoint,
+            mode: endpoint === "/api/chat" ? "ask" : "agent",
+            chatLogger,
+            usageTracker: { hasUsage: true },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        await stream.onError({ error: new TypeError("terminated") });
+        expect(state.providerErrorMetadata).toEqual({});
+        expect(state.openRouterMetadata.provider_name).toBe("Together");
+        expect(recordProviderError).toHaveBeenCalledWith(
+          expect.any(TypeError),
+          expect.objectContaining({ openRouterMetadata: {} }),
+        );
+      } finally {
+        mergeSpy.mockRestore();
+      }
+    },
+  );
 
   it.each([
     ["ask", "/api/chat", true, false],
