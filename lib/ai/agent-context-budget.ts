@@ -12,6 +12,9 @@ export const MAX_AGENT_CONTEXT_TOKENS = Math.floor(
 // Verified against https://openrouter.ai/api/v1/models on 2026-10-18.
 // Use the smaller advertised top_provider.context_length where it differs.
 // Exact IDs deliberately fail closed for new models and custom endpoints.
+// Abliteration stays on the legacy budget: the active abliterated-model has
+// only 256K context (https://abliteration.ai/pricing, 2026-10-18). Its 1M Large
+// variants are separate models, not evidence that the base model can expand.
 const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   "deepseek/deepseek-v4.1-flash": 1_048_576,
   "deepseek/deepseek-v4.1-flash-1017": 1_048_576,
@@ -42,10 +45,12 @@ export function getAgentContextBudget({
 }): number {
   const baseline = getMaxTokensForSubscription(subscription, { mode });
   if (!enabled || mode !== "agent") return baseline;
-  const capacities = [modelId, ...fallbackModelIds].map(
-    (id) => MODEL_CONTEXT_WINDOWS[id],
+  const capacities = [modelId, ...fallbackModelIds].map((id) =>
+    Object.hasOwn(MODEL_CONTEXT_WINDOWS, id)
+      ? MODEL_CONTEXT_WINDOWS[id]
+      : undefined,
   );
-  if (capacities.some((capacity) => capacity === undefined)) return baseline;
+  if (!capacities.every((capacity) => capacity !== undefined)) return baseline;
   // OpenRouter may transparently serve any route member. Budget for the
   // smallest member before sending, rather than learning about it on overflow.
   return Math.min(

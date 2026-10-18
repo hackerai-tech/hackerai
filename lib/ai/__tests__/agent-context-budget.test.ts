@@ -38,7 +38,12 @@ it.each([
   { enabled: false },
   { enabled: undefined },
   { modelId: "custom/unknown" },
+  { modelId: "constructor" },
+  { modelId: "__proto__" },
+  { modelId: "abliterated-model" },
+  { modelId: "abliterated-model-large-v2" },
   { fallbackModelIds: ["custom/unknown"] },
+  { fallbackModelIds: ["abliterated-model"] },
 ])(
   "retains the legacy budget when expansion is unavailable: %j",
   (override) => {
