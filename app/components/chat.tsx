@@ -639,7 +639,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
-      ).filter((element) => element.getClientRects().length > 0);
+      ).filter((element) => {
+        if (element.getClientRects().length === 0) return false;
+        // Closed details can still give descendants layout boxes in Chromium.
+        // Only their direct summary remains keyboard-accessible.
+        for (
+          let parent = element.parentElement;
+          parent && parent !== dialog;
+          parent = parent.parentElement
+        ) {
+          if (
+            parent instanceof HTMLDetailsElement &&
+            !parent.open &&
+            !(element.tagName === "SUMMARY" && element.parentElement === parent)
+          )
+            return false;
+        }
+        return true;
+      });
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

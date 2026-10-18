@@ -279,6 +279,10 @@ jest.mock("../ComputerSidebar", () => ({
         />
         <button type="button">Last computer action</button>
         <input aria-label="Hidden computer field" hidden />
+        <details>
+          <summary>More computer actions</summary>
+          <input aria-label="Collapsed computer field" />
+        </details>
       </div>
     );
   },
@@ -1560,9 +1564,7 @@ describe("Chat Component Integration", () => {
       const firstAction = screen.getByRole("button", {
         name: "First computer action",
       });
-      const lastAction = screen.getByRole("button", {
-        name: "Last computer action",
-      });
+      const lastAction = screen.getByText("More computer actions");
       await waitFor(() => expect(firstAction).toHaveFocus());
 
       lastAction.focus();
