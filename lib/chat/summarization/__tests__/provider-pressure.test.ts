@@ -2,10 +2,8 @@ import type { ModelMessage } from "ai";
 import {
   getProviderPromptPressure,
   DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES,
-  PROVIDER_PRESSURE_MESSAGE_COUNT,
   PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES,
   PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS,
-  PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
 } from "../provider-pressure";
 
 const toolResultMessage = (index: number, output: unknown): ModelMessage =>
@@ -79,63 +77,39 @@ describe("getProviderPromptPressure", () => {
     ).toMatchObject({ reason: "serialized_message_bytes" });
   });
 
-  it("keeps count guards active below the larger byte ceiling", () => {
-    const results = Array.from(
-      { length: PROVIDER_PRESSURE_TOOL_RESULT_COUNT },
-      (_, index) => toolResultMessage(index, "short"),
-    );
-    expect(getProviderPromptPressure(results, deepseekAgent)).toMatchObject({
-      reasons: ["tool_result_count"],
-    });
-    const messages: ModelMessage[] = Array.from(
-      { length: PROVIDER_PRESSURE_MESSAGE_COUNT },
-      () => ({ role: "user", content: "short" }),
-    );
-    expect(getProviderPromptPressure(messages, deepseekAgent)).toMatchObject({
-      reasons: ["message_count"],
-    });
-  });
+  it.each([undefined, deepseekAgent])(
+    "does not compact small histories merely because of their counts (%j)",
+    (route) => {
+      const results = Array.from({ length: 150 }, (_, index) =>
+        toolResultMessage(index, "short"),
+      );
+      expect(getProviderPromptPressure(results, route)).toBeNull();
+      const messages: ModelMessage[] = Array.from({ length: 200 }, () => ({
+        role: "user",
+        content: "short",
+      }));
+      expect(getProviderPromptPressure(messages, route)).toBeNull();
+    },
+  );
 
   it("triggers for large tool-heavy provider prompts", () => {
-    const messages = Array.from(
-      { length: PROVIDER_PRESSURE_TOOL_RESULT_COUNT },
-      (_, index) => toolResultMessage(index, "x".repeat(5_000)),
+    const messages = Array.from({ length: 100 }, (_, index) =>
+      toolResultMessage(index, "x".repeat(5_000)),
     );
 
     const pressure = getProviderPromptPressure(messages);
 
     expect(pressure).toMatchObject({
       reason: "serialized_message_bytes",
-      toolResultCount: PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
-      messageCount: PROVIDER_PRESSURE_TOOL_RESULT_COUNT,
+      toolResultCount: 100,
+      messageCount: 100,
       summarizationMaxTokensOverride:
         PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS,
     });
-    expect(pressure?.reasons).toEqual([
-      "serialized_message_bytes",
-      "tool_result_count",
-    ]);
+    expect(pressure?.reasons).toEqual(["serialized_message_bytes"]);
     expect(pressure?.serializedMessageBytes).toBeGreaterThanOrEqual(
       PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES,
     );
-  });
-
-  it("triggers on provider message count even when content is small", () => {
-    const messages = Array.from(
-      { length: PROVIDER_PRESSURE_MESSAGE_COUNT },
-      (_, index) =>
-        ({
-          role: "user",
-          content: `small ${index}`,
-        }) as ModelMessage,
-    );
-
-    expect(getProviderPromptPressure(messages)).toMatchObject({
-      reason: "message_count",
-      reasons: ["message_count"],
-      toolResultCount: 0,
-      messageCount: PROVIDER_PRESSURE_MESSAGE_COUNT,
-    });
   });
 
   it("does not trigger serialized pressure for a single image tool result", () => {

@@ -691,6 +691,67 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each(["agent", "ask"] as const)(
+    "continues a small %s request beyond the former history-count limits",
+    async (mode) => {
+      mockGetProviderPromptPressure.mockImplementation(
+        jest.requireActual("@/lib/chat/summarization/provider-pressure")
+          .getProviderPromptPressure,
+      );
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+        }) as any,
+        state,
+      )) as any;
+      const messages: ModelMessage[] = Array.from(
+        { length: 150 },
+        (_, index): ModelMessage[] => [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                input: { command: `printf 'Line ${index}'` },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                output: { type: "text", value: `Line ${index}` },
+              },
+            ],
+          },
+        ],
+      ).flat();
+      const prepared = await stream.prepareStep({
+        steps: [],
+        stepNumber: 1,
+        messages,
+      });
+      const checkedHistory =
+        mockGetProviderPromptPressure.mock.calls.at(-1)?.[0];
+      expect(checkedHistory).toHaveLength(300);
+      expect(prepared.messages).toHaveLength(300);
+      expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["agent", "ask"] as const)(
     "checks pressure against the effective model on each %s step",
     async (mode) => {
       let modelId = "deepseek/deepseek-v4.1-flash";

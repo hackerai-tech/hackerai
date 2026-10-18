@@ -1144,8 +1144,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       chatId: "chat-pressure",
       chatSystemPrompt: "test-system-prompt",
       providerPromptPressure: {
-        reason: "tool_result_count",
-        reasons: ["tool_result_count"],
+        reason: "serialized_message_bytes",
+        reasons: ["serialized_message_bytes"],
         toolResultCount: 101,
         messageCount: 101,
         summarizationMaxTokensOverride: 128_000,
@@ -1348,8 +1348,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       undefined,
       undefined,
       {
-        reason: "tool_result_count",
-        reasons: ["tool_result_count"],
+        reason: "serialized_message_bytes",
+        reasons: ["serialized_message_bytes"],
         toolResultCount: 1,
         messageCount: 1,
         summarizationMaxTokensOverride: 128_000,

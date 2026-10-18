@@ -3,8 +3,6 @@ import type { ChatMode } from "@/types";
 
 export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 450_000;
 export const DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES = 1_800_000;
-export const PROVIDER_PRESSURE_TOOL_RESULT_COUNT = 100;
-export const PROVIDER_PRESSURE_MESSAGE_COUNT = 120;
 export const PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS = 128_000;
 
 // These configured routes advertise a 1M context window. Allow more serialized
@@ -17,8 +15,7 @@ const LARGE_CONTEXT_DEEPSEEK_MODELS = new Set([
   "deepseek/deepseek-v4-pro-0813",
 ]);
 
-export type ProviderPromptPressureReason =
-  "serialized_message_bytes" | "tool_result_count" | "message_count";
+export type ProviderPromptPressureReason = "serialized_message_bytes";
 
 export interface ProviderPromptPressure {
   reason: ProviderPromptPressureReason;
@@ -145,14 +142,6 @@ export const getProviderPromptPressure = (
     serializedMessageBytes >= serializedMessageByteLimit
   ) {
     reasons.push("serialized_message_bytes");
-  }
-
-  if (toolResultCount >= PROVIDER_PRESSURE_TOOL_RESULT_COUNT) {
-    reasons.push("tool_result_count");
-  }
-
-  if (messageCount >= PROVIDER_PRESSURE_MESSAGE_COUNT) {
-    reasons.push("message_count");
   }
 
   if (reasons.length === 0) return null;
