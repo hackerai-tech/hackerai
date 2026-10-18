@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { normalizeTarget } from "../engagement-scope/policy";
 
 export const networkPolicySchema = z
   .object({
@@ -15,7 +14,23 @@ export const DEFAULT_NETWORK_POLICY: NetworkPolicy = {
 
 function networkHost(value: string): string {
   try {
-    return normalizeTarget(value);
+    if (!value || /[\s/@?#\\%:]/.test(value)) throw new Error("Invalid host");
+    const wildcard = value.startsWith("*.");
+    const rawHost = wildcard ? value.slice(2) : value;
+    const normalized = new URL(`https://${rawHost}`).hostname
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if (
+      !normalized ||
+      !normalized
+        .split(".")
+        .every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) ||
+      (/^\d+\.\d+\.\d+\.\d+$/.test(normalized) &&
+        rawHost.replace(/\.$/, "") !== normalized) ||
+      (wildcard && /^[\d.]+$/.test(normalized))
+    )
+      throw new Error("Invalid host");
+    return wildcard ? `*.${normalized}` : normalized;
   } catch {
     throw new Error(
       "Use a valid hostname, wildcard, IPv4 address, or IPv4 CIDR. URLs and ports are not supported.",

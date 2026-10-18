@@ -1,7 +1,3 @@
-jest.mock("@/lib/engagement-scope/admission", () => ({
-  recordUserScope: jest.fn().mockResolvedValue(undefined),
-  retryUserScope: jest.fn().mockResolvedValue(undefined),
-}));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 class MockResponse {
@@ -168,6 +164,7 @@ describe("web request correlation at Agent dispatch", () => {
     endpoint: "/api/agent" | "/api/agent-long",
     agentPermissionMode: string,
     header?: string,
+    body: Record<string, unknown> = {},
   ) =>
     createAgentTriggerPost({ endpoint })({
       headers: new Headers(
@@ -184,8 +181,41 @@ describe("web request correlation at Agent dispatch", () => {
           },
         ],
         webRequestId: "untrusted-body-canary",
+        ...body,
       }),
     } as any);
+
+  it.each([
+    ["send", {}],
+    ["regenerate", { regenerate: true, messages: [] }],
+    ["continue", { isAutoContinue: true }],
+  ])(
+    "admits %s on a legacy chat without depending on retired scope storage",
+    async (_operation, body) => {
+      getChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        engagement_scope_expected: true,
+        update_time: 1,
+      });
+      const response = await start(
+        "/api/agent",
+        "full_access",
+        requestId,
+        body,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ runId: "run-existing" });
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat-1", userId: "user-1" }),
+      );
+      expect(mockTriggerTask).toHaveBeenCalledWith(
+        "agent-long",
+        expect.objectContaining({ chatId: "chat-1" }),
+        expect.anything(),
+      );
+    },
+  );
 
   it.each(dispatchPaths)(
     "correlates %s %s without changing retry identity or payload",

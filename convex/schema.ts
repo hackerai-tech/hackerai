@@ -247,6 +247,8 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
+  // Normal chat/account deletion still cleans these records. No bulk migration.
   engagement_scopes: defineTable({
     chat_id: v.string(),
     user_id: v.string(),
@@ -274,6 +276,7 @@ export default defineSchema({
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
+    // Legacy field retained for existing chat documents only.
     engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
     title: v.string(),

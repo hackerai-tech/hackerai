@@ -2751,7 +2751,6 @@ export const agentLongTask = task({
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
-              engagementScope,
               cloudNetworkPrompt,
               tools,
               ensureSandbox,
@@ -3723,7 +3722,6 @@ export const agentLongTask = task({
               },
               trackedProvider,
               currentSystemPrompt,
-              engagementScope,
               cloudNetworkPrompt,
               tools,
               mode,

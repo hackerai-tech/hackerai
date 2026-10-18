@@ -11,7 +11,7 @@ import {
 export const CLOUD_NETWORK_PROMPT_TOKENS = 400;
 const MAX_SHOWN_DESTINATIONS = 10;
 const boundary =
-  "Applies only to this user's E2B cloud workspace, shared across tasks. Local/Desktop and server-side search/readers are outside this setting; do not use another route to bypass it. Network access does not grant testing permission: keep the engagement scope.";
+  "Applies only to this user's E2B cloud workspace, shared across tasks. Local/Desktop and server-side search/readers are outside this setting; do not use another route to bypass it. Network access does not grant testing permission: follow the user's authorized task and tool approval requirements.";
 const wrap = (text: string) =>
   `\n\n<cloud_network_settings>\n${boundary}\n${text}\n</cloud_network_settings>`;
 

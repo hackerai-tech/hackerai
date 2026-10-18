@@ -1,4 +1,3 @@
-jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     error: jest.fn(),
@@ -8,8 +7,6 @@ jest.mock("@/lib/posthog/server", () => ({
 
 import { phLogger } from "@/lib/posthog/server";
 import { createOpenUrlTool } from "../open-url";
-import { createScopeRuntime } from "@/lib/engagement-scope/runtime";
-import { getConvexClient } from "@/lib/db/convex-client";
 
 async function runTool(
   tool: ReturnType<typeof createOpenUrlTool>,
@@ -45,54 +42,6 @@ describe("open_url", () => {
     global.fetch = originalFetch;
     delete process.env.JINA_API_KEY;
     jest.clearAllMocks();
-  });
-
-  it("refreshes scope before URL dispatch and never contacts Jina after narrowing or loss of policy", async () => {
-    const policy = {
-      revision: 1,
-      status: "ready",
-      clarification: "",
-      clarificationRequested: false,
-      rules: [
-        {
-          target: "*.example.test",
-          effect: "allow",
-          activity: "active_testing",
-        },
-      ],
-      restrictions: [],
-    };
-    const query = jest.fn().mockResolvedValue(policy);
-    (getConvexClient as jest.Mock).mockReturnValue({ query });
-    global.fetch = jest
-      .fn()
-      .mockResolvedValue({ ok: true, text: async () => "synthetic content" });
-    const guarded = createOpenUrlTool({
-      engagementScope: createScopeRuntime("owner", "chat"),
-    });
-    const request = { url: "https://api.example.test/api", brief: "fixture" };
-    await runTool(guarded, request);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    (global.fetch as jest.Mock).mockClear();
-    query.mockResolvedValue({
-      ...policy,
-      revision: 2,
-      rules: [
-        ...policy.rules,
-        { target: "api.example.test", effect: "deny", activity: "all_contact" },
-      ],
-    });
-    expect(await runTool(guarded, request)).toEqual({
-      error: "This URL matches an engagement exclusion.",
-      scope_revision: 2,
-    });
-    expect(global.fetch).not.toHaveBeenCalled();
-    query.mockRejectedValue(new Error("unavailable"));
-    expect(await runTool(guarded, request)).toMatchObject({
-      error: expect.stringContaining("temporarily unavailable"),
-      scope_revision: 2,
-    });
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("logs expected Jina network timeouts as warnings without raw error objects", async () => {
