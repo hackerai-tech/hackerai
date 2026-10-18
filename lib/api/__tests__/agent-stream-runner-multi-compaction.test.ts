@@ -690,6 +690,43 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each(["agent", "ask"] as const)(
+    "checks pressure against the effective model on each %s step",
+    async (mode) => {
+      let modelId = "deepseek/deepseek-v4.1-flash";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          trackedProvider: { languageModel: () => ({ modelId }) },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const step = {
+        steps: [],
+        stepNumber: 0,
+        messages: [{ role: "user", content: "Continue" }],
+      };
+      await stream.prepareStep(step);
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { modelId, mode },
+      );
+      modelId = "z-ai/glm-5.3";
+      await stream.prepareStep({ ...step, stepNumber: 1 });
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { modelId, mode },
+      );
+    },
+  );
+
   it.each([
     { mode: "ask", inputRepair: false },
     { mode: "agent", inputRepair: false },

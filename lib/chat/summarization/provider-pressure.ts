@@ -1,14 +1,24 @@
 import type { ModelMessage } from "ai";
+import type { ChatMode } from "@/types";
 
 export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 450_000;
+export const DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES = 1_800_000;
 export const PROVIDER_PRESSURE_TOOL_RESULT_COUNT = 100;
 export const PROVIDER_PRESSURE_MESSAGE_COUNT = 120;
 export const PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS = 128_000;
 
+// These configured routes advertise a 1M context window. Allow more serialized
+// history within the existing token budget; unknown routes keep the legacy cap.
+const LARGE_CONTEXT_DEEPSEEK_MODELS = new Set([
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-v4.1-flash-1017",
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4-pro-0813",
+]);
+
 export type ProviderPromptPressureReason =
-  | "serialized_message_bytes"
-  | "tool_result_count"
-  | "message_count";
+  "serialized_message_bytes" | "tool_result_count" | "message_count";
 
 export interface ProviderPromptPressure {
   reason: ProviderPromptPressureReason;
@@ -119,7 +129,12 @@ const countToolResultParts = (messages: ModelMessage[]): number => {
 
 export const getProviderPromptPressure = (
   messages: ModelMessage[],
+  { modelId, mode }: { modelId?: string; mode?: ChatMode } = {},
 ): ProviderPromptPressure | null => {
+  const serializedMessageByteLimit =
+    mode === "agent" && modelId && LARGE_CONTEXT_DEEPSEEK_MODELS.has(modelId)
+      ? DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES
+      : PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES;
   const serializedMessageBytes = getSerializedBytes(messages);
   const toolResultCount = countToolResultParts(messages);
   const messageCount = messages.length;
@@ -127,7 +142,7 @@ export const getProviderPromptPressure = (
 
   if (
     serializedMessageBytes != null &&
-    serializedMessageBytes >= PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES
+    serializedMessageBytes >= serializedMessageByteLimit
   ) {
     reasons.push("serialized_message_bytes");
   }

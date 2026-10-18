@@ -1752,8 +1752,13 @@ export async function createAgentStream(
         const effectiveModelInfo = getEffectiveModelInfo(generationStepIndex);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
-        const providerPromptPressure =
-          getProviderPromptPressure(rollingModelMessages);
+        const providerPromptPressure = getProviderPromptPressure(
+          rollingModelMessages,
+          {
+            modelId: effectiveModelInfo.languageModel.modelId,
+            mode: ctx.mode,
+          },
+        );
         const shouldCheckDurableSummary =
           ctx.summarizationTracker.summarizationCount === 0 &&
           steps.length === 0;
