@@ -1,5 +1,8 @@
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
-import { AGENT_MODEL_CONTEXT_FLAG } from "@/lib/experiments/agent-model-context";
+import {
+  AGENT_MODEL_CONTEXT_FLAG,
+  type AgentModelContextVariant,
+} from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
@@ -776,6 +779,7 @@ export type AgentStreamContext = {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   agentModelContextEnabled?: boolean;
+  agentModelContextVariant?: AgentModelContextVariant;
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
@@ -1748,8 +1752,10 @@ export async function createAgentStream(
         !abortSignal.aborted &&
         !state.agentContextBudgetExposed &&
         ctx.mode === "agent" &&
-        ctx.agentModelContextEnabled &&
-        activeContextBudget > getMaxTokensForSubscription(ctx.subscription)
+        (ctx.agentModelContextVariant !== undefined ||
+          (ctx.agentModelContextEnabled &&
+            activeContextBudget >
+              getMaxTokensForSubscription(ctx.subscription)))
       ) {
         state.agentContextBudgetExposed = true;
         phLogger.event("agent_model_context_exposed", {
@@ -1757,6 +1763,11 @@ export async function createAgentStream(
           chat_id: ctx.chatId,
           run_id: ctx.triggerRunId,
           flag_key: AGENT_MODEL_CONTEXT_FLAG,
+          ...(ctx.agentModelContextVariant && {
+            experiment_variant: ctx.agentModelContextVariant,
+            [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]:
+              ctx.agentModelContextVariant,
+          }),
           model: model.modelId,
           context_max_tokens: activeContextBudget,
           compaction_threshold_tokens: summarizationThreshold,

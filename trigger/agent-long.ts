@@ -1,4 +1,4 @@
-import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
+import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -1920,12 +1920,13 @@ export const agentLongTask = task({
       }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const agentModelContextEnabled = await isAgentModelContextEnabled(
+      const agentModelContextVariant = await getAgentModelContextVariant(
         userId,
         subscription,
         mode,
         selectedModelOverride,
       );
+      const agentModelContextEnabled = agentModelContextVariant === "test";
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
         getMessagesByChatId({
@@ -3764,6 +3765,7 @@ export const agentLongTask = task({
               ctxSystemTokens,
               ctxMaxTokens,
               agentModelContextEnabled,
+              agentModelContextVariant,
               streamStartTime,
               triggerRunId: ctx.run.id,
               contextUsageOn,
