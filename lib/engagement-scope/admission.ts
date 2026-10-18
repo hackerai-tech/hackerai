@@ -7,6 +7,7 @@ import {
   applyExtraction,
   EXTRACTION_PROMPT,
   extractionSchema,
+  SourceEvidenceError,
 } from "./extract";
 import { MAX_SCOPE_TEXT } from "./policy";
 import { phLogger } from "@/lib/posthog/server";
@@ -35,6 +36,22 @@ function extractionFailureReason(error: unknown) {
     // Even an unusual thrown value must not interrupt persisting unavailable.
     return "unclassified";
   }
+}
+
+function extractionEvidenceCheck(error: unknown) {
+  try {
+    const check = error instanceof SourceEvidenceError ? error.check : null;
+    if (
+      check === "scope_source" ||
+      check === "scope_target" ||
+      check === "restriction_source" ||
+      check === "restriction_text"
+    )
+      return check;
+  } catch {
+    // Diagnostic properties must never prevent persisting unavailable state.
+  }
+  return null;
 }
 
 function opaqueUuid(value: string) {
@@ -121,6 +138,7 @@ async function recordScope(args: {
       stage: failureStage,
       timedOut: extractionSignal.aborted,
       reason: extractionFailureReason(error),
+      evidence_check: extractionEvidenceCheck(error),
       chat_id: opaqueUuid(args.chatId),
       message_id: opaqueUuid(args.messageId),
     });
