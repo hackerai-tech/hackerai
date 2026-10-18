@@ -12,7 +12,7 @@ export type GoalCommand =
       maxRuns: number;
     } & GoalContract)
   | { action: "resume"; additionalRuns?: number; input?: string }
-  | { action: "status" | "pause" | "stop" };
+  | { action: "status" | "pause" | "stop" | "clear" };
 export function parseGoalCommand(text: string): GoalCommand | null {
   const match = text.trim().match(/^\/goal(?:\s+([\s\S]*))?$/i);
   if (!match) return null;
@@ -24,7 +24,7 @@ export function parseGoalCommand(text: string): GoalCommand | null {
   )
     return { action: "status" };
   if (/^(pause|stop|clear)$/i.test(content))
-    return { action: content.toLowerCase() === "pause" ? "pause" : "stop" };
+    return { action: content.toLowerCase() as "pause" | "stop" | "clear" };
   if (
     /^resume\s+\+\d+/i.test(content) &&
     !/^resume\s+\+[1-8](?:\s|$)/i.test(content)

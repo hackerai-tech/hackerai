@@ -1,6 +1,9 @@
 import type { ChatMessage } from "@/types";
 
-type ReconciledMessage = Pick<ChatMessage, "id" | "role" | "parts">;
+type ReconciledMessage = Pick<
+  ChatMessage,
+  "id" | "role" | "parts" | "metadata"
+>;
 
 const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
   if (Object.is(current, next)) return true;
@@ -116,6 +119,7 @@ export const areMessagesEquivalentForConvexSync = (
     (message, index) =>
       message.id === next[index].id &&
       message.role === next[index].role &&
+      haveSameJsonValue(message.metadata?.goal, next[index].metadata?.goal) &&
       haveSameJsonValue(message.parts, next[index].parts),
   );
 

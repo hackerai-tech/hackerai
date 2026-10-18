@@ -11,6 +11,10 @@ jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
+const mockOpenSidebar = jest.fn();
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ openSidebar: mockOpenSidebar }),
+}));
 const settings = {
   sandboxPreference: "e2b",
   agentPermissionMode: "full_access",
@@ -112,7 +116,7 @@ describe("goal controls", () => {
     setMockQueryResult({ ...goal, state: "running", activeRunId: "r1" });
     rerender(<AgentGoalPanel {...props} idle={false} />);
     expect(screen.getByRole("button", { name: "Pause goal" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Stop goal" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete goal" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Pause goal" }));
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
@@ -236,38 +240,51 @@ describe("goal controls", () => {
     },
   );
 
-  it("validates each criterion before starting and preserves the dialog draft", async () => {
-    const send = jest.fn();
+  it("has no permanent launcher when no goal exists", async () => {
     render(
       <AgentGoalPanel
         chatId="chat"
         exists={false}
         eligible
         idle
-        send={send}
+        send={jest.fn()}
         settings={settings}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: /Set goal/ }));
+    await act(async () => {});
     expect(
-      screen.getByRole("dialog", { name: "Set an Agent goal" }),
-    ).toBeVisible();
-    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
-      target: { value: "Create marker" },
+      screen.queryByRole("region", { name: "Agent goal" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Set goal/ }),
+    ).not.toBeInTheDocument();
+  });
+  it("opens the existing sidebar to edit while a run is active", async () => {
+    setMockQueryResult({ ...goal, state: "running", activeRunId: "r1" });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle={false}
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    expect(mockOpenSidebar).toHaveBeenCalledWith({
+      kind: "goal",
+      chatId: "chat",
     });
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Goal success criteria" }),
-      { target: { value: "x".repeat(1001) } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Start goal" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "1,000 characters each",
-    );
-    expect(send).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
-    fireEvent.click(screen.getByRole("button", { name: /Set goal/ }));
-    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
-      "Create marker",
+    fireEvent.click(screen.getByRole("button", { name: "Delete goal" }));
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({
+          body: JSON.stringify({ chatId: "chat", action: "clear" }),
+        }),
+      ),
     );
   });
 });

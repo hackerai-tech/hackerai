@@ -133,7 +133,7 @@ describe("goal commands and contract validation", () => {
   it("parses a completion contract without sending control commands as prompts", () => {
     expect(parseGoalCommand("/goal")).toEqual({ action: "status" });
     expect(parseGoalCommand("/goal pause")).toEqual({ action: "pause" });
-    expect(parseGoalCommand("/goal clear")).toEqual({ action: "stop" });
+    expect(parseGoalCommand("/goal clear")).toEqual({ action: "clear" });
     expect(parseGoalCommand("/goal resume +2 The job finished")).toEqual({
       action: "resume",
       additionalRuns: 2,

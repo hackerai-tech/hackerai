@@ -53,15 +53,20 @@ import {
 } from "@/app/hooks/useOnlineStatus";
 import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
-import { WifiOff } from "lucide-react";
+import { WifiOff, Target, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
-  onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
+  goalPanel?: React.ReactNode;
+  onSubmit: (
+    e: React.FormEvent,
+    inputOverride?: string,
+  ) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
@@ -248,6 +253,7 @@ export const ChatInput = (props: ChatInputProps) => {
 };
 
 const ChatInputContent = ({
+  goalPanel,
   onSubmit,
   onStop,
   onReconnect,
@@ -772,8 +778,46 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
+  const [goalMode, setGoalMode] = useState(false);
+  const [goalEnabled, setGoalEnabled] = useState(false);
+  const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
+  useEffect(() => {
+    setGoalMode(false);
+    setGoalEnabled(false);
+    if (chatMode !== "agent" || subscription === "free") return;
+    const abort = new AbortController();
+    fetch("/api/agent-goal", { signal: abort.signal, cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setGoalEnabled(data?.enabled === true))
+      .catch(() => undefined);
+    return () => abort.abort();
+  }, [chatId, chatMode, subscription]);
+  useEffect(() => setDismissedGoalSuggestion(false), [input]);
+  const showGoalSuggestion =
+    goalEnabled &&
+    !goalMode &&
+    !dismissedGoalSuggestion &&
+    /^\/(?:g(?:o(?:a(?:l)?)?)?)?$/i.test(input.trim());
+  const goalExposure = useRef(false);
+  useEffect(() => {
+    if (showGoalSuggestion && !goalExposure.current) {
+      goalExposure.current = true;
+      captureAuthenticatedEvent("agent_goal_exposed", {
+        surface: "goal_slash_command",
+      });
+    }
+  }, [showGoalSuggestion]);
+  const selectGoal = () => {
+    setGoalMode(true);
+    setInput("");
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (showGoalSuggestion) {
+      selectGoal();
+      return;
+    }
     if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
@@ -784,11 +828,15 @@ const ChatInputContent = ({
     if (canSubmit) {
       isSubmittingAttachmentsRef.current =
         clearDraftOnSubmit && uploadedFiles.length > 0;
-      const accepted = await onSubmit(e);
+      const accepted = await onSubmit(
+        e,
+        goalMode ? `/goal start ${input}` : undefined,
+      );
       if (accepted === false) {
         isSubmittingAttachmentsRef.current = false;
         return;
       }
+      setGoalMode(false);
       if (clearDraftOnSubmit) {
         uploadedFilesRef.current = [];
         removeDraft(draftId);
@@ -953,6 +1001,21 @@ const ChatInputContent = ({
           onChange={handleFileUploadEvent}
         />
 
+        {goalPanel}
+        {showGoalSuggestion && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={selectGoal}
+            className="order-1 mb-2 flex w-full items-center gap-3 rounded-2xl border bg-muted p-3 text-left hover:bg-accent"
+          >
+            <Target className="size-4 shrink-0" />
+            <span>Goal</span>
+            <span className="text-sm text-muted-foreground">
+              Set a goal to keep pursuing
+            </span>
+          </button>
+        )}
         {showAgentApprovalPrompt ? (
           <AgentApprovalPrompt
             request={approvalRequest}
@@ -970,10 +1033,39 @@ const ChatInputContent = ({
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
-              placeholder={placeholder}
+              placeholder={
+                goalMode
+                  ? "Describe your goal, define measurable outcomes for best results"
+                  : placeholder
+              }
+              onCommandKeyDown={(e) => {
+                if (showGoalSuggestion && e.key === "Tab") {
+                  e.preventDefault();
+                  selectGoal();
+                }
+                if (e.key === "Escape") {
+                  setGoalMode(false);
+                  setDismissedGoalSuggestion(true);
+                }
+              }}
               autoFocus={autoFocus}
             />
             <ChatInputToolbar
+              goalControl={
+                goalMode ? (
+                  <button
+                    type="button"
+                    aria-label="Exit goal mode"
+                    title="Goal · 3 runs by default"
+                    onClick={() => setGoalMode(false)}
+                    className="flex shrink-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-muted"
+                  >
+                    <Target className="size-4" />
+                    Goal
+                    <X className="size-3" />
+                  </button>
+                ) : undefined
+              }
               compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}

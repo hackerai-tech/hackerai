@@ -44,7 +44,8 @@ export const get = query({
     const user = await ctx.auth.getUserIdentity();
     if (!user) return null;
     await owned(ctx, args.chatId, user.subject);
-    return byChat(ctx, args.chatId);
+    const goal = await byChat(ctx, args.chatId);
+    return goal?.deletedAt ? null : goal;
   },
 });
 export const getForBackend = query({
@@ -53,7 +54,8 @@ export const getForBackend = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     await owned(ctx, args.chatId, args.userId);
-    return byChat(ctx, args.chatId);
+    const goal = await byChat(ctx, args.chatId);
+    return goal;
   },
 });
 export const start = mutation({
@@ -104,6 +106,7 @@ export const start = mutation({
       state: "queued" as const,
       progress: "",
       reason: "Goal started",
+      startedAt: Date.now(),
       noProgressRuns: 0,
       evidence: [],
       updatedAt: Date.now(),
@@ -118,7 +121,12 @@ export const control = mutation({
     serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
-    action: v.union(v.literal("pause"), v.literal("stop"), v.literal("resume")),
+    action: v.union(
+      v.literal("pause"),
+      v.literal("stop"),
+      v.literal("clear"),
+      v.literal("resume"),
+    ),
     additionalRuns: v.optional(v.number()),
   },
   returns: goalDoc,
@@ -129,6 +137,7 @@ export const control = mutation({
     if (!goal) throw new ConvexError("No goal in this chat");
     if (args.action === "resume") {
       if (
+        goal.deletedAt ||
         goal.activeRunId ||
         chat.active_trigger_run_id ||
         chat.active_stream_id ||
@@ -161,9 +170,13 @@ export const control = mutation({
       });
       await ctx.db.patch(chat._id, { canceled_at: undefined });
     } else {
-      if (goal.state === "achieved") return goal;
+      if (goal.state === "achieved" && args.action !== "clear") return goal;
       await ctx.db.patch(goal._id, {
         state: args.action === "pause" ? "paused" : "canceled",
+        deletedAt: args.action === "clear" ? Date.now() : goal.deletedAt,
+        generation: goal.generation + (args.action === "clear" ? 1 : 0),
+        dispatchId: undefined,
+        waitUntil: undefined,
         reason: args.action === "pause" ? "Paused by user" : "Stopped by user",
         updatedAt: Date.now(),
       });
@@ -173,6 +186,82 @@ export const control = mutation({
     return (await ctx.db.get(goal._id))!;
   },
 });
+// Editing fences the old run before cancellation. Its late checkpoint or judge
+// cannot certify the updated objective, and editing never grants more runs.
+export const update = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    generation: v.number(),
+    objective: v.string(),
+    criteria: v.array(v.string()),
+    ...goalContractFields,
+  },
+  returns: goalDoc,
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await owned(ctx, args.chatId, args.userId);
+    const goal = await byChat(ctx, args.chatId);
+    if (!goal || goal.deletedAt || goal.state === "achieved")
+      throw new ConvexError("This goal is no longer editable");
+    if (goal.generation !== args.generation)
+      throw new ConvexError("Goal changed. Reopen the editor before saving.");
+    if (!validGoalStart({ ...args, maxRuns: goal.maxRuns }))
+      throw new ConvexError("Invalid goal objective or completion criteria");
+    await ctx.db.patch(goal._id, {
+      objective: args.objective.trim(),
+      criteria: args.criteria.map((c) => c.trim()),
+      verificationCommand: args.verificationCommand?.trim(),
+      constraints: args.constraints?.trim(),
+      boundaries: args.boundaries?.trim(),
+      stopWhen: args.stopWhen?.trim(),
+      state: "paused",
+      generation: goal.generation + 1,
+      checkpoint: undefined,
+      evidence: [],
+      judgment: undefined,
+      progress: "",
+      noProgressRuns: 0,
+      dispatchId: undefined,
+      waitUntil: undefined,
+      reason: "Goal updated. Resume when ready.",
+      updatedAt: Date.now(),
+    });
+    if (goal.activeRunId)
+      await ctx.db.patch(chat._id, { canceled_at: Date.now() });
+    return (await ctx.db.get(goal._id))!;
+  },
+});
+
+export const markMessage = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    messageId: v.string(),
+    generation: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await owned(ctx, args.chatId, args.userId);
+    const goal = await byChat(ctx, args.chatId);
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+      .unique();
+    if (
+      goal &&
+      goal.generation === args.generation &&
+      message?.chat_id === args.chatId &&
+      message.role === "user"
+    )
+      await ctx.db.patch(message._id, { goal: { sent: true } });
+    return null;
+  },
+});
+
 // Only one dispatcher may launch a generation. Retrying its external call uses the same Trigger idempotency key.
 export const claimDispatch = mutation({
   args: {
@@ -326,6 +415,16 @@ export const finish = mutation({
         q.eq("id", args.messageId ?? args.runId),
       )
       .unique();
+    // A canceled or edited run may finish after the user acted. Settle its
+    // lease without importing evidence or judgments from the old objective.
+    if (["paused", "canceled"].includes(goal.state)) {
+      await ctx.db.patch(goal._id, {
+        activeRunId: undefined,
+        dispatchId: undefined,
+        updatedAt: Date.now(),
+      });
+      return (await ctx.db.get(goal._id))!;
+    }
     const verified =
       goal.checkpoint?.evidence
         .filter(
@@ -368,6 +467,7 @@ export const finish = mutation({
           });
     await ctx.db.patch(goal._id, {
       state,
+      achievedAt: state === "achieved" ? Date.now() : undefined,
       activeRunId: undefined,
       dispatchId: undefined,
       evidence,
@@ -403,6 +503,16 @@ export const finish = mutation({
                         goal.reason),
       updatedAt: Date.now(),
     });
+    if (
+      state === "achieved" &&
+      goal.startedAt &&
+      message?.chat_id === args.chatId &&
+      message.role === "assistant"
+    ) {
+      await ctx.db.patch(message._id, {
+        goal: { achievedElapsedMs: Math.max(0, Date.now() - goal.startedAt) },
+      });
+    }
     return (await ctx.db.get(goal._id))!;
   },
 });

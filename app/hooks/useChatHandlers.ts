@@ -481,11 +481,14 @@ export const useChatHandlers = ({
     status === "submitted" ||
     Boolean(activeTriggerRunRef?.current);
 
-  const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
+  const handleSubmit = async (
+    e: React.FormEvent,
+    inputOverride?: string,
+  ): Promise<boolean> => {
     e.preventDefault();
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
-    const input = getInput();
+    const input = inputOverride ?? getInput();
     let goalCommand;
     let goalSettings: Record<string, unknown> = {};
     try {
@@ -497,7 +500,7 @@ export const useChatHandlers = ({
       return false;
     }
     if (goalCommand) {
-      if (["status", "pause", "stop"].includes(goalCommand.action)) {
+      if (["status", "pause", "stop", "clear"].includes(goalCommand.action)) {
         // New chats have no persisted owner record to reconcile yet.
         if (!isExistingChat) {
           toast.info(
@@ -758,9 +761,17 @@ export const useChatHandlers = ({
       runChatAction("send message", () =>
         sendMessage(
           {
-            text: input.trim() || undefined,
+            text:
+              goalCommand?.action === "start"
+                ? goalCommand.objective
+                : input.trim() || undefined,
             files: validFiles.length > 0 ? validFiles : undefined,
-            metadata: { createdAt: Date.now() },
+            metadata: {
+              createdAt: Date.now(),
+              ...(goalCommand?.action === "start"
+                ? { goal: { sent: true } }
+                : {}),
+            },
           },
           {
             body: {

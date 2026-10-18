@@ -252,6 +252,48 @@ describe("ChatInput - Integration Tests", () => {
     setNavigatorOnline(true);
   });
 
+  it("selects /goal without sending and submits its objective through goal mode", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    mockOnSubmit.mockResolvedValue(true);
+    render(
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute(
+      "placeholder",
+      "Describe your goal, define measurable outcomes for best results",
+    );
+    fireEvent.change(input, { target: { value: "Create a marker" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Create a marker",
+      ),
+    );
+  });
+
   describe("Sandbox disconnect warnings", () => {
     afterEach(() => jest.restoreAllMocks());
     const ui = () => (

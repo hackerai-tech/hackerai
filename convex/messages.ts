@@ -1013,6 +1013,12 @@ export const getMessagesByChatId = query({
           }),
           v.null(),
         ),
+        goal: v.optional(
+          v.object({
+            sent: v.optional(v.boolean()),
+            achievedElapsedMs: v.optional(v.number()),
+          }),
+        ),
         generation_time_ms: v.optional(v.number()),
         generation_started_at: v.optional(v.number()),
         mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
@@ -1157,6 +1163,7 @@ export const getMessagesByChatId = query({
           feedback,
           mode: message.mode,
           generation_started_at: message.generation_started_at,
+          goal: message.goal,
           generation_time_ms: message.generation_time_ms,
           fileDetails,
         });
@@ -1445,6 +1452,12 @@ export const getLastAssistantMessage = query({
       metadata: v.optional(
         v.object({
           generationStartedAt: v.optional(v.number()),
+          goal: v.optional(
+            v.object({
+              sent: v.optional(v.boolean()),
+              achievedElapsedMs: v.optional(v.number()),
+            }),
+          ),
           generationTimeMs: v.optional(v.number()),
           mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
         }),
@@ -1478,10 +1491,12 @@ export const getLastAssistantMessage = query({
         role: message.role,
         parts: message.parts,
         metadata:
+          message.goal ||
           message.mode ||
           typeof message.generation_started_at === "number" ||
           typeof message.generation_time_ms === "number"
             ? {
+                ...(message.goal ? { goal: message.goal } : {}),
                 ...(message.mode ? { mode: message.mode } : {}),
                 ...(typeof message.generation_started_at === "number"
                   ? { generationStartedAt: message.generation_started_at }

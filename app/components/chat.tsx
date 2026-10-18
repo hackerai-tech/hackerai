@@ -2370,6 +2370,31 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
 
+  const goalPanel = (
+    <AgentGoalPanel
+      key={chatId}
+      chatId={chatId}
+      exists={!!chatDataForCurrentChat}
+      eligible={chatMode === "agent" && subscription !== "free"}
+      idle={
+        status === "ready" && !activeTriggerRunId && messageQueue.length === 0
+      }
+      disabledReason={computerSendDisabledReason}
+      send={async (message, options) => {
+        hasManuallyStoppedRef.current = false;
+        resetAutoContinueCount();
+        if (!isExistingChat)
+          window.history.replaceState({}, "", `/c/${chatId}`);
+        await sendMessage(message, options);
+      }}
+      settings={{
+        sandboxPreference,
+        agentPermissionMode,
+        selectedModel: requestSelectedModel,
+      }}
+    />
+  );
+
   return (
     <>
       <StreamEffects
@@ -2420,31 +2445,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               isExistingChat={isExistingChat}
               isChatNotFound={isChatNotFound}
               branchedFromChatTitle={branchedFromChatTitle}
-            />
-
-            <AgentGoalPanel
-              key={chatId}
-              chatId={chatId}
-              exists={!!chatDataForCurrentChat}
-              eligible={chatMode === "agent" && subscription !== "free"}
-              idle={
-                status === "ready" &&
-                !activeTriggerRunId &&
-                messageQueue.length === 0
-              }
-              disabledReason={computerSendDisabledReason}
-              send={async (message, options) => {
-                hasManuallyStoppedRef.current = false;
-                resetAutoContinueCount();
-                if (!isExistingChat)
-                  window.history.replaceState({}, "", `/c/${chatId}`);
-                await sendMessage(message, options);
-              }}
-              settings={{
-                sandboxPreference,
-                agentPermissionMode,
-                selectedModel: requestSelectedModel,
-              }}
             />
 
             {/* Chat interface */}
@@ -2534,6 +2534,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       {!isMobile && (
                         <div className="w-full">
                           <ChatInput
+                            goalPanel={goalPanel}
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onReconnect={resumeStream}
@@ -2573,6 +2574,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   onHeightChange={setComposerOverlayHeight}
                 >
                   <ChatInput
+                    goalPanel={goalPanel}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}

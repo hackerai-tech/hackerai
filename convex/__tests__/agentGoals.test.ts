@@ -8,6 +8,8 @@ jest.mock("../lib/suspensionGuards", () => ({
 }));
 import {
   start,
+  update,
+  markMessage,
   control,
   claimRun,
   claimDispatch,
@@ -201,13 +203,17 @@ describe("persistent goal lifecycle", () => {
         evidence: [proof],
       },
     });
-    await db.message("retry-message", [result]);
+    const messageDocId = await db.message("retry-message", [result]);
     await invoke(finish, db.ctx, {
       ...terminal,
       messageId: "retry-message",
       judgment: { verdict: "done", reason: "Marker observed" },
     });
     expect(db.goal().state).toBe("achieved");
+    expect(
+      (await db.ctx.db.get(messageDocId)).goal.achievedElapsedMs,
+    ).toBeGreaterThanOrEqual(0);
+    expect(db.goal().achievedAt).toBeGreaterThanOrEqual(db.goal().startedAt);
     expect(db.goal().evidence[0].messageId).toBe("retry-message");
     expect(
       (await invoke(evidenceForBackend, db.ctx, owner))[0].result,
@@ -288,5 +294,91 @@ describe("persistent goal lifecycle", () => {
         additionalRuns: 6,
       }),
     ).rejects.toThrow("8 runs");
+  });
+});
+
+describe("editing and deleting an active goal", () => {
+  it("pauses editing, preserves spent budget, and rejects old completion evidence", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    const edited = await invoke(update, db.ctx, {
+      ...owner,
+      generation: 1,
+      objective: "New marker",
+      criteria: ["New marker exists"],
+    });
+    expect(edited).toMatchObject({
+      state: "paused",
+      runs: 1,
+      maxRuns: 3,
+      evidence: [],
+      generation: 2,
+    });
+    expect(db.chat().canceled_at).toEqual(expect.any(Number));
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      judgment: { verdict: "done", reason: "Old objective completed" },
+    });
+    expect(db.goal()).toMatchObject({
+      state: "paused",
+      objective: "New marker",
+      evidence: [],
+    });
+    expect(db.goal().judgment).toBeUndefined();
+    expect(db.goal().activeRunId).toBeUndefined();
+    await expect(
+      invoke(update, db.ctx, {
+        ...owner,
+        generation: 1,
+        objective: "Stale",
+        criteria: ["Stale"],
+      }),
+    ).rejects.toThrow("Goal changed");
+  });
+  it("hides a deleted goal and fences stale dispatches without resetting its generation", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(control, db.ctx, { ...owner, action: "clear" });
+    expect(await invoke(get, db.ctx, { chatId: "chat" })).toBeNull();
+    await invoke(finish, db.ctx, terminal);
+    await expect(
+      invoke(control, db.ctx, { ...owner, action: "resume" }),
+    ).rejects.toThrow();
+    db.chat().active_trigger_run_id = undefined;
+    const next = await invoke(start, db.ctx, startArgs);
+    expect(next.generation).toBe(3);
+    expect(
+      await invoke(claimDispatch, db.ctx, {
+        ...owner,
+        generation: 1,
+        dispatchId: "old",
+      }),
+    ).toBe(false);
+  });
+  it("saves goal labels only on the owner's user message", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    const id = await db.ctx.db.insert("messages", {
+      id: "user-message",
+      chat_id: "chat",
+      role: "user",
+      parts: [],
+    });
+    await invoke(markMessage, db.ctx, {
+      ...owner,
+      messageId: "user-message",
+      generation: 1,
+    });
+    expect((await db.ctx.db.get(id)).goal).toEqual({ sent: true });
+    await expect(
+      invoke(markMessage, db.ctx, {
+        ...owner,
+        userId: "other",
+        messageId: "user-message",
+        generation: 1,
+      }),
+    ).rejects.toThrow();
   });
 });

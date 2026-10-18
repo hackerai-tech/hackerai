@@ -1,3 +1,4 @@
+import { AgentGoalEditor } from "./AgentGoalEditor";
 import React from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
@@ -1395,6 +1396,16 @@ export const ComputerSidebar: React.FC<{
 }> = ({ messages, status }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
+
+  if (
+    sidebarOpen &&
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal"
+  )
+    return (
+      <AgentGoalEditor chatId={sidebarContent.chatId} onClose={closeSidebar} />
+    );
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (

@@ -100,7 +100,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
   hasLocalDesktopSourcePaths: jest.fn(),
   prepareLocalDesktopAttachmentsForTrigger: jest.fn(),
   rewriteSandboxFilePathsInMessages: jest.fn(),
-  stripLocalDesktopSourcePaths: jest.fn(),
+  stripLocalDesktopSourcePaths: (messages: unknown[]) => messages,
   uploadSandboxFiles: jest.fn(),
 }));
 
@@ -653,7 +653,16 @@ describe("goal reservations on oversized dispatch", () => {
         } as any,
       );
       expect(response.status).toBe(413);
-      expect(mockGoalMutation).toHaveBeenCalledTimes(2);
+      expect(mockGoalMutation).toHaveBeenCalledTimes(3);
+      expect(mockGoalMutation).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.objectContaining({
+          messageId: "input",
+          generation: 1,
+          chatId: "goal-chat",
+        }),
+      );
       expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
         serviceKey: "synthetic",
         chatId: "goal-chat",

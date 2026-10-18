@@ -822,6 +822,17 @@ export const createAgentTriggerPost =
       });
 
       if (!existingChat) await reserveGoal();
+      if (reservedGoal && goalRequest?.action === "start") {
+        const goalMessage = messagesForPersistence.findLast(
+          (m) => m.role === "user",
+        );
+        if (goalMessage)
+          await goalConvex().mutation(goalApi.agentGoals.markMessage, {
+            serviceKey: goalServiceKey(),
+            ...reservedGoal,
+            messageId: goalMessage.id,
+          });
+      }
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =

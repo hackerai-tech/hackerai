@@ -27,6 +27,7 @@ export interface ChatInputTextareaProps {
   draftId: string;
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
+  onCommandKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled?: boolean;
   minRows?: number;
   placeholder?: string;
@@ -37,6 +38,7 @@ export function ChatInputTextarea({
   draftId,
   chatMode,
   onEnterSubmit,
+  onCommandKeyDown,
   disabled = false,
   minRows = 1,
   placeholder,
@@ -182,6 +184,8 @@ export function ChatInputTextarea({
         disabled={disabled}
         data-testid="chat-input"
         onKeyDown={(e) => {
+          onCommandKeyDown?.(e);
+          if (e.defaultPrevented || e.nativeEvent.isComposing) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             onEnterSubmit(e);

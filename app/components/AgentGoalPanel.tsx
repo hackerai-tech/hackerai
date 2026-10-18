@@ -6,18 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { ChevronDown, Target } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { ChevronDown, Target, Pause, Trash2, Pencil } from "lucide-react";
 import { GOAL_MAX_RUNS, type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
+
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 const stateLabels: Record<GoalState, string> = {
   queued: "Queued",
@@ -41,7 +35,6 @@ export function AgentGoalPanel({
   idle,
   disabledReason,
   send,
-  settings,
 }: {
   chatId: string;
   exists: boolean;
@@ -60,17 +53,10 @@ export function AgentGoalPanel({
 }) {
   const goal = useQuery(api.agentGoals.get, exists ? { chatId } : "skip");
   const [enabled, setEnabled] = useState(false);
-  const [open, setOpen] = useState(false);
+  const { openSidebar } = useGlobalState();
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
   const [formError, setFormError] = useState("");
-  const [objective, setObjective] = useState("");
-  const [criteria, setCriteria] = useState("");
-  const [maxRuns, setMaxRuns] = useState(3);
-  const [verificationCommand, setVerificationCommand] = useState("");
-  const [constraints, setConstraints] = useState("");
-  const [boundaries, setBoundaries] = useState("");
-  const [stopWhen, setStopWhen] = useState("");
   const [reply, setReply] = useState("");
   const [additionalRuns, setAdditionalRuns] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -92,14 +78,14 @@ export function AgentGoalPanel({
     return () => abort.abort();
   }, [eligible, exists, chatId]);
   useEffect(() => {
-    if (enabled && eligible && !exposure.current) {
+    if (goal && enabled && eligible && !exposure.current) {
       exposure.current = true;
       captureAuthenticatedEvent("agent_goal_exposed", {
         surface: "chat_goal_control",
       });
     }
-  }, [enabled, eligible]);
-  if ((!enabled || !eligible) && !goal) return null;
+  }, [enabled, eligible, goal]);
+  if (!goal) return null;
   const active = goal && !["achieved", "canceled"].includes(goal.state);
   const resumable =
     goal &&
@@ -117,7 +103,7 @@ export function AgentGoalPanel({
     !["queued", "running", "needs_approval", "waiting"].includes(goal.state) &&
     validAdditionalRuns &&
     (goal.runs < goal.maxRuns || additionalRuns > 0);
-  async function control(action: "pause" | "stop") {
+  async function control(action: "pause" | "clear") {
     setControlling(true);
     try {
       const r = await fetch("/api/agent-goal", {
@@ -134,76 +120,43 @@ export function AgentGoalPanel({
       setControlling(false);
     }
   }
-  async function submit(resume: boolean) {
-    if (busy || !idle || disabledReason || !eligible || !enabled) return;
+  async function submit() {
+    if (
+      busy ||
+      !idle ||
+      disabledReason ||
+      !eligible ||
+      !enabled ||
+      !goal ||
+      !canResume
+    )
+      return;
     setSubmitting(true);
     setFormError("");
     try {
-      const successCriteria = criteria
-        .split("\n")
-        .map((c) => c.trim())
-        .filter(Boolean);
-      if (
-        !resume &&
-        (!objective.trim() ||
-          !successCriteria.length ||
-          successCriteria.length > 8 ||
-          successCriteria.some((c) => c.length > 1000) ||
-          !Number.isInteger(maxRuns) ||
-          maxRuns < 1 ||
-          maxRuns > GOAL_MAX_RUNS)
-      )
-        throw new Error(
-          "Enter an objective, 1–8 success criteria (up to 1,000 characters each), and a run budget of 1–8.",
-        );
-      if (resume && !canResume)
-        throw new Error(
-          "Choose a whole number of additional runs within the remaining budget.",
-        );
       await send(
         {
-          text: resume
-            ? "Resume my saved goal from the latest progress within its original authorization and run budget.\n" +
-              reply
-            : "Goal: " +
-              objective.trim() +
-              "\nSuccess criteria:\n" +
-              successCriteria.map((c, i) => i + 1 + ". " + c).join("\n"),
+          text:
+            "Resume my saved goal from the latest progress within its original authorization and run budget.\n" +
+            reply,
         },
         {
           body: {
-            ...(resume && goal
-              ? {
-                  sandboxPreference: goal.sandboxPreference,
-                  agentPermissionMode: goal.permissionMode,
-                  selectedModel: goal.selectedModel,
-                }
-              : settings),
+            sandboxPreference: goal.sandboxPreference,
+            agentPermissionMode: goal.permissionMode,
+            selectedModel: goal.selectedModel,
             mode: "agent",
-            goal: resume
-              ? { action: "resume", additionalRuns }
-              : {
-                  action: "start",
-                  objective: objective.trim(),
-                  criteria: successCriteria,
-                  maxRuns,
-                  verificationCommand,
-                  constraints,
-                  boundaries,
-                  stopWhen,
-                },
+            goal: { action: "resume", additionalRuns },
           },
         },
       );
       captureAuthenticatedEvent("agent_goal_user_control", {
-        action: resume ? "resume" : "start",
-        ...(resume ? {} : { max_runs: maxRuns }),
+        action: "resume",
       });
-      setOpen(false);
       setReply("");
       setAdditionalRuns(0);
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Goal could not start";
+      const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);
       toast.error(message);
     } finally {
@@ -213,10 +166,10 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="mx-auto w-full min-w-0 max-w-3xl shrink-0 px-4 py-2 text-sm"
+      className="relative z-10 order-1 mx-2 min-w-0 shrink-0 text-sm"
     >
       {goal && (
-        <div className="min-w-0 rounded-lg border bg-muted/30">
+        <div className="min-w-0 rounded-t-2xl border border-b-0 bg-muted/50 pb-2 -mb-2">
           <div className="flex flex-wrap items-center gap-2 p-2">
             <button
               type="button"
@@ -257,9 +210,11 @@ export function AgentGoalPanel({
                     size="sm"
                     variant="outline"
                     disabled={controlling}
+                    aria-label="Pause goal"
+                    title="Pause goal"
                     onClick={() => control("pause")}
                   >
-                    Pause goal
+                    <Pause className="size-4" />
                   </Button>
                 )}
               {canResume && (
@@ -268,7 +223,7 @@ export function AgentGoalPanel({
                   disabled={
                     busy || !idle || !enabled || !eligible || !!disabledReason
                   }
-                  onClick={() => submit(true)}
+                  onClick={() => submit()}
                 >
                   Resume goal
                 </Button>
@@ -285,14 +240,28 @@ export function AgentGoalPanel({
                     Add runs
                   </Button>
                 )}
-              {active && (
+              {goal.state !== "achieved" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Edit goal"
+                  title="Edit goal"
+                  disabled={controlling}
+                  onClick={() => openSidebar({ kind: "goal", chatId })}
+                >
+                  <Pencil className="size-4" />
+                </Button>
+              )}
+              {goal && (
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={controlling}
-                  onClick={() => control("stop")}
+                  aria-label="Delete goal"
+                  title="Delete goal"
+                  onClick={() => control("clear")}
                 >
-                  Stop goal
+                  <Trash2 className="size-4" />
                 </Button>
               )}
             </div>
@@ -429,146 +398,6 @@ export function AgentGoalPanel({
             </div>
           )}
         </div>
-      )}
-      {!active && enabled && eligible && (
-        <Dialog
-          open={open}
-          onOpenChange={(value) => {
-            setOpen(value);
-            setFormError("");
-          }}
-        >
-          <DialogTrigger asChild>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy || !idle || !!disabledReason}
-              className="gap-2 text-muted-foreground"
-            >
-              <Target className="size-4" aria-hidden="true" />
-              {goal ? "New goal" : "Set goal"}
-              <span className="text-xs">/goal</span>
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="flex max-h-[85dvh] flex-col overflow-hidden p-0">
-            <DialogHeader className="shrink-0 border-b p-4 pr-10 text-left">
-              <DialogTitle>Set an Agent goal</DialogTitle>
-              <DialogDescription>
-                Define the outcome and how you’ll know it is done.
-              </DialogDescription>
-            </DialogHeader>
-            <form
-              className="space-y-3 overflow-y-auto overscroll-contain p-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit(false);
-              }}
-            >
-              <label className="block">
-                Objective
-                <Textarea
-                  aria-label="Goal objective"
-                  value={objective}
-                  maxLength={4000}
-                  onChange={(e) => setObjective(e.target.value)}
-                  required
-                />
-              </label>
-              <label className="block">
-                Success criteria, one per line
-                <Textarea
-                  aria-label="Goal success criteria"
-                  value={criteria}
-                  maxLength={8000}
-                  onChange={(e) => setCriteria(e.target.value)}
-                  required
-                />
-              </label>
-              <label className="block">
-                Maximum runs
-                <Input
-                  aria-label="Goal maximum runs"
-                  type="number"
-                  min={1}
-                  max={GOAL_MAX_RUNS}
-                  value={maxRuns}
-                  onChange={(e) => setMaxRuns(Number(e.target.value))}
-                  className="w-24"
-                />
-              </label>
-              <details>
-                <summary className="cursor-pointer">
-                  Verification and boundaries (optional)
-                </summary>
-                <div className="space-y-2 py-2">
-                  <label className="block">
-                    Verification command
-                    <Input
-                      aria-label="Goal verification command"
-                      value={verificationCommand}
-                      maxLength={2000}
-                      onChange={(e) => setVerificationCommand(e.target.value)}
-                      placeholder="A test command that must exit successfully"
-                    />
-                  </label>
-                  <label className="block">
-                    What to preserve
-                    <Textarea
-                      aria-label="Goal constraints"
-                      value={constraints}
-                      maxLength={2000}
-                      onChange={(e) => setConstraints(e.target.value)}
-                    />
-                  </label>
-                  <label className="block">
-                    Authorized scope
-                    <Textarea
-                      aria-label="Goal boundaries"
-                      value={boundaries}
-                      maxLength={2000}
-                      onChange={(e) => setBoundaries(e.target.value)}
-                    />
-                  </label>
-                  <label className="block">
-                    Stop and ask for input when
-                    <Textarea
-                      aria-label="Goal stop conditions"
-                      value={stopWhen}
-                      maxLength={2000}
-                      onChange={(e) => setStopWhen(e.target.value)}
-                    />
-                  </label>
-                </div>
-              </details>
-              <p className="text-muted-foreground text-xs">
-                Works while you’re away in work slices of up to 20 minutes.
-                Every continuation consumes normal plan usage. Existing spend
-                and usage limits still stop the goal. Approval and input waits
-                require your response. The run budget grows only when you
-                explicitly add runs; reaching it leaves the goal unfinished.
-              </p>
-              <p className="text-muted-foreground text-xs">
-                Sandbox, model and permission mode are fixed when the goal
-                starts. A connected computer must stay online.
-              </p>
-              {formError && (
-                <p role="alert" className="text-destructive">
-                  {formError}
-                </p>
-              )}
-              {disabledReason && (
-                <p className="text-muted-foreground">{disabledReason}</p>
-              )}
-              <Button
-                type="submit"
-                size="sm"
-                disabled={busy || !idle || !!disabledReason}
-              >
-                {submitting ? "Starting…" : "Start goal"}
-              </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
       )}
     </section>
   );
