@@ -198,6 +198,35 @@ function isUnauthenticatedError(error: unknown): boolean {
   return (data as { code?: string }).code === "UNAUTHORIZED";
 }
 
+// Join an existing auth-stop event to its backend failure without copying error
+// text. SDK formats may change; missing/malformed markers simply omit the ID.
+function nativeAuthDiagnostics(
+  error: unknown,
+  convexFunction:
+    | "localSandbox:heartbeatDesktop"
+    | "localSandbox:refreshCentrifugoTokenDesktop",
+): Record<string, string | number> {
+  const diagnostics: Record<string, string | number> = {
+    native_auth_diagnostic_version: 1,
+    convex_function: convexFunction,
+  };
+  try {
+    const message = error instanceof Error ? error.message : undefined;
+    const match =
+      typeof message === "string"
+        ? message
+            .slice(0, 512)
+            .match(
+              /^\[CONVEX M\((localSandbox:(?:heartbeatDesktop|refreshCentrifugoTokenDesktop))\)\] \[Request ID: ([a-f0-9]{16})\]/,
+            )
+        : null;
+    if (match?.[1] === convexFunction) diagnostics.convex_request_id = match[2];
+  } catch {
+    // Diagnostics must not interrupt the existing authentication stop path.
+  }
+  return diagnostics;
+}
+
 interface DesktopBridgeConfig {
   connectDesktop: (args: {
     environmentId?: string;
@@ -329,6 +358,7 @@ export class DesktopSandboxBridge {
       if (isUnauthenticatedError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
+          ...nativeAuthDiagnostics(error, "localSandbox:heartbeatDesktop"),
         });
         this.terminateClient("unauthenticated");
         return;
@@ -468,6 +498,10 @@ export class DesktopSandboxBridge {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
               reason: "unauthenticated" as const,
+              ...nativeAuthDiagnostics(
+                error,
+                "localSandbox:refreshCentrifugoTokenDesktop",
+              ),
             };
             console.warn(
               "[DesktopSandboxBridge] Centrifugo refresh aborted — user not authenticated; stopping client to break retry loop",
