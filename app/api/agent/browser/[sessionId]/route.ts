@@ -13,6 +13,7 @@ import {
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  getPrivateStreamPort,
   sendBrowserInput,
   setAgentBrowserPaused,
   startBrowserRelay,
@@ -184,21 +185,34 @@ export async function POST(
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
-      const frame = await captureBrowserFrame(
+      const streamPort = await getPrivateStreamPort(
         sandbox,
         session,
         body.browserSessionName,
-        true,
       );
-      // Start the transport while the row is still claiming. Failed startup
-      // can then roll back the gate and claim using the same grant.
-      const relayUrl = await startBrowserRelay(
-        sandbox,
-        session,
-        body.browserSessionName,
-        grant,
-        origin,
-      );
+      // Both jobs use the same paused browser. Drain both before rollback so
+      // a late relay cannot outlive a failed capture and reopen revoked input.
+      const [capture, relay] = await Promise.allSettled([
+        captureBrowserFrame(
+          sandbox,
+          session,
+          body.browserSessionName,
+          true,
+          streamPort,
+        ),
+        startBrowserRelay(
+          sandbox,
+          session,
+          body.browserSessionName,
+          grant,
+          origin,
+          streamPort,
+        ),
+      ]);
+      if (capture.status === "rejected") throw capture.reason;
+      if (relay.status === "rejected") throw relay.reason;
+      const frame = capture.value;
+      const relayUrl = relay.value;
       const active = await convex.mutation(
         api.browserHandoffs.finishTakeoverForBackend,
         {

@@ -71,6 +71,7 @@ export function AgentBrowserPreview({
   const exitRequestId = useRef<string | null>(null);
   const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [takingControl, setTakingControl] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const grantRef = useRef<string | null>(null);
@@ -138,6 +139,7 @@ export function AgentBrowserPreview({
     exitRequestId.current = null;
     setHasTakenControl(false);
     setBusy(false);
+    setTakingControl(false);
     setError(null);
     setPasteError(null);
     setGrant(null);
@@ -298,23 +300,25 @@ export function AgentBrowserPreview({
       (session.state === "resuming" && session.updatedAt + 30_000 <= now))
       ? "recovery"
       : session?.state;
+  // Tool history does not change this live, owner-scoped browser session.
   const canTake =
-    liveSelection &&
     !frameStale &&
     !human &&
     (effectiveState === "agent" || effectiveState === "recovery");
   const canResume =
-    liveSelection &&
-    ((!!session && !frameStale && (human || effectiveState === "recovery")) ||
-      (!session && hasTakenControl) ||
-      (effectiveState === "agent" && !!exitRequestId.current));
+    (!!session && !frameStale && (human || effectiveState === "recovery")) ||
+    (!session && hasTakenControl) ||
+    (effectiveState === "agent" && !!exitRequestId.current);
 
   useLayoutEffect(() => {
     if (grant && fullScreen) inputRef.current?.focus({ preventScroll: true });
   }, [grant, fullScreen]);
 
   const takeControl = async () => {
-    if (!canTake || !frame) return;
+    if (!canTake || !frame || busy) return;
+    if (!liveSelection) onJumpToLive?.();
+    setTakingControl(true);
+    setFullScreen(true);
     setBusy(true);
     setError(null);
     try {
@@ -341,12 +345,15 @@ export function AgentBrowserPreview({
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
+      if (!hasTakenControl) setFullScreen(false);
       setError(
         cause instanceof Error ? cause.message : "Could not take control",
       );
     } finally {
-      if (mountedRef.current && sessionIdRef.current === sessionId)
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
         setBusy(false);
+        setTakingControl(false);
+      }
     }
   };
 
@@ -700,7 +707,17 @@ export function AgentBrowserPreview({
             />
           </div>
         )}
-        {session && frameStale && (
+        {takingControl && (
+          <div
+            role="status"
+            className="absolute inset-0 flex items-center justify-center bg-background/70 px-6 text-center text-sm text-foreground backdrop-blur-sm"
+          >
+            {effectiveState === "claiming"
+              ? "Pausing Agent and connecting browser…"
+              : "Requesting control…"}
+          </div>
+        )}
+        {session && frameStale && !takingControl && (
           <div className="absolute inset-0 flex min-h-24 items-center justify-center bg-background/80 px-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
             {previewState === "loading"
               ? "Waiting for Agent browser…"
@@ -719,7 +736,10 @@ export function AgentBrowserPreview({
             : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
         }
       >
-        {human || effectiveState === "recovery" || hasTakenControl ? (
+        {takingControl ||
+        human ||
+        effectiveState === "recovery" ||
+        hasTakenControl ? (
           <button
             ref={resumeButtonRef}
             type="button"
@@ -741,7 +761,7 @@ export function AgentBrowserPreview({
                   ? "Take control is available after an eligible Cloud Agent opens its browser."
                   : "This Agent run has ended, so browser control is unavailable. Ask the Agent to reopen the page and wait for you to take control."
               : !liveSelection
-                ? "You’re viewing an earlier tool. Return to the live tool to take control."
+                ? "This browser is live. Take control to pause the Agent; the tool history below is earlier."
                 : frameStale
                   ? "Take control will be available when the live browser preview connects."
                   : "Take control to click and type. The Agent’s browser actions pause until you resume."}

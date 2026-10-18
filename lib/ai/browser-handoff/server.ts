@@ -83,7 +83,7 @@ export async function getActiveBrowserSessionName(
   return name;
 }
 
-async function getPrivateStreamPort(
+export async function getPrivateStreamPort(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
@@ -131,8 +131,11 @@ export async function startBrowserRelay(
   browserSessionName: string,
   grant: string,
   origin: string,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const handle = await sandbox.commands.run(
     `node -e ${quote(RELAY_START_PROGRAM)}`,
     {
@@ -214,8 +217,11 @@ export async function captureBrowserFrame(
   session: BrowserSessionLocation,
   browserSessionName: string,
   requireFresh = false,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const result = await sandbox.commands.run(
     browserBridgeCommand(port, "frame"),
     {

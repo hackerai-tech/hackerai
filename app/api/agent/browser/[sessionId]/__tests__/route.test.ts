@@ -7,6 +7,11 @@ const mockStartRelay = jest.fn(async () => {
 const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
+const mockCapture = jest.fn(async () => {
+  if (mockFailure === "capture" || mockFailure === "unpause")
+    throw new Error("Capture failed");
+  return { image: "fresh" };
+});
 const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
@@ -78,11 +83,8 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
     mockFailure === "identity" ? "another-browser" : "default",
   setAgentBrowserPaused: (...args: Parameters<typeof mockPause>) =>
     mockPause(...args),
-  captureBrowserFrame: async () => {
-    if (mockFailure === "capture" || mockFailure === "unpause")
-      throw new Error("Capture failed");
-    return { image: "fresh" };
-  },
+  captureBrowserFrame: () => mockCapture(),
+  getPrivateStreamPort: async () => 1234,
 }));
 
 let post: typeof import("../route").POST;
@@ -288,3 +290,46 @@ it.each(["agent", "recovery"])(
     expect(mockPaused).toBe(state === "recovery");
   },
 );
+
+it("starts the relay while fresh capture is pending, but withholds control until both are ready", async () => {
+  mockFailure = "none";
+  let finish!: (frame: { image: string }) => void;
+  mockCapture.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const pending = take();
+  // Flush asynchronous admission and sandbox setup, without waiting on capture.
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(mockStartRelay).toHaveBeenCalled();
+  expect(
+    mockMutation.mock.calls.some(
+      ([name]) => name === "finishTakeoverForBackend",
+    ),
+  ).toBe(false);
+  finish({ image: "fresh" });
+  expect((await pending).status).toBe(200);
+});
+
+it("drains late relay startup before rollback after capture fails", async () => {
+  mockState = "agent";
+  mockPaused = false;
+  let finish!: (url: string) => void;
+  mockStartRelay.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const pending = take();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(mockStartRelay).toHaveBeenCalled();
+  expect(mockStopRelay).not.toHaveBeenCalled();
+  expect(mockPaused).toBe(true);
+  finish("https://relay.example");
+  expect((await pending).status).toBe(503);
+  expect(mockStopRelay).toHaveBeenCalledTimes(1);
+  expect(mockPaused).toBe(false);
+});

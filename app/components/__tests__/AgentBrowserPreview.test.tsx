@@ -209,7 +209,7 @@ it("keeps the unavailable browser explanation specific to browser tools", () => 
   ).not.toBeInTheDocument();
 });
 
-it("offers a route back to live control from an older tool", async () => {
+it("takes the current browser directly from earlier tool history", async () => {
   const jump = jest.fn();
   render(
     <AgentBrowserPreview
@@ -222,11 +222,50 @@ it("offers a route back to live control from an older tool", async () => {
   await act(async () => {});
   expect(
     screen.getByRole("button", { name: "Take control of Agent browser" }),
-  ).toBeDisabled();
-  fireEvent.click(
-    screen.getByRole("button", { name: "Return to live browser" }),
-  );
+  ).toBeEnabled();
+  await takeControl();
   expect(jump).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("application")).toBeVisible();
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)?.action).toBe("resume");
+});
+
+it("opens fullscreen immediately while withholding input until takeover is confirmed", async () => {
+  let finish!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "take"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({}));
+  await mount();
+  await takeControl();
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
+  expect(screen.getByRole("status")).toHaveTextContent("Requesting control");
+  expect(screen.queryByRole("application")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeDisabled();
+  await act(async () => {
+    finish(response({ grant: "grant-a", frame }));
+  });
+  expect(screen.getByRole("application")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+});
+
+it("returns to the preview with a retryable error when initial takeover fails", async () => {
+  handleAction = async () => response({ error: "Connection failed" }, false);
+  await mount();
+  await takeControl();
+  expect(
+    screen.queryByRole("dialog", { name: "Browser control" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Connection failed");
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
 });
 
 it("keeps a new session usable when an older resume fails late", async () => {
