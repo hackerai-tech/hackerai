@@ -753,6 +753,14 @@ export const useChatHandlers = ({
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
+    const outgoingText =
+      goalCommand?.action === "start"
+        ? goalCommand.objective
+        : (resumeMessage ?? (input.trim() || undefined));
+    const outgoingMetadata = {
+      createdAt: Date.now(),
+      ...(goalCommand?.action === "start" ? { goal: { sent: true } } : {}),
+    };
     try {
       // Get file objects from uploaded files - URLs are already resolved in global state
       const validFiles = uploadedFiles
@@ -763,17 +771,9 @@ export const useChatHandlers = ({
       runChatAction("send message", () =>
         sendMessage(
           {
-            text:
-              goalCommand?.action === "start"
-                ? goalCommand.objective
-                : (resumeMessage ?? (input.trim() || undefined)),
+            text: outgoingText,
             files: validFiles.length > 0 ? validFiles : undefined,
-            metadata: {
-              createdAt: Date.now(),
-              ...(goalCommand?.action === "start"
-                ? { goal: { sent: true } }
-                : {}),
-            },
+            metadata: outgoingMetadata,
           },
           {
             body: {
@@ -794,7 +794,7 @@ export const useChatHandlers = ({
       // Fallback to text-only message if file processing fails
       runChatAction("send fallback message", () =>
         sendMessage(
-          { text: input, metadata: { createdAt: Date.now() } },
+          { text: outgoingText, metadata: outgoingMetadata },
           {
             body: {
               mode: currentChatMode,

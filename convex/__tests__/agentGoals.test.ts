@@ -120,9 +120,10 @@ describe("persistent goal lifecycle", () => {
       "Goal chat unavailable",
     );
     expect(validateServiceKey).toHaveBeenCalledWith("synthetic");
-    await expect(invoke(get, db.ctx, { chatId: "chat" })).rejects.toThrow();
+    await expect(invoke(get, db.ctx, { chatId: "chat" })).resolves.toBeNull();
     db.chat().user_id = "owner";
     db.chat().deletion_started_at = 1;
+    await expect(invoke(get, db.ctx, { chatId: "chat" })).resolves.toBeNull();
     await expect(invoke(start, db.ctx, startArgs)).rejects.toThrow();
   });
   it("claims one worker per generation and rejects duplicate and stale dispatches", async () => {

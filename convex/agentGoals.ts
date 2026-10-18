@@ -43,7 +43,12 @@ export const get = query({
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
     if (!user) return null;
-    await owned(ctx, args.chatId, user.subject);
+    try {
+      await owned(ctx, args.chatId, user.subject);
+    } catch (error) {
+      if (error instanceof ConvexError) return null;
+      throw error;
+    }
     const goal = await byChat(ctx, args.chatId);
     return goal?.deletedAt ? null : goal;
   },
