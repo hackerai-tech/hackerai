@@ -252,13 +252,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         <div className="flex w-full h-full overflow-hidden">
           {/* Chat Sidebar - Desktop screens for logged users */}
           {!isMobile && !authLoading && user && (
-            <div
-              className={`transition-all duration-300 ${
-                chatSidebarOpen
-                  ? "w-[300px] flex-shrink-0"
-                  : "w-12 flex-shrink-0"
-              }`}
-            >
+            <div className="shrink-0">
               <SidebarProvider
                 open={chatSidebarOpen}
                 onOpenChange={setChatSidebarOpen}

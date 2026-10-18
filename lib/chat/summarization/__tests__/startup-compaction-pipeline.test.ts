@@ -443,8 +443,8 @@ describe("startup compaction through the real AI SDK", () => {
     },
   );
 
-  it.each([61_000, 91_000])(
-    "allows a long GLM checkpoint but recovers after its deadline (%i ms)",
+  it.each([74_000, 76_000])(
+    "preserves a long GLM checkpoint but starts recovery at 75 seconds (%i ms)",
     async (completionMs) => {
       jest.useFakeTimers();
       // Node's native AbortSignal.timeout bypasses Jest's clock. Preserve its
@@ -537,14 +537,15 @@ describe("startup compaction through the real AI SDK", () => {
           },
         });
         expect(recovery.doGenerateCalls).toHaveLength(
-          completionMs > 90_000 ? 1 : 0,
+          completionMs > 75_000 ? 1 : 0,
         );
-        if (completionMs > 90_000) {
+        if (completionMs > 75_000) {
           expect(recordEvent).toHaveBeenCalledWith(
             "compaction_model_attempt_finished",
             expect.objectContaining({
               failure_reason: "timeout",
               served_model: "model-glm-5.3-flash",
+              duration_ms: 75_000,
             }),
           );
         }

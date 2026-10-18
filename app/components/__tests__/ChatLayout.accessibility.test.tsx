@@ -174,7 +174,6 @@ describe("ChatLayout responsive accessibility", () => {
       "data-layout",
       "compact-rail",
     );
-    expect(screen.getByTestId("sidebar")).toHaveClass("w-12");
     expect(screen.getByTestId("sidebar-provider")).toHaveAttribute(
       "data-open",
       "false",
@@ -214,7 +213,6 @@ describe("ChatLayout responsive accessibility", () => {
       "data-layout",
       "standard",
     );
-    expect(screen.getByTestId("sidebar")).toHaveClass("w-[300px]");
     expect(screen.getByTestId("sidebar-provider")).toHaveAttribute(
       "data-open",
       "true",

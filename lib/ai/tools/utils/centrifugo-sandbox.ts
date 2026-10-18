@@ -1403,6 +1403,66 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // Cache for the detected HTTP client.
   private httpClient: HttpClient | null = null;
   private powerShellExecutable: string | undefined;
+  private uploadReadDiagnosticStarted = false;
+
+  private async diagnoseUploadReadFailure(path: string): Promise<void> {
+    // Reserve before awaiting: concurrent and repeated failed files share one
+    // metadata-only probe per adapter. Never read file contents or list folders.
+    if (this.uploadReadDiagnosticStarted) return;
+    this.uploadReadDiagnosticStarted = true;
+    const escaped = CentrifugoSandbox.escapePath(path);
+    const marker = "__HACKERAI_UPLOAD_READ_FLAGS__:";
+    const command =
+      `printf '${marker}'; ` +
+      ["-e", "-f", "-r"]
+        .map(
+          (flag) =>
+            `if test ${flag} ${escaped}; then printf 1; else printf 0; fi; `,
+        )
+        .join("") +
+      "printf '\\n'";
+    let probeStatus: "complete" | "invalid_response" | "unavailable" =
+      "unavailable";
+    let flags: boolean[] | null = null;
+    try {
+      const result = await this.commands.run(command, {
+        timeoutMs: 2_000,
+        displayName: "",
+      });
+      const match = result.stdout.match(
+        /(?:^|\n)__HACKERAI_UPLOAD_READ_FLAGS__:([01])([01])([01])\r?(?:\n|$)/,
+      );
+      if (result.exitCode === 0 && match) {
+        probeStatus = "complete";
+        flags = match.slice(1).map((flag) => flag === "1");
+      } else if (result.exitCode === 0) {
+        probeStatus = "invalid_response";
+      }
+    } catch {
+      // Diagnostics must not replace the upload failure or retry publication.
+    }
+    try {
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_input_diagnostic",
+          sandbox_type: "desktop",
+          platform: "posix",
+          http_client: "curl",
+          exit_code: 26,
+          probe_status: probeStatus,
+          input_exists: flags?.[0] ?? null,
+          input_regular_file: flags?.[1] ?? null,
+          // A confined curl process can still differ from this shell's view.
+          input_readable_by_shell: flags?.[2] ?? null,
+          native_file_relay: this.supportsNativeFileRelay(),
+        }),
+      );
+    } catch {
+      // Logging is optional; preserve the original redacted upload error.
+    }
+  }
 
   private async resolvePowerShellExecutable(
     signal?: AbortSignal,
@@ -2354,6 +2414,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 : null,
             }),
           );
+          if (
+            result.exitCode === 26 &&
+            httpClient === "curl" &&
+            this.connectionInfo.isDesktop &&
+            !this.isWindows()
+          ) {
+            await this.diagnoseUploadReadFailure(path);
+          }
           const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
             rawPath,
             path,

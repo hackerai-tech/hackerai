@@ -1,3 +1,4 @@
+import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
@@ -128,7 +129,10 @@ import {
 } from "@/lib/ai/providers";
 import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
+import {
+  getMaxTokensForSubscription,
+  safeCountTokens,
+} from "@/lib/token-utils";
 import {
   getSummarizationThresholdTokens,
   MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
@@ -738,6 +742,9 @@ export type AgentStreamContext = {
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
+  engagementScope?: ScopeRuntime;
+  /** Reloads bounded workspace network context for E2B runs only. */
+  cloudNetworkPrompt?: () => Promise<string>;
   tools: ToolSet;
   mode: ChatMode;
   endpoint: ChatApiEndpoint;
@@ -1383,7 +1390,7 @@ export async function createAgentStream(
       activeTools: args.activeTools,
       availableToolCount: Object.keys(ctx.tools).length,
       contextUsage: state.ctxUsage,
-      systemTokens: ctx.systemPromptTokens,
+      systemTokens: ctx.systemPromptTokens + networkTokens,
       maxOutputTokens,
       hasMultimodalToolResults: streamHasImageViewResults,
     });
@@ -1422,7 +1429,15 @@ export async function createAgentStream(
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
+  const engagementScope = ctx.engagementScope;
+  let [scopeSection, networkSection] = await Promise.all([
+    engagementScope?.prompt(false) ?? "",
+    ctx.cloudNetworkPrompt?.() ?? "",
+  ]);
+  let networkTokens = safeCountTokens(networkSection);
   const historyEligible =
+    !scopeSection &&
+    !networkSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
   const historyDecision = historyEligible
@@ -1592,7 +1607,9 @@ export async function createAgentStream(
   };
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
-      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
+      (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
+        scopeSection +
+        networkSection,
       name,
     );
   const initialProviderOptions = getStepProviderOptions(
@@ -1688,6 +1705,21 @@ export async function createAgentStream(
         historyEnabled = false;
         historyReplay.reset();
       }
+      const [nextScopeSection, nextNetworkSection] = await Promise.all([
+        engagementScope?.prompt() ?? "",
+        ctx.cloudNetworkPrompt?.() ?? "",
+      ]);
+      if (
+        (nextScopeSection !== scopeSection ||
+          nextNetworkSection !== networkSection) &&
+        historyEnabled
+      ) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      scopeSection = nextScopeSection;
+      networkSection = nextNetworkSection;
+      networkTokens = safeCountTokens(networkSection);
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -1774,8 +1806,9 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens,
-              ctxSystemTokens: ctx.ctxSystemTokens,
+              systemPromptTokens: ctx.systemPromptTokens + networkTokens,
+              ctxSystemTokens:
+                ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
               ctxMaxTokens: ctx.ctxMaxTokens,
               providerInputTokens: state.lastStepInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
@@ -1931,7 +1964,7 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens,
+              systemPromptTokens: ctx.systemPromptTokens + networkTokens,
               providerInputTokens: state.lastStepInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
@@ -2258,7 +2291,7 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
+            ctx.currentSystemPrompt + scopeSection + networkSection,
             fallbackModelInfo.modelName,
           ),
         };

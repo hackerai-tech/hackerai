@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { EngagementScope } from "./EngagementScope";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { PanelLeft, Sparkle, SquarePen, Split, Share } from "lucide-react";
@@ -269,6 +270,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
+              {id && user && chatData && <EngagementScope chatId={id} />}
               {/* Share button stays in the desktop layout so title loading does not shift it. */}
               <button
                 aria-label="Share"

@@ -1,3 +1,8 @@
+import {
+  createScopeRuntime,
+  guardScopeTools,
+} from "@/lib/engagement-scope/runtime";
+import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
@@ -120,6 +125,11 @@ export const createTools = (
   auxiliaryVision?: ToolContext["auxiliaryVision"],
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
+  const engagementScope = createScopeRuntime(
+    userID,
+    chatId,
+    !!runtimePolicy.ptyScopeId,
+  );
   let sandbox: AnySandbox | null = null;
   let sandboxCostSegmentStartedAt: number | null = null;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
@@ -266,6 +276,7 @@ export const createTools = (
       )
     : undefined;
   const context: ToolContext = {
+    engagementScope,
     browserSessions,
     sandboxManager,
     writer,
@@ -361,7 +372,7 @@ export const createTools = (
       : guardedTools;
   };
 
-  const tools = buildTools();
+  const tools = guardScopeTools(buildTools(), engagementScope);
 
   const getSandbox = () => sandbox;
   const ensureSandbox = async (options?: {
@@ -414,7 +425,7 @@ export const createTools = (
 
   const getToolsForModel = (nextModelName: string | undefined) => {
     setCurrentModelName(nextModelName);
-    return buildTools();
+    return guardScopeTools(buildTools(), engagementScope);
   };
 
   const getSandboxSessionUsage = async (): Promise<SandboxSessionUsage> => {
@@ -455,6 +466,12 @@ export const createTools = (
   };
 
   return {
+    engagementScope,
+    cloudNetworkPrompt: createCloudNetworkPrompt(
+      userID,
+      () =>
+        isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
+    ),
     tools,
     waitForBrowserHandoff: (signal?: AbortSignal) =>
       browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??

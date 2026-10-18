@@ -91,17 +91,14 @@ function loadPty(): PtyModule {
 export class ProcessRunner {
   private readonly activeProcesses: Map<string, PtyProcess> = new Map();
   private readonly outputBuffers: Map<string, string> = new Map();
+  private readonly pendingOutput = new Set<string>();
   private readonly killTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly listeners: Map<
     keyof ProcessRunnerEvents,
     ProcessRunnerEvents[keyof ProcessRunnerEvents]
   > = new Map();
   private flushTimer: NodeJS.Timeout | undefined;
-
-  constructor() {
-    this.flushTimer = setInterval(() => this.flushAll(), FLUSH_INTERVAL_MS);
-    this.flushTimer.unref();
-  }
+  private flushSchedulingStopped = false;
 
   // -----------------------------------------------------------------------
   // Event registration
@@ -151,12 +148,16 @@ export class ProcessRunner {
     this.outputBuffers.set(sessionId, "");
 
     proc.onData((data: string) => {
+      if (!data) return;
       const current = this.outputBuffers.get(sessionId) ?? "";
       const updated = current + data;
       this.outputBuffers.set(sessionId, updated);
+      this.pendingOutput.add(sessionId);
 
       if (updated.length >= FLUSH_THRESHOLD_BYTES) {
         this.flush(sessionId);
+      } else {
+        this.scheduleFlush();
       }
     });
 
@@ -257,10 +258,8 @@ export class ProcessRunner {
   }
 
   private disposeTimers(clearKillTimers: boolean): void {
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = undefined;
-    }
+    this.flushSchedulingStopped = true;
+    this.clearFlushTimer();
     if (clearKillTimers) {
       for (const timer of this.killTimers.values()) {
         clearTimeout(timer);
@@ -285,6 +284,8 @@ export class ProcessRunner {
   }
 
   private flush(sessionId: string): void {
+    this.pendingOutput.delete(sessionId);
+    if (this.pendingOutput.size === 0) this.clearFlushTimer();
     const buffer = this.outputBuffers.get(sessionId);
     if (!buffer || buffer.length === 0) {
       return;
@@ -294,8 +295,26 @@ export class ProcessRunner {
   }
 
   private flushAll(): void {
-    for (const sessionId of this.outputBuffers.keys()) {
+    for (const sessionId of [...this.pendingOutput]) {
       this.flush(sessionId);
+    }
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer || this.flushSchedulingStopped) return;
+    // Start the batch deadline with the first chunk; later chunks must not
+    // postpone delivery. Quiet PTYs and idle clients need no flush timer.
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      this.flushAll();
+    }, FLUSH_INTERVAL_MS);
+    this.flushTimer.unref?.();
+  }
+
+  private clearFlushTimer(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
     }
   }
 
@@ -317,6 +336,7 @@ export class ProcessRunner {
         throw error;
       }
 
+      this.flush(sessionId);
       this.activeProcesses.delete(sessionId);
       this.outputBuffers.delete(sessionId);
       this.clearKillTimer(sessionId);

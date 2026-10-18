@@ -1,3 +1,5 @@
+import { networkPolicy } from "./cloudNetworkValidators";
+import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -188,6 +190,18 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  cloud_network_settings: defineTable({
+    user_id: v.string(),
+    policy: networkPolicy,
+    revision: v.number(),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("applying"),
+      v.literal("failed"),
+    ),
+    token: v.optional(v.string()),
+    leaseUntil: v.optional(v.number()),
+  }).index("by_user_id", ["user_id"]),
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
     "by_visitor",
     ["visitor_id"],
@@ -233,7 +247,34 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  engagement_scopes: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+    active: v.boolean(),
+    revision: v.number(),
+    rules: v.array(scopeRule),
+    restrictions: v.array(v.string()),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("processing"),
+      v.literal("unavailable"),
+      v.literal("ambiguous"),
+    ),
+    clarification: v.string(),
+    clarificationRequested: v.boolean(),
+    source_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+  engagement_scope_events: defineTable({
+    chat_id: v.string(),
+    source_id: v.string(),
+    source_text: v.string(),
+    source_kind: v.union(v.literal("user_message"), v.literal("user_edit")),
+    status: v.union(v.literal("pending"), v.literal("applied")),
+    revision: v.number(),
+    policy: v.optional(scopePolicy),
+  }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
+    engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
     title: v.string(),
     user_id: v.string(),

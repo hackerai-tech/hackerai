@@ -1,3 +1,5 @@
+import { readNetworkSettings } from "@/lib/cloud-network/service";
+import { e2bNetwork } from "@/lib/cloud-network/policy";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
@@ -306,7 +308,11 @@ export const ensureSandboxConnection = async (
 
       signal?.throwIfAborted();
       try {
+        const networkSettings = await readNetworkSettings(userID);
         const sandbox = await Sandbox.create(createCluster.template, {
+          ...(networkSettings
+            ? { network: e2bNetwork(networkSettings.policy) }
+            : {}),
           ...createCluster.connectionOptions,
           ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,

@@ -1,3 +1,7 @@
+jest.mock("@/lib/cloud-network/service", () => ({
+  readNetworkSettings: jest.fn(async () => null),
+  ensureCloudNetwork: jest.fn(async () => {}),
+}));
 jest.mock("@e2b/code-interpreter", () => {
   class E2BError extends Error {}
   return {
@@ -28,6 +32,7 @@ jest.mock("../cloud-workspace-guard", () => ({
   refreshE2BWorkspaceLease: jest.fn(async () => {}),
 }));
 
+import { readNetworkSettings } from "@/lib/cloud-network/service";
 import { Sandbox } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
@@ -547,6 +552,25 @@ describe("E2B sandbox lease lifecycle", () => {
         lifecycle: { onTimeout: "pause", autoResume: true },
         secure: true,
         metadata: expect.objectContaining({ sandboxVersion: "v12" }),
+      }),
+    );
+  });
+
+  it("creates a new workspace with its stored network restrictions already applied", async () => {
+    jest
+      .mocked(readNetworkSettings)
+      .mockResolvedValueOnce({
+        policy: { mode: "restricted", allow: ["example.test"] },
+        revision: 3,
+        status: "ready",
+      });
+    sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+    sandboxApi.create.mockResolvedValue({ sandboxId: "restricted-workspace" });
+    await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.objectContaining({
+        network: { allowOut: ["example.test"], denyOut: ["0.0.0.0/0"] },
       }),
     );
   });
