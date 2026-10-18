@@ -622,6 +622,86 @@ describe("terminal connection state", () => {
     expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
     expect(bridge.getConnectionId()).toBeNull();
   });
+
+  it("correlates unauthenticated token refresh without copying error text", async () => {
+    const onTerminated = jest.fn();
+    const error = Object.assign(
+      new Error(
+        "[CONVEX M(localSandbox:refreshCentrifugoTokenDesktop)] [Request ID: 0123456789abcdef] Server Error: private-token-canary",
+      ),
+      { data: { code: "UNAUTHORIZED" } },
+    );
+    const config = buildConfig({
+      onTerminated,
+      refreshCentrifugoTokenDesktop: jest.fn().mockRejectedValue(error),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    await expect(mockClientOptions?.getToken?.()).rejects.toBe(error);
+
+    expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+    expect(bridge.getConnectionId()).toBeNull();
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "sandbox_connection_terminated",
+      expect.objectContaining({
+        native_auth_diagnostic_version: 1,
+        convex_function: "localSandbox:refreshCentrifugoTokenDesktop",
+        convex_request_id: "0123456789abcdef",
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(captureAuthenticatedEvent).mock.calls),
+    ).not.toContain("private-token-canary");
+  });
+
+  it.each([
+    ["0123456789abcdef", "0123456789abcdef"],
+    ["private-token-canary", undefined],
+    ["0123456789abcdef0123456789abcdef", undefined],
+  ])(
+    "keeps heartbeat auth termination safe for request marker %s",
+    async (marker, expectedId) => {
+      jest.useFakeTimers();
+      const onTerminated = jest.fn();
+      const config = buildConfig({ onTerminated });
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        config.heartbeatDesktop.mockRejectedValueOnce(
+          Object.assign(
+            new Error(
+              `[CONVEX M(localSandbox:heartbeatDesktop)] [Request ID: ${marker}] Server Error: private-token-canary`,
+            ),
+            { data: { code: "UNAUTHORIZED" } },
+          ),
+        );
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(2);
+        await jest.advanceTimersByTimeAsync(60_000);
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(2);
+        const authCapture = jest
+          .mocked(captureAuthenticatedEvent)
+          .mock.calls.find(
+            ([event, properties]) =>
+              event === "desktop_bridge_relay_state_changed" &&
+              properties?.reason === "heartbeat_unauthenticated",
+          );
+        expect(authCapture?.[1]).toMatchObject({
+          native_auth_diagnostic_version: 1,
+          convex_function: "localSandbox:heartbeatDesktop",
+        });
+        expect(authCapture?.[1]?.convex_request_id).toBe(expectedId);
+        expect(
+          JSON.stringify(jest.mocked(captureAuthenticatedEvent).mock.calls),
+        ).not.toContain("private-token-canary");
+      } finally {
+        await bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
 });
 
 // ── targetConnectionId filtering ──────────────────────────────────────
