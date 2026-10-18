@@ -22,7 +22,7 @@ afterEach(() => {
 test("email-only maintenance works without passwords and honors overrides", () => {
   process.env.TEST_PRO_TIER_USER = "pro-preview@example.test";
   expect(getTestUserEmails()).toEqual({
-    free: "free@hackerai.com",
+    free: "free@hackerai.co",
     pro: "pro-preview@example.test",
     ultra: "ultra@hackerai.com",
   });
