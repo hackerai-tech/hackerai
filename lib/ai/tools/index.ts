@@ -331,10 +331,14 @@ export const createTools = (
       ...(runtimePolicy.additionalTools?.(context) ?? {}),
     };
 
+    const guardedTools = browserSessions
+      ? browserSessions.guardTools(allTools, runtimePolicy.signal)
+      : allTools;
+
     if (runtimePolicy.allowedToolNames) {
       const allowed = new Set(runtimePolicy.allowedToolNames);
       return Object.fromEntries(
-        Object.entries(allTools).filter(([name]) => allowed.has(name)),
+        Object.entries(guardedTools).filter(([name]) => allowed.has(name)),
       ) as ToolSet;
     }
 
@@ -354,7 +358,7 @@ export const createTools = (
             open_url: createOpenUrlTool(context),
           }),
         }
-      : allTools;
+      : guardedTools;
   };
 
   const tools = buildTools();
@@ -452,6 +456,9 @@ export const createTools = (
 
   return {
     tools,
+    waitForBrowserHandoff: (signal?: AbortSignal) =>
+      browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??
+      Promise.resolve(false),
     getBrowserHandoffNotes: () =>
       browserSessions?.getExitNotes() ?? Promise.resolve([]),
     cleanupBrowserSessions: () =>

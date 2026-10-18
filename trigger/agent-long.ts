@@ -2746,6 +2746,7 @@ export const agentLongTask = task({
               setCurrentModelName,
               getToolsForModel,
               getBrowserHandoffNotes,
+              waitForBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -3654,6 +3655,7 @@ export const agentLongTask = task({
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {

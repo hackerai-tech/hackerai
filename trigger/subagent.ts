@@ -1057,6 +1057,7 @@ export const subagentTask = task({
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
               getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               ensureSandbox,
               setCurrentModelName,
             } = createTools(
@@ -1353,6 +1354,7 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
                   if (freeDailySettlement) {
@@ -1502,6 +1504,10 @@ export const subagentTask = task({
                 },
                 onError: ({ error }) => {
                   attemptError = error;
+                },
+                onFinish: async () => {
+                  if (!activeAbort.signal.aborted)
+                    await waitForBrowserHandoff(activeAbort.signal);
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
                   stepCount += 1;

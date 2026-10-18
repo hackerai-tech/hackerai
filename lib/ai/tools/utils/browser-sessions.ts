@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import type { ToolSet } from "ai";
+import { abortableDelay } from "@/lib/utils/abortable-delay";
 import type { AnySandbox } from "@/types";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -30,6 +32,22 @@ type BrowserHandoffScope = {
   triggerRegion?: string;
   serviceKey: string;
 };
+
+// Convex HTTP reads can outlive Stop; detach the waiter without admitting work.
+function withCancellation<T>(
+  work: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
 
 /** One owner per tool factory, never shared between a parent and its children. */
 export class BrowserSessions {
@@ -147,6 +165,68 @@ export class BrowserSessions {
           }
         : {}),
     };
+  }
+
+  /** Hold the owning Agent at model, tool and normal-completion boundaries. */
+  async waitForAgentControl(signal?: AbortSignal): Promise<boolean> {
+    let waited = false;
+    while (true) {
+      signal?.throwIfAborted();
+      if (this.closed || Date.now() >= this.expiresAt)
+        throw new Error("Browser session ownership has ended.");
+      if (!this.handoffScope) return waited;
+      const scope = this.handoffScope;
+      const sessions = [...this.sessions.values()].filter((s) => s.registered);
+      const states = await withCancellation(
+        Promise.all(
+          sessions.map((session) =>
+            getConvexClient().query(api.browserHandoffs.getForBackend, {
+              serviceKey: scope.serviceKey,
+              userId: scope.userId,
+              sessionId: session.sessionId,
+            }),
+          ),
+        ),
+        signal,
+      );
+      signal?.throwIfAborted();
+      // Missing/replaced ownership is not permission to continue issuing tools.
+      if (states.some((state) => !state || !state.runActive))
+        throw new Error("Browser session ownership has ended.");
+      if (states.every((state) => state?.state === "agent")) return waited;
+      // Expired grants become recovery, which still requires an explicit resume.
+      waited = true;
+      await abortableDelay(1000, signal);
+    }
+  }
+
+  guardTools(tools: ToolSet, signal?: AbortSignal): ToolSet {
+    return Object.fromEntries(
+      Object.entries(tools).map(([name, definition]) => {
+        const execute = definition.execute;
+        if (!execute) return [name, definition];
+        return [
+          name,
+          {
+            ...definition,
+            execute: async (...args: Parameters<typeof execute>) => {
+              const signals = [signal, args[1].abortSignal].filter(
+                (s): s is AbortSignal => !!s,
+              );
+              const waited = await this.waitForAgentControl(
+                signals.length ? AbortSignal.any(signals) : undefined,
+              );
+              if (waited)
+                return {
+                  error:
+                    "Human browser takeover completed. This queued action was not executed. Read the user's handoff context and take a fresh browser snapshot before deciding the next action.",
+                };
+              return await execute(...args);
+            },
+          },
+        ];
+      }),
+    ) as ToolSet;
   }
 
   async getExitNotes(): Promise<Array<{ id: string; text: string }>> {
