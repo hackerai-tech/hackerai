@@ -147,7 +147,9 @@ export function resolveGoalOutcome(args: {
   judgment?: GoalJudgment;
 }): GoalState {
   // A boundary always wins over a model's pending completion claim.
-  if (args.canceled) return "canceled";
+  // Canceling a work slice pauses the goal; explicit stop/clear controls
+  // persist their own terminal state before this resolver is reached.
+  if (args.canceled) return "paused";
   if (
     args.usageExhausted ||
     ["budget-exhausted", "agent-run-spend-cap"].includes(

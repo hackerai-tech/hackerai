@@ -41,6 +41,53 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
+  it("keeps a paused goal visible and enables Resume after the canceled run settles", async () => {
+    const paused = { ...goal, state: "paused", maxRuns: 3, activeRunId: "r1" };
+    setMockQueryResult(paused);
+    const send = jest.fn().mockResolvedValue(undefined);
+    const panel = (
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={send}
+        settings={settings}
+      />
+    );
+    const { rerender } = render(panel);
+    await act(async () => {});
+    expect(screen.getByRole("status")).toHaveTextContent("Paused");
+    expect(screen.getByText("Create marker")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Resume goal" })).toBeDisabled();
+    setMockQueryResult({ ...paused, activeRunId: undefined });
+    rerender(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={send}
+        settings={settings}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Resume goal" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("Goal: Create marker"),
+        }),
+        expect.objectContaining({
+          body: expect.objectContaining({
+            goal: { action: "resume", additionalRuns: 0 },
+          }),
+        }),
+      ),
+    );
+  });
   it("offers goals only after eligibility and flag checks", async () => {
     render(
       <AgentGoalPanel

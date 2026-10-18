@@ -719,6 +719,22 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnStop).toHaveBeenCalledTimes(1);
     });
 
+    it("keeps composer Stop available for a persisted goal run while the local stream is ready", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasActiveGoalRun
+          />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByLabelText("Stop generation"));
+      expect(mockOnStop).toHaveBeenCalledTimes(1);
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
     it("hides a stale stop action after an Agent run is known to be terminal", () => {
       render(
         <TestWrapper>

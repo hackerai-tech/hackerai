@@ -63,6 +63,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
   goalPanel?: React.ReactNode;
+  hasActiveGoalRun?: boolean;
   onSubmit: (
     e: React.FormEvent,
     inputOverride?: string,
@@ -254,6 +255,7 @@ export const ChatInput = (props: ChatInputProps) => {
 
 const ChatInputContent = ({
   goalPanel,
+  hasActiveGoalRun = false,
   onSubmit,
   onStop,
   onReconnect,
@@ -319,7 +321,8 @@ const ChatInputContent = ({
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
-  const isGenerating = status === "submitted" || status === "streaming";
+  const isGenerating =
+    hasActiveGoalRun || status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const todoPanelVisible =
     !sidebarOpen && getTodoPanelViewState(todos, status).hasActiveTodos;

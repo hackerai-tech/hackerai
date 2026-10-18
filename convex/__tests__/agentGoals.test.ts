@@ -8,6 +8,7 @@ jest.mock("../lib/suspensionGuards", () => ({
 }));
 import {
   start,
+  pauseForCanceledRun,
   update,
   markMessage,
   control,
@@ -157,6 +158,58 @@ describe("persistent goal lifecycle", () => {
     ).toBeNull();
     expect(db.goal().runs).toBe(1);
   });
+  it("pauses only the canceled run's goal and retains progress for resume", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "old-run" });
+    expect(db.goal().state).toBe("running");
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    expect(db.goal()).toMatchObject({
+      state: "paused",
+      objective: startArgs.objective,
+      runs: 1,
+      maxRuns: 3,
+    });
+    await invoke(finish, db.ctx, { ...terminal, canceled: true });
+    expect(db.goal().state).toBe("paused");
+    expect(db.goal().activeRunId).toBeUndefined();
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(control, db.ctx, { ...owner, action: "resume" });
+    expect(db.goal()).toMatchObject({ state: "queued", runs: 1, maxRuns: 3 });
+  });
+
+  it("keeps cancellation resumable when worker cleanup wins the race, while explicit stop stays stopped", async () => {
+    for (const explicitStop of [false, true]) {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      if (explicitStop)
+        await invoke(control, db.ctx, { ...owner, action: "stop" });
+      await invoke(finish, db.ctx, { ...terminal, canceled: true });
+      expect(db.goal().state).toBe(explicitStop ? "canceled" : "paused");
+      expect(db.goal().activeRunId).toBeUndefined();
+    }
+  });
+
+  it("does not pause an unrelated run or an already completed or deleted goal", async () => {
+    const db = database();
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "ordinary" });
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    db.chat().active_trigger_run_id = "new-run";
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    expect(db.goal().state).toBe("running");
+    db.chat().active_trigger_run_id = "r1";
+    db.goal().state = "achieved";
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    expect(db.goal().state).toBe("achieved");
+    db.goal().state = "canceled";
+    db.goal().deletedAt = 123;
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    expect(db.goal().state).toBe("canceled");
+  });
+
   it("keeps pause authoritative against late checkpoints, completion, and dispatch", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

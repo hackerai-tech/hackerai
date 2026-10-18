@@ -6,6 +6,11 @@ const mockSetActiveTriggerRun = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockLoggerWarn = jest.fn();
+const mockPauseGoal = jest.fn();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ mutation: mockPauseGoal }),
+}));
+jest.mock("@/lib/goals/server", () => ({ goalServiceKey: () => "synthetic" }));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -135,6 +140,15 @@ describe("agent cancel route", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockPauseGoal).toHaveBeenCalledWith(expect.anything(), {
+      serviceKey: "synthetic",
+      chatId: "chat-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+    expect(mockPauseGoal.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelAgentTriggerRun.mock.invocationCallOrder[0],
+    );
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
       chatId: "chat-1",
@@ -179,6 +193,7 @@ describe("agent cancel route", () => {
         chat_id: "chat-1",
       }),
     );
+    expect(mockPauseGoal).not.toHaveBeenCalled();
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
@@ -243,6 +258,7 @@ describe("cancellation timeout diagnostics", () => {
     "read_request",
     "authenticate",
     "get_chat",
+    "pause_goal",
     "close_approval_session",
     "cancel_trigger_run",
     "clear_active_run",
@@ -261,6 +277,8 @@ describe("cancellation timeout diagnostics", () => {
       mockGetUserIDAndPro.mockReturnValueOnce(pending.promise);
     if (stage === "get_chat")
       mockGetChatById.mockReturnValueOnce(pending.promise);
+    if (stage === "pause_goal")
+      mockPauseGoal.mockReturnValueOnce(pending.promise);
     if (stage === "close_approval_session")
       mockCloseAgentApprovalSession.mockReturnValueOnce(pending.promise);
     if (stage === "cancel_trigger_run")
@@ -282,6 +300,7 @@ describe("cancellation timeout diagnostics", () => {
       elapsed_ms: 10_000,
     });
     const authorized = [
+      "pause_goal",
       "close_approval_session",
       "cancel_trigger_run",
       "clear_active_run",

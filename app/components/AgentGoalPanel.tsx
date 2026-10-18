@@ -216,11 +216,17 @@ export function AgentGoalPanel({
                     <Pause className="size-4" />
                   </Button>
                 )}
-              {canResume && (
+              {(canResume ||
+                (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
                 <Button
                   size="sm"
                   disabled={
-                    busy || !idle || !enabled || !eligible || !!disabledReason
+                    busy ||
+                    !canResume ||
+                    !idle ||
+                    !enabled ||
+                    !eligible ||
+                    !!disabledReason
                   }
                   onClick={() => submit()}
                 >

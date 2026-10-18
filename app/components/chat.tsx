@@ -2371,6 +2371,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
 
+  const hasActiveGoalRun =
+    !!activeTriggerRunId &&
+    ["queued", "running", "needs_approval"].includes(
+      persistedGoal?.state ?? "",
+    );
   const goalPanel = (
     <AgentGoalPanel
       key={chatId}
@@ -2536,12 +2541,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                         <div className="w-full">
                           <ChatInput
                             goalPanel={goalPanel}
+                            hasActiveGoalRun={hasActiveGoalRun}
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
-                            hideStop={isAgentRunUiTerminal}
+                            hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -2576,12 +2582,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 >
                   <ChatInput
                     goalPanel={goalPanel}
+                    hasActiveGoalRun={hasActiveGoalRun}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
-                    hideStop={isAgentRunUiTerminal}
+                    hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}

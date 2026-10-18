@@ -121,6 +121,39 @@ export const start = mutation({
     return (await ctx.db.get(id))!;
   },
 });
+// Composer Stop targets a specific run. Pause only its goal, so a delayed
+// cancellation cannot pause a replacement run or revive a removed goal.
+export const pauseForCanceledRun = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await owned(ctx, args.chatId, args.userId);
+    if (chat.active_trigger_run_id !== args.runId) return null;
+    const goal = await byChat(ctx, args.chatId);
+    if (
+      !goal ||
+      goal.deletedAt ||
+      (goal.activeRunId && goal.activeRunId !== args.runId) ||
+      !["queued", "running", "waiting", "needs_approval"].includes(goal.state)
+    )
+      return null;
+    await ctx.db.patch(goal._id, {
+      state: "paused",
+      dispatchId: undefined,
+      waitUntil: undefined,
+      reason: "Paused by user",
+      updatedAt: Date.now(),
+    });
+    await ctx.db.patch(chat._id, { canceled_at: Date.now() });
+    return null;
+  },
+});
 export const control = mutation({
   args: {
     serviceKey: v.string(),
@@ -489,23 +522,25 @@ export const finish = mutation({
         ? goal.reason
         : state === "queued"
           ? (args.judgment?.reason ?? "Continuing from saved progress")
-          : state === "waiting"
-            ? "Waiting before the next work slice"
-            : state === "achieved"
-              ? "Completion verified against saved evidence"
-              : state === "budget_exhausted"
-                ? "Approved run budget exhausted; goal remains unfinished"
-                : state === "blocked"
-                  ? (args.judgment?.reason ??
-                    goal.checkpoint?.progress ??
-                    "Two runs produced no verified progress")
-                  : state === "usage_exhausted"
-                    ? "Usage or run spend limit reached; explicit user action required"
-                    : state === "failed"
-                      ? "Run failed; review saved work before resuming"
-                      : (args.judgment?.reason ??
-                        goal.checkpoint?.progress ??
-                        goal.reason),
+          : state === "paused"
+            ? "Run paused. Resume when ready."
+            : state === "waiting"
+              ? "Waiting before the next work slice"
+              : state === "achieved"
+                ? "Completion verified against saved evidence"
+                : state === "budget_exhausted"
+                  ? "Approved run budget exhausted; goal remains unfinished"
+                  : state === "blocked"
+                    ? (args.judgment?.reason ??
+                      goal.checkpoint?.progress ??
+                      "Two runs produced no verified progress")
+                    : state === "usage_exhausted"
+                      ? "Usage or run spend limit reached; explicit user action required"
+                      : state === "failed"
+                        ? "Run failed; review saved work before resuming"
+                        : (args.judgment?.reason ??
+                          goal.checkpoint?.progress ??
+                          goal.reason),
       updatedAt: Date.now(),
     });
     if (

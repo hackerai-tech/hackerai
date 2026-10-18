@@ -42,7 +42,7 @@ describe("goal completion and limits", () => {
     expect(resolveGoalOutcome({ ...base, runs: 3, judgment: undefined })).toBe(
       "budget_exhausted",
     );
-    expect(resolveGoalOutcome({ ...base, canceled: true })).toBe("canceled");
+    expect(resolveGoalOutcome({ ...base, canceled: true })).toBe("paused");
     expect(resolveGoalOutcome({ ...base, usageExhausted: true })).toBe(
       "usage_exhausted",
     );
