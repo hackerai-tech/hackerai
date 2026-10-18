@@ -150,6 +150,17 @@ a preview branch. Avoid hard-coding current revenue, user counts, team-share
 percentages, pricing, or other volatile metrics in durable instructions; use
 qualitative direction and source-of-truth references instead.
 
+## OpenRouter Request Diagnostics
+
+Check existing provider telemetry first. If attribution or usage metadata is
+missing and a recorded generation ID is available, call
+`GET https://openrouter.ai/api/v1/generation?id=<generation_id>` using the existing
+`OPENROUTER_API_KEY` from the authorized environment source. Load the key inside
+the request process; never print it, place it in command arguments, or copy
+environment files between checkouts. Return only provider, model, timing, token
+usage, cost, and finish reason. Report missing records or lookup failures without
+inferring an upstream provider or requesting a new key before checking access.
+
 ## Feature Rollouts and Measurement
 
 For meaningful user-facing features or behavior changes, consider a PostHog
