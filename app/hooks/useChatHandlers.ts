@@ -1,3 +1,4 @@
+import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
 import { useRef, RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -47,6 +48,7 @@ import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
+  goalState?: string;
   sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
@@ -119,6 +121,7 @@ export const useChatHandlers = ({
   onStopCallback,
   resetAutoContinueCount,
   sendDisabledReason,
+  goalState,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
@@ -478,13 +481,104 @@ export const useChatHandlers = ({
     status === "submitted" ||
     Boolean(activeTriggerRunRef?.current);
 
-  const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
+  const handleSubmit = async (
+    e: React.FormEvent,
+    inputOverride?: string,
+  ): Promise<boolean> => {
     e.preventDefault();
-    if (sendDisabledReasonRef.current) return false;
-
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
-    const input = getInput();
+    const input = inputOverride ?? getInput();
+    let goalCommand;
+    let resumeMessage: string | undefined;
+    let goalSettings: Record<string, unknown> = {};
+    try {
+      goalCommand = parseGoalCommand(input);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Invalid goal command",
+      );
+      return false;
+    }
+    if (goalCommand) {
+      if (["status", "pause", "stop", "clear"].includes(goalCommand.action)) {
+        // New chats have no persisted owner record to reconcile yet.
+        if (!isExistingChat) {
+          toast.info(
+            "No goal in this chat. Use /goal followed by an objective.",
+          );
+          clearInput();
+          return true;
+        }
+        try {
+          const response =
+            goalCommand.action === "status"
+              ? await fetch(
+                  `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+                  { cache: "no-store" },
+                )
+              : await fetch("/api/agent-goal", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ chatId, action: goalCommand.action }),
+                });
+          const data = await response.json();
+          if (!response.ok)
+            throw new Error(data.message ?? "Goal control failed");
+          toast.info(
+            data.goal
+              ? `Goal: ${data.goal.state.replaceAll("_", " ")} (${data.goal.runs}/${data.goal.maxRuns} runs)`
+              : data.state
+                ? `Goal ${data.state}`
+                : "No goal in this chat. Use /goal followed by an objective.",
+          );
+          clearInput();
+          return true;
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : "Goal control failed",
+          );
+          return false;
+        }
+      }
+      if (chatModeRef.current !== "agent" || subscription === "free") {
+        toast.error("Use Agent mode on a paid plan to start or resume a goal.");
+        return false;
+      }
+      if (
+        status !== "ready" ||
+        activeTriggerRunRef?.current ||
+        messageQueue.length
+      ) {
+        toast.info(
+          "Wait for this chat’s current work and queued messages to settle before starting or resuming a goal.",
+        );
+        return false;
+      }
+      if (goalCommand.action === "resume") {
+        try {
+          const r = await fetch(
+            `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+            { cache: "no-store" },
+          );
+          const data = await r.json();
+          if (!r.ok || !data.goal)
+            throw new Error(data.message ?? "No saved goal in this chat.");
+          resumeMessage = goalResumeMessage(data.goal, goalCommand.input);
+          goalSettings = {
+            sandboxPreference: data.goal.sandboxPreference,
+            agentPermissionMode: data.goal.permissionMode,
+            selectedModel: data.goal.selectedModel,
+          };
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : "Goal could not resume",
+          );
+          return false;
+        }
+      }
+    }
+    if (sendDisabledReasonRef.current) return false;
 
     // The visible composer normally blocks this path while offline. Check the
     // browser snapshot again here so a connectivity race cannot clear a draft.
@@ -532,6 +626,31 @@ export const useChatHandlers = ({
     const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
     if (!input.trim() && !hasValidFiles) {
       return false;
+    }
+    if (
+      !goalCommand &&
+      goalState &&
+      ["queued", "running", "waiting", "needs_approval"].includes(goalState)
+    ) {
+      try {
+        const r = await fetch("/api/agent-goal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId, action: "pause" }),
+        });
+        if (!r.ok)
+          throw new Error(
+            "Could not pause the goal before sending your message. Your draft is saved.",
+          );
+        toast.info(
+          "Goal paused for your message. Resume it from the goal panel when ready.",
+        );
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Goal could not pause",
+        );
+        return false;
+      }
     }
 
     const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
@@ -616,8 +735,12 @@ export const useChatHandlers = ({
       }
     }
 
+    const outgoingText =
+      goalCommand?.action === "start"
+        ? goalCommand.objective
+        : (resumeMessage ?? (input.trim() || undefined));
     const tokenLimitStatus = await getInputTokenLimitStatus(
-      input,
+      outgoingText ?? "",
       uploadedFiles,
       maxTokens,
     );
@@ -634,6 +757,10 @@ export const useChatHandlers = ({
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
+    const outgoingMetadata = {
+      createdAt: Date.now(),
+      ...(goalCommand?.action === "start" ? { goal: { sent: true } } : {}),
+    };
     try {
       // Get file objects from uploaded files - URLs are already resolved in global state
       const validFiles = uploadedFiles
@@ -644,9 +771,9 @@ export const useChatHandlers = ({
       runChatAction("send message", () =>
         sendMessage(
           {
-            text: input.trim() || undefined,
+            text: outgoingText,
             files: validFiles.length > 0 ? validFiles : undefined,
-            metadata: { createdAt: Date.now() },
+            metadata: outgoingMetadata,
           },
           {
             body: {
@@ -656,6 +783,8 @@ export const useChatHandlers = ({
               agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
+              ...(goalCommand ? { goal: goalCommand } : {}),
+              ...goalSettings,
             },
           },
         ),
@@ -665,7 +794,7 @@ export const useChatHandlers = ({
       // Fallback to text-only message if file processing fails
       runChatAction("send fallback message", () =>
         sendMessage(
-          { text: input, metadata: { createdAt: Date.now() } },
+          { text: outgoingText, metadata: outgoingMetadata },
           {
             body: {
               mode: currentChatMode,
@@ -674,6 +803,8 @@ export const useChatHandlers = ({
               agentPermissionMode: agentPermissionModeRef.current,
 
               selectedModel: requestSelectedModel,
+              ...(goalCommand ? { goal: goalCommand } : {}),
+              ...goalSettings,
             },
           },
         ),

@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 
+jest.mock("@/lib/utils/client-token-validation", () => {
+  const actual = jest.requireActual<
+    typeof import("@/lib/utils/client-token-validation")
+  >("@/lib/utils/client-token-validation");
+  return {
+    ...actual,
+    getInputTokenLimitStatus: jest.fn(actual.getInputTokenLimitStatus),
+  };
+});
+
 const mockCaptureAuthenticatedEvent = jest.fn();
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) =>
@@ -23,6 +33,7 @@ const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
 const mockResetAutoContinueCount = jest.fn();
 let mockInput = "";
+let mockEmptyQueue = false;
 let mockChatMode = "agent";
 let mockQueuedDeliveryStatus: "failed" | undefined;
 
@@ -75,15 +86,17 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     isUploadingFiles: false,
     subscription: "pro",
     queueMessage: mockQueueMessage,
-    messageQueue: [
-      {
-        id: "queued-1",
-        deliveryStatus: mockQueuedDeliveryStatus,
-        text: "Change direction",
-        files: [],
-        timestamp: 123,
-      },
-    ],
+    messageQueue: mockEmptyQueue
+      ? []
+      : [
+          {
+            id: "queued-1",
+            deliveryStatus: mockQueuedDeliveryStatus,
+            text: "Change direction",
+            files: [],
+            timestamp: 123,
+          },
+        ],
     removeQueuedMessage: mockRemoveQueuedMessage,
     queueBehavior: "queue",
     sandboxPreference: "e2b",
@@ -132,6 +145,7 @@ describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInput = "";
+    mockEmptyQueue = false;
     mockChatMode = "agent";
     mockQueuedDeliveryStatus = undefined;
     Object.defineProperty(navigator, "onLine", {
@@ -149,6 +163,90 @@ describe("useChatHandlers steer todo handoff", () => {
       ),
     });
   });
+
+  it("keeps the draft when the expanded saved goal exceeds the input budget", async () => {
+    mockInput = "/goal resume";
+    mockEmptyQueue = true;
+    const validation = await import("@/lib/utils/client-token-validation");
+    jest
+      .mocked(validation.getInputTokenLimitStatus)
+      .mockImplementationOnce(async (text) =>
+        text.includes("Verify the new file")
+          ? { exceedsLimit: true, tokenCount: 999999 }
+          : { exceedsLimit: false },
+      );
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        goal: {
+          objective: "Updated file goal",
+          criteria: ["Verify the new file"],
+          sandboxPreference: "e2b",
+          permissionMode: "full_access",
+          selectedModel: "hackerai-standard",
+        },
+      }),
+    } as Response);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    try {
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as unknown as React.FormEvent),
+        ).toBe(false);
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+    } finally {
+      jest.mocked(validation.getInputTokenLimitStatus).mockClear();
+    }
+  });
+
+  it.each(["/goal", "/goal status", "/goal pause", "/goal clear"])(
+    "handles %s in an unsaved chat without a backend request or model run",
+    async (command) => {
+      mockInput = command;
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "new-chat",
+          messages: [],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: false,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as unknown as React.FormEvent);
+      });
+      expect(accepted).toBe(true);
+      expect(mockClearInput).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it("retries the latest queued message without native findLast or replacing an uncertain run", async () => {
     mockQueuedDeliveryStatus = "failed";

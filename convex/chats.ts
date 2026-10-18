@@ -385,6 +385,11 @@ async function deleteSubagentDataForChat(
 
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
+  const goal = await ctx.db
+    .query("agent_goals")
+    .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
+    .unique();
+  if (goal) await ctx.db.delete(goal._id);
 
   if (await deleteFindingsForChatBatch(ctx, chat)) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
@@ -1825,6 +1830,19 @@ export const setActiveAgentApprovalPending = mutation({
         active_agent_approval_pending: true,
         active_agent_approval_request: args.request,
       });
+      const goal = await ctx.db
+        .query("agent_goals")
+        .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+        .unique();
+      if (
+        goal?.activeRunId === chat.active_trigger_run_id &&
+        goal?.state === "running"
+      )
+        await ctx.db.patch(goal._id, {
+          state: "needs_approval",
+          reason: "Waiting for existing tool approval",
+          updatedAt: Date.now(),
+        });
       return "acquired" as const;
     }
     if (
@@ -1837,6 +1855,15 @@ export const setActiveAgentApprovalPending = mutation({
       active_agent_approval_pending: undefined,
       active_agent_approval_request: undefined,
     });
+    const goal = await ctx.db
+      .query("agent_goals")
+      .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+      .unique();
+    if (
+      goal?.activeRunId === chat.active_trigger_run_id &&
+      goal?.state === "needs_approval"
+    )
+      await ctx.db.patch(goal._id, { state: "running", updatedAt: Date.now() });
     return "released" as const;
   },
 });

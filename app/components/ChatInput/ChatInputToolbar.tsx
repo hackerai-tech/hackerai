@@ -15,11 +15,13 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
+  goalControl?: React.ReactNode;
   compactAgentControls?: boolean;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
+  goalControl,
   compactAgentControls = false,
   onAttachClick,
   chatMode,
@@ -64,6 +66,7 @@ export function ChatInputToolbar({
         !freeDesktopAgentOnlyActive ? (
           <ChatModeSelector />
         ) : null}
+        {goalControl}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
         {user && isAgentMode(chatMode) ? (
           <>

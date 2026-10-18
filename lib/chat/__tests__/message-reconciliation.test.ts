@@ -15,6 +15,19 @@ const createAssistantMessage = (
 });
 
 describe("areMessagesEquivalentForConvexSync", () => {
+  it("applies a goal completion receipt after the answer already rendered", () => {
+    const current = createAssistantMessage("Done");
+    const persisted = {
+      ...current,
+      metadata: { goal: { achievedElapsedMs: 52000 } },
+    };
+    expect(areMessagesEquivalentForConvexSync([current], [persisted])).toBe(
+      false,
+    );
+    expect(
+      areMessagesEquivalentForConvexSync([persisted], [{ ...persisted }]),
+    ).toBe(true);
+  });
   it("detects completed text when the message ID and part count are unchanged", () => {
     const current = [createAssistantMessage("The latest")];
     const persisted = [

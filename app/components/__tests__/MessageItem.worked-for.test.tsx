@@ -134,6 +134,19 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("shows a saved goal's completion time on its answer", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: {
+        ...assistantMessage,
+        metadata: { goal: { achievedElapsedMs: 52000 } },
+      },
+    });
+    expect(screen.getByLabelText("Goal message status")).toHaveTextContent(
+      "Goal achieved in 52s",
+    );
+  });
+
   it("hides a stopped run's recovery notice after a newer user message", () => {
     const props = {
       message: assistantMessage,

@@ -23,6 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
@@ -634,10 +635,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             "input:not([disabled])",
             "select:not([disabled])",
             "textarea:not([disabled])",
+            "summary",
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
-      );
+      ).filter((element) => {
+        if (element.getClientRects().length === 0) return false;
+        // Closed details can still give descendants layout boxes in Chromium.
+        // Only their direct summary remains keyboard-accessible.
+        for (
+          let parent = element.parentElement;
+          parent && parent !== dialog;
+          parent = parent.parentElement
+        ) {
+          if (
+            parent instanceof HTMLDetailsElement &&
+            !parent.open &&
+            !(element.tagName === "SUMMARY" && element.parentElement === parent)
+          )
+            return false;
+        }
+        return true;
+      });
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -810,6 +829,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const persistedGoal = useQuery(
+    api.agentGoals.get,
+    chatDataForCurrentChat ? { chatId } : "skip",
+  );
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -2232,6 +2255,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat,
     status,
     isSendingNowRef,
+    goalState: persistedGoal?.state,
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
@@ -2364,6 +2388,36 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     (terminalAgentRunUiState.runId
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
+
+  const hasActiveGoalRun =
+    !!activeTriggerRunId &&
+    ["queued", "running", "needs_approval"].includes(
+      persistedGoal?.state ?? "",
+    );
+  const goalPanel = (
+    <AgentGoalPanel
+      key={chatId}
+      chatId={chatId}
+      exists={!!chatDataForCurrentChat}
+      eligible={chatMode === "agent" && subscription !== "free"}
+      idle={
+        status === "ready" && !activeTriggerRunId && messageQueue.length === 0
+      }
+      disabledReason={computerSendDisabledReason}
+      send={async (message, options) => {
+        hasManuallyStoppedRef.current = false;
+        resetAutoContinueCount();
+        if (!isExistingChat)
+          window.history.replaceState({}, "", `/c/${chatId}`);
+        await sendMessage(message, options);
+      }}
+      settings={{
+        sandboxPreference,
+        agentPermissionMode,
+        selectedModel: requestSelectedModel,
+      }}
+    />
+  );
 
   return (
     <>
@@ -2504,12 +2558,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       {!isMobile && (
                         <div className="w-full">
                           <ChatInput
+                            goalPanel={goalPanel}
+                            hasActiveGoalRun={hasActiveGoalRun}
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
-                            hideStop={isAgentRunUiTerminal}
+                            hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -2543,12 +2599,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   onHeightChange={setComposerOverlayHeight}
                 >
                   <ChatInput
+                    goalPanel={goalPanel}
+                    hasActiveGoalRun={hasActiveGoalRun}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
-                    hideStop={isAgentRunUiTerminal}
+                    hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}
@@ -2567,17 +2625,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             </div>
           </div>
 
-          {/* Desktop Computer Sidebar */}
-          {!computerSidebarOverlay && (
+          {/* Keep one sidebar subtree so responsive layout changes preserve editor drafts. */}
+          {(!computerSidebarOverlay || sidebarOpen) && (
             <div
-              className={`min-w-0 transition-[width] duration-300 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
-              }`}
-              data-layout="split"
+              ref={computerSidebarOverlay ? computerDialogRef : undefined}
+              className={
+                computerSidebarOverlay
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
+              }
+              role={computerSidebarOverlay ? "dialog" : undefined}
+              aria-modal={computerSidebarOverlay ? true : undefined}
+              aria-label={
+                computerSidebarOverlay ? "HackerAI’s Computer" : undefined
+              }
+              tabIndex={computerSidebarOverlay ? -1 : undefined}
+              data-layout={computerSidebarOverlay ? "overlay" : "split"}
               data-testid="computer-sidebar-container"
             >
               {sidebarOpen && (
-                <ComputerSidebar messages={messages} status={status} />
+                <div
+                  className={`h-full w-full ${computerSidebarOverlay ? "max-w-4xl" : ""}`}
+                >
+                  <ComputerSidebar messages={messages} status={status} />
+                </div>
               )}
             </div>
           )}
@@ -2588,24 +2659,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             isDragOver={isDragOver}
           />
         </div>
-
-        {/* Computer overlay for mobile and narrow desktop workspaces. */}
-        {computerSidebarOverlay && sidebarOpen && (
-          <div
-            ref={computerDialogRef}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label="HackerAI’s Computer"
-            tabIndex={-1}
-            data-layout="overlay"
-            data-testid="computer-sidebar-container"
-          >
-            <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
-            </div>
-          </div>
-        )}
       </div>
     </>
   );

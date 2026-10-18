@@ -9,6 +9,9 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { logger } from "@/lib/logger";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { goalServiceKey } from "@/lib/goals/server";
 
 type AgentCancelRejectionReason =
   "chat_owner_mismatch" | "chat_missing" | "stale_run";
@@ -48,6 +51,7 @@ export const createAgentCancelPost =
       | "read_request"
       | "authenticate"
       | "get_chat"
+      | "pause_goal"
       | "close_approval_session"
       | "cancel_trigger_run"
       | "clear_active_run" = "read_request";
@@ -158,6 +162,29 @@ export const createAgentCancelPost =
         runId: runId ?? undefined,
         approvalSessionId: approvalSessionId ?? undefined,
       };
+      if (runId) {
+        stage = "pause_goal";
+        try {
+          await getConvexClient().mutation(api.agentGoals.pauseForCanceledRun, {
+            serviceKey: goalServiceKey(),
+            chatId,
+            userId,
+            runId,
+          });
+        } catch {
+          // Stopping cost-incurring work must survive a goal-storage failure.
+          // Worker cleanup also resolves canceled goal slices to paused.
+          logger.warn(
+            "Could not persist goal pause before Agent cancellation",
+            {
+              event: "agent_cancel_goal_pause_failed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              request_id: requestId,
+            },
+          );
+        }
+      }
       stage = "close_approval_session";
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
