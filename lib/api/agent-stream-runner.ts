@@ -1755,7 +1755,6 @@ export async function createAgentStream(
         const providerPromptPressure = getProviderPromptPressure(
           rollingModelMessages,
           {
-            modelId: effectiveModelInfo.languageModel.modelId,
             mode: ctx.mode,
           },
         );

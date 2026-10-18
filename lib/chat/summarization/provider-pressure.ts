@@ -1,19 +1,9 @@
 import type { ModelMessage } from "ai";
 import type { ChatMode } from "@/types";
 
-export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 450_000;
-export const DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES = 1_800_000;
+export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 600_000;
+export const AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES = 1_800_000;
 export const PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS = 128_000;
-
-// These configured routes advertise a 1M context window. Allow more serialized
-// history within the existing token budget; unknown routes keep the legacy cap.
-const LARGE_CONTEXT_DEEPSEEK_MODELS = new Set([
-  "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4.1-flash",
-  "deepseek/deepseek-v4.1-flash-1017",
-  "deepseek/deepseek-v4-pro",
-  "deepseek/deepseek-v4-pro-0813",
-]);
 
 export type ProviderPromptPressureReason = "serialized_message_bytes";
 
@@ -126,11 +116,11 @@ const countToolResultParts = (messages: ModelMessage[]): number => {
 
 export const getProviderPromptPressure = (
   messages: ModelMessage[],
-  { modelId, mode }: { modelId?: string; mode?: ChatMode } = {},
+  { mode }: { mode?: ChatMode } = {},
 ): ProviderPromptPressure | null => {
   const serializedMessageByteLimit =
-    mode === "agent" && modelId && LARGE_CONTEXT_DEEPSEEK_MODELS.has(modelId)
-      ? DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES
+    mode === "agent"
+      ? AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES
       : PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES;
   const serializedMessageBytes = getSerializedBytes(messages);
   const toolResultCount = countToolResultParts(messages);

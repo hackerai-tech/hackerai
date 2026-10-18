@@ -1,7 +1,6 @@
 import type { ModelMessage } from "ai";
 import {
   getProviderPromptPressure,
-  DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES,
   PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES,
   PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS,
 } from "../provider-pressure";
@@ -20,10 +19,6 @@ const toolResultMessage = (index: number, output: unknown): ModelMessage =>
   }) as unknown as ModelMessage;
 
 describe("getProviderPromptPressure", () => {
-  const deepseekAgent = {
-    modelId: "deepseek/deepseek-v4.1-flash",
-    mode: "agent" as const,
-  };
   const historyWithBytes = (bytes: number): ModelMessage[] => {
     const messages: ModelMessage[] = [{ role: "user", content: "" }];
     const overhead = new TextEncoder().encode(JSON.stringify(messages)).length;
@@ -31,53 +26,31 @@ describe("getProviderPromptPressure", () => {
     return messages;
   };
 
-  it.each([
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4.1-flash",
-    "deepseek/deepseek-v4.1-flash-1017",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-pro-0813",
-  ])("allows larger Agent histories on %s", (modelId) => {
-    const messages = historyWithBytes(600_000);
+  it("allows larger histories in Agent mode without a model selector", () => {
+    const messages = historyWithBytes(700_000);
+    expect(getProviderPromptPressure(messages, { mode: "agent" })).toBeNull();
+    expect(getProviderPromptPressure(messages, { mode: "ask" })).toMatchObject({
+      reason: "serialized_message_bytes",
+    });
     expect(getProviderPromptPressure(messages)).toMatchObject({
       reason: "serialized_message_bytes",
     });
-    expect(
-      getProviderPromptPressure(messages, { ...deepseekAgent, modelId }),
-    ).toBeNull();
-  });
-
-  it("compacts exactly at the larger byte ceiling", () => {
-    expect(
-      getProviderPromptPressure(
-        historyWithBytes(DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES - 1),
-        deepseekAgent,
-      ),
-    ).toBeNull();
-    expect(
-      getProviderPromptPressure(
-        historyWithBytes(DEEPSEEK_AGENT_PRESSURE_SERIALIZED_MESSAGE_BYTES),
-        deepseekAgent,
-      ),
-    ).toMatchObject({ reason: "serialized_message_bytes" });
   });
 
   it.each([
-    { modelId: "deepseek/deepseek-v4.1-flash", mode: "ask" as const },
-    { modelId: "deepseek/deepseek-v3", mode: "agent" as const },
-    { modelId: "deepseek/deepseek-v4-unknown", mode: "agent" as const },
-    { modelId: "z-ai/glm-5.3", mode: "agent" as const },
-    { mode: "agent" as const },
-  ])("retains the legacy byte ceiling for $modelId / $mode", (route) => {
+    { mode: "agent" as const, limit: 1_800_000 },
+    { mode: "ask" as const, limit: 600_000 },
+    { mode: undefined, limit: 600_000 },
+  ])("compacts exactly at the $mode byte ceiling", ({ mode, limit }) => {
     expect(
-      getProviderPromptPressure(
-        historyWithBytes(PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES),
-        route,
-      ),
+      getProviderPromptPressure(historyWithBytes(limit - 1), { mode }),
+    ).toBeNull();
+    expect(
+      getProviderPromptPressure(historyWithBytes(limit), { mode }),
     ).toMatchObject({ reason: "serialized_message_bytes" });
   });
 
-  it.each([undefined, deepseekAgent])(
+  it.each([undefined, { mode: "agent" as const }, { mode: "ask" as const }])(
     "does not compact small histories merely because of their counts (%j)",
     (route) => {
       const results = Array.from({ length: 150 }, (_, index) =>
@@ -94,7 +67,7 @@ describe("getProviderPromptPressure", () => {
 
   it("triggers for large tool-heavy provider prompts", () => {
     const messages = Array.from({ length: 100 }, (_, index) =>
-      toolResultMessage(index, "x".repeat(5_000)),
+      toolResultMessage(index, "x".repeat(7_000)),
     );
 
     const pressure = getProviderPromptPressure(messages);

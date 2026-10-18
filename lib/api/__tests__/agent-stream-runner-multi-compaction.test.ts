@@ -752,7 +752,7 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each(["agent", "ask"] as const)(
-    "checks pressure against the effective model on each %s step",
+    "uses the %s byte ceiling across model changes",
     async (mode) => {
       let modelId = "deepseek/deepseek-v4.1-flash";
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
@@ -777,13 +777,13 @@ describe("createAgentStream repeated compaction", () => {
       await stream.prepareStep(step);
       expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
         expect.any(Array),
-        { modelId, mode },
+        { mode },
       );
       modelId = "z-ai/glm-5.3";
       await stream.prepareStep({ ...step, stepNumber: 1 });
       expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
         expect.any(Array),
-        { modelId, mode },
+        { mode },
       );
     },
   );
