@@ -635,10 +635,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             "input:not([disabled])",
             "select:not([disabled])",
             "textarea:not([disabled])",
+            "summary",
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
-      );
+      ).filter((element) => element.getClientRects().length > 0);
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

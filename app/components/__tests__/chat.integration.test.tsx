@@ -278,6 +278,7 @@ jest.mock("../ComputerSidebar", () => ({
           onChange={(e) => setDraft(e.target.value)}
         />
         <button type="button">Last computer action</button>
+        <input aria-label="Hidden computer field" hidden />
       </div>
     );
   },
@@ -1528,6 +1529,11 @@ describe("Chat Component Integration", () => {
 
     it("uses an accessible Computer overlay on narrow workspaces", async () => {
       mockComputerOverlayMedia = true;
+      const rects = jest
+        .spyOn(HTMLElement.prototype, "getClientRects")
+        .mockImplementation(function (this: HTMLElement) {
+          return (this.hidden ? [] : [{}]) as unknown as DOMRectList;
+        });
 
       render(
         <TestWrapper>
@@ -1562,6 +1568,8 @@ describe("Chat Component Integration", () => {
       lastAction.focus();
       fireEvent.keyDown(document, { key: "Tab" });
       expect(firstAction).toHaveFocus();
+      fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+      expect(lastAction).toHaveFocus();
 
       fireEvent.keyDown(document, { key: "Escape" });
       await waitFor(() => {
@@ -1570,6 +1578,7 @@ describe("Chat Component Integration", () => {
         ).not.toBeInTheDocument();
       });
       expect(trigger).toHaveFocus();
+      rects.mockRestore();
     });
 
     // Mobile task navigation is covered by ChatLayout accessibility tests.
