@@ -19,7 +19,7 @@ import {
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterEncryptedReasoning,
   supportsMultimodalToolResults,
-  resolveTierToProviderKey,
+  resolveAgentTierToProviderKey,
 } from "@/lib/ai/providers";
 
 const edgeFetchPrimitives =
@@ -279,8 +279,7 @@ describe("provider registry", () => {
   });
 
   it("resolves Agent Pro to V4.1 Flash with native image support", () => {
-    const mode = "agent";
-    const key = resolveTierToProviderKey("hackerai-pro", mode)!;
+    const key = resolveAgentTierToProviderKey("hackerai-pro");
     expect(myProvider.languageModel(key).modelId).toBe(
       "deepseek/deepseek-v4.1-flash",
     );

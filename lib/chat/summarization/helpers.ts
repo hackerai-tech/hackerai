@@ -25,6 +25,7 @@ import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serializat
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARY_INPUT_MAX_TOKENS,
+  SUMMARY_PRIOR_CHECKPOINT_MAX_TOKENS,
   SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS,
   SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
   SUMMARY_PROMPT_VERSION,
@@ -601,6 +602,18 @@ const compactContentPartForSummaryBudget = (
 
   const record = part as Record<string, unknown>;
 
+  // This is only the summarizer's overflow projection, never live tool replay.
+  // A shortened reasoning block cannot retain provider signatures or opaque
+  // reasoning metadata. Keep its readable content as explicitly unverified text.
+  if (record.type === "reasoning" && typeof record.text === "string") {
+    return {
+      value: toTextModelContentPart(
+        `[Prior assistant reasoning, not confirmed evidence]\n${truncateSummaryText(record.text, maxTextPartTokens)}`,
+      ),
+      changed: true,
+    };
+  }
+
   if (record.type === "text" && typeof record.text === "string") {
     const text = truncateSummaryText(record.text, maxTextPartTokens);
     return {
@@ -661,7 +674,15 @@ const compactTextPartsForSummaryBudget = <T extends ModelMessage>(
 
     if (!contentChanged) return message;
     changed = true;
-    return { ...message, content } as T;
+    // Message-level reasoning details can otherwise replay the unbounded text
+    // or a signature for reasoning that this summary projection has replaced.
+    const { providerOptions, ...withoutProviderOptions } = message;
+    return {
+      ...(message.content.some((part) => part.type === "reasoning")
+        ? withoutProviderOptions
+        : message),
+      content,
+    } as T;
   });
 
   return changed ? compacted : messages;
@@ -671,18 +692,33 @@ const fallbackSummaryInputMessages = (
   messages: ModelMessage[],
   maxInputTokens: number,
 ): ModelMessage[] => {
-  const transcript = truncateContent(
-    stringifySummaryMessages(messages),
-    "\n[Summary input transcript shortened: middle omitted]\n",
-    Math.max(1, maxInputTokens - 256),
-  );
-
-  return [
+  const project = (transcript: string): ModelMessage[] => [
     {
       role: "user",
       content: `[Summary input transcript was too large after compaction; sanitized transcript follows.]\n${transcript}`,
     },
-  ] as ModelMessage[];
+  ];
+  const overhead = estimateSummaryInputTokens(project(""));
+  const source = stringifySummaryMessages(messages);
+  let transcriptBudget = Math.max(0, maxInputTokens - overhead);
+  while (transcriptBudget > 0) {
+    const transcript = truncateContent(
+      source,
+      "\n[Summary input transcript shortened: middle omitted]\n",
+      transcriptBudget,
+    );
+    const projected = project(transcript);
+    // Wrapping JSON in a text message escapes it again. Budget the actual
+    // encoded projection, not just the transcript before it is wrapped.
+    const tokens = estimateSummaryInputTokens(projected);
+    if (tokens <= maxInputTokens) return projected;
+    const scale = (maxInputTokens - overhead) / Math.max(1, tokens - overhead);
+    transcriptBudget = Math.min(
+      transcriptBudget - 1,
+      Math.floor(transcriptBudget * scale),
+    );
+  }
+  return [];
 };
 
 export const boundModelMessagesForSummarization = (
@@ -697,27 +733,62 @@ export const boundModelMessagesForSummarization = (
     overflowTextPartMaxTokens?: number;
   } = {},
 ): ModelMessage[] => {
-  if (maxInputTokens <= 0) return fallbackSummaryInputMessages(messages, 1);
+  if (maxInputTokens <= 0) return [];
   if (estimateSummaryInputTokens(messages) <= maxInputTokens) return messages;
 
+  const first = messages[0];
+  const firstText =
+    first?.role === "user"
+      ? typeof first.content === "string"
+        ? first.content
+        : first.content.length === 1 && first.content[0].type === "text"
+          ? first.content[0].text
+          : ""
+      : "";
+  // Reserve only a leading complete checkpoint, with a strict cap even for
+  // untrusted/oversized input. Leave at least half the budget for newer evidence.
+  const checkpointBudget = Math.min(
+    SUMMARY_PRIOR_CHECKPOINT_MAX_TOKENS,
+    Math.floor(maxInputTokens / 2),
+  );
+  const priorCheckpoint =
+    firstText.startsWith("<context_summary>\n") &&
+    firstText.includes("</context_summary>")
+      ? estimateSummaryInputTokens([first]) <= checkpointBudget
+        ? [first]
+        : fallbackSummaryInputMessages([first], checkpointBudget)
+      : [];
+  const source = priorCheckpoint.length > 0 ? messages.slice(1) : messages;
+  const remainingBudget =
+    maxInputTokens -
+    (priorCheckpoint.length > 0
+      ? estimateSummaryInputTokens(priorCheckpoint) + 2
+      : 0);
+  const withCheckpoint = (tail: ModelMessage[]) => [
+    ...priorCheckpoint,
+    ...tail,
+  ];
+
   let compacted = compactModelMessagesForSummarization(
-    messages,
+    source,
     overflowToolOutputMaxTokens,
   );
   compacted = compactTextPartsForSummaryBudget(
     compacted,
     overflowTextPartMaxTokens,
   );
-  if (estimateSummaryInputTokens(compacted) <= maxInputTokens) {
-    return compacted;
+  if (estimateSummaryInputTokens(withCheckpoint(compacted)) <= maxInputTokens) {
+    return withCheckpoint(compacted);
   }
 
   compacted = compactTextPartsForSummaryBudget(compacted, 128);
-  if (estimateSummaryInputTokens(compacted) <= maxInputTokens) {
-    return compacted;
+  if (estimateSummaryInputTokens(withCheckpoint(compacted)) <= maxInputTokens) {
+    return withCheckpoint(compacted);
   }
 
-  return fallbackSummaryInputMessages(compacted, maxInputTokens);
+  return withCheckpoint(
+    fallbackSummaryInputMessages(compacted, remainingBudget),
+  );
 };
 
 const getLanguageModelIdentifier = (
@@ -793,6 +864,9 @@ export const generateSummaryText = async (
       });
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
+  if (sourceModelMessages.length > 0 && summaryModelMessages.length === 0) {
+    throw new Error("Summary input budget cannot retain any source history");
+  }
   if (
     generationOptions?.preservePrefix &&
     estimatedCompactedInputTokens > summaryInputMaxTokens

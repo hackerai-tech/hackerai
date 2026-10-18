@@ -52,9 +52,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
-  ASK_MODEL_OPTIONS,
   AGENT_MODEL_OPTIONS,
-  getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
 
@@ -454,9 +452,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         }) ?? "auto");
   const isAuto = displayValue === "auto";
 
-  const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
+  // Free users see the paid Agent tiers as locked upgrade options.
+  const options = AGENT_MODEL_OPTIONS;
 
-  const effectiveValue = isAuto ? getDefaultModelForMode(mode) : displayValue;
+  const effectiveValue = isAuto ? options[0].id : displayValue;
   const selected =
     options.find((opt) => opt.id === effectiveValue) ?? options[0];
 

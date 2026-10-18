@@ -2,7 +2,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { generateText, Output } from "ai";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import { myProvider, resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 import {
   applyExtraction,
   EXTRACTION_PROMPT,
@@ -96,7 +96,7 @@ async function recordScope(args: {
     ) {
       const result = await generateText({
         model: myProvider.languageModel(
-          resolveTierToProviderKey("hackerai-standard", "agent"),
+          resolveAgentTierToProviderKey("hackerai-standard"),
         ),
         system: EXTRACTION_PROMPT,
         prompt: JSON.stringify({

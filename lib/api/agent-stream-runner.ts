@@ -1,4 +1,5 @@
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
@@ -303,6 +304,7 @@ export const resolveAgentModelForImageToolResults = (
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.
   if (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL
   )

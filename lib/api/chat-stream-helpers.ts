@@ -1,4 +1,9 @@
 import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+  DEEPSEEK_1017_CANONICAL_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
+import {
   ABLITERATION_LARGE_V2_MODEL_KEY,
   ABLITERATION_MODEL_KEY,
   isAbliterationModel,
@@ -675,6 +680,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-vision": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  [DEEPSEEK_1017_MODEL_KEY]: DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -724,13 +730,15 @@ export function isExplicitDeepSeekProSelectionForRetry({
 }): boolean {
   return (
     selectedModelOverride === "hackerai-pro" &&
-    (EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
+    (selectedModel === DEEPSEEK_1017_MODEL_KEY ||
+      EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
       (mode === "agent" &&
         selectedModel === "model-deepseek-v4-flash-vision-pro"))
   );
 }
 
 const HIGH_REASONING_MODELS = [
+  DEEPSEEK_1017_MODEL_KEY,
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -803,6 +811,7 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-flash-vision";
   }
   if (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
@@ -952,6 +961,8 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
+  [DEEPSEEK_1017_SLUG]: DEEPSEEK_1017_MODEL_KEY,
+  [DEEPSEEK_1017_CANONICAL_SLUG]: DEEPSEEK_1017_MODEL_KEY,
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   // Historical provider responses keep their original rates even though the
@@ -1091,37 +1102,40 @@ export function buildProviderOptions(
       }
     : baseProviderRouting;
   // GLM titles need mandatory reasoning, kept low for the small output budget.
-  const reasoning = isTitleGeneration
-    ? { enabled: true, effort: "low" }
-    : isStandardGlmFlashVision
-      ? {
-          enabled: true,
-          effort: "high",
-        }
-      : isMediumGrok45Vision
-        ? {
-            enabled: true,
-            effort: "medium",
-          }
-        : routesThroughHighReasoningModel
-          ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-            ? options.reasoningOverride
-            : {
+  const reasoning =
+    modelName === DEEPSEEK_1017_MODEL_KEY
+      ? { enabled: true, effort: "high" }
+      : isTitleGeneration
+        ? { enabled: true, effort: "low" }
+        : isStandardGlmFlashVision
+          ? {
+              enabled: true,
+              effort: "high",
+            }
+          : isMediumGrok45Vision
+            ? {
                 enabled: true,
-                effort: "high",
+                effort: "medium",
               }
-          : (options.reasoningOverride ??
-            (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-              ? {
-                  enabled: true,
-                  effort: "high",
-                }
-              : isReasoningModel
-                ? {
+            : routesThroughHighReasoningModel
+              ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+                ? options.reasoningOverride
+                : {
                     enabled: true,
-                    ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                    effort: "high",
                   }
-                : { enabled: false }));
+              : (options.reasoningOverride ??
+                (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+                  ? {
+                      enabled: true,
+                      effort: "high",
+                    }
+                  : isReasoningModel
+                    ? {
+                        enabled: true,
+                        ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                      }
+                    : { enabled: false }));
 
   return {
     openrouter: {
@@ -1497,25 +1511,7 @@ export function assertFreeAgentGates(args: {
   }
 }
 
-/**
- * Paid plans are Agent-only. Enforce this at the API boundary so stale clients
- * and direct requests cannot restore the removed paid Ask path.
- */
-export function assertChatModeAccess(args: {
-  mode: unknown;
-  subscription: SubscriptionTier;
-}): void {
-  if (args.mode !== "ask" && args.mode !== "agent") {
-    throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
-  }
-
-  if (args.mode !== "ask" || args.subscription === "free") return;
-
-  throw new ChatSDKError(
-    "forbidden:chat",
-    "Paid plans use Agent mode. Ask mode is only available on the free plan.",
-  );
-}
+export { assertChatModeAccess } from "@/lib/utils/mode-helpers";
 
 /**
  * Build the extra-usage config for paid users with `extra_usage_enabled`.

@@ -235,6 +235,7 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
+  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
@@ -2093,6 +2094,11 @@ export const agentLongTask = task({
         subscription,
         selectedModel,
         hasImages: requestHasImages,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -2413,6 +2419,15 @@ export const agentLongTask = task({
               createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
+                controlContinuationModel:
+                  activeFlashRoutingAssignment &&
+                  createTrackedProvider().languageModel(
+                    resolveAgentModelAfterSummarization(
+                      activeFlashRoutingAssignment.modelKey,
+                      mode,
+                      false,
+                    ),
+                  ).modelId,
                 userId,
                 mode,
                 subscription,
@@ -2424,7 +2439,10 @@ export const agentLongTask = task({
                   variant: activeAbliteratedExperiment.variant,
                   requestId: assistantMessageId,
                 }
-              : (activeFlashRoutingAssignment ??
+              : ((activeFlashRoutingAssignment && {
+                  ...activeFlashRoutingAssignment,
+                  requestId: assistantMessageId,
+                }) ??
                 getDeepSeekV4Pro0813ExperimentContext(
                   activeDeepSeekV4Pro0813Experiment,
                 ));
@@ -3752,7 +3770,15 @@ export const agentLongTask = task({
                 runTimingTracker.startModelStream();
               },
               onModelStreamFinish: runTimingTracker.finishModelStream,
-              onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onModelChunk: () => {
+                if (
+                  routingExperimentContext &&
+                  routingExperimentContext.firstModelChunkAt === undefined
+                ) {
+                  routingExperimentContext.firstModelChunkAt = Date.now();
+                }
+                runTimingTracker.recordFirstModelChunk();
+              },
               onModelStepSelected: (modelName) => {
                 activeModelName = modelName;
                 terminalRequestedModelSlug =
@@ -3982,6 +4008,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               runReporting.captureTerminal(captureAgentCompletionAnalytics, {
+                responseMessageId: retryMessageId,
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
                   usageTracker.measurementProperties(selectedModel),
@@ -5038,6 +5065,7 @@ export const agentLongTask = task({
                       runReporting.captureTerminal(
                         captureAgentCompletionAnalytics,
                         {
+                          responseMessageId: assistantMessageId,
                           cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                           usageMeasurement:
                             usageTracker.measurementProperties(selectedModel),

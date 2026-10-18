@@ -1,7 +1,7 @@
 import type { UIMessage } from "ai";
 
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
-import { resolveTierToProviderKey } from "@/lib/ai/providers";
+import { resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 import {
   AGENT_AUTO_REVIEW_MODEL,
   AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
@@ -74,10 +74,7 @@ const authorizationContext = {
 
 describe("Agent Auto review", () => {
   it("uses the shared Standard route with reasoning disabled", () => {
-    const standardModel = resolveTierToProviderKey(
-      "hackerai-standard",
-      "agent",
-    );
+    const standardModel = resolveAgentTierToProviderKey("hackerai-standard");
 
     expect(AGENT_AUTO_REVIEW_MODEL).toBe(standardModel);
     expect(AGENT_AUTO_REVIEW_PROVIDER_OPTIONS).toEqual({

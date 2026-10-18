@@ -5,7 +5,7 @@ import { SourceEvidenceError } from "../extract";
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/ai/providers", () => ({
   myProvider: { languageModel: jest.fn() },
-  resolveTierToProviderKey: () => "existing-standard-model",
+  resolveAgentTierToProviderKey: () => "existing-standard-model",
 }));
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 jest.mock("ai", () => ({
