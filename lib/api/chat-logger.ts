@@ -1,3 +1,7 @@
+import {
+  PAID_DEEPSEEK_1017_KEY,
+  PAID_MODEL_OUTCOME_EVENT,
+} from "@/lib/experiments/paid-deepseek-1017";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import {
   freeAgentBudgetProperties,
@@ -1337,6 +1341,7 @@ type AgentCompletionAnalyticsArgs = {
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   hasResponseContent: boolean;
+  responseMessageId?: string;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1763,6 +1768,63 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  if (args.experiment?.key === PAID_DEEPSEEK_1017_KEY) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: PAID_MODEL_OUTCOME_EVENT,
+        properties: {
+          ...getExperimentAnalyticsProperties(args.experiment),
+          ...args.usageMeasurement,
+          chat_id: args.chatId,
+          message_id: args.responseMessageId ?? args.experiment.requestId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          has_response_content: args.hasResponseContent,
+          natural_completion:
+            outcome === "success" &&
+            args.hasResponseContent &&
+            !args.stepLimitTelemetry?.stepLimitReached &&
+            args.finishReason !== "length" &&
+            args.finishReason !== "error",
+          duration_ms:
+            args.experiment.startedAt === undefined
+              ? undefined
+              : Math.max(0, Date.now() - args.experiment.startedAt),
+          time_to_first_chunk_ms:
+            args.experiment.startedAt !== undefined &&
+            args.experiment.firstModelChunkAt !== undefined
+              ? Math.max(
+                  0,
+                  args.experiment.firstModelChunkAt - args.experiment.startedAt,
+                )
+              : undefined,
+          request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+          active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+          selected_model: args.selectedModel,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served: args.fallbackServed,
+          finish_reason: args.finishReason,
+          abort_source: args.abortSource,
+          provider_error_category: args.providerErrorCategory,
+          provider_error_status_code: args.providerErrorStatusCode,
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          handled_tool_failure_count: args.handledToolFailureCount,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
+          sandbox_type: sandboxInfo?.type,
+          sandbox_provider: sandboxInfo?.provider,
+          $insert_id: `${args.experiment.requestId}:paid-model-outcome`,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Outcome reporting must not interrupt persistence or billing.
+    }
+  }
   // A successful free response is activation evidence; metered cost alone also
   // occurs on failed requests. Keep this separate from task-completion claims.
   if (

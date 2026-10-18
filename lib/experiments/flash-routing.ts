@@ -1,13 +1,23 @@
+import {
+  PAID_DEEPSEEK_1017_KEY,
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "./paid-deepseek-1017";
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
 import { myProvider, type ModelName } from "@/lib/ai/providers";
 import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-context";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof PAID_DEEPSEEK_1017_KEY;
+  requestId?: string;
+  startedAt?: number;
+  baselineModel?: string;
+  selectedModelOverride?: string;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
@@ -21,15 +31,59 @@ export async function evaluateFlashRouting({
   subscription,
   selectedModel,
   hasImages,
+  selectedModelOverride,
+  limitRescue = false,
+  modelPolicyActive = false,
 }: {
-  posthog: Pick<PostHog, "evaluateFlags"> | null;
+  posthog: Pick<PostHog, "evaluateFlags" | "getFeatureFlagResult"> | null;
   userId: string;
   mode: ChatMode;
   subscription: SubscriptionTier;
   selectedModel: ModelName;
   hasImages: boolean;
+  selectedModelOverride?: SelectedModel;
+  limitRescue?: boolean;
+  modelPolicyActive?: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
-  if (!posthog || !userId || hasImages) return undefined;
+  if (!posthog || !userId || limitRescue || modelPolicyActive) return undefined;
+  const selector = selectedModelOverride ?? "auto";
+  const paidEligible =
+    ["pro", "pro-plus", "ultra", "team"].includes(subscription) &&
+    (selector === "auto" || selector === "hackerai-pro") &&
+    [
+      "model-deepseek-v4-flash-vision-pro",
+      "model-deepseek-v4-flash-vision",
+      "model-glm-5.3-flash",
+      "model-grok-4.5",
+    ].includes(selectedModel);
+  if (paidEligible) {
+    try {
+      const variant = await getPostHogFlagWithoutExposure(
+        posthog,
+        PAID_DEEPSEEK_1017_KEY,
+        userId,
+        {
+          subscription_tier: subscription,
+        },
+      );
+      if (variant !== "control" && variant !== "test") return undefined;
+      return {
+        key: PAID_DEEPSEEK_1017_KEY,
+        variant,
+        modelKey: variant === "test" ? DEEPSEEK_1017_MODEL_KEY : selectedModel,
+        configuredModel:
+          variant === "test"
+            ? DEEPSEEK_1017_SLUG
+            : myProvider.languageModel(selectedModel).modelId,
+        baselineModel: selectedModel,
+        selectedModelOverride: selector,
+        startedAt: Date.now(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  if (hasImages) return undefined;
   const key =
     mode === "agent" &&
     subscription !== "free" &&
@@ -103,6 +157,8 @@ export function createFlashRoutingExposureRecorder({
     )
       return;
     recorded = true;
+    if (assignment.key === PAID_DEEPSEEK_1017_KEY)
+      assignment.requestId = requestId;
     try {
       posthog.capture({
         distinctId: userId,
@@ -115,6 +171,9 @@ export function createFlashRoutingExposureRecorder({
           selected_model: assignment.modelKey,
           configured_model: configuredModel,
           request_id: requestId,
+          message_id: requestId,
+          baseline_model: assignment.baselineModel,
+          selected_model_override: assignment.selectedModelOverride,
           exposure_surface: "provider_request",
           $process_person_profile: false,
         },

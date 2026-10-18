@@ -196,6 +196,7 @@ describe("Flash routing experiments", () => {
         selected_model: "model-glm-5.3-flash-agent",
         configured_model: "z-ai/glm-5.3-flash",
         request_id: "request-1",
+        message_id: "request-1",
         exposure_surface: "provider_request",
         $process_person_profile: false,
       },

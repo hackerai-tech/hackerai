@@ -2589,3 +2589,72 @@ describe("createChatLogger provider stream timeout", () => {
     }
   });
 });
+
+it.each([
+  ["ask", "success", true, "stop", false, true],
+  ["agent", "success", true, "stop", false, true],
+  ["ask", "success", false, "stop", false, false],
+  ["agent", "error", false, "error", false, false],
+  ["agent", "aborted", true, "stop", false, false],
+  ["agent", "success", true, "length", false, false],
+  ["agent", "success", true, "stop", true, false],
+] as const)(
+  "records paid experiment terminal outcome (%s %s)",
+  (
+    mode,
+    outcome,
+    hasResponseContent,
+    finishReason,
+    stepLimitReached,
+    naturalCompletion,
+  ) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
+      posthog: { capture } as any,
+      userId: "user",
+      chatId: "chat",
+      endpoint: "/api/chat",
+      mode,
+      subscription: "pro",
+      outcome,
+      hasResponseContent,
+      finishReason,
+      responseMessageId: "recovered-message",
+      selectedModel: "model-deepseek-v4.1-flash-1017-pro",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      stepLimitTelemetry: { stepLimitReached } as any,
+      experiment: {
+        key: "paid_pro_auto_deepseek_1017_v1",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls
+      .map(([e]) => e as any)
+      .filter((e) => e.event === "paid_model_response_outcome");
+    expect(events).toHaveLength(1);
+    expect(events[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      message_id: "recovered-message",
+      experiment_variant: "test",
+      mode,
+      outcome,
+      has_response_content: hasResponseContent,
+      natural_completion: naturalCompletion,
+      fallback_served: true,
+      response_model: "z-ai/glm-5.3-flash",
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:paid-model-outcome",
+      $process_person_profile: false,
+    });
+    expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+  },
+);
