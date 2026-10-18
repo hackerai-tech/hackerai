@@ -83,6 +83,33 @@ describe("sandbox acquisition serialization", () => {
     jest.useRealTimers();
   });
 
+  it("dispatches parent delegation and child tools without a scope lookup", async () => {
+    const execute = jest.fn().mockResolvedValue({ result: "completed" });
+    mockNetworkQuery.mockRejectedValue(new Error("scope storage unavailable"));
+    const args: Parameters<typeof createTools> = [
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+    ];
+    args[22] = {
+      additionalTools: () => ({ delegate_task: { execute } as never }),
+    };
+    const { tools, getToolsForModel } = createTools(...args);
+    const input = { task: "bounded offline analysis" };
+    await tools.delegate_task.execute!(input, {
+      toolCallId: "parent",
+      messages: [],
+    });
+    await getToolsForModel("test-model").delegate_task.execute!(input, {
+      toolCallId: "child",
+      messages: [],
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(mockNetworkQuery).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["agent", "e2b", true],
     ["agent", undefined, true],

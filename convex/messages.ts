@@ -1,4 +1,3 @@
-import { initializeBranchedScope } from "./engagementScopes";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
@@ -2063,12 +2062,9 @@ export const branchChat = mutation({
         title: originalChat.title,
         user_id: user.subject,
         branched_from_chat_id: message.chat_id,
-        engagement_scope_expected: true,
         project_id: originalChat.project_id,
         update_time: Date.now(),
       });
-
-      await initializeBranchedScope(ctx, newChatId, user.subject);
 
       // Copy messages to new chat, tracking old→new ID mapping for summary remapping
       const messageIdMap = new Map<string, string>();

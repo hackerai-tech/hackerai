@@ -13,16 +13,3 @@ export const scopePolicy = v.object({
   rules: v.array(scopeRule),
   restrictions: v.array(v.string()),
 });
-export const scopeSnapshot = v.object({
-  rules: v.array(scopeRule),
-  restrictions: v.array(v.string()),
-  revision: v.number(),
-  status: v.union(
-    v.literal("ready"),
-    v.literal("processing"),
-    v.literal("unavailable"),
-    v.literal("ambiguous"),
-  ),
-  clarification: v.string(),
-  clarificationRequested: v.boolean(),
-});

@@ -242,19 +242,11 @@ describe("atomic chat branching", () => {
         id,
         title: "Task title",
         project_id: "project-1",
-        engagement_scope_expected: true,
       }),
     );
-    expect(f.ctx.db.insert).toHaveBeenCalledWith(
+    expect(f.ctx.db.insert).not.toHaveBeenCalledWith(
       "engagement_scopes",
-      expect.objectContaining({
-        chat_id: id,
-        user_id: "owner",
-        active: true,
-        rules: [],
-        revision: 0,
-        status: "ambiguous",
-      }),
+      expect.anything(),
     );
     expect(f.ctx.db.insert).toHaveBeenCalledWith(
       "chat_summaries",

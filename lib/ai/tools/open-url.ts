@@ -30,12 +30,7 @@ const NETWORK_ERROR_MESSAGE_PATTERN =
 type OpenUrlLogContext = Partial<
   Pick<
     ToolContext,
-    | "chatId"
-    | "getCurrentModelName"
-    | "modelName"
-    | "onToolFailure"
-    | "userID"
-    | "engagementScope"
+    "chatId" | "getCurrentModelName" | "modelName" | "onToolFailure" | "userID"
   >
 >;
 
@@ -122,10 +117,6 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
       modelName: context?.getCurrentModelName?.() ?? context?.modelName,
     }).inputSchema,
     execute: async ({ url }: OpenUrlToolInput, { abortSignal }) => {
-      const decision = await context?.engagementScope?.checkUrl(url);
-      if (decision && decision.outcome !== "allow") {
-        return { error: decision.reason, scope_revision: decision.revision };
-      }
       const startedAt = Date.now();
 
       try {

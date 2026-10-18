@@ -695,6 +695,104 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each(["agent", "ask"] as const)(
+    "continues a small %s request beyond the former history-count limits",
+    async (mode) => {
+      mockGetProviderPromptPressure.mockImplementation(
+        jest.requireActual("@/lib/chat/summarization/provider-pressure")
+          .getProviderPromptPressure,
+      );
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+        }) as any,
+        state,
+      )) as any;
+      const messages: ModelMessage[] = Array.from(
+        { length: 150 },
+        (_, index): ModelMessage[] => [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                input: { command: `printf 'Line ${index}'` },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                output: { type: "text", value: `Line ${index}` },
+              },
+            ],
+          },
+        ],
+      ).flat();
+      const prepared = await stream.prepareStep({
+        steps: [],
+        stepNumber: 1,
+        messages,
+      });
+      const checkedHistory =
+        mockGetProviderPromptPressure.mock.calls.at(-1)?.[0];
+      expect(checkedHistory).toHaveLength(300);
+      expect(prepared.messages).toHaveLength(300);
+      expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["agent", "ask"] as const)(
+    "uses the %s byte ceiling across model changes",
+    async (mode) => {
+      let modelId = "deepseek/deepseek-v4.1-flash";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          trackedProvider: { languageModel: () => ({ modelId }) },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const step = {
+        steps: [],
+        stepNumber: 0,
+        messages: [{ role: "user", content: "Continue" }],
+      };
+      await stream.prepareStep(step);
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { mode },
+      );
+      modelId = "z-ai/glm-5.3";
+      await stream.prepareStep({ ...step, stepNumber: 1 });
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { mode },
+      );
+    },
+  );
+
   it.each([
     { mode: "ask", inputRepair: false },
     { mode: "agent", inputRepair: false },
@@ -1051,50 +1149,6 @@ describe("createAgentStream repeated compaction", () => {
       "Use my selected account.",
     );
   });
-
-  it.each(["ask", "agent"])(
-    "refreshes canonical scope independently of %s conversation history",
-    async (mode) => {
-      const prompt = jest
-        .fn()
-        .mockResolvedValue("\nSaved scope revision 1: example.test");
-      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-        usedTokens: 1000,
-        maxTokens: 128000,
-      });
-      const stream = (await createAgentStream(
-        "test-model",
-        createTestStreamContext({
-          mode,
-          engagementScope: {
-            prompt,
-            checkUrl: jest.fn(),
-            checkTool: jest.fn(),
-          },
-          usageTracker: {},
-          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-        }) as any,
-        state,
-      )) as any;
-      expect(stream.system).toContain("Saved scope revision 1");
-      prompt.mockResolvedValue(
-        "\nSaved scope revision 2: example.test; exclude admin.example.test",
-      );
-      const next = await stream.prepareStep({
-        steps: [],
-        stepNumber: 0,
-        messages: [
-          {
-            role: "user",
-            content: "Old compacted summary says all subdomains are allowed",
-          },
-        ],
-      });
-      expect(next.system).toContain("Saved scope revision 2");
-      expect(next.system).toContain("exclude admin.example.test");
-      expect(next.system).not.toContain("Saved scope revision 1");
-    },
-  );
 
   it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
     const cloudNetworkPrompt = jest

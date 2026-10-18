@@ -8,8 +8,8 @@
  * @module
  */
 
-import type * as cloudNetwork from "../cloudNetwork.js";
 import type * as engagementScopes from "../engagementScopes.js";
+import type * as cloudNetwork from "../cloudNetwork.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as browserHandoffs from "../browserHandoffs.js";
@@ -36,6 +36,7 @@ import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
+import type * as lib_legacyEngagementScope from "../lib/legacyEngagementScope.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
 import type * as lib_sharedChatSnapshot from "../lib/sharedChatSnapshot.js";
@@ -79,8 +80,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  cloudNetwork: typeof cloudNetwork;
   engagementScopes: typeof engagementScopes;
+  cloudNetwork: typeof cloudNetwork;
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
   browserHandoffs: typeof browserHandoffs;
@@ -107,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
+  "lib/legacyEngagementScope": typeof lib_legacyEngagementScope;
   "lib/logger": typeof lib_logger;
   "lib/retainedTail": typeof lib_retainedTail;
   "lib/sharedChatSnapshot": typeof lib_sharedChatSnapshot;

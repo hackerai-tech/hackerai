@@ -73,6 +73,12 @@ and the designated Preview backend/worker, and test through Computer Use. Keep
 Preview and Production environment boundaries; do not use Production as a test
 fallback. Preview UI success does not replace required tests or CI.
 
+Before detailed Preview QA, verify the designated Preview backend and Trigger
+worker, then use the existing Preview test account to complete one harmless
+Agent request and confirm its saved response survives reload. Resolve
+configuration failures before continuing. Never use masked configuration values
+as credentials or substitute Production.
+
 Run `pnpm test:changed` for local iteration: it runs Jest tests related to
 uncommitted changes with one worker, plus the Node tooling suites outside Jest.
 The commit hook retains staged lint/format checks and type checking, then uses
@@ -263,6 +269,11 @@ independently. Keep one parent thread responsible for coordinating scope,
 avoiding overlap, and integrating results.
 
 ## Visual Verification
+
+For new user-facing workflows, define one concrete acceptance example before
+implementation, including relevant history or environment changes. Inspect the
+first functional desktop and narrow-screen layouts early, before extensive
+polish. Ask the user only when a material product decision remains unclear.
 
 Use visual verification in the same PR thread by default when the PR changes UI,
 chat message rendering, file/image display, onboarding, pricing, sandbox

@@ -1,6 +1,5 @@
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
-import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
@@ -745,7 +744,6 @@ export type AgentStreamContext = {
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
-  engagementScope?: ScopeRuntime;
   /** Reloads bounded workspace network context for E2B runs only. */
   cloudNetworkPrompt?: () => Promise<string>;
   tools: ToolSet;
@@ -1432,14 +1430,9 @@ export async function createAgentStream(
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
-  const engagementScope = ctx.engagementScope;
-  let [scopeSection, networkSection] = await Promise.all([
-    engagementScope?.prompt(false) ?? "",
-    ctx.cloudNetworkPrompt?.() ?? "",
-  ]);
+  let networkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
   let networkTokens = safeCountTokens(networkSection);
   const historyEligible =
-    !scopeSection &&
     !networkSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
@@ -1611,7 +1604,6 @@ export async function createAgentStream(
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
       (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
-        scopeSection +
         networkSection,
       name,
     );
@@ -1695,19 +1687,11 @@ export async function createAgentStream(
         historyEnabled = false;
         historyReplay.reset();
       }
-      const [nextScopeSection, nextNetworkSection] = await Promise.all([
-        engagementScope?.prompt() ?? "",
-        ctx.cloudNetworkPrompt?.() ?? "",
-      ]);
-      if (
-        (nextScopeSection !== scopeSection ||
-          nextNetworkSection !== networkSection) &&
-        historyEnabled
-      ) {
+      const nextNetworkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
+      if (nextNetworkSection !== networkSection && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();
       }
-      scopeSection = nextScopeSection;
       networkSection = nextNetworkSection;
       networkTokens = safeCountTokens(networkSection);
       preparedToolCycleRecovery = undefined;
@@ -1768,8 +1752,12 @@ export async function createAgentStream(
         const effectiveModelInfo = getEffectiveModelInfo(generationStepIndex);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
-        const providerPromptPressure =
-          getProviderPromptPressure(rollingModelMessages);
+        const providerPromptPressure = getProviderPromptPressure(
+          rollingModelMessages,
+          {
+            mode: ctx.mode,
+          },
+        );
         const shouldCheckDurableSummary =
           ctx.summarizationTracker.summarizationCount === 0 &&
           steps.length === 0;
@@ -2282,7 +2270,7 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt + scopeSection + networkSection,
+            ctx.currentSystemPrompt + networkSection,
             fallbackModelInfo.modelName,
           ),
         };
