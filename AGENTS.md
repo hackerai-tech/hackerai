@@ -270,6 +270,11 @@ avoiding overlap, and integrating results.
 
 ## Visual Verification
 
+For new user-facing workflows, define one concrete acceptance example before
+implementation, including relevant history or environment changes. Inspect the
+first functional desktop and narrow-screen layouts early, before extensive
+polish. Ask the user only when a material product decision remains unclear.
+
 Use visual verification in the same PR thread by default when the PR changes UI,
 chat message rendering, file/image display, onboarding, pricing, sandbox
 selection, frontend routes/components, or prompt behavior that creates a
