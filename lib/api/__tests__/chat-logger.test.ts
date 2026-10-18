@@ -2368,6 +2368,7 @@ describe("createChatLogger OpenRouter metadata", () => {
       const errorSpy = jest
         .spyOn(console, "error")
         .mockImplementation(() => {});
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
       const phSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
       try {
         const logger = createChatLogger({
@@ -2380,15 +2381,15 @@ describe("createChatLogger OpenRouter metadata", () => {
           openrouter_request_id: "req-previous-success",
           openrouter_upstream_id: "upstream-previous-success",
         });
-        logger.recordProviderError(
-          Object.assign(new Error("Bad gateway"), { statusCode: 502 }),
-          {
-            mode: "agent",
-            model: "test-model",
-            requestedModelSlug: "test/model",
-            openRouterMetadata: metadata,
-          },
-        );
+        const error = Object.assign(new Error("Bad gateway"), {
+          statusCode: 502,
+        });
+        logger.recordProviderError(error, {
+          mode: "agent",
+          model: "test-model",
+          requestedModelSlug: "test/model",
+          openRouterMetadata: metadata,
+        });
         const fields = phSpy.mock.calls.at(-1)![1];
         expect(fields).toMatchObject({
           provider_name: metadata.provider_name,
@@ -2408,8 +2409,25 @@ describe("createChatLogger OpenRouter metadata", () => {
           "upstream-previous-success",
         ])
           expect(emitted).not.toContain(previous);
+        logger.emitUnexpectedError(error);
+        const wideEvent = JSON.parse(String(logSpy.mock.calls.at(-1)![0]));
+        expect(wideEvent.model).toMatchObject({
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        expect(JSON.stringify(wideEvent.provider_error)).not.toContain(
+          "previous-success",
+        );
+        expect(wideEvent.provider_error.provider_name).toBe(
+          metadata.provider_name,
+        );
+        for (const [key, value] of Object.entries(metadata))
+          expect(wideEvent.provider_error).toHaveProperty(key, value);
       } finally {
         errorSpy.mockRestore();
+        logSpy.mockRestore();
         phSpy.mockRestore();
       }
     },
