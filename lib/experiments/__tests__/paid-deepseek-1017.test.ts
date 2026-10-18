@@ -212,3 +212,52 @@ describe("paid 1017 routing", () => {
     ).toEqual(calculateRawTokenCost(1000000, "input", base.selectedModel));
   });
 });
+
+it.each(["model-glm-5.3-flash", "model-grok-4.5"])(
+  "records control exposure after startup compaction changes %s",
+  async (selectedModel) => {
+    const posthog = client("control");
+    const assignment = await evaluateFlashRouting({
+      ...base,
+      selectedModel,
+      hasImages: true,
+      posthog: posthog as never,
+    });
+    const continuationModel = myProvider.languageModel(
+      resolveAgentModelAfterSummarization(selectedModel, "agent", false),
+    ).modelId;
+    expect(continuationModel).not.toBe(assignment!.configuredModel);
+    const record = createFlashRoutingExposureRecorder({
+      ...base,
+      assignment,
+      posthog: posthog as never,
+      requestId: "compacted",
+      controlContinuationModel: continuationModel,
+    });
+    record("unrelated-model");
+    expect(posthog.capture).not.toHaveBeenCalled();
+    record(continuationModel);
+    record(assignment!.configuredModel);
+    record(continuationModel);
+    expect(posthog.capture).toHaveBeenCalledTimes(1);
+    expect(posthog.capture.mock.calls[0][0].properties).toMatchObject({
+      experiment_variant: "control",
+      configured_model: continuationModel,
+      assigned_configured_model: assignment!.configuredModel,
+      experiment_request_id: "compacted",
+    });
+    const treatment = await evaluateFlashRouting({
+      ...base,
+      posthog: client("test") as never,
+    });
+    const capture = jest.fn();
+    createFlashRoutingExposureRecorder({
+      ...base,
+      assignment: treatment,
+      posthog: { capture } as never,
+      requestId: "test",
+      controlContinuationModel: continuationModel,
+    })(continuationModel);
+    expect(capture).not.toHaveBeenCalled();
+  },
+);

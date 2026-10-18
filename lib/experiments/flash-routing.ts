@@ -139,6 +139,7 @@ export function createFlashRoutingExposureRecorder({
   mode,
   subscription,
   requestId,
+  controlContinuationModel,
 }: {
   posthog: Pick<PostHog, "capture"> | null;
   assignment: FlashRoutingAssignment | undefined;
@@ -146,14 +147,21 @@ export function createFlashRoutingExposureRecorder({
   mode: ChatMode;
   subscription: SubscriptionTier;
   requestId: string;
+  /** The normal post-compaction route, resolved by the shared runner policy. */
+  controlContinuationModel?: string;
 }): (configuredModel: string) => void {
   let recorded = false;
   return (configuredModel) => {
+    const isControlContinuation =
+      assignment?.key === PAID_DEEPSEEK_1017_KEY &&
+      assignment.variant === "control" &&
+      mode === "agent" &&
+      configuredModel === controlContinuationModel;
     if (
       recorded ||
       !posthog ||
       !assignment ||
-      configuredModel !== assignment.configuredModel
+      (configuredModel !== assignment.configuredModel && !isControlContinuation)
     )
       return;
     recorded = true;
@@ -170,6 +178,9 @@ export function createFlashRoutingExposureRecorder({
           mode,
           selected_model: assignment.modelKey,
           configured_model: configuredModel,
+          ...(isControlContinuation && {
+            assigned_configured_model: assignment.configuredModel,
+          }),
           request_id: requestId,
           message_id: requestId,
           baseline_model: assignment.baselineModel,

@@ -234,6 +234,7 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
+  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
@@ -834,6 +835,15 @@ export const createChatHandler = () => {
       const recordFlashRoutingExposure = createFlashRoutingExposureRecorder({
         posthog,
         assignment: activeFlashRoutingAssignment,
+        controlContinuationModel:
+          activeFlashRoutingAssignment &&
+          createTrackedProvider().languageModel(
+            resolveAgentModelAfterSummarization(
+              activeFlashRoutingAssignment.modelKey,
+              mode,
+              false,
+            ),
+          ).modelId,
         userId,
         mode,
         subscription,

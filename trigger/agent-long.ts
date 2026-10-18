@@ -235,6 +235,7 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
+  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
@@ -2418,6 +2419,15 @@ export const agentLongTask = task({
               createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
+                controlContinuationModel:
+                  activeFlashRoutingAssignment &&
+                  createTrackedProvider().languageModel(
+                    resolveAgentModelAfterSummarization(
+                      activeFlashRoutingAssignment.modelKey,
+                      mode,
+                      false,
+                    ),
+                  ).modelId,
                 userId,
                 mode,
                 subscription,
