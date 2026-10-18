@@ -1,4 +1,4 @@
-import { appendBrowserHandoffNotes } from "@/lib/ai/browser-handoff/context";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
@@ -1638,6 +1638,7 @@ export async function createAgentStream(
       refund: () => ctx.usageRefundTracker.refund(),
     });
 
+  const projectHandoffNotes = createBrowserHandoffNoteProjector();
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
     // copy of every provider request; response messages still drive persistence.
@@ -1687,7 +1688,7 @@ export async function createAgentStream(
       // fails, retry/fail this step rather than act with silently missing context.
       const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
       const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] =>
-        appendBrowserHandoffNotes(messages, handoffNotes);
+        projectHandoffNotes(messages, handoffNotes);
       if (handoffNotes.length && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();

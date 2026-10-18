@@ -851,3 +851,37 @@ it("can submit the note when browser storage is blocked", async () => {
     remove.mockRestore();
   }
 });
+
+it("ignores a heartbeat failure while ownership is being returned", async () => {
+  await mount();
+  await takeControl();
+  let rejectHeartbeat!: (error: Error) => void;
+  let finishResume!: (response: Response) => void;
+  handleAction = async (body) => {
+    if (body.action === "heartbeat")
+      return new Promise((_resolve, reject) => {
+        rejectHeartbeat = reject;
+      });
+    if (body.action === "resume")
+      return new Promise((resolve) => {
+        finishResume = resolve;
+      });
+    return response({ frame });
+  };
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    rejectHeartbeat(new Error("Grant revoked by resume"));
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+  await act(async () => {
+    finishResume(response({ frame }));
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});

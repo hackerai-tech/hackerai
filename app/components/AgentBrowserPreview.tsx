@@ -69,6 +69,7 @@ export function AgentBrowserPreview({
   const [note, setNote] = useState("");
   const [hasTakenControl, setHasTakenControl] = useState(false);
   const exitRequestId = useRef<string | null>(null);
+  const [exitRetryAvailable, setExitRetryAvailable] = useState(false);
   const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [takingControl, setTakingControl] = useState(false);
@@ -137,6 +138,7 @@ export function AgentBrowserPreview({
       setNote("");
     }
     exitRequestId.current = null;
+    setExitRetryAvailable(false);
     setHasTakenControl(false);
     setBusy(false);
     setTakingControl(false);
@@ -250,6 +252,7 @@ export function AgentBrowserPreview({
       void post({ action: "heartbeat", grant }).catch(() => {
         if (
           stopped ||
+          resumingRef.current ||
           !mountedRef.current ||
           sessionIdRef.current !== sessionId ||
           grantRef.current !== grant
@@ -308,7 +311,7 @@ export function AgentBrowserPreview({
   const canResume =
     (!!session && !frameStale && (human || effectiveState === "recovery")) ||
     (!session && hasTakenControl) ||
-    (effectiveState === "agent" && !!exitRequestId.current);
+    (effectiveState === "agent" && exitRetryAvailable);
 
   useLayoutEffect(() => {
     if (grant && fullScreen) inputRef.current?.focus({ preventScroll: true });
@@ -341,7 +344,10 @@ export function AgentBrowserPreview({
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
       setExitOpen(false);
-      if (!hasTakenControl) exitRequestId.current = null;
+      if (!hasTakenControl) {
+        exitRequestId.current = null;
+        setExitRetryAvailable(false);
+      }
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -373,6 +379,7 @@ export function AgentBrowserPreview({
         grantRef.current !== activeGrant
       )
         return;
+      setExitRetryAvailable(true);
       const data = await post({
         action: "resume",
         grant: activeGrant,
@@ -402,6 +409,8 @@ export function AgentBrowserPreview({
         // Storage may be unavailable; the submitted context is already saved.
       }
       exitRequestId.current = null;
+      setExitRetryAvailable(false);
+      setError(null);
       setHasTakenControl(false);
       if (data.frame) {
         setFrame(data.frame);

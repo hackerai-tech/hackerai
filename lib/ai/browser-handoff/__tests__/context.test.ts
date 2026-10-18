@@ -1,31 +1,45 @@
 import type { ModelMessage } from "ai";
-import { appendBrowserHandoffNotes } from "../context";
+import { createBrowserHandoffNoteProjector } from "../context";
 
-it("deduplicates retained and repeated private notes without modifying history", () => {
-  const messages: ModelMessage[] = [{ role: "user", content: "Signed in!" }];
-  const result = appendBrowserHandoffNotes(messages, [
-    { text: "Signed in!" },
-    { text: "Changed NAME.AZ!" },
-    { text: "Changed NAME.AZ!" },
+it("keeps takeover updates before subsequent responses when SDK input omits them", () => {
+  const project = createBrowserHandoffNoteProjector();
+  const original: ModelMessage[] = [{ role: "user", content: "Inspect" }];
+  const notes = [{ id: "1", text: "Changed NAME.AZ!?" }];
+  const first = project(original, notes);
+  const completed: ModelMessage = {
+    role: "assistant",
+    content: "Read NAME.AZ!? and closed the browser.",
+  };
+  expect(project([...original, completed], notes)).toEqual([
+    ...first,
+    completed,
   ]);
-  expect(result).toEqual([
-    ...messages,
-    { role: "user", content: "Changed NAME.AZ!" },
-  ]);
-  expect(messages).toHaveLength(1);
-  expect(
-    appendBrowserHandoffNotes(result, [{ text: "Changed NAME.AZ!" }]),
-  ).toEqual(result);
+  expect(project([...first, completed], notes)).toEqual([...first, completed]);
+  expect(original).toHaveLength(1);
 });
 
-it("restores context after compaction removes it and does not mistake assistant text for a note", () => {
-  const messages: ModelMessage[] = [
-    { role: "assistant", content: "Signed in!" },
+it("restores compacted notes in order before retained actions without replaying a new turn", () => {
+  const project = createBrowserHandoffNoteProjector();
+  const notes = [
+    { id: "1", text: "Signed in." },
+    { id: "2", text: "Selected the lab." },
   ];
-  expect(appendBrowserHandoffNotes(messages, [{ text: "Signed in!" }])).toEqual(
-    [...messages, { role: "user", content: "Signed in!" }],
-  );
-  expect(appendBrowserHandoffNotes([], [{ text: "Signed in!" }])).toEqual([
-    { role: "user", content: "Signed in!" },
+  project([{ role: "user", content: "Inspect" }], notes);
+  const compacted: ModelMessage[] = [
+    { role: "system", content: "Summary" },
+    { role: "assistant", content: "Completed the lab." },
+  ];
+  const restored = project(compacted, notes);
+  expect(restored).toEqual([
+    compacted[0],
+    ...notes.map(({ text }) => ({ role: "user", content: text })),
+    compacted[1],
   ]);
+  expect(project(compacted, notes)).toEqual(restored);
+  expect(
+    project(restored, [
+      ...notes,
+      { id: "3", text: "Now inspect another page." },
+    ]).at(-1),
+  ).toEqual({ role: "user", content: "Now inspect another page." });
 });

@@ -1,4 +1,4 @@
-import { appendBrowserHandoffNotes } from "@/lib/ai/browser-handoff/context";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
@@ -1333,6 +1333,7 @@ export const subagentTask = task({
               let attemptError: unknown;
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
+              const projectHandoffNotes = createBrowserHandoffNoteProjector();
               const generation = streamText({
                 // Keep tool-loop step results without retaining every serialized prompt.
                 experimental_include: { requestBody: false },
@@ -1485,7 +1486,7 @@ export const subagentTask = task({
                   const serializedMessages = JSON.stringify(messages);
                   const handoffNotes = await getBrowserHandoffNotes();
                   const messagesWithUpdates = [
-                    ...appendBrowserHandoffNotes(
+                    ...projectHandoffNotes(
                       messages as ModelMessage[],
                       handoffNotes,
                     ),
