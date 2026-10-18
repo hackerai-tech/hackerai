@@ -1975,23 +1975,24 @@ export const agentLongTask = task({
         country: payload.regionalSubscriptionCountry,
         surface: "agent_worker",
       });
+      let goalContinuationMessage: UIMessage | undefined;
       if (activeGoal && isAutomaticContinuation) {
-        // The previous slice ended with an assistant turn. Persist the same
-        // kind of hidden user nudge as ordinary auto-continue so providers
-        // begin a fresh turn instead of completing the old assistant prefix.
+        // Persist a fresh user turn and retain it for prepared Desktop input,
+        // which intentionally keeps attachments from the dispatch payload.
+        goalContinuationMessage = {
+          id: `goal-continue:${ctx.run.id}`,
+          role: "user",
+          parts: [
+            {
+              type: "text",
+              text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalResumeMessage(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+            },
+          ],
+        };
         await saveMessage({
           chatId,
           userId,
-          message: {
-            id: `goal-continue:${ctx.run.id}`,
-            role: "user",
-            parts: [
-              {
-                type: "text",
-                text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalResumeMessage(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
-              },
-            ],
-          },
+          message: goalContinuationMessage,
           mode: "agent",
           isHidden: true,
         });
@@ -2017,12 +2018,21 @@ export const agentLongTask = task({
         sandboxPreference,
       });
       const truncatedMessages = fetched.truncatedMessages;
-      const messagesForProcessing =
+      let messagesForProcessing =
         localDesktopAttachmentsPrepared && messages.length > 0
           ? messages
           : truncatedMessages.length
             ? truncatedMessages
             : messages;
+      if (
+        goalContinuationMessage &&
+        !messagesForProcessing.some((m) => m.id === goalContinuationMessage.id)
+      ) {
+        messagesForProcessing = [
+          ...messagesForProcessing,
+          goalContinuationMessage,
+        ];
+      }
       const messagesForAccounting = messagesForProcessing;
       const attachmentCounts = countFileAttachments(messagesForProcessing);
       const baseExtraUsageConfigPromise = buildExtraUsageConfig({

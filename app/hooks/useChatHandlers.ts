@@ -735,8 +735,12 @@ export const useChatHandlers = ({
       }
     }
 
+    const outgoingText =
+      goalCommand?.action === "start"
+        ? goalCommand.objective
+        : (resumeMessage ?? (input.trim() || undefined));
     const tokenLimitStatus = await getInputTokenLimitStatus(
-      input,
+      outgoingText ?? "",
       uploadedFiles,
       maxTokens,
     );
@@ -753,10 +757,6 @@ export const useChatHandlers = ({
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
-    const outgoingText =
-      goalCommand?.action === "start"
-        ? goalCommand.objective
-        : (resumeMessage ?? (input.trim() || undefined));
     const outgoingMetadata = {
       createdAt: Date.now(),
       ...(goalCommand?.action === "start" ? { goal: { sent: true } } : {}),
