@@ -144,3 +144,23 @@ it("Stop also interrupts an unavailable ownership service", async () => {
   controller.abort(new Error("Stopped"));
   await rejected;
 });
+
+it("continues on the current replacement sandbox without admitting an obsolete owner", async () => {
+  const { sessions } = await owner();
+  await sessions.prepare({
+    sandboxId: "replacement",
+    commands: { run: async () => ({ exitCode: 0, stdout: "/usr/bin" }) },
+  } as unknown as AnySandbox);
+  const registrations = mockMutation.mock.calls as unknown as Array<
+    [unknown, { sessionId: string }]
+  >;
+  const latestId = registrations.at(-1)![1].sessionId;
+  mockQuery.mockImplementation(async (_query, args) =>
+    args.sessionId === latestId ? { state: "agent", runActive: true } : null,
+  );
+  await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+  mockQuery.mockResolvedValue(null);
+  await expect(sessions.waitForAgentControl()).rejects.toThrow(
+    "ownership has ended",
+  );
+});

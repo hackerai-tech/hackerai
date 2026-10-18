@@ -190,10 +190,13 @@ export class BrowserSessions {
         signal,
       );
       signal?.throwIfAborted();
-      // Missing/replaced ownership is not permission to continue issuing tools.
-      if (states.some((state) => !state || !state.runActive))
+      // Replaced sandboxes remain in our map for cleanup. Only the latest
+      // registered owner can authorize work; stale rows must not block it.
+      const currentStates = states.filter((state) => state?.runActive);
+      if (states.length > 0 && currentStates.length === 0)
         throw new Error("Browser session ownership has ended.");
-      if (states.every((state) => state?.state === "agent")) return waited;
+      if (currentStates.every((state) => state?.state === "agent"))
+        return waited;
       // Expired grants become recovery, which still requires an explicit resume.
       waited = true;
       await abortableDelay(1000, signal);
