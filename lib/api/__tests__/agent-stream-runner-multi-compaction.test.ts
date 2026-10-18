@@ -690,6 +690,64 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each(["startup", "startup-error", "rolling", "rolling-error"])(
+    "stops oversized %s requests when compaction fails without dropping saved history",
+    async (phase) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const largeText = " ordinary".repeat(190_000);
+      const original = [uiMessage("large", largeText)];
+      const state = initAgentStreamState(original, {
+        usedTokens: 210_000,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 210_000;
+      const rolling = phase.startsWith("rolling");
+      if (phase === "startup-error") {
+        mockRunSummarizationStep.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockRunSummarizationStep.mockResolvedValue({
+          summarizationAttempted: true,
+          needsSummarization: false,
+        });
+      }
+      if (phase === "rolling-error") {
+        mockCompactModelMessagesInRun.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockCompactModelMessagesInRun.mockResolvedValue(null);
+      }
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "abliterated-model" }),
+          },
+          systemPromptTokens: 20_000,
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: rolling,
+            summarizationCount: rolling ? 1 : 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      await expect(
+        stream.prepareStep({
+          steps: rolling ? [{}] : [],
+          stepNumber: rolling ? 1 : 0,
+          messages: [{ role: "user", content: largeText }],
+        }),
+      ).rejects.toThrow(
+        "Conversation could not be compacted to fit the selected model",
+      );
+      expect(state.finalMessages).toEqual(original);
+    },
+  );
+
   it.each([
     ["x-ai/grok-4.6", 234_000],
     ["abliterated-model", 200_000],

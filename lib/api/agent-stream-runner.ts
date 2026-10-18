@@ -142,9 +142,13 @@ import {
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
-import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
+import {
+  getRecentCompleteModelTail,
+  estimateSummaryInputTokens,
+} from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractSubagentDeliveryClaims,
@@ -208,6 +212,10 @@ import {
   guardLanguageModelProviderResponse,
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
+
+class AgentContextBudgetError extends Error {
+  name = "AgentContextBudgetError";
+}
 
 const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
@@ -1337,6 +1345,7 @@ export async function createAgentStream(
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
+    enforceContextBudget = true,
   ): Promise<ModelMessage[]> => {
     const toolCallRepair = isAbliterationModel(effectiveModelName)
       ? splitProviderToolCallBatches(messages)
@@ -1382,6 +1391,25 @@ export async function createAgentStream(
       messagesWithAuthorization,
       openRouterFileAnnotations,
     );
+    // A failed compaction must not send expanded history to a smaller model.
+    // Preserve the transcript for retry instead of silently deleting context.
+    if (
+      enforceContextBudget &&
+      ctx.mode === "agent" &&
+      ctx.agentModelContextEnabled &&
+      estimateSummaryInputTokens(prepared) +
+        Math.max(
+          ctx.systemPromptTokens + networkTokens,
+          safeCountTokens(
+            JSON.stringify(requestSystemPrompt(effectiveModelName)),
+          ),
+        ) >
+        activeContextBudget
+    ) {
+      throw new AgentContextBudgetError(
+        "Conversation could not be compacted to fit the selected model. Please retry.",
+      );
+    }
     if (historyEnabled) trustedHistoryPrefix = structuredClone(prepared);
     return prepared;
   };
@@ -1629,6 +1657,7 @@ export async function createAgentStream(
   const initialModelMessages = await prepareProviderMessages(
     initialSerializedMessages,
     initialModelInfo.modelName,
+    false, // prepareStep must get a chance to compact before enforcing the budget.
   );
   recordProviderRequestDiagnostics({
     modelName: initialModelInfo.modelName,
@@ -2251,7 +2280,11 @@ export async function createAgentStream(
         historyTelemetry.fallback = "prepare_error";
         historyEnabled = false;
         historyReplay.reset();
-        if (error instanceof AbliterationVisionError || abortSignal.aborted)
+        if (
+          error instanceof AgentContextBudgetError ||
+          error instanceof AbliterationVisionError ||
+          abortSignal.aborted
+        )
           throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
           // Expected on user stop
