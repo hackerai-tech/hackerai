@@ -13,6 +13,7 @@ import {
   markMessage,
   control,
   claimRun,
+  associateStartedRun,
   claimDispatch,
   checkpoint,
   finish,
@@ -114,6 +115,50 @@ const terminal = {
 
 describe("persistent goal lifecycle", () => {
   beforeEach(() => jest.clearAllMocks());
+  it("makes a queued worker stoppable before claim without spending a run", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    const run = { ...owner, generation: 1, runId: "r1" };
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(true);
+    expect(db.chat().active_trigger_run_id).toBe("r1");
+    expect(db.goal()).toMatchObject({ state: "queued", runs: 0 });
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    expect(db.goal()).toMatchObject({ state: "paused", runs: 0 });
+    expect(await invoke(claimRun, db.ctx, run)).toBeNull();
+  });
+  it("does not undo worker claims, pauses, or completion during start association", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    const run = { ...owner, generation: 1, runId: "r1" };
+    await invoke(claimRun, db.ctx, run);
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    const canceledAt = db.chat().canceled_at;
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(true);
+    expect(db.chat().canceled_at).toBe(canceledAt);
+    expect(db.goal()).toMatchObject({ state: "paused", runs: 1 });
+    db.goal().activeRunId = undefined;
+    db.chat().active_trigger_run_id = undefined;
+    db.goal().state = "achieved";
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(true);
+    expect(db.chat().active_trigger_run_id).toBeUndefined();
+  });
+  it("fences delayed association after goal edits, deletion, and competing work", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    const run = { ...owner, generation: 1, runId: "r1" };
+    db.goal().generation = 2;
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(false);
+    db.goal().generation = 1;
+    db.goal().deletedAt = 1;
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(false);
+    db.goal().deletedAt = undefined;
+    db.goal().state = "paused";
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(false);
+    db.goal().state = "queued";
+    db.chat().active_trigger_run_id = "new-run";
+    expect(await invoke(associateStartedRun, db.ctx, run)).toBe(false);
+    expect(db.chat().active_trigger_run_id).toBe("new-run");
+  });
   it("requires authenticated ownership and the service key", async () => {
     const db = database();
     db.chat().user_id = "other";

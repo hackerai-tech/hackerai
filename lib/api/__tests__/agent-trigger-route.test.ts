@@ -504,6 +504,55 @@ describe("Agent trigger route lifecycle", () => {
     );
   });
 
+  it("waits for goal association before returning its startup handle", async () => {
+    let associate!: (value: boolean) => void;
+    mockGoalMutation.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        associate = resolve;
+      }),
+    );
+    const settled = jest.fn();
+    const started = finalizeStartedAgentRun({
+      chatId: "chat-1",
+      runId: "run-1",
+      approvalSessionId: undefined,
+      goal: { userId: "user-1", generation: 2 },
+    }).then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
+      serviceKey: "synthetic",
+      chatId: "chat-1",
+      runId: "run-1",
+      userId: "user-1",
+      generation: 2,
+      approvalSessionId: undefined,
+    });
+    associate(true);
+    await started;
+    expect(settled).toHaveBeenCalledWith({ publicAccessToken: "run-token" });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("cancels a dispatched worker when its goal was replaced before association", async () => {
+    mockGoalMutation.mockResolvedValueOnce(false);
+    await expect(
+      finalizeStartedAgentRun({
+        chatId: "chat-1",
+        runId: "run-old",
+        approvalSessionId: undefined,
+        goal: { userId: "user-1", generation: 1 },
+      }),
+    ).rejects.toMatchObject({ metadata: { agent_run_association: "stale" } });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-old");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerRunId: null,
+        expectedRunId: "run-old",
+      }),
+    );
+  });
+
   it("changes Session external identity with protocol or worker version", () => {
     const input = {
       chatId: "chat-1",

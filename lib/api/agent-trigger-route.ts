@@ -420,12 +420,12 @@ export const finalizeStartedAgentRun = async ({
   chatId,
   runId,
   approvalSessionId,
-  workerAssociatesGoal = false,
+  goal,
 }: {
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
-  workerAssociatesGoal?: boolean;
+  goal?: { userId: string; generation: number };
 }): Promise<StartedAgentRunAccess> => {
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken, association] =
@@ -443,8 +443,16 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        workerAssociatesGoal
-          ? Promise.resolve("updated")
+        goal
+          ? goalConvex()
+              .mutation(goalApi.agentGoals.associateStartedRun, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                runId,
+                approvalSessionId,
+                ...goal,
+              })
+              .then((associated) => (associated ? "updated" : "stale"))
           : setActiveTriggerRun({
               chatId,
               triggerRunId: runId,
@@ -1097,7 +1105,7 @@ export const createAgentTriggerPost =
           chatId,
           runId,
           approvalSessionId,
-          workerAssociatesGoal: !!reservedGoal,
+          goal: reservedGoal,
         });
 
       console.info(`[${endpoint}] started trigger run`, {

@@ -332,6 +332,49 @@ export const claimDispatch = mutation({
     return true;
   },
 });
+// Associate before returning the start response so Stop can target a worker
+// that has not claimed its goal yet. Never reattach a finished or replaced run.
+export const associateStartedRun = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    generation: v.number(),
+    runId: v.string(),
+    approvalSessionId: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await owned(ctx, args.chatId, args.userId);
+    const goal = await byChat(ctx, args.chatId);
+    if (!goal || goal.deletedAt || goal.generation !== args.generation)
+      return false;
+    if (goal.activeRunId === args.runId)
+      return chat.active_trigger_run_id === args.runId;
+    if (goal.activeRunId || chat.active_trigger_run_id || chat.active_stream_id)
+      return false;
+    // A fast worker may have already completed before token creation finishes.
+    if (
+      [
+        "achieved",
+        "blocked",
+        "budget_exhausted",
+        "usage_exhausted",
+        "needs_input",
+        "failed",
+      ].includes(goal.state)
+    )
+      return true;
+    if (!["queued", "waiting"].includes(goal.state)) return false;
+    await ctx.db.patch(chat._id, {
+      active_trigger_run_id: args.runId,
+      active_agent_approval_session_id: args.approvalSessionId,
+      active_agent_approval_pending: undefined,
+    });
+    return true;
+  },
+});
 export const claimRun = mutation({
   args: {
     serviceKey: v.string(),
