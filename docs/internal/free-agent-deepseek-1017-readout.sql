@@ -18,8 +18,10 @@ WITH accounts AS (
     groupArrayIf(timestamp, event = 'subscription_started'
       AND properties.conversion_type = 'free_to_paid'
       AND toFloat(properties.invoice_amount_paid_dollars) > 0) AS payments,
-    groupArrayIf(tuple(timestamp, toFloat(properties.cost_dollars),
-      toFloat(properties.model_cost_dollars)),
+    groupArrayIf(tuple(timestamp, coalesce(toFloat(properties.cost_dollars), 0),
+      coalesce(toFloat(properties.model_cost_dollars), 0),
+      properties.cost_dollars IS NOT NULL,
+      properties.model_cost_dollars IS NOT NULL),
       event = 'hackerai-usage_cost' AND properties.mode = 'agent'
       AND properties.subscription_tier = 'free') AS costs,
     argMinIf(properties.free_agent_budget_experiment_variant, timestamp,
@@ -42,6 +44,10 @@ WITH accounts AS (
       payments) AS paid7d,
     arrayCount(c -> c.1 >= exposed_at AND c.1 < exposed_at + INTERVAL 7 DAY,
       costs) AS cost_records7d,
+    arrayExists(c -> c.1 >= exposed_at AND c.1 < exposed_at + INTERVAL 7 DAY
+      AND NOT c.4, costs) AS unknown_cost7d,
+    arrayExists(c -> c.1 >= exposed_at AND c.1 < exposed_at + INTERVAL 7 DAY
+      AND NOT c.5, costs) AS unknown_model_cost7d,
     arraySum(arrayMap(c -> if(c.1 >= exposed_at
       AND c.1 < exposed_at + INTERVAL 7 DAY, c.2, 0), costs)) AS cost7d,
     arraySum(arrayMap(c -> if(c.1 >= exposed_at
@@ -56,6 +62,8 @@ SELECT variant, budget_variant,
   countIf(mature AND variants_seen = 1 AND paid7d) AS converted_users,
   100.0 * converted_users / nullIf(mature_users, 0) AS conversion_pct7d,
   countIf(mature AND variants_seen = 1 AND cost_records7d = 0) AS missing_cost_users,
+  countIf(mature AND variants_seen = 1 AND unknown_cost7d) AS unknown_cost_users,
+  countIf(mature AND variants_seen = 1 AND unknown_model_cost7d) AS unknown_model_cost_users,
   sumIf(cost7d, mature AND variants_seen = 1) AS known_free_agent_cost7d,
   known_free_agent_cost7d / nullIf(mature_users, 0) AS cost_per_exposed_user7d,
   sumIf(model_cost7d, mature AND variants_seen = 1) /
