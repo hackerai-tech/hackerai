@@ -1926,6 +1926,7 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
       );
+      runReporting.setAgentModelContextVariant(agentModelContextVariant);
       const agentModelContextEnabled = agentModelContextVariant === "test";
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
