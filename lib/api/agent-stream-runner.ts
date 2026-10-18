@@ -1026,6 +1026,8 @@ export async function createAgentStream(
     ctx.agentModelContextEnabled &&
     ctx.selectedModelOverride === "hackerai-max";
   let activeModelInputTokens = 0;
+  let lastPreparedInputEstimate = 0;
+  let lastCompletedResponseMessages: ModelMessage[] = [];
   let summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
@@ -1415,18 +1417,22 @@ export async function createAgentStream(
     );
     // A failed compaction must not send expanded history to a smaller model.
     // Preserve the transcript for retry instead of silently deleting context.
-    if (
-      enforceContextBudget &&
-      ctx.mode === "agent" &&
-      ctx.agentModelContextEnabled &&
-      estimateSummaryInputTokens(prepared) +
+    if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
+      lastPreparedInputEstimate =
+        estimateSummaryInputTokens(prepared) +
         Math.max(
           ctx.systemPromptTokens + networkTokens,
           safeCountTokens(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
-        ) >
-        activeContextBudget
+        );
+      lastCompletedResponseMessages = [];
+    }
+    if (
+      enforceContextBudget &&
+      ctx.mode === "agent" &&
+      ctx.agentModelContextEnabled &&
+      lastPreparedInputEstimate > activeContextBudget
     ) {
       throw new AgentContextBudgetError(
         "Conversation could not be compacted to fit the selected model. Please retry.",
@@ -1851,7 +1857,12 @@ export async function createAgentStream(
         const shouldCompactInRun =
           !shouldCheckDurableSummary &&
           (providerPromptPressure !== null ||
-            state.lastStepInputTokens > summarizationThreshold);
+            state.lastStepInputTokens > summarizationThreshold ||
+            (ctx.agentModelContextEnabled &&
+              estimateSummaryInputTokens(rollingModelMessages) +
+                ctx.systemPromptTokens +
+                networkTokens >
+                summarizationThreshold));
 
         if (
           canSummarizeAgain() &&
@@ -2411,7 +2422,14 @@ export async function createAgentStream(
         get threshold() {
           return summarizationThreshold;
         },
-        getLastStepInputTokens: () => state.lastStepInputTokens,
+        getLastStepInputTokens: () =>
+          ctx.agentModelContextEnabled && !canSummarizeAgain()
+            ? Math.max(
+                state.lastStepInputTokens,
+                lastPreparedInputEstimate +
+                  estimateSummaryInputTokens(lastCompletedResponseMessages),
+              )
+            : state.lastStepInputTokens,
         getHasSummarized: () =>
           ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
         getCanSummarizeAgain: canSummarizeAgain,
@@ -2494,6 +2512,7 @@ export async function createAgentStream(
       text,
       finishReason,
     }) => {
+      lastCompletedResponseMessages = response?.messages ?? [];
       // An assignment, failed attempt, reasoning-only output or vision baseline
       // cannot activate this context. State survives retries within this run only.
       if (

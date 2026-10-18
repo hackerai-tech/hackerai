@@ -1899,6 +1899,25 @@ export const agentLongTask = task({
         country: payload.regionalSubscriptionCountry,
         surface: "agent_worker",
       });
+      const userCustomizationPromise = getUserCustomization({ userId });
+      const maxExtraUsageConfig =
+        selectedModelOverride === "hackerai-max"
+          ? await buildExtraUsageConfig({
+              userId,
+              subscription,
+              userCustomization: await userCustomizationPromise,
+              organizationId,
+            })
+          : undefined;
+      // Resolve Max entitlement before granting its larger history allowance.
+      if (selectedModelOverride === "hackerai-max") {
+        selectedModelOverride =
+          normalizeMaxModelForSubscription(
+            selectedModelOverride,
+            subscription,
+            { extraUsageAvailable: canUseExtraUsage(maxExtraUsageConfig!) },
+          ) ?? undefined;
+      }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const agentModelContextEnabled = await isAgentModelContextEnabled(
@@ -1908,7 +1927,7 @@ export const agentLongTask = task({
         selectedModelOverride,
       );
       const [userCustomization, fetched] = await Promise.all([
-        getUserCustomization({ userId }),
+        userCustomizationPromise,
         getMessagesByChatId({
           chatId,
           userId,
@@ -1935,15 +1954,16 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
       const attachmentCounts = countFileAttachments(messagesForProcessing);
-      const baseExtraUsageConfigPromise = buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
+
       const [projectContext, baseExtraUsageConfig] = await Promise.all([
         projectContextPromise,
-        baseExtraUsageConfigPromise,
+        maxExtraUsageConfig ??
+          buildExtraUsageConfig({
+            userId,
+            subscription,
+            userCustomization,
+            organizationId,
+          }),
       ]);
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
