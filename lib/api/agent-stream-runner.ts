@@ -2842,7 +2842,7 @@ export async function createAgentStream(
           userId: ctx.userId,
           subscription: ctx.subscription,
           providerRequest: latestProviderRequestDiagnostics,
-          openRouterMetadata: state.openRouterMetadata,
+          openRouterMetadata: state.providerErrorMetadata,
         });
       }
     },

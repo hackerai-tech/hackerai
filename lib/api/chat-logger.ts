@@ -853,22 +853,18 @@ export function createChatLogger(config: ChatLoggerConfig) {
         providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
-        ...(attributedProviderName && {
-          provider_name: attributedProviderName,
-          provider_name_source: "openrouter_error_metadata",
-        }),
+        // Clear response-level attribution inherited from diagnostic context.
+        // A previous successful step does not identify this failed call.
+        provider_name: attributedProviderName,
+        provider_name_source: attributedProviderName
+          ? "openrouter_error_metadata"
+          : undefined,
         ...(configuredModel && { configured_model: configuredModel }),
         ...(requestedModelSlug && { requested_model_slug: requestedModelSlug }),
         ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
-        ...(openrouterGenerationId && {
-          openrouter_generation_id: openrouterGenerationId,
-        }),
-        ...(openRouterMetadata.openrouter_request_id && {
-          openrouter_request_id: openRouterMetadata.openrouter_request_id,
-        }),
-        ...(openRouterMetadata.openrouter_upstream_id && {
-          openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
-        }),
+        openrouter_generation_id: openrouterGenerationId,
+        openrouter_request_id: openRouterMetadata.openrouter_request_id,
+        openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
       };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
