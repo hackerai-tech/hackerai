@@ -5,6 +5,7 @@ const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
 jest.mock("@/lib/ai/abliteration", () => ({
   ABLITERATION_MODEL_KEY: "model-abliterated",
+  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
   isAbliterationConfigured: mockConfigured,
 }));
 jest.mock("@/lib/posthog/server", () => ({
@@ -102,6 +103,35 @@ describe("compaction model assignment and telemetry", () => {
       model: "model-glm-5.3-flash",
     });
     expect(mockEvent).not.toHaveBeenCalled();
+  });
+  it.each(["agent", "ask"] as const)(
+    "expands only Agent Max compaction, mode=%s",
+    async (mode) => {
+      const assignment = await new CompactionModelPolicy({
+        ...context,
+        mode,
+        expandedMaxContext: true,
+      }).resolve();
+      expect(assignment.model).toBe(
+        mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
+      );
+      expect(assignment.expandedMaxContext).toBe(
+        mode === "agent" ? true : undefined,
+      );
+    },
+  );
+  it("preserves moderation-based selection with the larger Max fallback", async () => {
+    mockFlag.mockResolvedValue(true);
+    expect(
+      await new CompactionModelPolicy({
+        ...context,
+        expandedMaxContext: true,
+      }).resolve(),
+    ).toMatchObject({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated-large-v2",
+      expandedMaxContext: true,
+    });
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses the moderation decision for %s in Ask and Agent",

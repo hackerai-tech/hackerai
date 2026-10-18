@@ -1905,6 +1905,7 @@ export const agentLongTask = task({
         userId,
         subscription,
         mode,
+        selectedModelOverride,
       );
       const [userCustomization, fetched] = await Promise.all([
         getUserCustomization({ userId }),

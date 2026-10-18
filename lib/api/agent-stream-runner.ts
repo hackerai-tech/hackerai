@@ -10,7 +10,11 @@ import {
   resolveAbliterationModelForGenerationStep,
   type AbliterationGenerationStepLimit,
 } from "@/lib/experiments/abliterated-model-steps";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
+import {
+  isAbliterationModel,
+  ABLITERATION_MODEL_KEY,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+} from "@/lib/ai/abliteration";
 import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
@@ -1017,6 +1021,11 @@ export async function createAgentStream(
     assistantContentLoopAbortController.signal,
   ]);
   let activeContextBudget = ctx.ctxMaxTokens;
+  const maxContextEnabled =
+    ctx.mode === "agent" &&
+    ctx.agentModelContextEnabled &&
+    ctx.selectedModelOverride === "hackerai-max";
+  let activeModelInputTokens = 0;
   let summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
@@ -1244,8 +1253,8 @@ export async function createAgentStream(
           stepIndex,
         })
       : routeModelName;
-  const getEffectiveModelName = (stepIndex = generationStepOffset) =>
-    resolveAgentModelForImageToolResults(
+  const getEffectiveModelName = (stepIndex = generationStepOffset) => {
+    const effectiveModel = resolveAgentModelForImageToolResults(
       getPreVisionModelName(stepIndex),
       ctx.mode,
       streamHasImageViewResults,
@@ -1254,6 +1263,17 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
+    // Keep the three-step treatment schedule, but do not shrink long Max
+    // history just to fit the base Abliteration model's smaller window.
+    return maxContextEnabled &&
+      effectiveModel === ABLITERATION_MODEL_KEY &&
+      activeModelInputTokens >
+        getSummarizationThresholdTokens(
+          getMaxTokensForSubscription(ctx.subscription),
+        )
+      ? ABLITERATION_LARGE_V2_MODEL_KEY
+      : effectiveModel;
+  };
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
@@ -1272,7 +1292,7 @@ export async function createAgentStream(
     lastRequestedSlug = languageModel.modelId;
     if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
       activeContextBudget = getAgentContextBudget({
-        enabled: true,
+        enabled: maxContextEnabled,
         mode: ctx.mode,
         subscription: ctx.subscription,
         modelId: languageModel.modelId,
@@ -1352,7 +1372,9 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      ? await preprocessAbliterationImages(toolCallRepair.messages, {
+          force: effectiveModelName === ABLITERATION_LARGE_V2_MODEL_KEY,
+        })
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
@@ -1471,6 +1493,11 @@ export async function createAgentStream(
       "message_serialization",
       Date.now() - initialSerializationStartedAt,
     );
+  }
+  if (maxContextEnabled) {
+    activeModelInputTokens =
+      estimateSummaryInputTokens(initialSerializedMessages) +
+      ctx.systemPromptTokens;
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
@@ -1621,6 +1648,7 @@ export async function createAgentStream(
       subscription: ctx.subscription,
       baselineModel: modelName,
       platformAuthorized: ctx.platformAuthorized,
+      expandedMaxContext: maxContextEnabled,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -1727,6 +1755,7 @@ export async function createAgentStream(
           context_max_tokens: activeContextBudget,
           compaction_threshold_tokens: summarizationThreshold,
           subscription_tier: ctx.subscription,
+          selected_model: ctx.selectedModelOverride,
           $process_person_profile: false,
         });
       }
@@ -1773,6 +1802,12 @@ export async function createAgentStream(
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
+      if (maxContextEnabled) {
+        activeModelInputTokens =
+          estimateSummaryInputTokens(rollingModelMessages) +
+          ctx.systemPromptTokens +
+          networkTokens;
+      }
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||

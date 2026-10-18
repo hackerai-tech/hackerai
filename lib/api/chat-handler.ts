@@ -443,6 +443,7 @@ export const createChatHandler = () => {
         userId,
         subscription,
         mode,
+        selectedModelOverride,
       );
       const [userCustomization, fetched] = await Promise.all([
         getUserCustomization({ userId }),

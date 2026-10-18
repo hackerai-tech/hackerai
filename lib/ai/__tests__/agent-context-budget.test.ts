@@ -41,7 +41,6 @@ it.each([
   { modelId: "constructor" },
   { modelId: "__proto__" },
   { modelId: "abliterated-model" },
-  { modelId: "abliterated-model-large-v2" },
   { fallbackModelIds: ["custom/unknown"] },
   { fallbackModelIds: ["abliterated-model"] },
 ])(
@@ -62,3 +61,12 @@ it.each(["free", "pro"] as const)(
     expect(getMaxFileTokens(subscription, { mode: "ask" })).toBe(baseline / 2);
   },
 );
+
+it("uses the exact 1M Large v2 capacity rather than the base model limit", () => {
+  const budget = getAgentContextBudget({
+    ...route,
+    modelId: "abliterated-model-large-v2",
+  });
+  expect(budget).toBe(484_000);
+  expect(getSummarizationThresholdTokens(budget)).toBe(464_000);
+});

@@ -690,6 +690,62 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each([
+    { enabled: false, tokens: 190_000 },
+    { enabled: true, tokens: 190_000 },
+    { enabled: true, tokens: 10_000 },
+  ])(
+    "keeps the three-step Max schedule with enabled=$enabled and tokens=$tokens",
+    async ({ enabled, tokens }) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const text = " ordinary".repeat(tokens);
+      const state = initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: tokens + 100,
+        maxTokens: 200_000,
+      });
+      const ids: Record<string, string> = {
+        "model-abliterated": "abliterated-model",
+        "model-abliterated-large-v2": "abliterated-model-large-v2",
+        "model-glm-5.3": "z-ai/glm-5.3",
+      };
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: enabled,
+          selectedModelOverride: "hackerai-max",
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: ids[name] }),
+          },
+          abliteratedStepRouting: {
+            baselineModel: "model-glm-5.3",
+            generationStepLimit: 3,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      for (let stepNumber = 0; stepNumber < 4; stepNumber++) {
+        const prepared = await stream.prepareStep({
+          steps: Array.from({ length: stepNumber }, () => ({})),
+          stepNumber,
+          messages: [{ role: "user", content: text }],
+        });
+        expect(prepared.model.modelId).toBe(
+          stepNumber < 3
+            ? enabled && tokens > 180_000
+              ? "abliterated-model-large-v2"
+              : "abliterated-model"
+            : "z-ai/glm-5.3",
+        );
+        if (enabled && stepNumber < 3)
+          expect(state.ctxUsage.maxTokens).toBe(
+            tokens > 180_000 ? 484_000 : 200_000,
+          );
+      }
+    },
+  );
+
   it.each(["startup", "startup-error", "rolling", "rolling-error"])(
     "stops oversized %s requests when compaction fails without dropping saved history",
     async (phase) => {
@@ -764,6 +820,7 @@ describe("createAgentStream repeated compaction", () => {
       const tracker = { hasSummarized: false, summarizationCount: 0 };
       const ctx = createTestStreamContext({
         agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
         trackedProvider: { languageModel: () => ({ modelId }) },
         usageTracker: {},
         summarizationTracker: tracker,
@@ -2357,6 +2414,47 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
     },
   );
+
+  it("describes even a single image before sending long Max history to text-only Large v2", async () => {
+    const text = " ordinary".repeat(190_000);
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: [
+          { type: "text", text },
+          { type: "image", image: "https://example.test/image.png" },
+        ],
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: {
+          languageModel: (name: string) => ({
+            modelId:
+              name === "model-abliterated-large-v2"
+                ? "abliterated-model-large-v2"
+                : "abliterated-model",
+          }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-glm-5.3",
+          generationStepLimit: 3,
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: 190_100,
+        maxTokens: 200_000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("abliterated-model-large-v2");
+    expect(JSON.stringify(stream.messages)).toContain("image_description");
+    expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+  });
 
   it("does not start the main provider when initial OCR fails", async () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
