@@ -1,3 +1,8 @@
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+  DEEPSEEK_1017_CANONICAL_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
@@ -1276,6 +1281,7 @@ const buildProviderMap = (
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
 ) =>
   ({
+    [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
@@ -1370,6 +1376,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
   "model-deepseek-v4-flash-vision": "DeepSeek V4.1 Flash",
   "model-deepseek-v4-flash-vision-pro": "DeepSeek V4.1 Flash",
+  [DEEPSEEK_1017_MODEL_KEY]: "DeepSeek V4.1 Flash 1017",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
@@ -1395,6 +1402,7 @@ export function isAnthropicModel(modelName: string): boolean {
 /** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
@@ -1438,6 +1446,9 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
+    normalized === DEEPSEEK_1017_MODEL_KEY ||
+    normalized === DEEPSEEK_1017_SLUG ||
+    normalized === DEEPSEEK_1017_CANONICAL_SLUG ||
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
     normalized === "ask-model-free" ||

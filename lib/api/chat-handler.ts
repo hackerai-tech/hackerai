@@ -234,6 +234,7 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
+  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
@@ -668,6 +669,11 @@ export const createChatHandler = () => {
         subscription,
         selectedModel,
         hasImages: requestHasImages,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -829,6 +835,15 @@ export const createChatHandler = () => {
       const recordFlashRoutingExposure = createFlashRoutingExposureRecorder({
         posthog,
         assignment: activeFlashRoutingAssignment,
+        controlContinuationModel:
+          activeFlashRoutingAssignment &&
+          createTrackedProvider().languageModel(
+            resolveAgentModelAfterSummarization(
+              activeFlashRoutingAssignment.modelKey,
+              mode,
+              false,
+            ),
+          ).modelId,
         userId,
         mode,
         subscription,
@@ -840,7 +855,10 @@ export const createChatHandler = () => {
             variant: activeAbliteratedExperiment.variant,
             requestId: assistantMessageId,
           }
-        : (activeFlashRoutingAssignment ??
+        : ((activeFlashRoutingAssignment && {
+            ...activeFlashRoutingAssignment,
+            requestId: assistantMessageId,
+          }) ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
           ));
@@ -1715,7 +1733,15 @@ export const createChatHandler = () => {
               ctxSystemTokens,
               ctxMaxTokens,
               streamStartTime,
-              onModelChunk: () => chatLogger?.markFirstChunk(),
+              onModelChunk: () => {
+                if (
+                  routingExperimentContext &&
+                  routingExperimentContext.firstModelChunkAt === undefined
+                ) {
+                  routingExperimentContext.firstModelChunkAt = Date.now();
+                }
+                chatLogger?.markFirstChunk();
+              },
               onModelStepSelected: (modelName) => {
                 activeModelName = modelName;
                 setCurrentModelName(modelName);
@@ -2437,6 +2463,7 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  responseMessageId: retryMessageId,
                                   cacheHistoryTelemetry:
                                     state.cacheHistoryTelemetry,
                                   usageMeasurement:
@@ -2806,6 +2833,7 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      responseMessageId: assistantMessageId,
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),
