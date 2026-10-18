@@ -179,6 +179,46 @@ describe("default compaction policy pipeline", () => {
       expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
     },
   );
+  it("keeps more than 64K source tokens for Max checkpoints and only retries a large-context model", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    mockGenerateText
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 20 },
+      });
+    expect((await compact()).needsSummarization).toBe(true);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    expect(mockGenerateText.mock.calls[0][0].providerOptions).toEqual({
+      abliteration: { reasoningEffort: "low" },
+    });
+    for (const [args] of mockGenerateText.mock.calls) {
+      const tokens = estimateSummaryInputTokens(args.messages);
+      expect(tokens).toBeGreaterThan(64_000);
+      expect(tokens).toBeLessThan(490_000);
+    }
+  });
+  it("does not shrink Max source through an unverified fallback when both large summarizers fail", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    mockGenerateText.mockRejectedValue(new Error("Provider unavailable"));
+    expect((await compact()).needsSummarization).toBe(false);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+  });
   it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
     mockGenerateText
       .mockResolvedValueOnce({

@@ -1,4 +1,5 @@
 import "server-only";
+import { getAgentHistoryBudget } from "@/lib/ai/agent-context-budget";
 import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
 import {
   countIndependentAbliterationResponses,
@@ -18,7 +19,6 @@ import {
 } from "@/lib/utils/file-token-utils";
 import {
   countMessagesTokens,
-  getMaxTokensForSubscription,
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
@@ -1406,6 +1406,7 @@ export async function getMessagesByChatId({
   subscription,
   mode,
   useClientMessagesForRegenerate,
+  agentModelContextEnabled = false,
 }: {
   chatId: string;
   userId: string;
@@ -1414,6 +1415,7 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
+  agentModelContextEnabled?: boolean;
 }) {
   let chat = undefined;
   let isNewChat = true;
@@ -1517,9 +1519,11 @@ export async function getMessagesByChatId({
             }
           }
 
-          const maxTokens = getMaxTokensForSubscription(subscription, {
+          const maxTokens = getAgentHistoryBudget(
+            subscription,
             mode,
-          });
+            agentModelContextEnabled,
+          );
           const truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
@@ -1586,9 +1590,11 @@ export async function getMessagesByChatId({
             };
 
             // Re-truncate real messages to leave room for the summary message
-            const maxTokens = getMaxTokensForSubscription(subscription, {
+            const maxTokens = getAgentHistoryBudget(
+              subscription,
               mode,
-            });
+              agentModelContextEnabled,
+            );
             const summaryTokens = countMessagesTokens(
               [summaryMessage],
               fileTokensFromLoop,
@@ -1718,6 +1724,7 @@ export async function getMessagesByChatId({
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
     mode,
     userId,
+    agentModelContextEnabled,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -1727,9 +1734,11 @@ export async function getMessagesByChatId({
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any, userId);
-      const maxTokens = getMaxTokensForSubscription(subscription, {
+      const maxTokens = getAgentHistoryBudget(
+        subscription,
         mode,
-      });
+        agentModelContextEnabled,
+      );
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
       const largestFileToken = Object.values(fileTokens).length
         ? Math.max(...Object.values(fileTokens))

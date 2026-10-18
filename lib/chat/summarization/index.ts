@@ -4,9 +4,10 @@ import { getCompactionResponseFormat } from "./structured-summary";
 
 import {
   CompactionModelPolicy,
-  COMPACTION_PRIMARY_MODEL,
+  MAX_CONTEXT_SUMMARY_INPUT_TOKENS,
   hasStructuredCompactionSummary,
 } from "@/lib/chat/summarization/compaction-policy";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 
 import {
   UIMessage,
@@ -577,7 +578,9 @@ const generateSummaryTextWithRetry = async ({
       const models = [
         assignment.model,
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        ...STARTUP_COMPACTION_FALLBACK_MODELS,
+        ...(assignment.expandedMaxContext
+          ? []
+          : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
       let servedModel: string | undefined;
       try {
@@ -601,7 +604,7 @@ const generateSummaryTextWithRetry = async ({
               chatSystemPrompt,
               hasExistingSummary,
               undefined,
-              modelName === COMPACTION_PRIMARY_MODEL
+              isAbliterationModel(modelName)
                 ? {
                     abliteration: {
                       reasoningEffort: "low",
@@ -613,7 +616,9 @@ const generateSummaryTextWithRetry = async ({
                   ),
               abortSignal,
               modelMessages,
-              summaryInputMaxTokens,
+              assignment.expandedMaxContext
+                ? MAX_CONTEXT_SUMMARY_INPUT_TOKENS
+                : summaryInputMaxTokens,
               {
                 maxRetries: 0,
                 // Allow longer checkpoints to finish, but start recovery before
@@ -668,12 +673,12 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ||
               index === models.length - 1 ||
               !(
-                modelName === COMPACTION_PRIMARY_MODEL ||
+                isAbliterationModel(modelName) ||
                 // A cheaper primary can reject a request with a non-retryable
                 // provider error (for example HTTP 400). Still try the assigned
                 // Abliteration fallback once; never retry caller cancellation.
                 (index === 0 &&
-                  assignment.fallbackModel === COMPACTION_PRIMARY_MODEL) ||
+                  isAbliterationModel(assignment.fallbackModel)) ||
                 error instanceof InvalidCompactionSummaryError ||
                 isMalformedProviderJsonError(error) ||
                 isRecoverableStartupCompactionError(error)

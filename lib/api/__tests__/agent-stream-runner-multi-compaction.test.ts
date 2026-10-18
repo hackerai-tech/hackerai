@@ -690,6 +690,247 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each([
+    { enabled: false, tokens: 190_000 },
+    { enabled: true, tokens: 190_000 },
+    { enabled: true, tokens: 10_000 },
+  ])(
+    "keeps the three-step Max schedule with enabled=$enabled and tokens=$tokens",
+    async ({ enabled, tokens }) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const text = " ordinary".repeat(tokens);
+      const state = initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: tokens + 100,
+        maxTokens: 200_000,
+      });
+      const ids: Record<string, string> = {
+        "model-abliterated": "abliterated-model",
+        "model-abliterated-large-v2": "abliterated-model-large-v2",
+        "model-glm-5.3": "z-ai/glm-5.3",
+      };
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: enabled,
+          selectedModelOverride: "hackerai-max",
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: ids[name] }),
+          },
+          abliteratedStepRouting: {
+            baselineModel: "model-glm-5.3",
+            generationStepLimit: 3,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      for (let stepNumber = 0; stepNumber < 4; stepNumber++) {
+        const prepared = await stream.prepareStep({
+          steps: Array.from({ length: stepNumber }, () => ({})),
+          stepNumber,
+          messages: [{ role: "user", content: text }],
+        });
+        expect(prepared.model.modelId).toBe(
+          stepNumber < 3
+            ? enabled && tokens > 180_000
+              ? "abliterated-model-large-v2"
+              : "abliterated-model"
+            : "z-ai/glm-5.3",
+        );
+        if (enabled && stepNumber < 3)
+          expect(state.ctxUsage.maxTokens).toBe(
+            tokens > 180_000 ? 484_000 : 200_000,
+          );
+      }
+    },
+  );
+
+  it("compacts a new oversized tool result even when the previous input was small", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: uiMessage(
+        "checkpoint",
+        "<context_summary>Keep verified status</context_summary>",
+      ),
+      summarizationUsage: {},
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 100,
+      maxTokens: 200_000,
+    });
+    state.lastStepInputTokens = 100;
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: { languageModel: () => ({ modelId: "z-ai/glm-5.3" }) },
+        usageTracker: {},
+        summarizationTracker: {
+          hasSummarized: true,
+          summarizationCount: 1,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      steps: [{}],
+      stepNumber: 1,
+      messages: [
+        { role: "user", content: "Continue" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "big",
+              toolName: "file",
+              input: {},
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "big",
+              toolName: "file",
+              output: { type: "text", value: " a".repeat(520_000) },
+            },
+          ],
+        },
+      ],
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(prepared.messages)).toContain("Keep verified status");
+    expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
+  });
+
+  it.each(["startup", "startup-error", "rolling", "rolling-error"])(
+    "stops oversized %s requests when compaction fails without dropping saved history",
+    async (phase) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const largeText = " ordinary".repeat(190_000);
+      const original = [uiMessage("large", largeText)];
+      const state = initAgentStreamState(original, {
+        usedTokens: 210_000,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 210_000;
+      const rolling = phase.startsWith("rolling");
+      if (phase === "startup-error") {
+        mockRunSummarizationStep.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockRunSummarizationStep.mockResolvedValue({
+          summarizationAttempted: true,
+          needsSummarization: false,
+        });
+      }
+      if (phase === "rolling-error") {
+        mockCompactModelMessagesInRun.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockCompactModelMessagesInRun.mockResolvedValue(null);
+      }
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "abliterated-model" }),
+          },
+          systemPromptTokens: 20_000,
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: rolling,
+            summarizationCount: rolling ? 1 : 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      await expect(
+        stream.prepareStep({
+          steps: rolling ? [{}] : [],
+          stepNumber: rolling ? 1 : 0,
+          messages: [{ role: "user", content: largeText }],
+        }),
+      ).rejects.toThrow(
+        "Conversation could not be compacted to fit the selected model",
+      );
+      expect(state.finalMessages).toEqual(original);
+    },
+  );
+
+  it.each([
+    ["x-ai/grok-4.6", 234_000],
+    ["abliterated-model", 200_000],
+  ])(
+    "compacts long history before switching to %s with a %i budget",
+    async (smallerModel, smallerBudget) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      let modelId = "z-ai/glm-5.3-flash";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 300_000,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 300_000;
+      const tracker = { hasSummarized: false, summarizationCount: 0 };
+      const ctx = createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: { languageModel: () => ({ modelId }) },
+        usageTracker: {},
+        summarizationTracker: tracker,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      const messages = [{ role: "user", content: "Continue" }];
+      await stream.prepareStep({ steps: [], stepNumber: 0, messages });
+      expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ctxMaxTokens: 508_288 }),
+      );
+      expect(state.ctxUsage.maxTokens).toBe(508_288);
+      stream.experimental_onStepStart({ model: { modelId } });
+      tracker.summarizationCount = 1;
+      tracker.hasSummarized = true;
+      await stream.prepareStep({ steps: [{}], stepNumber: 1, messages });
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+      modelId = smallerModel;
+      await stream.prepareStep({
+        steps: [{}, {}],
+        stepNumber: 2,
+        messages: [...messages, { role: "user", content: "Next" }],
+      });
+      expect(mockCompactModelMessagesInRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ maxTokens: smallerBudget }),
+      );
+      expect(state.ctxUsage.maxTokens).toBe(smallerBudget);
+      const retry = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      retry.experimental_onStepStart({ model: { modelId } });
+      expect(
+        jest
+          .mocked(phLogger.event)
+          .mock.calls.filter(
+            ([event]) => event === "agent_model_context_exposed",
+          ),
+      ).toHaveLength(1);
+    },
+  );
+
   it.each(["agent", "ask"] as const)(
     "continues a small %s request beyond the former history-count limits",
     async (mode) => {
@@ -2268,6 +2509,47 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
     },
   );
+
+  it("describes even a single image before sending long Max history to text-only Large v2", async () => {
+    const text = " ordinary".repeat(190_000);
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: [
+          { type: "text", text },
+          { type: "image", image: "https://example.test/image.png" },
+        ],
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: {
+          languageModel: (name: string) => ({
+            modelId:
+              name === "model-abliterated-large-v2"
+                ? "abliterated-model-large-v2"
+                : "abliterated-model",
+          }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-glm-5.3",
+          generationStepLimit: 3,
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: 190_100,
+        maxTokens: 200_000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("abliterated-model-large-v2");
+    expect(JSON.stringify(stream.messages)).toContain("image_description");
+    expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+  });
 
   it("does not start the main provider when initial OCR fails", async () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
@@ -3883,64 +4165,93 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
   });
 
-  it("stops cleanly when the attempt budget is exhausted with no accepted summary", async () => {
-    mockRunSummarizationStep.mockResolvedValue({
-      summarizationAttempted: true,
-      needsSummarization: false,
-    });
-    mockCompactModelMessagesInRun.mockResolvedValue(null);
-    mockGetProviderPromptPressure.mockReturnValue({
-      reason: "serialized_message_bytes",
-      reasons: [],
-    });
-    const tracker = {
-      hasSummarized: false,
-      summarizationCount: 0,
-      recordSummarization: jest.fn(),
-      recordSummarizationUsage: jest.fn(),
-    };
-    const initialRaw: ModelMessage[] = [
-      { role: "user", content: "oversized initial history" },
-    ];
-    const state = initAgentStreamState(
-      [uiMessage("original-failure", "oversized initial history")],
-      { usedTokens: 200_000, maxTokens: 200_000 },
-    );
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        chatId: "chat-failure",
-        ctxMaxTokens: 200_000,
-        summarizationTracker: tracker,
-        usageTracker: {},
-      }) as any,
-      state,
-    )) as any;
-
-    await stream.prepareStep({ steps: [], messages: initialRaw });
-    const rawMessages = [...initialRaw];
-    const steps: Array<Record<string, unknown>> = [];
-    for (
-      let index = 1;
-      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
-      index++
-    ) {
-      const step: ModelMessage = {
-        role: "assistant",
-        content: `failed compaction step ${index}`,
+  it.each([false, true])(
+    "stops cleanly when compaction attempts are exhausted with context flag=%s",
+    async (enabled) => {
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: false,
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const tracker = {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
       };
-      rawMessages.push(step);
-      steps.push({ toolResults: [], response: { messages: [step] } });
-      await stream.prepareStep({ steps, messages: rawMessages });
-    }
+      const initialRaw: ModelMessage[] = [
+        { role: "user", content: "oversized initial history" },
+      ];
+      const state = initAgentStreamState(
+        [uiMessage("original-failure", "oversized initial history")],
+        { usedTokens: 200_000, maxTokens: 200_000 },
+      );
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          chatId: "chat-failure",
+          agentModelContextEnabled: enabled,
+          ctxMaxTokens: 200_000,
+          summarizationTracker: tracker,
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
 
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
-    );
-    expect(tracker.summarizationCount).toBe(0);
-    expect(tracker.recordSummarization).not.toHaveBeenCalled();
-    state.lastStepInputTokens = 300_000;
-    expect(stream.stopWhen[1]()).toBe(true);
-    expect(state.stoppedDueToTokenExhaustion).toBe(true);
-  });
+      await stream.prepareStep({ steps: [], messages: initialRaw });
+      const rawMessages = [...initialRaw];
+      const steps: Array<Record<string, unknown>> = [];
+      for (
+        let index = 1;
+        index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+        index++
+      ) {
+        const step: ModelMessage = {
+          role: "assistant",
+          content: `failed compaction step ${index}`,
+        };
+        rawMessages.push(step);
+        steps.push({ toolResults: [], response: { messages: [step] } });
+        await stream.prepareStep({ steps, messages: rawMessages });
+      }
+
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+      );
+      expect(tracker.summarizationCount).toBe(0);
+      expect(tracker.recordSummarization).not.toHaveBeenCalled();
+      state.lastStepInputTokens = enabled ? 100 : 300_000;
+      if (enabled)
+        await stream.onStepFinish({
+          response: {
+            messages: [
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "big",
+                    toolName: "file",
+                    output: { type: "text", value: " a".repeat(210_000) },
+                  },
+                ],
+              },
+            ],
+          },
+          toolCalls: [],
+          toolResults: [],
+          text: "",
+          finishReason: "tool-calls",
+        });
+      expect(stream.stopWhen[1]()).toBe(true);
+      expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    },
+  );
 });
