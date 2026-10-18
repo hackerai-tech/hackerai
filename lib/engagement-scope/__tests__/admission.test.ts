@@ -1,6 +1,7 @@
 import { recordUserScope, retryUserScope } from "../admission";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { generateText } from "ai";
+import { SourceEvidenceError } from "../extract";
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/ai/providers", () => ({
   myProvider: { languageModel: jest.fn() },
@@ -99,6 +100,8 @@ it.each([
   ["evidence", "scope_evidence_missing"],
   ["unknown", "unclassified"],
   ["hostile error", "unclassified"],
+  ["hostile evidence check", "unclassified"],
+  ["private evidence check", "unclassified"],
 ] as const)(
   "logs a bounded reason for %s failures without leaking content or losing the previous policy",
   async (failure, reason) => {
@@ -126,8 +129,23 @@ it.each([
           },
         });
       if (
+        failure === "hostile evidence check" ||
+        failure === "private evidence check"
+      ) {
+        Object.setPrototypeOf(error, SourceEvidenceError.prototype);
+        Object.defineProperty(error, "check", {
+          get: () => {
+            if (failure === "hostile evidence check")
+              throw new Error(privateText);
+            return privateText;
+          },
+        });
+      }
+      if (
         failure === "unknown" ||
         failure === "hostile error" ||
+        failure === "hostile evidence check" ||
+        failure === "private evidence check" ||
         failure === "object generation"
       ) {
         (generateText as jest.Mock).mockRejectedValue(error);
@@ -159,11 +177,14 @@ it.each([
         stage:
           failure === "unknown" ||
           failure === "hostile error" ||
+          failure === "hostile evidence check" ||
+          failure === "private evidence check" ||
           failure === "object generation"
             ? "generation"
             : "validation",
         timedOut: false,
         reason,
+        evidence_check: failure === "evidence" ? "scope_target" : null,
         chat_id: chatId,
         message_id: messageId,
       });
@@ -175,6 +196,80 @@ it.each([
         unavailable: true,
         policy: { rules: current.rules, restrictions: current.restrictions },
       });
+    } finally {
+      warn.mockRestore();
+    }
+  },
+);
+
+it.each([
+  ["scope_source", "scope_evidence_missing"],
+  ["scope_target", "scope_evidence_missing"],
+  ["restriction_source", "restriction_evidence_missing"],
+  ["restriction_text", "restriction_evidence_missing"],
+] as const)(
+  "identifies the %s evidence check while preserving unavailable state and private content",
+  async (check, reason) => {
+    const sourceText = "Test private.example.test with no private-enumeration";
+    const absentText = "invented-private.example.test";
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mutate
+        .mockResolvedValueOnce({
+          complete: false,
+          revision: 3,
+          sourceText,
+          current,
+        })
+        .mockResolvedValueOnce(true);
+      (generateText as jest.Mock).mockResolvedValue({
+        output: {
+          changes: check.startsWith("scope")
+            ? [
+                {
+                  operation: "add",
+                  rule: {
+                    target: absentText,
+                    effect: "allow",
+                    activity: "active_testing",
+                  },
+                  evidence: check === "scope_source" ? absentText : sourceText,
+                },
+              ]
+            : [],
+          restrictions: check.startsWith("restriction")
+            ? [
+                {
+                  operation: "add",
+                  text: absentText,
+                  evidence:
+                    check === "restriction_source" ? absentText : sourceText,
+                },
+              ]
+            : [],
+          clarification: "",
+        },
+      });
+      await recordUserScope({
+        userId: "owner",
+        chatId: "chat",
+        messageId: "m2",
+      });
+      expect(warn).toHaveBeenCalledWith("engagement_scope_extraction_failed", {
+        stage: "validation",
+        timedOut: false,
+        reason,
+        evidence_check: check,
+        chat_id: null,
+        message_id: null,
+      });
+      expect(mutate.mock.calls[1][1]).toMatchObject({
+        expectedRevision: 3,
+        unavailable: true,
+        policy: { rules: current.rules, restrictions: current.restrictions },
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(sourceText);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(absentText);
     } finally {
       warn.mockRestore();
     }
