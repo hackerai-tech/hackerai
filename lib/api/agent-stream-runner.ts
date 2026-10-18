@@ -2080,7 +2080,7 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  nextBaseMessages,
+                  withHandoffNotes(nextBaseMessages),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {

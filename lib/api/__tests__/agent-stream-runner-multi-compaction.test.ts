@@ -2908,13 +2908,13 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it.each(["durable", "rolling"])(
+  it.each(["durable", "rolling", "rolling-empty-tail"])(
     "keeps recovery and handoff context in %s compaction requests",
     async (kind) => {
       const summary = uiMessage("summary", "Continue the fixture.");
       const tracker = {
-        hasSummarized: kind === "rolling",
-        summarizationCount: kind === "rolling" ? 1 : 0,
+        hasSummarized: kind !== "durable",
+        summarizationCount: kind !== "durable" ? 1 : 0,
         recordSummarization() {
           this.hasSummarized = true;
           this.summarizationCount++;
@@ -2928,9 +2928,14 @@ describe("createAgentStream repeated compaction", () => {
       mockCompactModelMessagesInRun.mockResolvedValue({
         summaryMessage: summary,
         summaryText: "Continue the fixture.",
+        runtimeContextTokens:
+          kind === "rolling-empty-tail"
+            ? require("@/lib/chat/summarization/constants")
+                .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS
+            : 0,
         summarizationUsage: { inputTokens: 10, outputTokens: 2 },
       });
-      if (kind === "rolling")
+      if (kind !== "durable")
         mockGetProviderPromptPressure.mockReturnValue({
           reason: "serialized_message_bytes",
           reasons: [],
@@ -2970,7 +2975,7 @@ describe("createAgentStream repeated compaction", () => {
         });
       }
       const prepared = await stream.prepareStep({
-        steps: kind === "rolling" ? [{ toolResults: [] }] : [],
+        steps: kind !== "durable" ? [{ toolResults: [] }] : [],
         messages: [{ role: "user", content: "old context ".repeat(4_000) }],
       });
       expect(JSON.stringify(prepared.messages)).toContain(
@@ -2979,7 +2984,7 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(prepared.messages)).toContain(
         "HANDOFF: use the account I selected.",
       );
-      if (kind === "rolling")
+      if (kind !== "durable")
         expect(mockCompactModelMessagesInRun).toHaveBeenCalled();
       else expect(mockRunSummarizationStep).toHaveBeenCalled();
       stream.experimental_onStepStart({ model: { modelId: "test-model" } });
