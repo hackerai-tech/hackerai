@@ -17,6 +17,7 @@ import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/sum
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
+const mockLimitModelImageToolResults = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
@@ -120,11 +121,8 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     messages,
     prunedCount: 0,
   }),
-  limitModelImageToolResults: (messages: ModelMessage[]) => ({
-    messages,
-    totalImageCount: 0,
-    elidedImageCount: 0,
-  }),
+  limitModelImageToolResults: (...args: unknown[]) =>
+    mockLimitModelImageToolResults(...args),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: (error: unknown) =>
@@ -667,6 +665,13 @@ describe("retry served-model telemetry", () => {
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLimitModelImageToolResults.mockImplementation(
+      (messages: ModelMessage[]) => ({
+        messages,
+        totalImageCount: 0,
+        elidedImageCount: 0,
+      }),
+    );
     mockAppendAssistantDelta.mockReset().mockReturnValue({ detected: false });
     mockHistoryFlag.mockResolvedValue(false);
     mockLoadHistory
@@ -962,6 +967,57 @@ describe("createAgentStream repeated compaction", () => {
       role: "user",
       content: "I selected the XSS lab. Continue from here.",
     });
+  });
+
+  it("keeps a handoff note after its screenshot when older images are elided", async () => {
+    mockLimitModelImageToolResults.mockImplementation(
+      jest.requireActual("@/lib/chat/compaction/prune-tool-outputs")
+        .limitModelImageToolResults,
+    );
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const note = { id: "handoff", text: "Use my selected form." };
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes: async () => [note],
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const screenshot = (id: number): ModelMessage => ({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: `image-${id}`,
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "image-data", data: "test", mediaType: "image/png" },
+            ],
+          },
+        },
+      ],
+    });
+    const initial: ModelMessage[] = [
+      { role: "user", content: "Inspect" },
+      screenshot(0),
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [...initial, screenshot(1), screenshot(2), screenshot(3)],
+    });
+    expect(next.messages[0]).toEqual(initial[0]);
+    expect(next.messages[1].content[0].output.value[0].type).toBe("text");
+    expect(next.messages[2]).toEqual({ role: "user", content: note.text });
+    expect(next.messages[3]).toEqual(screenshot(1));
   });
 
   it("does not continue without handoff context when its lookup fails", async () => {

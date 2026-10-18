@@ -1729,11 +1729,12 @@ export async function createAgentStream(
       let rollingModelMessages = historyEnabled
         ? historyReplay.project(rawModelMessages)
         : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      // Anchor private notes before image elision changes prior tool messages.
+      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       if (!historyEnabled)
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
-      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
