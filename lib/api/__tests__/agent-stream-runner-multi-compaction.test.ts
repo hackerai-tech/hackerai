@@ -950,50 +950,6 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it.each(["ask", "agent"])(
-    "refreshes canonical scope independently of %s conversation history",
-    async (mode) => {
-      const prompt = jest
-        .fn()
-        .mockResolvedValue("\nSaved scope revision 1: example.test");
-      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-        usedTokens: 1000,
-        maxTokens: 128000,
-      });
-      const stream = (await createAgentStream(
-        "test-model",
-        createTestStreamContext({
-          mode,
-          engagementScope: {
-            prompt,
-            checkUrl: jest.fn(),
-            checkTool: jest.fn(),
-          },
-          usageTracker: {},
-          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-        }) as any,
-        state,
-      )) as any;
-      expect(stream.system).toContain("Saved scope revision 1");
-      prompt.mockResolvedValue(
-        "\nSaved scope revision 2: example.test; exclude admin.example.test",
-      );
-      const next = await stream.prepareStep({
-        steps: [],
-        stepNumber: 0,
-        messages: [
-          {
-            role: "user",
-            content: "Old compacted summary says all subdomains are allowed",
-          },
-        ],
-      });
-      expect(next.system).toContain("Saved scope revision 2");
-      expect(next.system).toContain("exclude admin.example.test");
-      expect(next.system).not.toContain("Saved scope revision 1");
-    },
-  );
-
   it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
     const cloudNetworkPrompt = jest
       .fn()

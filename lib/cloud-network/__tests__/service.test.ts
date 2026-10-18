@@ -120,6 +120,9 @@ it.each([
   "*.127.0.0.1",
   "192.0.2.0/33",
   "[::1]",
+  "https://example.test",
+  "example.test:443",
+  "*.0x7f000001",
 ])("rejects an unrepresentable destination %s", (destination) => {
   expect(() =>
     normalizeNetworkPolicy({ mode: "restricted", allow: [destination] }),
@@ -218,4 +221,26 @@ it("releases a failed reconciliation when canceled before the first provider wri
     success: false,
     releaseLease: true,
   });
+});
+
+it("applies and verifies No internet on the same E2B workspace", async () => {
+  const offline = { mode: "offline" as const, allow: [] };
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({ policy: offline, revision: 3, status: "applying" })
+    .mockResolvedValue(null);
+  const sandbox = workspace();
+  (Sandbox.connect as jest.Mock).mockResolvedValue(sandbox);
+  expect(await saveNetworkSettings("owner", offline, 2)).toMatchObject({
+    policy: offline,
+    status: "ready",
+  });
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    { allowOut: [], denyOut: ["0.0.0.0/0"] },
+    expect.anything(),
+  );
+  expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+  expect(sandbox.files.get("/home/user/keep.txt")).toBe("unchanged-file");
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
 });

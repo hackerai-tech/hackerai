@@ -1,4 +1,4 @@
-import { deleteScopeBatch } from "./engagementScopes";
+import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
 import { query, mutation, internalMutation } from "./lib/serviceFunctions";

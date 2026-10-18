@@ -1,7 +1,3 @@
-import {
-  recordUserScope,
-  retryUserScope,
-} from "@/lib/engagement-scope/admission";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -514,19 +510,6 @@ export const createChatHandler = () => {
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
       });
-      if (
-        !isAutoContinue &&
-        truncatedMessages.length > 0 &&
-        (isAgentMode(mode) || chat?.engagement_scope_expected)
-      ) {
-        await retryUserScope({ userId, chatId });
-        if (!regenerate)
-          await recordUserScope({
-            userId,
-            chatId,
-            messageId: truncatedMessages[truncatedMessages.length - 1].id,
-          });
-      }
 
       const regionalFreeLimits = getRegionalFreeLimits({
         userId,
@@ -954,7 +937,6 @@ export const createChatHandler = () => {
             });
 
             const {
-              engagementScope,
               cloudNetworkPrompt,
               tools,
               ensureSandbox,
@@ -1718,7 +1700,6 @@ export const createChatHandler = () => {
               },
               trackedProvider,
               currentSystemPrompt,
-              engagementScope,
               cloudNetworkPrompt,
               tools,
               mode,
