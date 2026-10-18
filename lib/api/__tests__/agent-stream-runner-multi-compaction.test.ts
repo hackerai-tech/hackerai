@@ -690,6 +690,62 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it("uses the active model budget at startup, after tool steps, and on smaller-model retries", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    let modelId = "z-ai/glm-5.3-flash";
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 300_000,
+      maxTokens: 200_000,
+    });
+    state.lastStepInputTokens = 300_000;
+    const tracker = { hasSummarized: false, summarizationCount: 0 };
+    const ctx = createTestStreamContext({
+      agentModelContextEnabled: true,
+      trackedProvider: { languageModel: () => ({ modelId }) },
+      usageTracker: {},
+      summarizationTracker: tracker,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      ctx as any,
+      state,
+    )) as any;
+    const messages = [{ role: "user", content: "Continue" }];
+    await stream.prepareStep({ steps: [], stepNumber: 0, messages });
+    expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ctxMaxTokens: 508_288 }),
+    );
+    expect(state.ctxUsage.maxTokens).toBe(508_288);
+    stream.experimental_onStepStart({ model: { modelId } });
+    tracker.summarizationCount = 1;
+    tracker.hasSummarized = true;
+    await stream.prepareStep({ steps: [{}], stepNumber: 1, messages });
+    expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+    modelId = "x-ai/grok-4.6";
+    await stream.prepareStep({
+      steps: [{}, {}],
+      stepNumber: 2,
+      messages: [...messages, { role: "user", content: "Next" }],
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenLastCalledWith(
+      expect.objectContaining({ maxTokens: 234_000 }),
+    );
+    expect(state.ctxUsage.maxTokens).toBe(234_000);
+    const retry = (await createAgentStream(
+      "test-model",
+      ctx as any,
+      state,
+    )) as any;
+    retry.experimental_onStepStart({ model: { modelId } });
+    expect(
+      jest
+        .mocked(phLogger.event)
+        .mock.calls.filter(
+          ([event]) => event === "agent_model_context_exposed",
+        ),
+    ).toHaveLength(1);
+  });
+
   it.each(["agent", "ask"] as const)(
     "continues a small %s request beyond the former history-count limits",
     async (mode) => {

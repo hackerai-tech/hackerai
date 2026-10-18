@@ -1,3 +1,5 @@
+import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import { AGENT_MODEL_CONTEXT_FLAG } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
@@ -402,6 +404,8 @@ export type AgentStreamState = {
   /** Context-window usage data; updated after summarization and each step. */
   ctxUsage: { usedTokens: number; maxTokens: number };
   lastStepInputTokens: number;
+  /** One actual context-budget exposure across retries in this run. */
+  agentContextBudgetExposed?: boolean;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
   /** Snapshot when onFinish starts, before cancellation during async settlement. */
@@ -759,6 +763,7 @@ export type AgentStreamContext = {
   systemPromptTokens: number;
   ctxSystemTokens: number;
   ctxMaxTokens: number;
+  agentModelContextEnabled?: boolean;
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
@@ -1003,7 +1008,8 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
-  const summarizationThreshold = getSummarizationThresholdTokens(
+  let activeContextBudget = ctx.ctxMaxTokens;
+  let summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
@@ -1256,6 +1262,19 @@ export async function createAgentStream(
     ctx.onModelStepSelected?.(effectiveModelName);
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;
+    if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
+      activeContextBudget = getAgentContextBudget({
+        enabled: true,
+        mode: ctx.mode,
+        subscription: ctx.subscription,
+        modelId: languageModel.modelId,
+        fallbackModelIds: activeStepRouting.fallbackModels,
+      });
+      summarizationThreshold =
+        getSummarizationThresholdTokens(activeContextBudget);
+      state.ctxUsage = { ...state.ctxUsage, maxTokens: activeContextBudget };
+    }
+
     return {
       modelName: effectiveModelName,
       languageModel,
@@ -1662,6 +1681,26 @@ export async function createAgentStream(
           { deduplicate: false },
         );
       }
+      if (
+        !abortSignal.aborted &&
+        !state.agentContextBudgetExposed &&
+        ctx.mode === "agent" &&
+        ctx.agentModelContextEnabled &&
+        activeContextBudget > getMaxTokensForSubscription(ctx.subscription)
+      ) {
+        state.agentContextBudgetExposed = true;
+        phLogger.event("agent_model_context_exposed", {
+          userId: ctx.userId,
+          chat_id: ctx.chatId,
+          run_id: ctx.triggerRunId,
+          flag_key: AGENT_MODEL_CONTEXT_FLAG,
+          model: model.modelId,
+          context_max_tokens: activeContextBudget,
+          compaction_threshold_tokens: summarizationThreshold,
+          subscription_tier: ctx.subscription,
+          $process_person_profile: false,
+        });
+      }
       if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       ctx.onModelStreamStart?.();
@@ -1772,7 +1811,7 @@ export async function createAgentStream(
               systemPromptTokens: ctx.systemPromptTokens + networkTokens,
               ctxSystemTokens:
                 ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
-              ctxMaxTokens: ctx.ctxMaxTokens,
+              ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
@@ -1929,7 +1968,7 @@ export async function createAgentStream(
               providerOptions: getStepProviderOptions(
                 effectiveModelInfo.modelName,
               ),
-              maxTokens: ctx.ctxMaxTokens,
+              maxTokens: activeContextBudget,
               providerPromptPressure,
               compactionIndex: ctx.summarizationTracker.summarizationCount + 1,
               hasExistingSummary:
@@ -2301,7 +2340,9 @@ export async function createAgentStream(
         return true;
       },
       tokenExhaustedAfterSummarization({
-        threshold: summarizationThreshold,
+        get threshold() {
+          return summarizationThreshold;
+        },
         getLastStepInputTokens: () => state.lastStepInputTokens,
         getHasSummarized: () =>
           ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
