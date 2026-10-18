@@ -1,3 +1,4 @@
+import { appendBrowserHandoffNotes } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
@@ -1484,11 +1485,10 @@ export const subagentTask = task({
                   const serializedMessages = JSON.stringify(messages);
                   const handoffNotes = await getBrowserHandoffNotes();
                   const messagesWithUpdates = [
-                    ...(messages as ModelMessage[]),
-                    ...handoffNotes.map((note) => ({
-                      role: "user" as const,
-                      content: note.text,
-                    })),
+                    ...appendBrowserHandoffNotes(
+                      messages as ModelMessage[],
+                      handoffNotes,
+                    ),
                     ...(deadlineMessage ? [deadlineMessage] : []),
                     ...Array.from(parentUpdates.entries()).flatMap(
                       ([messageId, updateMessage]) =>

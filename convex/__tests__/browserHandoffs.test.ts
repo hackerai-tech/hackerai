@@ -1,3 +1,4 @@
+import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../../lib/ai/browser-handoff/constants";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -90,6 +91,7 @@ function fixture() {
     agentId = "parent",
     runId = "run-parent",
     sessionId = scope.sessionId,
+    lifetimeMs = 60_000,
   ) =>
     browser.registerForBackend.handler(ctx as never, {
       serviceKey: "key",
@@ -100,13 +102,38 @@ function fixture() {
       agentId,
       sandboxId: "sandbox",
       directory: "/dev/shm/hackerai-browser-0123456789abcdef01234567",
-      expiresAt: Date.now() + 60_000,
+      expiresAt: Date.now() + lifetimeMs,
     });
   return { rows, ctx, scope, register };
 }
 
 describe("browser handoff ownership", () => {
   beforeEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("accepts the six-hour run lifetime and rejects deadlines beyond its grace", async () => {
+    jest.useFakeTimers();
+    const { register } = fixture();
+    expect(
+      await register(
+        "parent",
+        "run-parent",
+        "a".repeat(32),
+        BROWSER_SESSION_MAX_LIFETIME_MS,
+      ),
+    ).toBe(true);
+    expect(
+      await register(
+        "parent",
+        "run-parent",
+        "b".repeat(32),
+        BROWSER_SESSION_MAX_LIFETIME_MS + 1,
+      ),
+    ).toBe(false);
+    expect(await register("parent", "run-parent", "c".repeat(32), 0)).toBe(
+      false,
+    );
     jest.useRealTimers();
   });
 

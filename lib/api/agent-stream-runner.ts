@@ -1,3 +1,4 @@
+import { appendBrowserHandoffNotes } from "@/lib/ai/browser-handoff/context";
 import type { ScopeRuntime } from "@/lib/engagement-scope/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
@@ -1685,22 +1686,8 @@ export async function createAgentStream(
       // Saved handoff notes can change the user's instructions. If the read
       // fails, retry/fail this step rather than act with silently missing context.
       const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
-      const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] => {
-        const existing = new Set(
-          messages.flatMap((message) =>
-            message.role === "user" && typeof message.content === "string"
-              ? [message.content]
-              : [],
-          ),
-        );
-        const result = [...messages];
-        for (const note of handoffNotes) {
-          if (existing.has(note.text)) continue;
-          result.push({ role: "user", content: note.text });
-          existing.add(note.text);
-        }
-        return result;
-      };
+      const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] =>
+        appendBrowserHandoffNotes(messages, handoffNotes);
       if (handoffNotes.length && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();

@@ -9,9 +9,8 @@ import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 
-// Agent tasks have a four-hour wall-clock limit. Keep a small cleanup grace;
-// a detached sandbox watchdog also expires checkpoints after a worker crash.
-export const BROWSER_SESSION_MAX_LIFETIME_MS = (4 * 60 + 5) * 60 * 1000;
+import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
+export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 
 type BrowserSession = {
   sessionId: string;
@@ -75,12 +74,16 @@ export class BrowserSessions {
 
   /** Retry failed setup on the next call, retaining every attempt for cleanup. */
   async prepare(sandbox: AnySandbox): Promise<Record<string, string>> {
-    if (this.closed || Date.now() >= this.expiresAt) {
+    if (this.closed) {
       throw new Error(
         "Browser session ownership has ended. Start a new Agent run.",
       );
     }
     if (!isE2BSandbox(sandbox)) return {};
+    if (Date.now() >= this.expiresAt)
+      throw new Error(
+        "Browser session ownership has ended. Start a new Agent run.",
+      );
     const sandboxId = sandbox.sandboxId;
     if (!sandboxId)
       throw new Error("Browser session sandbox identity is unavailable.");
@@ -172,11 +175,13 @@ export class BrowserSessions {
     let waited = false;
     while (true) {
       signal?.throwIfAborted();
-      if (this.closed || Date.now() >= this.expiresAt)
-        throw new Error("Browser session ownership has ended.");
+      if (this.closed) throw new Error("Browser session ownership has ended.");
       if (!this.handoffScope) return waited;
       const scope = this.handoffScope;
       const sessions = [...this.sessions.values()].filter((s) => s.registered);
+      if (!sessions.length) return waited;
+      if (Date.now() >= this.expiresAt)
+        throw new Error("Browser session ownership has ended.");
       const states = await withCancellation(
         Promise.all(
           sessions.map((session) =>

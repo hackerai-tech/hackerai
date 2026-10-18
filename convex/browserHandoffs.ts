@@ -1,3 +1,4 @@
+import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../lib/ai/browser-handoff/constants";
 import { v } from "convex/values";
 import {
   mutation,
@@ -174,7 +175,7 @@ export const registerForBackend = mutation({
       !/^\/dev\/shm\/hackerai-browser-[a-f0-9]{24}$/.test(args.directory) ||
       !/^[a-zA-Z0-9_-]{1,128}$/.test(args.sandboxId) ||
       args.expiresAt <= Date.now() ||
-      args.expiresAt > Date.now() + 4.1 * 60 * 60 * 1000
+      args.expiresAt > Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS
     )
       return false;
     const probe = {

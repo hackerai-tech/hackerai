@@ -1,5 +1,8 @@
 import type { AnySandbox } from "@/types";
-import { BrowserSessions } from "../browser-sessions";
+import {
+  BROWSER_SESSION_MAX_LIFETIME_MS,
+  BrowserSessions,
+} from "../browser-sessions";
 
 const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
@@ -161,6 +164,54 @@ it("continues on the current replacement sandbox without admitting an obsolete o
   await expect(sessions.waitForAgentControl()).resolves.toBe(false);
   mockQuery.mockResolvedValue(null);
   await expect(sessions.waitForAgentControl()).rejects.toThrow(
+    "ownership has ended",
+  );
+});
+
+it("does not impose browser expiry on runs without a registered browser", async () => {
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run",
+    agentId: "parent",
+    serviceKey: "test-key",
+  });
+  jest.setSystemTime(Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS);
+  await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+  await expect(
+    sessions.prepare({ sandboxKind: "centrifugo" } as unknown as AnySandbox),
+  ).resolves.toEqual({});
+  expect(mockQuery).not.toHaveBeenCalled();
+  await sessions.cleanup();
+  await expect(sessions.waitForAgentControl()).rejects.toThrow(
+    "ownership has ended",
+  );
+});
+
+it("supports browser setup late in a six-hour run but enforces final expiry", async () => {
+  const startedAt = Date.now();
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run",
+    agentId: "parent",
+    serviceKey: "test-key",
+  });
+  const sandbox = {
+    sandboxId: "late",
+    commands: {
+      run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+    },
+  } as unknown as AnySandbox;
+  jest.setSystemTime(startedAt + 5.75 * 60 * 60 * 1000);
+  await sessions.prepare(sandbox);
+  mockQuery.mockResolvedValue({ state: "agent", runActive: true });
+  await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+  jest.setSystemTime(startedAt + BROWSER_SESSION_MAX_LIFETIME_MS);
+  await expect(sessions.waitForAgentControl()).rejects.toThrow(
+    "ownership has ended",
+  );
+  await expect(sessions.prepare(sandbox)).rejects.toThrow(
     "ownership has ended",
   );
 });
