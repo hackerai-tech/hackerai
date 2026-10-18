@@ -15,7 +15,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
 
@@ -266,13 +266,21 @@ jest.mock("../ChatInput", () => ({
 }));
 
 jest.mock("../ComputerSidebar", () => ({
-  ComputerSidebar: () => (
-    <div data-testid="computer-sidebar">
-      Sidebar
-      <button type="button">First computer action</button>
-      <button type="button">Last computer action</button>
-    </div>
-  ),
+  ComputerSidebar: () => {
+    const [draft, setDraft] = useState("");
+    return (
+      <div data-testid="computer-sidebar">
+        Sidebar
+        <button type="button">First computer action</button>
+        <textarea
+          aria-label="Computer draft"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <button type="button">Last computer action</button>
+      </div>
+    );
+  },
 }));
 
 jest.mock("../ChatHeader", () => ({
@@ -1444,6 +1452,46 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("preserves an open editor draft across split and overlay layouts", async () => {
+      const view = (
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view);
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Unsaved goal edits" } },
+      );
+      mockComputerOverlayMedia = true;
+      rerender(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(
+        screen.getByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Unsaved goal edits");
+      mockComputerOverlayMedia = false;
+      rerender(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(
+        screen.queryByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Unsaved goal edits");
+    });
     it("should render sidebar on desktop", () => {
       render(
         <TestWrapper>

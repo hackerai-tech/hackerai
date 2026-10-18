@@ -78,3 +78,38 @@ it("keeps an automatically derived criterion aligned with an edited objective", 
     screen.getByRole("textbox", { name: "Goal success criteria" }),
   ).toHaveValue("Updated objective");
 });
+
+it("explains invalid criteria before saving and permits correction without losing the objective", async () => {
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  const close = jest.fn();
+  render(<AgentGoalEditor chatId="chat" onClose={close} />);
+  const criteria = screen.getByRole("textbox", {
+    name: "Goal success criteria",
+  });
+  const save = screen.getByRole("button", { name: "Save and pause" });
+  fireEvent.change(criteria, {
+    target: {
+      value: Array.from({ length: 9 }, (_, i) => `Outcome ${i + 1}`).join("\n"),
+    },
+  });
+  expect(criteria).toHaveAccessibleDescription(
+    expect.stringContaining("up to 8"),
+  );
+  expect(save).toBeDisabled();
+  fireEvent.click(save);
+  expect(fetch).not.toHaveBeenCalled();
+  fireEvent.change(criteria, { target: { value: "x".repeat(1001) } });
+  expect(criteria).toHaveAccessibleDescription(
+    expect.stringContaining("1,000 characters"),
+  );
+  expect(save).toBeDisabled();
+  fireEvent.change(criteria, {
+    target: { value: "The requested result is verified." },
+  });
+  expect(save).toBeEnabled();
+  expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+    "Old objective",
+  );
+  fireEvent.click(save);
+  await waitFor(() => expect(close).toHaveBeenCalled());
+});

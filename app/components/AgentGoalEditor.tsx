@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -66,10 +66,28 @@ function GoalForm({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const criteriaHelpId = useId();
+  const parsedCriteria = criteria
+    .split("\n")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const criteriaError =
+    parsedCriteria.length > 8
+      ? "Use up to 8 success criteria, one per line."
+      : parsedCriteria.some((c) => c.length > 1000)
+        ? "Keep each success criterion within 1,000 characters. Split longer criteria across separate lines."
+        : "";
   const stale = version !== goal.generation;
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    if (saving || stale) return;
+    if (
+      saving ||
+      stale ||
+      criteriaError ||
+      !objective.trim() ||
+      !parsedCriteria.length
+    )
+      return;
     setSaving(true);
     setError("");
     try {
@@ -81,10 +99,7 @@ function GoalForm({
           chatId: goal.chatId,
           generation: version,
           objective,
-          criteria: criteria
-            .split("\n")
-            .map((c) => c.trim())
-            .filter(Boolean),
+          criteria: parsedCriteria,
           ...contract,
         }),
       });
@@ -112,7 +127,13 @@ function GoalForm({
         <Button
           type="submit"
           size="sm"
-          disabled={saving || stale || !objective.trim() || !criteria.trim()}
+          disabled={
+            saving ||
+            stale ||
+            !!criteriaError ||
+            !objective.trim() ||
+            !parsedCriteria.length
+          }
         >
           {saving ? "Saving…" : "Save and pause"}
         </Button>
@@ -153,11 +174,21 @@ function GoalForm({
           <span>Success criteria · one per line</span>
           <Textarea
             aria-label="Goal success criteria"
+            aria-describedby={criteriaHelpId}
+            aria-invalid={!!criteriaError}
             value={criteria}
             onChange={(e) => setCriteria(e.target.value)}
             rows={4}
             required
           />
+          <span
+            id={criteriaHelpId}
+            role={criteriaError ? "alert" : undefined}
+            className={`block text-xs ${criteriaError ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {criteriaError ||
+              "Up to 8 criteria, with 1,000 characters per criterion."}
+          </span>
         </label>
         <details>
           <summary className="cursor-pointer text-sm">

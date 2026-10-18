@@ -2607,17 +2607,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             </div>
           </div>
 
-          {/* Desktop Computer Sidebar */}
-          {!computerSidebarOverlay && (
+          {/* Keep one sidebar subtree so responsive layout changes preserve editor drafts. */}
+          {(!computerSidebarOverlay || sidebarOpen) && (
             <div
-              className={`min-w-0 transition-[width] duration-300 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
-              }`}
-              data-layout="split"
+              ref={computerSidebarOverlay ? computerDialogRef : undefined}
+              className={
+                computerSidebarOverlay
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
+              }
+              role={computerSidebarOverlay ? "dialog" : undefined}
+              aria-modal={computerSidebarOverlay ? true : undefined}
+              aria-label={
+                computerSidebarOverlay ? "HackerAI’s Computer" : undefined
+              }
+              tabIndex={computerSidebarOverlay ? -1 : undefined}
+              data-layout={computerSidebarOverlay ? "overlay" : "split"}
               data-testid="computer-sidebar-container"
             >
               {sidebarOpen && (
-                <ComputerSidebar messages={messages} status={status} />
+                <div
+                  className={`h-full w-full ${computerSidebarOverlay ? "max-w-4xl" : ""}`}
+                >
+                  <ComputerSidebar messages={messages} status={status} />
+                </div>
               )}
             </div>
           )}
@@ -2628,24 +2641,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             isDragOver={isDragOver}
           />
         </div>
-
-        {/* Computer overlay for mobile and narrow desktop workspaces. */}
-        {computerSidebarOverlay && sidebarOpen && (
-          <div
-            ref={computerDialogRef}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label="HackerAI’s Computer"
-            tabIndex={-1}
-            data-layout="overlay"
-            data-testid="computer-sidebar-container"
-          >
-            <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
-            </div>
-          </div>
-        )}
       </div>
     </>
   );
