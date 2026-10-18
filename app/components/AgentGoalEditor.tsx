@@ -139,7 +139,11 @@ function GoalForm({
             autoFocus
             aria-label="Goal objective"
             value={objective}
-            onChange={(e) => setObjective(e.target.value)}
+            onChange={(e) => {
+              if (criteria.trim() === objective.trim())
+                setCriteria(e.target.value);
+              setObjective(e.target.value);
+            }}
             maxLength={4000}
             rows={6}
             required

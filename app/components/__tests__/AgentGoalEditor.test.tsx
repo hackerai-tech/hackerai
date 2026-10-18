@@ -67,3 +67,14 @@ it("keeps a failed edit visible and rejects a stale draft", async () => {
     "Keep this draft",
   );
 });
+
+it("keeps an automatically derived criterion aligned with an edited objective", () => {
+  setMockQueryResult({ ...goal, criteria: [goal.objective] });
+  render(<AgentGoalEditor chatId="chat" onClose={jest.fn()} />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+    target: { value: "Updated objective" },
+  });
+  expect(
+    screen.getByRole("textbox", { name: "Goal success criteria" }),
+  ).toHaveValue("Updated objective");
+});

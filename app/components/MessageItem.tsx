@@ -19,7 +19,13 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { ChevronDown, ChevronUp, FileSearch } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  FileSearch,
+  Target,
+  CircleCheck,
+} from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -706,12 +712,21 @@ export const MessageItem = memo(function MessageItem({
             className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
             aria-label="Goal message status"
           >
-            {isUser && message.metadata.goal.sent
-              ? "◎ Sent as goal"
-              : !isUser &&
-                  typeof message.metadata.goal.achievedElapsedMs === "number"
-                ? `✓ Goal achieved in ${formatGoalDuration(message.metadata.goal.achievedElapsedMs)}`
-                : null}
+            {isUser && message.metadata.goal.sent ? (
+              <>
+                <Target className="size-3.5" aria-hidden="true" />
+                <span>Sent as goal</span>
+              </>
+            ) : !isUser &&
+              typeof message.metadata.goal.achievedElapsedMs === "number" ? (
+              <>
+                <CircleCheck className="size-3.5" aria-hidden="true" />
+                <span title="Elapsed time from goal creation, including pauses and waiting">
+                  Goal achieved in{" "}
+                  {formatGoalDuration(message.metadata.goal.achievedElapsedMs)}
+                </span>
+              </>
+            ) : null}
           </div>
         )}
         <MessageActions
