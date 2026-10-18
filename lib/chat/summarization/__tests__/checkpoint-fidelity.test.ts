@@ -56,7 +56,7 @@ const recentTransaction = (cycle: number): ModelMessage[] => [
         toolName: "read_file",
         output: {
           type: "text",
-          value: `Restricted harness: candidate A rejected. Candidate B still inconclusive. Check ${cycle} completed.`,
+          value: `Artifact inspection: Check ${cycle} completed. No new candidate result.`,
         },
       },
     ],
@@ -91,7 +91,28 @@ describe("checkpoint fidelity under summary input pressure", () => {
     const bounded = boundModelMessagesForSummarization(messages, {
       maxInputTokens: 1024,
     });
+    expect(bounded.length).toBeGreaterThan(0);
+    expect(JSON.stringify(bounded)).toContain("Recent observation");
     expect(estimateSummaryInputTokens(bounded)).toBeLessThanOrEqual(1024);
+  });
+
+  it("does not call the provider if the budget cannot retain source history", async () => {
+    const model = new MockLanguageModelV3();
+    await expect(
+      generateSummaryText(
+        [],
+        model,
+        "agent",
+        "Summarize.",
+        false,
+        undefined,
+        undefined,
+        undefined,
+        recentTransaction(1),
+        1,
+      ),
+    ).rejects.toThrow("cannot retain any source history");
+    expect(model.doGenerateCalls).toHaveLength(0);
   });
 
   it("does not replay signatures for reasoning shortened in the summary copy", () => {
@@ -150,6 +171,7 @@ describe("checkpoint fidelity under summary input pressure", () => {
         expect(serialized).toContain(`Check ${cycle} completed`);
         if (cycle === 1) {
           expect(serialized).toContain("initially reported working");
+          expect(serialized).toContain("Correction: candidate A rejected");
         } else {
           expect(serialized).toContain("Candidate A: REJECTED");
           expect(serialized).not.toContain("initially reported working");
@@ -176,6 +198,13 @@ describe("checkpoint fidelity under summary input pressure", () => {
     });
     for (cycle = 1; cycle <= 4; cycle++) {
       history.push(...recentTransaction(cycle));
+      if (cycle === 1) {
+        history.push({
+          role: "user",
+          content:
+            "Correction: candidate A rejected. The permissive harness is not representative of the restricted harness. Candidate B remains inconclusive.",
+        });
+      }
       const result = await generateSummaryText(
         [],
         model,

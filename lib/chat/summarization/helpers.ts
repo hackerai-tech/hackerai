@@ -692,25 +692,31 @@ const fallbackSummaryInputMessages = (
   messages: ModelMessage[],
   maxInputTokens: number,
 ): ModelMessage[] => {
+  const project = (transcript: string): ModelMessage[] => [
+    {
+      role: "user",
+      content: `[Summary input transcript was too large after compaction; sanitized transcript follows.]\n${transcript}`,
+    },
+  ];
+  const overhead = estimateSummaryInputTokens(project(""));
   const source = stringifySummaryMessages(messages);
-  let transcriptBudget = Math.max(0, maxInputTokens - 64);
+  let transcriptBudget = Math.max(0, maxInputTokens - overhead);
   while (transcriptBudget > 0) {
     const transcript = truncateContent(
       source,
       "\n[Summary input transcript shortened: middle omitted]\n",
       transcriptBudget,
     );
-    const projected: ModelMessage[] = [
-      {
-        role: "user",
-        content: `[Summary input transcript was too large after compaction; sanitized transcript follows.]\n${transcript}`,
-      },
-    ];
+    const projected = project(transcript);
     // Wrapping JSON in a text message escapes it again. Budget the actual
     // encoded projection, not just the transcript before it is wrapped.
     const tokens = estimateSummaryInputTokens(projected);
     if (tokens <= maxInputTokens) return projected;
-    transcriptBudget -= Math.max(1, tokens - maxInputTokens);
+    const scale = (maxInputTokens - overhead) / Math.max(1, tokens - overhead);
+    transcriptBudget = Math.min(
+      transcriptBudget - 1,
+      Math.floor(transcriptBudget * scale),
+    );
   }
   return [];
 };
@@ -858,6 +864,9 @@ export const generateSummaryText = async (
       });
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
+  if (sourceModelMessages.length > 0 && summaryModelMessages.length === 0) {
+    throw new Error("Summary input budget cannot retain any source history");
+  }
   if (
     generationOptions?.preservePrefix &&
     estimatedCompactedInputTokens > summaryInputMaxTokens
