@@ -2,7 +2,7 @@ import { generateText, Output, type UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import { myProvider, resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { isAgentAutoReviewFilesystemDeletionCommand } from "@/lib/chat/agent-auto-review-evidence";
@@ -28,10 +28,8 @@ const CONVERSATION_CONTEXT_SEPARATOR =
   "\n\n--- next retained conversation item ---\n\n";
 const USER_CONTEXT_TRUNCATION_TAG = "user_content_truncated";
 export const AGENT_AUTO_REVIEW_TIMEOUT_MS = 15_000;
-export const AGENT_AUTO_REVIEW_MODEL = resolveTierToProviderKey(
-  "hackerai-standard",
-  "agent",
-);
+export const AGENT_AUTO_REVIEW_MODEL =
+  resolveAgentTierToProviderKey("hackerai-standard");
 export const AGENT_AUTO_REVIEW_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },

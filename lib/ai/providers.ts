@@ -8,7 +8,7 @@ import {
   ABLITERATION_MODEL_KEY,
 } from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import type { ChatMode, SelectedModel } from "@/types/chat";
+import type { SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -1464,36 +1464,24 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   );
 }
 
-/**
- * Map a HackerAI tier id to the underlying provider key for a given mode.
- * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to GLM 5.3 Flash. Pro uses DeepSeek
- * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses GLM 5.3 in both
- * modes; media-aware routing happens in `selectModel`.
- */
-export function resolveTierToProviderKey(
+/** Resolve a paid Agent tier. Auto is selected by the caller. */
+export function resolveAgentTierToProviderKey(
   tier: Exclude<SelectedModel, "auto">,
-  mode: ChatMode,
 ): ModelName;
-export function resolveTierToProviderKey(tier: "auto", mode: ChatMode): null;
-export function resolveTierToProviderKey(
+export function resolveAgentTierToProviderKey(tier: "auto"): null;
+export function resolveAgentTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
 ): ModelName | null;
-export function resolveTierToProviderKey(
+export function resolveAgentTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
 ): ModelName | null {
-  if (tier === "auto") return null;
   switch (tier) {
+    case "auto":
+      return null;
     case "hackerai-standard":
-      return mode === "agent"
-        ? "model-glm-5.3-flash-agent"
-        : "model-glm-5.3-flash";
+      return "model-glm-5.3-flash-agent";
     case "hackerai-pro":
-      return mode === "agent"
-        ? "model-deepseek-v4-flash-vision-pro"
-        : "model-deepseek-v4-pro-0813";
+      return "model-deepseek-v4-flash-vision-pro";
     case "hackerai-max":
       return "model-glm-5.3";
   }

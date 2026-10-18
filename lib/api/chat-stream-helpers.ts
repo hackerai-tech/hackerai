@@ -1497,25 +1497,7 @@ export function assertFreeAgentGates(args: {
   }
 }
 
-/**
- * Paid plans are Agent-only. Enforce this at the API boundary so stale clients
- * and direct requests cannot restore the removed paid Ask path.
- */
-export function assertChatModeAccess(args: {
-  mode: unknown;
-  subscription: SubscriptionTier;
-}): void {
-  if (args.mode !== "ask" && args.mode !== "agent") {
-    throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
-  }
-
-  if (args.mode !== "ask" || args.subscription === "free") return;
-
-  throw new ChatSDKError(
-    "forbidden:chat",
-    "Paid plans use Agent mode. Ask mode is only available on the free plan.",
-  );
-}
+export { assertChatModeAccess } from "@/lib/utils/mode-helpers";
 
 /**
  * Build the extra-usage config for paid users with `extra_usage_enabled`.

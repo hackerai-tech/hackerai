@@ -77,7 +77,7 @@ describe("ModelSelector", () => {
   });
 
   it("shows model choices immediately while Auto is selected", () => {
-    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
 
@@ -127,10 +127,21 @@ describe("ModelSelector", () => {
     },
   );
 
+  it("keeps Agent tiers locked as upgrades in Free Ask", () => {
+    mockSubscription = "free";
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Model$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(mockRedirectToPricing).toHaveBeenCalled();
+  });
+
   it("selects Auto as a first-class option", () => {
     const onChange = jest.fn();
     render(
-      <ModelSelector value="hackerai-pro" onChange={onChange} mode="ask" />,
+      <ModelSelector value="hackerai-pro" onChange={onChange} mode="agent" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
@@ -141,19 +152,6 @@ describe("ModelSelector", () => {
     );
 
     expect(onChange).toHaveBeenCalledWith("auto");
-  });
-
-  it("selects HackerAI Pro in ask mode without a high-cost warning", () => {
-    const onChange = jest.fn();
-    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
-
-    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
-
-    expect(
-      screen.queryByTestId("high-cost-model-warning"),
-    ).not.toBeInTheDocument();
-    expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
   it("selects HackerAI Pro in agent mode without a high-cost warning", () => {
