@@ -59,6 +59,8 @@ SELECT arm, mode, selector, tier, count() AS selected,
         toUnixTimestamp(toDateTime('{as_of_utc}', 'UTC')) * 1000) AS expired_unanswered,
     countIf(answer IN ('solved', 'helpful', 'no', 'not_checked')) / nullIf(count(), 0) AS response_rate,
     countIf(answer = 'solved') / nullIf(countIf(answer IN ('solved', 'helpful', 'no')), 0) AS solved_fraction,
-    countIf(answer = 'solved') / nullIf(count(), 0) AS solved_per_selected
+    countIf(answer = 'solved') / nullIf(count(), 0) AS solved_per_selected,
+    countIf(answer IN ('solved', 'helpful')) / nullIf(countIf(answer IN ('solved', 'helpful', 'no')), 0) AS helpful_or_solved_fraction,
+    countIf(answer IN ('solved', 'helpful')) / nullIf(count(), 0) AS helpful_or_solved_per_selected
 FROM per_user
 GROUP BY arm, mode, selector, tier

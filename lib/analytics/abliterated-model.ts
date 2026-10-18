@@ -8,7 +8,10 @@ import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
-import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import {
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
+  type AbliteratedAssignment,
+} from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
@@ -116,6 +119,9 @@ export class AbliteratedModelTelemetry {
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
+      ...(args.assignment.key === ABLITERATED_SHORT_FOLLOWUP_KEY && {
+        followup_measurement_version: 1,
+      }),
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
       )

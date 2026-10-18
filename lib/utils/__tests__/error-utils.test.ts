@@ -41,6 +41,12 @@ describe("missing error messages", () => {
       });
     },
   );
+
+  it("does not throw when a provider message contains a circular value", () => {
+    const value: { message?: unknown } = {};
+    value.message = value;
+    expect(getErrorMessage(value)).toBe("Unknown error occurred");
+  });
 });
 
 describe("extractRetryAttempts -> request_id", () => {

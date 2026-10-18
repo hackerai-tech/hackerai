@@ -1,7 +1,9 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_SHORT_FOLLOWUP_KEY,
 } from "../abliterated-model";
+import { resolveAbliterationModelForGenerationStep } from "../abliterated-model-steps";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
 import type { SubscriptionTier } from "@/types";
@@ -155,9 +157,10 @@ describe("paid moderation-gated three-step Abliteration", () => {
             mode,
             subscription: "free",
             selectedModelOverride,
-            previewDiagnosticContext: {
+            diagnosticContext: {
               chatId: "free-chat",
               requestId: "free-run",
+              logAll: true,
             },
           }),
         ).resolves.toBeUndefined();
@@ -230,13 +233,14 @@ describe("paid moderation-gated three-step Abliteration", () => {
     },
   );
   it("diagnoses the default without customer content and without changing behavior on logging failure", async () => {
-    const previewDiagnosticContext = {
+    const diagnosticContext = {
       chatId: "test-chat",
       requestId: "test-run",
+      logAll: true,
     };
     const result = await evaluateAbliteratedModel({
       ...defaults,
-      previewDiagnosticContext,
+      diagnosticContext,
     });
     expect(result?.key).toBe(
       ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
@@ -257,8 +261,149 @@ describe("paid moderation-gated three-step Abliteration", () => {
     await expect(
       evaluateAbliteratedModel({
         ...defaults,
-        previewDiagnosticContext,
+        diagnosticContext,
       }),
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+  });
+
+  describe("bounded same-chat follow-up", () => {
+    const shortFollowup = [
+      {
+        id: "followup",
+        role: "user" as const,
+        parts: [
+          {
+            type: "text" as const,
+            text: "Why did you stop helping with this authorized test?",
+          },
+        ],
+      },
+    ];
+    const continuity = {
+      ...defaults,
+      posthog: {} as any,
+      moderationEligible: false,
+      allowsAbliterationContinuation: true,
+      independentAbliterationSeedCount: 2,
+      continuationTurn: true,
+      messages: shortFollowup,
+    };
+
+    it.each(["ask", "agent"] as const)(
+      "uses same-chat preference on %s without timestamps and returns to baseline on step two",
+      async (mode) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+        const assignment = await evaluateAbliteratedModel({
+          ...continuity,
+          mode,
+        });
+        expect(assignment).toMatchObject({
+          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          modelKey: ABLITERATION_MODEL_KEY,
+          baselineModel: defaults.selectedModel,
+          generationStepLimit: 1,
+          selectionSource: "history",
+        });
+        expect(getPostHogFlagWithoutExposure).toHaveBeenCalledWith(
+          expect.anything(),
+          ABLITERATED_SHORT_FOLLOWUP_KEY,
+          "u",
+          expect.objectContaining({ subscription_tier: "pro" }),
+        );
+        expect(
+          resolveAbliterationModelForGenerationStep({
+            treatmentModel: assignment!.modelKey,
+            baselineModel: assignment!.baselineModel,
+            generationStepLimit: assignment!.generationStepLimit,
+            stepIndex: 0,
+          }),
+        ).toBe(ABLITERATION_MODEL_KEY);
+        expect(
+          resolveAbliterationModelForGenerationStep({
+            treatmentModel: assignment!.modelKey,
+            baselineModel: assignment!.baselineModel,
+            generationStepLimit: assignment!.generationStepLimit,
+            stepIndex: 1,
+          }),
+        ).toBe(defaults.selectedModel);
+      },
+    );
+
+    it.each([
+      ["new or branched chat", { independentAbliterationSeedCount: 0 }],
+      ["one seed", { independentAbliterationSeedCount: 1 }],
+      ["failed moderation", { allowsAbliterationContinuation: false }],
+      ["unchecked moderation", { moderationChecked: false }],
+      ["regeneration or auto-run", { continuationTurn: false }],
+      ["free plan", { subscription: "free" as const }],
+      ["rescue", { limitRescue: true }],
+      [
+        "long message",
+        {
+          messages: [
+            {
+              ...shortFollowup[0],
+              parts: [{ type: "text" as const, text: "x".repeat(201) }],
+            },
+          ],
+        },
+      ],
+      [
+        "unsupported file",
+        {
+          messages: [
+            {
+              ...shortFollowup[0],
+              parts: [
+                {
+                  type: "file" as const,
+                  mediaType: "application/pdf",
+                  url: "https://example.test/test.pdf",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    ])("keeps the baseline for %s", async (_label, overrides) => {
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+      expect(
+        await evaluateAbliteratedModel({
+          ...continuity,
+          ...(overrides as object),
+        }),
+      ).toBeUndefined();
+    });
+
+    it.each(["ask", "agent"] as const)(
+      "enrolls %s control without changing its model",
+      async (mode) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
+        expect(
+          await evaluateAbliteratedModel({ ...continuity, mode }),
+        ).toMatchObject({
+          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          variant: "control",
+          modelKey: defaults.selectedModel,
+          baselineModel: defaults.selectedModel,
+          selectionSource: "history",
+        });
+      },
+    );
+    it.each([false, undefined, true, "unexpected"])(
+      "does not enroll invalid/off flag value %s",
+      async (value) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
+        expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+      },
+    );
+    it("keeps the baseline when the flag is off or unavailable", async () => {
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValueOnce(false);
+      expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+      jest
+        .mocked(getPostHogFlagWithoutExposure)
+        .mockRejectedValueOnce(new Error("flag unavailable"));
+      expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+    });
   });
 });
