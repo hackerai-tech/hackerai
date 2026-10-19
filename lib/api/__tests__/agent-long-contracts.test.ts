@@ -643,7 +643,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     expect(agentPartialSaveRouteSrc).toMatch(/getUserID\(req\)/);
     expect(agentPartialSaveRouteSrc).toMatch(
-      /assertUserCanAccessChatHistory\(\s*userId(?:\s*,|\s*\))/,
+      /await assertUserCanAccessChatHistory\(userId,\s*\{\s*retryNetworkFailure:\s*true,\s*signal:\s*req\.signal,?\s*\}\)/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(
       /getChatById\(\{\s*id:\s*body\.chatId\s*\}\)/,
@@ -1697,13 +1697,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
-      /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+      /getNextProviderDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
     );
     expect(taskSrc).toMatch(
       /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
     );
     expect(
-      taskSrc.match(/getNextDeepSeekProDisconnectRetryModel\(\{/g),
+      taskSrc.match(/getNextProviderDisconnectRetryModel\(\{/g),
     ).toHaveLength(1);
     const finalRetryCacheBaselineIdx = taskSrc.indexOf(
       "preFallbackCacheRead =",
