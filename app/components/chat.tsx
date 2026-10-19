@@ -1,4 +1,5 @@
 "use client";
+import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
@@ -1082,6 +1083,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }),
   );
 
+  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+    chatId: string;
+    sequence: number;
+  } | null>(null);
+
   const {
     messages,
     sendMessage: sendMessageUnchecked,
@@ -1127,6 +1133,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
         case "data-cloud-connection-error": {
+          setCloudConnectionFailure((prior) => ({
+            chatId,
+            sequence: (prior?.sequence ?? 0) + 1,
+          }));
           const data = dataPart.data as { code?: unknown };
           if (data?.code === "timeout") {
             toast.error(
@@ -2416,6 +2426,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               isChatNotFound={isChatNotFound}
               branchedFromChatTitle={branchedFromChatTitle}
             />
+
+            {sandboxPreference === "e2b" && subscription !== "free" && (
+              <div className="mx-auto w-full max-w-[768px] px-4">
+                <CloudWorkspaceRecovery
+                  key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
+                  surface={
+                    cloudConnectionFailure?.chatId === chatId
+                      ? "cloud_connection_error"
+                      : "workspace_status"
+                  }
+                />
+              </div>
+            )}
 
             {/* Chat interface */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0">
