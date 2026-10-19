@@ -199,14 +199,11 @@ describe("security validation subagent runtime contracts", () => {
     );
     expectMarkerOrder(
       acceptResult,
-      "await verifyResultEvidence(",
+      "await verifySubagentResultAfterHandoff(",
       "markSubagentFinalizing(",
     );
-    expectMarkerOrder(
-      acceptResult,
-      "await waitForBrowserHandoff(activeAbort.signal)",
-      "await observeFinalization(",
-    );
+    expect(acceptResult).toContain("getNotes: getBrowserHandoffNotes");
+    expect(acceptResult).toContain("waitForControl: waitForBrowserHandoff");
     const onFinish = child.slice(
       child.indexOf("onFinish: async () =>"),
       child.indexOf("onStepFinish: async"),

@@ -1,3 +1,4 @@
+import { verifySubagentResultAfterHandoff } from "@/lib/ai/subagents/result-handoff";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
@@ -778,27 +779,21 @@ export const subagentTask = task({
                 };
               }
               runtimeStage = "evidence_verification";
-              const evidence = await verifyResultEvidence({
-                result: parsed,
-                sandbox,
-                expectedSandboxIdentity: row.sandbox_identity,
+              const evidence = await verifySubagentResultAfterHandoff({
+                verify: () =>
+                  verifyResultEvidence({
+                    result: parsed,
+                    sandbox,
+                    expectedSandboxIdentity: row.sandbox_identity,
+                    signal: activeAbort.signal,
+                    authorize: assertRuntimeAuthorized,
+                  }),
+                getNotes: getBrowserHandoffNotes,
+                waitForControl: waitForBrowserHandoff,
                 signal: activeAbort.signal,
-                authorize: assertRuntimeAuthorized,
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
-              // Finalizing ends browser ownership. Keep it running until the
-              // user returns control, and reconsider a result prepared earlier.
-              if (
-                !activeAbort.signal.aborted &&
-                (await waitForBrowserHandoff(activeAbort.signal))
-              ) {
-                return {
-                  accepted: false,
-                  error:
-                    "Human browser takeover completed. Read the handoff context and take a fresh browser snapshot before submitting the result again.",
-                };
-              }
               const finalizing = await observeFinalization(
                 "result_submission",
                 Boolean(resultValue),
