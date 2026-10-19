@@ -1,4 +1,3 @@
-import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
@@ -84,10 +83,7 @@ export const MessageErrorState = (props: MessageErrorStateProps) => {
       <MessageErrorContent {...props} />
     </BlockedChatBillingRecovery>
   ) : (
-    <>
-      <MessageErrorContent {...props} />
-      {props.mode === "agent" && <CloudWorkspaceRecovery />}
-    </>
+    <MessageErrorContent {...props} />
   );
 };
 

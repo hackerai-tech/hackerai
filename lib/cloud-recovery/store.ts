@@ -16,6 +16,7 @@ export const failureSchema = z.object({
   sandboxVersion: z.string().min(1),
   attempts: z.array(z.string().uuid()).min(1).max(2),
   uncertain: z.boolean(),
+  timeoutOnly: z.boolean().optional(),
   lastFailedAt: z.number(),
 });
 export type ResumeFailures = z.infer<typeof failureSchema>;
@@ -50,6 +51,7 @@ export async function recordResumeFailure(args: {
   sandboxVersion: string;
   acquisitionId: string;
   uncertain: boolean;
+  timeoutOnly?: boolean;
 }) {
   // No new runtime writes until the environment has an explicit recovery target.
   if (!process.env.CLOUD_DISK_RECOVERY_TARGETS) return;
@@ -72,8 +74,17 @@ export async function recordResumeFailure(args: {
      if raw then
        local prior = cjson.decode(raw)
        if prior.sandboxId == next.sandboxId and prior.region == next.region and prior.template == next.template and prior.sandboxVersion == next.sandboxVersion then
-         next.attempts = prior.attempts; next.uncertain = prior.uncertain or next.uncertain
-         for _, id in ipairs(next.attempts) do if id == ARGV[2] then return 0 end end
+         next.attempts = prior.attempts
+         next.timeoutOnly = (not prior.uncertain or prior.timeoutOnly == true) and (not next.uncertain or next.timeoutOnly == true)
+         next.uncertain = prior.uncertain or next.uncertain
+         for _, id in ipairs(next.attempts) do
+           if id == ARGV[2] then
+             if next.uncertain ~= prior.uncertain or (next.uncertain and next.timeoutOnly ~= prior.timeoutOnly) then
+               redis.call('SET', KEYS[1], cjson.encode(next), 'EX', 86400)
+             end
+             return 0
+           end
+         end
          if #next.attempts < 2 then table.insert(next.attempts, ARGV[2]) end
        end
      end
@@ -98,7 +109,7 @@ export async function offerConsent(userId: string, target: ResumeFailures) {
     issuedAt: Date.now(),
   };
   await recoveryRedis().set(consentKey(userId), record, { nx: true });
-  // A permanent record prevents prompting or rebooting again after a refresh.
+  // Executed and failed receipts are permanent. Only unconsumed offers can renew.
   return (await readConsent(userId))!;
 }
 export async function decideConsent(
@@ -130,4 +141,23 @@ export async function failConsent(userId: string, token: string) {
     [consentKey(userId)],
     [token],
   );
+}
+
+/** Reopening or refreshing an unconsumed offer cannot reset an attempted recovery. */
+export async function renewConsent(userId: string, consent: RecoveryConsent) {
+  const next: RecoveryConsent = {
+    ...consent,
+    token: randomUUID(),
+    status: "offered",
+    issuedAt: Date.now(),
+  };
+  const changed = await recoveryRedis().eval(
+    `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end
+     local current = cjson.decode(raw)
+     if current.token ~= ARGV[1] or (current.status ~= 'offered' and current.status ~= 'declined') then return 0 end
+     redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+    [consentKey(userId)],
+    [consent.token, JSON.stringify(next)],
+  );
+  return changed === 1 ? next : null;
 }

@@ -115,11 +115,12 @@ export function validateDiskRecoveryAuthorization(
 function assertIdentity(
   info: SandboxInfo,
   auth: DiskRecoveryAuthorization,
+  expectedState: "paused" | "running" = "paused",
 ): void {
   const cluster = getE2BClusterRouting(auth.region).createCluster;
   if (
     info.sandboxId !== auth.sandboxId ||
-    info.state !== "paused" ||
+    info.state !== expectedState ||
     info.metadata?.userID !== auth.userId ||
     info.metadata?.e2bCluster !== cluster.cluster ||
     info.metadata?.template !== auth.expectedTemplate ||
@@ -176,7 +177,9 @@ export async function recoverE2BDiskOnly(
     (existingResult as { token?: string }).token === auth.idempotencyKey
   ) {
     if (
-      (existingResult as { status?: string }).status !== "verified_paused" ||
+      !["verified_paused", "verified_ready"].includes(
+        (existingResult as { status?: string }).status ?? "",
+      ) ||
       (existingResult as { sandboxId?: string }).sandboxId !== auth.sandboxId ||
       (existingResult as { region?: string }).region !== auth.region
     )
@@ -208,12 +211,12 @@ export async function recoverE2BDiskOnly(
     assertIdentity(info, auth);
     if (
       customer &&
-      (info.lifecycle?.autoResume !== false ||
+      (typeof info.lifecycle?.autoResume !== "boolean" ||
         info.lifecycle?.onTimeout !== "pause")
     )
       throw new DiskRecoveryError(
         "traffic",
-        "Inbound auto-resume cannot be safely isolated",
+        "Workspace lifecycle is unverified",
       );
     // Unknown extra metadata can encode a preservation hold or provider action.
     if (
@@ -248,8 +251,9 @@ export async function recoverE2BDiskOnly(
   });
   let stage = "identity";
   try {
-    // Recheck after fencing: never reboot a sandbox that was started by
-    // inbound auto-resume or a connection already in flight.
+    // Recheck after fencing. E2B arbitrates a later inbound race: an in-flight
+    // restore refuses reboot; an already-running sandbox is returned unchanged.
+    // Never pause a newly running sandbox here merely to force a reboot.
     await assertTarget();
     if (customer) await customer.assertIdle();
     stage = "reboot";
@@ -379,9 +383,29 @@ export async function recoverE2BDiskOnly(
       );
     if (customer) await assertTarget();
     await claim.update({ step: "final_state_paused" });
+    if (customer) {
+      // Restore access ourselves. No chat action or prior process is replayed.
+      // A concurrent auto-resume may return the running sandbox; readiness and
+      // exact identity still must pass. A conflict/timeout never retries reboot.
+      stage = "reconnect";
+      await claim.update({ step: "reconnecting" });
+      const ready = await Sandbox.connect(auth.sandboxId, {
+        ...connectionOptions,
+        requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
+        timeoutMs: 30 * 60 * 1000,
+      });
+      if (ready.sandboxId !== auth.sandboxId)
+        throw new DiskRecoveryError(
+          stage,
+          "Provider returned a different sandbox",
+        );
+      await observeWorkspace(ready, fingerprintKey);
+      const readyInfo = await getInfo();
+      assertIdentity(readyInfo, auth, "running");
+    }
     const result = {
       token: auth.idempotencyKey,
-      status: "verified_paused",
+      status: customer ? "verified_ready" : "verified_paused",
       sandboxId: auth.sandboxId,
       region: auth.region,
       entryCount: observed.count,
@@ -405,7 +429,9 @@ export async function recoverE2BDiskOnly(
         completed &&
         typeof completed === "object" &&
         (completed as { token?: string }).token === auth.idempotencyKey &&
-        (completed as { status?: string }).status === "verified_paused" &&
+        ["verified_paused", "verified_ready"].includes(
+          (completed as { status?: string }).status ?? "",
+        ) &&
         (completed as { sandboxId?: string }).sandboxId === auth.sandboxId &&
         (completed as { region?: string }).region === auth.region
       )

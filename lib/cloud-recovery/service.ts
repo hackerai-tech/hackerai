@@ -30,6 +30,7 @@ import {
   offerConsent,
   decideConsent,
   failConsent,
+  renewConsent,
   type RecoveryConsent,
   type ResumeFailures,
 } from "./store";
@@ -58,6 +59,7 @@ export type RecoveryView = {
     | "recovered";
   token?: string;
   step?: string;
+  reference?: string;
 };
 export class RecoveryUnavailable extends Error {}
 class RecoveryBusy extends RecoveryUnavailable {}
@@ -148,10 +150,15 @@ async function assertEligible(
     !failures ||
     !sameTarget(failures, consent.target) ||
     failures.attempts.length < 2 ||
-    failures.uncertain ||
+    (failures.uncertain && failures.timeoutOnly !== true) ||
     Date.now() - failures.lastFailedAt > 86400000
   )
     throw new RecoveryUnavailable();
+  // A connection deadline is not evidence that the provider stopped. Drain the
+  // full idle window and then independently inspect paused identity. The single
+  // reboot request must be refused by E2B if a conflicting start is in flight.
+  if (failures.uncertain && Date.now() - failures.lastFailedAt < 15 * 60000)
+    throw new RecoveryBusy();
   const workspace = await readCloudWorkspaceState(userId);
   if (
     workspace &&
@@ -187,7 +194,7 @@ async function assertEligible(
     info.metadata?.e2bCluster !== cluster.cluster ||
     info.metadata?.template !== auth.expectedTemplate ||
     info.metadata?.sandboxVersion !== auth.expectedSandboxVersion ||
-    info.lifecycle?.autoResume !== false ||
+    typeof info.lifecycle?.autoResume !== "boolean" ||
     info.lifecycle?.onTimeout !== "pause" ||
     Object.keys(info.metadata ?? {}).some(
       (key) =>
@@ -216,9 +223,9 @@ async function assertEligible(
     throw new RecoveryUnavailable();
   return auth;
 }
-export async function recoveryView(userId: string): Promise<RecoveryView> {
+async function currentRecoveryView(userId: string): Promise<RecoveryView> {
   if (!(await enabled(userId))) return { status: "hidden" };
-  const consent = await readConsent(userId);
+  let consent = await readConsent(userId);
   if (consent) {
     const workspace = await readCloudWorkspaceState(userId);
     const result = (await readE2BDiskRecoveryResult(userId)) as {
@@ -230,7 +237,7 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
     } | null;
     if (
       result?.token === consent.token &&
-      result.status === "verified_paused" &&
+      result.status === "verified_ready" &&
       result.sandboxId === consent.target.sandboxId &&
       result.region === consent.target.region &&
       workspace?.phase === "e2b" &&
@@ -268,10 +275,15 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
         step: workspace?.phase === "recovery" ? workspace.step : "queued",
       };
     }
-    if (consent.status === "declined") return { status: "declined" };
+    if (consent.status === "declined")
+      return { status: "declined", token: consent.token };
     if (!(await readFailures(userId))) return { status: "hidden" };
-    if (Date.now() - consent.issuedAt > 10 * 60000)
-      return { status: "support" };
+    if (Date.now() - consent.issuedAt > 10 * 60000) {
+      // A stale warning can be reviewed again; it never granted permission to act.
+      const renewed = await renewConsent(userId, consent);
+      if (!renewed) return { status: "waiting" };
+      consent = renewed;
+    }
     try {
       await assertEligible(userId, consent);
       return { status: "offered", token: consent.token };
@@ -281,7 +293,8 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
   }
   const failures = await readFailures(userId);
   if (!failures || failures.attempts.length < 2) return { status: "hidden" };
-  if (failures.uncertain) return { status: "support" };
+  if (failures.uncertain && failures.timeoutOnly !== true)
+    return { status: "support" };
   const candidate: RecoveryConsent = {
     token: crypto.randomUUID(),
     target: failures,
@@ -298,6 +311,23 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
     ? { status: "offered", token: offered.token }
     : { status: "support" };
 }
+export async function recoveryView(userId: string): Promise<RecoveryView> {
+  const view = await currentRecoveryView(userId);
+  if (view.status === "hidden") return view;
+  const consent = await readConsent(userId);
+  const failures = consent ? null : await readFailures(userId);
+  const incident = consent?.token ?? failures?.attempts[0];
+  return incident ? { ...view, reference: `CR-${incident.slice(0, 8)}` } : view;
+}
+
+export async function reopenRecovery(userId: string, token: string) {
+  if (!(await enabled(userId))) throw new RecoveryUnavailable();
+  const consent = await readConsent(userId);
+  if (!consent || consent.token !== token || consent.status !== "declined")
+    throw new RecoveryUnavailable();
+  await renewConsent(userId, consent);
+}
+
 export async function confirmRecovery(
   userId: string,
   token: string,

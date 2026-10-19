@@ -299,10 +299,17 @@ describe("customer recovery verification", () => {
   };
   beforeEach(() => {
     idle.mockResolvedValue(undefined);
-    getInfo.mockResolvedValue({
-      ...info,
-      lifecycle: { autoResume: false, onTimeout: "pause" },
-    } as never);
+    getInfo.mockImplementation(
+      async () =>
+        ({
+          ...info,
+          state:
+            connect.mock.calls.length > pause.mock.calls.length
+              ? "running"
+              : "paused",
+          lifecycle: { autoResume: true, onTimeout: "pause" },
+        }) as never,
+    );
     let bytes = "";
     write.mockImplementation(async (_path, value) => {
       bytes = value;
@@ -321,33 +328,31 @@ describe("customer recovery verification", () => {
       nextItems: async () => [{ snapshotId: "backup-1" }],
     } as never);
   });
-  it("requires false auto-resume before claiming and rechecks it after fencing", async () => {
+  it("requires a known pause lifecycle, even when auto-resume is enabled", async () => {
     getInfo.mockResolvedValueOnce({
       ...info,
-      lifecycle: { autoResume: true, onTimeout: "pause" },
+      lifecycle: { onTimeout: "pause" },
     } as never);
     await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
       stage: "traffic",
     });
     expect(claim).not.toHaveBeenCalled();
-    getInfo
-      .mockResolvedValueOnce({
-        ...info,
-        lifecycle: { autoResume: false, onTimeout: "pause" },
-      } as never)
-      .mockResolvedValueOnce({
-        ...info,
-        lifecycle: { autoResume: true, onTimeout: "pause" },
-      } as never);
-    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
-      stage: "identity",
-    });
     expect(connect).not.toHaveBeenCalled();
+  });
+  it("retains the fence and does not retry when a conflicting provider start refuses reboot", async () => {
+    connect.mockRejectedValueOnce(
+      Object.assign(new Error("conflict"), { status: 409 }),
+    );
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reboot",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
     expect(finish).not.toHaveBeenCalled();
   });
   it("proves our own bytes persisted across normal resume before releasing", async () => {
     await expect(recoverE2BDiskOnly(auth, customer)).resolves.toMatchObject({
-      status: "verified_paused",
+      status: "verified_ready",
     });
     expect(write).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(2);
@@ -408,5 +413,23 @@ describe("customer recovery verification", () => {
     });
     expect(connect).toHaveBeenCalledTimes(1);
     expect(finish).not.toHaveBeenCalled();
+  });
+  it("does not publish readiness if final normal reconnection fails", async () => {
+    const sandbox = {
+      sandboxId: auth.sandboxId,
+      commands: { run },
+      files: { list, write, read, remove },
+      pause,
+      createSnapshot: snapshot,
+    } as never;
+    connect
+      .mockResolvedValueOnce(sandbox)
+      .mockResolvedValueOnce(sandbox)
+      .mockRejectedValueOnce(new Error("reconnect timeout"));
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reconnect",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
   });
 });

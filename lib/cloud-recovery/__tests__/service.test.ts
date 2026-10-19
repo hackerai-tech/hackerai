@@ -18,11 +18,13 @@ import {
   offerConsent,
   decideConsent,
   failConsent,
+  renewConsent,
 } from "../store";
 import {
   recoveryView,
   confirmRecovery,
   executeCustomerRecovery,
+  reopenRecovery,
 } from "../service";
 
 jest.mock("@e2b/code-interpreter", () => ({
@@ -58,6 +60,7 @@ jest.mock("../store", () => ({
   offerConsent: jest.fn(),
   decideConsent: jest.fn(),
   failConsent: jest.fn(),
+  renewConsent: jest.fn(),
 }));
 const token = "7ad19af5-4d14-4d4b-aab7-90734610a6da";
 const target = {
@@ -160,18 +163,25 @@ it("one failed acquisition is a normal retry, not recovery", async () => {
   expect(Sandbox.getInfo).not.toHaveBeenCalled();
 });
 it("offers only after server-owned identity, idle and provider checks", async () => {
-  expect(await recoveryView("owner")).toEqual({ status: "offered", token });
+  expect(await recoveryView("owner")).toEqual({
+    status: "offered",
+    token,
+    reference: "CR-7ad19af5",
+  });
   expect(offerConsent).toHaveBeenCalledWith("owner", target);
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });
-it.each([true, undefined])(
-  "cannot recover an autoResume=%s workspace",
+it.each([undefined])(
+  "cannot recover an unverified autoResume=%s workspace",
   async (autoResume) => {
     jest.mocked(Sandbox.getInfo).mockResolvedValue({
       ...info,
       lifecycle: { ...info.lifecycle, autoResume },
     } as never);
-    expect(await recoveryView("owner")).toEqual({ status: "support" });
+    expect(await recoveryView("owner")).toEqual({
+      status: "support",
+      reference: "CR-7ad19af5",
+    });
     expect(offerConsent).not.toHaveBeenCalled();
   },
 );
@@ -237,6 +247,7 @@ it.each([
   if (reason === "runtime")
     process.env.NEXT_PUBLIC_CONVEX_URL = "https://wrong.convex.cloud";
   expect(await recoveryView("owner")).toEqual({
+    reference: "CR-7ad19af5",
     status: ["lease", "active", "child", "unknown"].includes(reason)
       ? "waiting"
       : "support",
@@ -261,7 +272,11 @@ it("declining cannot invoke recovery and survives later reads", async () => {
   jest
     .mocked(readConsent)
     .mockResolvedValue({ ...consent, status: "declined" });
-  expect(await recoveryView("owner")).toEqual({ status: "declined" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "declined",
+    token,
+    reference: "CR-7ad19af5",
+  });
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });
 it("only one concurrent confirmation dispatches work", async () => {
@@ -310,7 +325,10 @@ it("marks failed provider work support-only without a second attempt", async () 
   ).rejects.toThrow("support reconciliation");
   expect(failConsent).toHaveBeenCalledWith("owner", token);
   jest.mocked(readConsent).mockResolvedValue({ ...consent, status: "failed" });
-  expect(await recoveryView("owner")).toEqual({ status: "support" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "support",
+    reference: "CR-7ad19af5",
+  });
   await expect(
     executeCustomerRecovery("owner", token, "us-east-1"),
   ).rejects.toThrow();
@@ -322,7 +340,7 @@ it("a completion receipt must match the exact sandbox and region", async () => {
     .mockResolvedValue({ ...consent, status: "executing" });
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
-    status: "verified_paused",
+    status: "verified_ready",
     completedAt: new Date().toISOString(),
     sandboxId: "other",
     region: target.region,
@@ -330,7 +348,7 @@ it("a completion receipt must match the exact sandbox and region", async () => {
   expect((await recoveryView("owner")).status).toBe("recovering");
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
-    status: "verified_paused",
+    status: "verified_ready",
     completedAt: new Date().toISOString(),
     sandboxId: target.sandboxId,
     region: target.region,
@@ -343,7 +361,10 @@ it("a completion receipt must match the exact sandbox and region", async () => {
     destinationId: target.sandboxId,
     region: target.region,
   });
-  expect(await recoveryView("owner")).toEqual({ status: "recovered" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "recovered",
+    reference: "CR-7ad19af5",
+  });
 });
 it("an interrupted task becomes support-only while keeping its receipt", async () => {
   jest.mocked(readConsent).mockResolvedValue({
@@ -372,7 +393,10 @@ it.each(["E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "E2B_DEBUG"])(
   async (name) => {
     process.env[name] =
       name === "E2B_DEBUG" ? "true" : "https://unverified.example.test";
-    expect(await recoveryView("owner")).toEqual({ status: "support" });
+    expect(await recoveryView("owner")).toEqual({
+      status: "support",
+      reference: "CR-7ad19af5",
+    });
     expect(Sandbox.getInfo).not.toHaveBeenCalled();
   },
 );
@@ -382,7 +406,7 @@ it("a completed receipt cannot hide a newer durable recovery fence", async () =>
     .mockResolvedValue({ ...consent, status: "executing" });
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
-    status: "verified_paused",
+    status: "verified_ready",
     completedAt: new Date().toISOString(),
     sandboxId: target.sandboxId,
     region: target.region,
@@ -406,7 +430,10 @@ it("refuses unrecognized workspace preservation fields", async () => {
     region: target.region,
     preservationHold: "pending",
   } as never);
-  expect(await recoveryView("owner")).toEqual({ status: "support" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "support",
+    reference: "CR-7ad19af5",
+  });
   expect(offerConsent).not.toHaveBeenCalled();
 });
 
@@ -424,7 +451,7 @@ it("a newer failure supersedes a verified receipt without allowing another reboo
   });
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
-    status: "verified_paused",
+    status: "verified_ready",
     sandboxId: target.sandboxId,
     region: target.region,
     completedAt: new Date(Date.now() - 60000).toISOString(),
@@ -432,7 +459,10 @@ it("a newer failure supersedes a verified receipt without allowing another reboo
   jest
     .mocked(readFailures)
     .mockResolvedValue({ ...target, lastFailedAt: Date.now() });
-  expect(await recoveryView("owner")).toEqual({ status: "support" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "support",
+    reference: "CR-7ad19af5",
+  });
   expect(offerConsent).not.toHaveBeenCalled();
 });
 it("allows a timely confirmed consent even when the original offer is old", async () => {
@@ -457,4 +487,69 @@ it("refuses a stale confirmation timestamp", async () => {
     executeCustomerRecovery("owner", token, target.region),
   ).rejects.toThrow();
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+
+it("permits a known auto-resume lifecycle with every other guard intact", async () => {
+  jest.mocked(Sandbox.getInfo).mockResolvedValue({
+    ...info,
+    lifecycle: { autoResume: true, onTimeout: "pause" },
+  } as never);
+  expect(await recoveryView("owner")).toMatchObject({
+    status: "offered",
+    token,
+  });
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+it("reopening deferred consent only renews an unconsumed receipt", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "declined" });
+  await reopenRecovery("owner", token);
+  expect(renewConsent).toHaveBeenCalledWith(
+    "owner",
+    expect.objectContaining({ token, status: "declined" }),
+  );
+  for (const status of ["confirmed", "executing", "failed"] as const) {
+    jest.mocked(readConsent).mockResolvedValue({ ...consent, status });
+    await expect(reopenRecovery("owner", token)).rejects.toThrow();
+  }
+  expect(renewConsent).toHaveBeenCalledTimes(1);
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+it("refreshes an expired unconsumed offer instead of sending it permanently to support", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, issuedAt: Date.now() - 11 * 60000 });
+  jest.mocked(renewConsent).mockResolvedValue(consent);
+  expect(await recoveryView("owner")).toMatchObject({
+    status: "offered",
+    token,
+  });
+  expect(decideConsent).not.toHaveBeenCalled();
+});
+
+it("waits for the complete idle window before reconciling known resume deadlines", async () => {
+  const failure = { ...target, uncertain: true, timeoutOnly: true };
+  jest.mocked(readFailures).mockResolvedValue(failure);
+  expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+  expect(Sandbox.getInfo).not.toHaveBeenCalled();
+  jest
+    .mocked(readFailures)
+    .mockResolvedValue({ ...failure, lastFailedAt: Date.now() - 16 * 60000 });
+  expect(await recoveryView("owner")).toMatchObject({ status: "offered" });
+  jest
+    .mocked(Sandbox.getInfo)
+    .mockResolvedValue({ ...info, state: "running" } as never);
+  expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+it("never treats an unknown old outcome as a reconciled deadline", async () => {
+  jest.mocked(readFailures).mockResolvedValue({
+    ...target,
+    uncertain: true,
+    timeoutOnly: false,
+    lastFailedAt: Date.now() - 16 * 60000,
+  });
+  expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+  expect(Sandbox.getInfo).not.toHaveBeenCalled();
 });

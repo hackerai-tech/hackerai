@@ -2,7 +2,11 @@ import type { NextRequest } from "next/server";
 import { tasks } from "@trigger.dev/sdk";
 import { GET, POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { confirmRecovery, recoveryView } from "@/lib/cloud-recovery/service";
+import {
+  confirmRecovery,
+  recoveryView,
+  reopenRecovery,
+} from "@/lib/cloud-recovery/service";
 import { failConsent } from "@/lib/cloud-recovery/store";
 import { ChatSDKError } from "@/lib/errors";
 jest.mock("@trigger.dev/sdk", () => ({ tasks: { trigger: jest.fn() } }));
@@ -13,6 +17,7 @@ jest.mock("@/lib/suspensions", () => ({
 jest.mock("@/lib/cloud-recovery/service", () => ({
   confirmRecovery: jest.fn(),
   recoveryView: jest.fn(),
+  reopenRecovery: jest.fn(),
 }));
 jest.mock("@/lib/cloud-recovery/store", () => ({ failConsent: jest.fn() }));
 jest.mock("next/server", () => ({
@@ -112,4 +117,11 @@ it("treats an uncertain dispatch as support-only and does not retry", async () =
   expect(failConsent).toHaveBeenCalledWith("session-owner", token);
   await POST(request({ token, confirmed: true }));
   expect(tasks.trigger).toHaveBeenCalledTimes(1);
+});
+
+it("reopens a deferred warning without dispatching provider work", async () => {
+  expect((await POST(request({ token, reopen: true }))).status).toBe(200);
+  expect(reopenRecovery).toHaveBeenCalledWith("session-owner", token);
+  expect(confirmRecovery).not.toHaveBeenCalled();
+  expect(tasks.trigger).not.toHaveBeenCalled();
 });

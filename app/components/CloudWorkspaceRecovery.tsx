@@ -11,8 +11,13 @@ const steps: Record<string, string> = {
   recovered_state_paused: "Checking persistence after restart…",
   normal_resume_verified: "Finishing verification…",
   final_state_paused: "Restoring access…",
+  reconnecting: "Reconnecting your workspace…",
 };
-export function CloudWorkspaceRecovery() {
+export function CloudWorkspaceRecovery({
+  surface = "cloud_connection_error",
+}: {
+  surface?: "cloud_connection_error" | "workspace_status";
+}) {
   const [view, setView] = useState<RecoveryView>({ status: "hidden" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -61,11 +66,11 @@ export function CloudWorkspaceRecovery() {
     ) {
       exposed.current = view.token;
       captureAuthenticatedEvent("cloud_workspace_customer_recovery_exposed", {
-        surface: "chat_error",
+        surface,
       });
     }
-  }, [view]);
-  async function decide(confirmed: boolean) {
+  }, [view, surface]);
+  async function decide(decision: boolean | "reopen") {
     if (!view.token || busy) return;
     setBusy(true);
     setError(false);
@@ -73,7 +78,11 @@ export function CloudWorkspaceRecovery() {
       const response = await fetch("/api/sandbox/recovery", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: view.token, confirmed }),
+        body: JSON.stringify(
+          decision === "reopen"
+            ? { token: view.token, reopen: true }
+            : { token: view.token, confirmed: decision },
+        ),
       });
       if (!response.ok) throw new Error("Recovery confirmation unavailable");
       setView(await response.json());
@@ -86,18 +95,47 @@ export function CloudWorkspaceRecovery() {
       setBusy(false);
     }
   }
-  if (view.status === "hidden" || view.status === "declined") return null;
+  async function contactSupport() {
+    const message = `My cloud workspace needs help recovering. Reference: ${view.reference ?? "unavailable"}. Status: ${view.status}.`;
+    try {
+      if (
+        typeof (window as Window & { Intercom?: unknown }).Intercom !==
+        "function"
+      )
+        throw new Error("Messenger unavailable");
+      const intercom = await import("@intercom/messenger-js-sdk");
+      // Opens a draft. Only the customer can send it.
+      intercom.showNewMessage(message);
+    } catch {
+      window.open("https://help.hackerai.co/", "_blank", "noopener,noreferrer");
+    }
+  }
+  if (view.status === "hidden") return null;
   return (
     <div
       className="mt-3 rounded-lg border p-4 text-sm"
       aria-label="Cloud workspace recovery"
     >
-      {view.status === "offered" ? (
+      <p className="font-medium mb-2">Cloud workspace</p>
+      {view.status === "declined" ? (
+        <>
+          <p>Recovery is available whenever you’re ready.</p>
+          <Button
+            className="mt-3"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void decide("reopen")}
+          >
+            Review recovery
+          </Button>
+        </>
+      ) : view.status === "offered" ? (
         <>
           <p>
-            Your cloud workspace couldn’t resume. Recovering it will restart the
-            environment from its saved disk. Running processes and unsaved
-            changes may be lost.
+            Your cloud workspace couldn’t resume. Recovery may restart it from
+            saved disk. A restart stops running processes and discards changes
+            not saved to disk.
           </p>
           <p className="mt-2 text-muted-foreground">
             Recovery will not continue your previous task. After recovery, start
@@ -119,19 +157,40 @@ export function CloudWorkspaceRecovery() {
         </>
       ) : view.status === "recovered" ? (
         <p role="status">
-          Your workspace passed recovery checks. Reload this page, then start a
-          new request. Previous tasks will not restart automatically.
+          Workspace ready. You can start a new request now. Previous tasks will
+          not restart automatically.
         </p>
       ) : view.status === "support" ? (
-        <p role="alert">
-          Your cloud workspace needs support to recover safely. Contact support
-          before trying recovery again. We have not created a replacement
-          workspace.
-        </p>
+        <>
+          <p role="alert">
+            Your cloud workspace needs support to recover safely. Your existing
+            workspace is preserved for review.
+          </p>
+          {view.reference && (
+            <p className="mt-2 text-muted-foreground">
+              Reference: {view.reference}
+            </p>
+          )}
+          <Button
+            className="mt-3"
+            size="sm"
+            onClick={() => void contactSupport()}
+          >
+            Contact support
+          </Button>
+          <a
+            className="ml-3 underline"
+            href="https://help.hackerai.co/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Help center
+          </a>
+        </>
       ) : (
         <p role="status">
           {view.status === "waiting"
-            ? "Recovery is waiting for workspace activity to stop. Stop active tasks and close workspace connections. Recent activity can take up to 15 minutes to settle."
+            ? "We’re waiting for current tasks and workspace connections to finish. We’ll check automatically and show recovery when it’s safe. This can take up to 15 minutes after the last activity."
             : (steps[view.step ?? "queued"] ??
               "Verifying your cloud workspace…")}{" "}
           You can leave this page and return to check progress.
@@ -139,8 +198,17 @@ export function CloudWorkspaceRecovery() {
       )}
       {error && (
         <p className="mt-2" role="alert">
-          Recovery status could not be checked. We will keep checking; do not
-          submit another recovery.
+          We couldn’t check recovery status. Your confirmation won’t be sent
+          again.
+          <Button
+            className="ml-2"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void refresh().catch(() => setError(true))}
+          >
+            Check status
+          </Button>
         </p>
       )}
     </div>

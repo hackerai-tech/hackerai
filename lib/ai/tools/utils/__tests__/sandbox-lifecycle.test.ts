@@ -38,7 +38,7 @@ jest.mock("../cloud-workspace-guard", () => ({
 }));
 
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { Sandbox } from "@e2b/code-interpreter";
+import { Sandbox, TimeoutError } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -1048,6 +1048,40 @@ describe("E2B sandbox lease lifecycle", () => {
         ),
       ).rejects.toThrow();
       expect(recordResumeFailure).toHaveBeenCalledTimes(recorded ? 1 : 0);
+    },
+  );
+
+  it.each([true, false])(
+    "marks only SDK connection deadlines as reconcilable: %s",
+    async (deadline) => {
+      process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+      listSandbox({
+        state: "paused",
+        metadata: {
+          userID: "user-1",
+          sandboxVersion: "v12",
+          template: "terminal-agent-sandbox",
+          e2bCluster: "us",
+        },
+      });
+      sandboxApi.connect.mockRejectedValue(
+        deadline
+          ? new TimeoutError("requestTimeoutMs exceeded")
+          : new Error("unknown connection failure"),
+      );
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          {
+            acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+            triggerRegion: "us-east-1",
+          },
+        ),
+      ).rejects.toThrow();
+      expect(recordResumeFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ uncertain: true, timeoutOnly: deadline }),
+      );
+      expect(sandboxApi.create).not.toHaveBeenCalled();
     },
   );
 

@@ -194,7 +194,7 @@ export async function claimE2BDiskRecovery(args: {
      end
      if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
      local last = redis.call('GET', KEYS[3]);
-     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or result.status ~= 'verified_paused' or result.token == ARGV[3] then return 0 end end
+     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or (result.status ~= 'verified_paused' and result.status ~= 'verified_ready') or result.token == ARGV[3] then return 0 end end
      if ARGV[1] == '' then if raw then return 0 end
      else
        local function equal(a, b)

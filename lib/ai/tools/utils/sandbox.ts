@@ -4,11 +4,15 @@ import {
 } from "@/lib/cloud-recovery/store";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
 import { e2bNetwork } from "@/lib/cloud-network/policy";
-import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
+import {
+  CloudAcquisitionTimeoutError,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
   NotFoundError,
+  TimeoutError,
   classifyE2BError,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
@@ -386,6 +390,16 @@ export const ensureSandboxConnection = async (
         acquisitionId: options.acquisitionId,
         uncertain:
           signal?.aborted === true || !status || ![400, 422].includes(status),
+        // Only a known connection deadline can be reconciled by the customer
+        // path. Cancellation, authentication errors and unknown outcomes remain
+        // support-only; a deadline still waits for the complete idle window.
+        timeoutOnly:
+          phase === "connect" &&
+          (signal?.aborted
+            ? signal.reason instanceof CloudAcquisitionTimeoutError &&
+              signal.reason.acquisitionStage === "connect"
+            : error instanceof TimeoutError &&
+              !error.message.includes("sandbox timeout")),
       }).catch(() => {});
     }
     signal?.throwIfAborted();

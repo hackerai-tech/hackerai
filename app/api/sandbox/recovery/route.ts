@@ -4,13 +4,18 @@ import { z } from "zod";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
-import { confirmRecovery, recoveryView } from "@/lib/cloud-recovery/service";
+import {
+  confirmRecovery,
+  recoveryView,
+  reopenRecovery,
+} from "@/lib/cloud-recovery/service";
 import { failConsent } from "@/lib/cloud-recovery/store";
 import type { cloudWorkspaceRecoveryTask } from "@/trigger/cloud-workspace-recovery";
 export const maxDuration = 60;
-const bodySchema = z
-  .object({ token: z.string().uuid(), confirmed: z.boolean() })
-  .strict();
+const bodySchema = z.union([
+  z.object({ token: z.string().uuid(), confirmed: z.boolean() }).strict(),
+  z.object({ token: z.string().uuid(), reopen: z.literal(true) }).strict(),
+]);
 async function owner(request: NextRequest) {
   const { userId, subscription } = await getUserIDAndPro(request);
   if (subscription === "free") throw new ChatSDKError("forbidden:api");
@@ -53,6 +58,10 @@ export async function POST(request: NextRequest) {
     const parsed = bodySchema.safeParse(await request.json());
     if (!parsed.success)
       return json({ error: "Invalid recovery confirmation" }, 400);
+    if ("reopen" in parsed.data) {
+      await reopenRecovery(userId, parsed.data.token);
+      return json(await recoveryView(userId));
+    }
     const consent = await confirmRecovery(
       userId,
       parsed.data.token,

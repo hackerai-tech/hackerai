@@ -131,44 +131,49 @@ The customer path is deliberately narrower than the operator CLI. It requires:
 - No active parent/child Agent resources, recent workspace activity, migration,
   cleanup, unresolved recovery or uncertain provider action. Cloud Agent admission,
   acquisition, cached-client lease refresh and cleanup share the durable fence.
-- Independent provider readback of `lifecycle.autoResume === false` and
+- Independent provider readback of a known boolean `lifecycle.autoResume` and
   `onTimeout === "pause"`, checked before and after the atomic recovery claim.
 
-**Existing auto-resume workspaces are support-only.** The pinned SDK and current
-[E2B lifecycle API](https://docs.e2b.dev/sandbox/auto-resume) expose auto-resume at
-creation and in info readback, but no supported update for an existing paused
-sandbox. A lack of Agent work does not stop external HTTP/SDK traffic. Do not
-pretend a second state check closes that race, change the lifecycle globally,
-or create a replacement sandbox. A provider-supported way to disable and drain
-inbound auto-resume on existing sandboxes remains a rollout prerequisite.
+Existing auto-resume workspaces can use the same one-shot path. The
+[E2B reboot contract](https://docs.e2b.dev/sandbox/resume-without-memory) refuses
+reboot while a conflicting memory restore is in flight. If inbound traffic has
+already started the sandbox, connect returns that running sandbox without
+rebooting it. The workflow verifies readiness and persistence in either case;
+it does not claim that memory was discarded when the provider returned an
+already-running workspace. It never pauses a newly running workspace simply to
+force the initial reboot, changes lifecycle settings, or creates a replacement.
+Unknown lifecycle, provider conflict or uncertain recovery outcome requires
+support. Validate these provider semantics on disposable sandboxes before
+rollout, including a real inbound-traffic race.
 
-Timeouts, aborted calls, 409s, 5xx responses and unknown failures can finish
-provider-side. They stay ineligible for automatic disk recovery. Only definite
-400/422 responses can contribute to a customer-recoverable record; these still
-require every other check. Reconciliation of uncertain prior actions remains an
-operator responsibility. The current path therefore does not offer a reboot to
-all customers with repeated connection failures.
+Only definite 400/422 ordinary resume failures and known SDK/application
+connection deadlines can contribute to a recoverable incident. A known deadline
+remains uncertain: wait the full fifteen-minute idle window after its last
+failure, check leases and active work, then independently verify exact paused
+identity and regional inventory. E2B must refuse the single reboot request if an
+old restore is still starting. Cancellation, 409s, 5xx responses and other unknown
+outcomes remain support-only. Uncertainty from one of those failures cannot be
+erased by a later known timeout or definite failure.
 
-Consent is an immutable, user-scoped receipt with a random UUID and the
-server-selected target. It expires for confirmation after ten minutes. Decline,
-confirmation and execution survive reloads. Only the winner of the atomic
-confirmation dispatches a task; the atomic workspace claim changes confirmed
-consent to executing before any provider mutation. Execution must begin within
-ten minutes of the recorded confirmation time (legacy receipts fall back to the
-offer time). A completed receipt is superseded by any later resume failure and
-then routes to support, without authorizing another reboot. Task retries are disabled.
-A lost dispatch response is support-only, because the task may have started.
-Confirmed/executing receipts never permit another recovery attempt, even after
-an interruption. Operators must reconcile receipts/fences before future changes;
-there is no customer reset/clear endpoint.
+Consent is a user-scoped receipt with a random UUID and server-selected target.
+Unconsumed offers expire for confirmation after ten minutes and can be refreshed.
+“Not now” defers; the customer can reopen the warning after reload. Renewal uses
+an atomic compare-and-set and never resets confirmed, executing or failed
+receipts. Only the winner of atomic confirmation dispatches a task; the atomic
+workspace claim consumes confirmed consent before any provider mutation.
+Execution must begin within ten minutes of confirmation. A newer failure after
+successful recovery routes to support without authorizing another reboot. Task
+retries are disabled. Lost dispatch, interruption or uncertain provider mutation
+requires reconciliation, never a customer reset or automatic retry.
 
 The worker rechecks environment/region, assignment, eligibility, billing-backed
 entitlement and access, then shares the operator recovery procedure. It writes a
 unique synthetic probe, reads its bytes, creates a separate snapshot and lists
 snapshots for the exact sandbox to corroborate the backup receipt. It explicitly
 pauses, resumes normally, checks terminal access, top-level metadata and probe
-bytes, removes the probe, pauses again and independently verifies final identity
-and lifecycle. Only then does it release the fence, pin ordinary acquisition to
+bytes, removes the probe, pauses again and independently verifies identity
+and lifecycle. It then reconnects normally and checks terminal/file access and
+running identity before recording `verified_ready` and releasing the fence, pin ordinary acquisition to
 the original sandbox and publish completion. Probe persistence proves our test
 bytes survived that cycle; it does not prove historical file completeness.
 
@@ -176,8 +181,15 @@ Failure or interruption retains the durable fence after a claim. Progress and
 backup IDs remain server-side. The UI displays bounded stage names, then asks
 for support if failed or stale; it never clears a fence or retries a reboot.
 A timed-out provider operation must be reconciled against provider reality.
-After verified recovery the customer reloads and starts a new request. Completed
-tool actions and old jobs are never automatically replayed.
+After verified recovery the customer can start a new request without reloading.
+Completed tool actions and old jobs are never automatically replayed. The
+operator CLI retains its `verified_paused` outcome and final paused state.
+
+The recovery card appears on a cloud acquisition failure and in the Cloud
+selector so navigation or a deferred choice does not hide it permanently.
+Waiting is polled automatically. Support opens a customer-sendable Messenger
+draft with only the opaque incident reference and status; the help center and
+visible reference remain available if Messenger is blocked.
 
 ### Configuration and rollout
 
@@ -221,18 +233,19 @@ flag blocks new confirmations/executions; existing recovery fences remain.
 
 ### Acceptance before enabling
 
-Use only a disposable synthetic Preview sandbox with auto-resume explicitly
-false. In the actual signed-in Preview app, cause two distinct definite ordinary
+Use only a disposable synthetic Preview sandbox. Exercise both supported
+auto-resume settings. In the actual signed-in Preview app, cause two distinct definite ordinary
 resume failures without changing sandbox identity. A single failure must show
 normal retry; repeated eligible failures must show the loss warning and explicit
 confirmation. Decline, reload, concurrent tabs and a lost response must not
 trigger duplicate work. Confirm once and observe backup/verification progress,
-then reload and issue a new bounded command/file request in the original
+then issue a new bounded command/file request without reloading, in the original
 workspace. Check terminal and known synthetic file bytes across another normal
 pause/resume. Confirm old actions/jobs were not replayed.
 
-Also rehearse uncertain resume, auto-resume enabled/unknown, active work, recent
-lease, concurrent recovery, backup/readback failure, probe mismatch and worker
+Also rehearse known connection deadlines before/after the idle window, unknown
+resume outcomes, unknown lifecycle, inbound auto-resume conflicts, active work,
+recent lease, concurrent recovery, backup/readback failure, probe mismatch and worker
 interruption. These must refuse recovery or retain the exact fence and require
 support. Unit tests and a synthetic browser component harness do not establish
 provider or authenticated Preview acceptance. Do not test customer sandboxes.

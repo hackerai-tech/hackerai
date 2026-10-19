@@ -27,6 +27,7 @@ import {
 export type CloudSandboxAcquisitionContext = {
   signal?: AbortSignal;
   onTimeout?: () => void;
+  onFailure?: () => void;
   acquisitionId?: string;
   provider?: CloudSandboxProvider;
   selectionReason?: CloudSandboxSelectionReason;
@@ -173,6 +174,11 @@ export async function ensureCloudSandboxConnection(options: {
     recordOutcome("success");
     return { ...result, provider: "e2b" };
   } catch (error) {
+    try {
+      options.context?.onFailure?.();
+    } catch {
+      /* A closed stream cannot mask the acquisition failure. */
+    }
     recordOutcome("error");
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,

@@ -21,7 +21,7 @@ it("renders informed consent without submitting or replaying a task", async () =
   render(<CloudWorkspaceRecovery />);
   expect(
     await screen.findByText(
-      /Running processes and unsaved changes may be lost/,
+      /A restart stops running processes and discards changes/,
     ),
   ).toBeInTheDocument();
   expect(
@@ -64,7 +64,7 @@ it("submits explicit consent once, then renders progress and verified completion
 it("declines explicitly and does not show a second confirmation", async () => {
   fetchMock
     .mockResolvedValueOnce(respond({ status: "offered", token }))
-    .mockResolvedValue(respond({ status: "declined" }));
+    .mockResolvedValue(respond({ status: "declined", token }));
   render(<CloudWorkspaceRecovery />);
   fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
   await waitFor(() =>
@@ -102,4 +102,48 @@ it("refreshing during recovery displays progress without offering another reboot
   expect(
     screen.queryByRole("button", { name: "Recover workspace" }),
   ).not.toBeInTheDocument();
+});
+
+it("reopens a deferred recovery after reload without confirming it", async () => {
+  fetchMock
+    .mockResolvedValueOnce(respond({ status: "declined", token }))
+    .mockResolvedValueOnce(respond({ status: "offered", token }));
+  render(<CloudWorkspaceRecovery surface="workspace_status" />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Review recovery" }),
+  );
+  expect(
+    await screen.findByRole("button", { name: "Recover workspace" }),
+  ).toBeEnabled();
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    token,
+    reopen: true,
+  });
+});
+it("offers actionable support and a reference without transmitting customer content", async () => {
+  const intercom = jest.fn();
+  Object.defineProperty(window, "Intercom", {
+    configurable: true,
+    value: intercom,
+  });
+  fetchMock.mockResolvedValue(
+    respond({ status: "support", reference: "CR-example" }),
+  );
+  render(<CloudWorkspaceRecovery />);
+  expect(await screen.findByText("Reference: CR-example")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Help center" })).toHaveAttribute(
+    "href",
+    "https://help.hackerai.co/",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Contact support" }));
+  await waitFor(() =>
+    expect(intercom).toHaveBeenCalledWith(
+      "showNewMessage",
+      expect.stringContaining("CR-example"),
+    ),
+  );
+  expect(
+    fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+  ).toHaveLength(0);
+  delete (window as Window & { Intercom?: unknown }).Intercom;
 });
