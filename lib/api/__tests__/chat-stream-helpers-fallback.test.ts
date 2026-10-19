@@ -1478,12 +1478,12 @@ describe("resolveServedModelForCostAccounting", () => {
 
 describe("Agent Max explicit provider recovery", () => {
   const snapshot = "model-deepseek-v4.1-flash-1017-pro";
-  it("selects DeepSeek 1017 then Grok without changing Ask or non-Max recovery", () => {
+  it("selects DeepSeek 1017 without admitting an unchecked Grok attempt or changing Ask and non-Max recovery", () => {
     expect(
       getRetryFallbackModel("model-glm-5.3", "agent", "hackerai-max"),
     ).toBe(snapshot);
     expect(getRetryFallbackModel(snapshot, "agent", "hackerai-max")).toBe(
-      "model-grok-4.6",
+      snapshot,
     );
     expect(getRetryFallbackModel("model-glm-5.3", "ask", "hackerai-max")).toBe(
       "model-kimi-k3",

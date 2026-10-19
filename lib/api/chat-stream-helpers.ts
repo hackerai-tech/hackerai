@@ -802,9 +802,8 @@ export function getRetryFallbackModel(
   selectedModelOverride?: SelectedModel,
 ): ModelName {
   if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    return modelName === DEEPSEEK_1017_MODEL_KEY
-      ? "model-grok-4.6"
-      : DEEPSEEK_1017_MODEL_KEY;
+    // Grok is admitted only by the context-aware final recovery decision.
+    return DEEPSEEK_1017_MODEL_KEY;
   }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
     return "model-deepseek-v4-pro-0813";
