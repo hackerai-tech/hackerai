@@ -88,6 +88,59 @@ describe("uploadSandboxFileToConvex", () => {
     consoleErrorSpy.mockRestore();
   });
 
+  test.each([
+    "file_metadata",
+    "upload_url",
+    "transfer",
+    "file_registration",
+  ] as const)(
+    "retains the failing %s phase without exporting the failure contents",
+    async (phase) => {
+      const error = Object.freeze(new Error("private-upload-error"));
+      const sandbox = makeSandbox(10);
+      if (phase === "file_metadata") {
+        sandbox.commands.run.mockRejectedValueOnce(error);
+      } else if (phase === "upload_url") {
+        mockGenerateS3UploadUrl.mockRejectedValueOnce(error);
+      } else if (phase === "transfer") {
+        sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+        const originalRun = sandbox.commands.run.getMockImplementation()!;
+        sandbox.commands.run.mockImplementation(async (command) => {
+          if (command.includes("curl -fsSL -X PUT")) throw error;
+          return originalRun(command);
+        });
+      } else {
+        mockConvexAction.mockRejectedValueOnce(error);
+      }
+      const onPhase = jest.fn();
+
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/private/report.txt",
+          onPhase,
+        }),
+      ).rejects.toThrow("private-upload-error");
+      expect(onPhase).toHaveBeenLastCalledWith(phase);
+      expect(JSON.stringify(onPhase.mock.calls)).not.toMatch(/private|report/);
+    },
+  );
+
+  test("a failing diagnostics observer cannot prevent a file upload", async () => {
+    const sandbox = makeSandbox(10);
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/report.txt",
+        onPhase: () => {
+          throw new Error("observer unavailable");
+        },
+      }),
+    ).resolves.toMatchObject({ fileId: "file_123", sizeBytes: 10 });
+  });
+
   test("mints a fresh user-scoped URL for an uploaded sandbox file", async () => {
     mockConvexAction.mockResolvedValueOnce([
       "https://s3.example/download?signature=fresh",

@@ -76,6 +76,69 @@ describe("get_terminal_files", () => {
     jest.clearAllMocks();
   });
 
+  it("counts final failed files by phase without counting recovered candidate paths", async () => {
+    const privateMessage = "private-target-and-signed-upload-url";
+    mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+      if (args.fullPath === "/home/user/recovered.txt") {
+        args.onPhase?.("file_metadata");
+        throw new Error(privateMessage);
+      }
+      if (args.fullPath.endsWith("missing.txt")) {
+        args.onPhase?.("file_metadata");
+        throw new Error(privateMessage);
+      }
+      if (args.fullPath === "/failed-upload.txt") {
+        args.onPhase?.("transfer");
+        throw new Error(privateMessage);
+      }
+      return {
+        fileId: "stored-file" as never,
+        url: "https://files.example/private",
+        tokens: 0,
+        name: "recovered.txt",
+        mediaType: "text/plain",
+        sizeBytes: 1,
+      };
+    });
+    const context = makeContext();
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["recovered.txt", "missing.txt", "/failed-upload.txt"],
+    });
+
+    expect(result).toMatchObject({
+      files: [{ path: "recovered.txt" }],
+      failedFiles: [{ path: "missing.txt" }, { path: "/failed-upload.txt" }],
+    });
+    const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
+    expect(fields).toMatchObject({
+      delivered_file_count: 1,
+      failed_file_count: 2,
+      file_delivery_diagnostic_version: 1,
+      failure_phase_counts: { file_metadata: 1, transfer: 1 },
+    });
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private-target|signed-upload|missing\.txt|failed-upload\.txt|recovered\.txt/,
+    );
+  });
+
+  it("reports setup failures for every requested file without invoking uploads", async () => {
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandbox)
+      .mockRejectedValueOnce(new Error("private-acquisition-error"));
+    await runTool(createGetTerminalFiles(context), {
+      files: ["/one.txt", "/two.txt"],
+    });
+    expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        failed_file_count: 2,
+        failure_phase_counts: { sandbox_setup: 2 },
+      }),
+    );
+  });
+
   it("does not upload when delivery is stopped while creation is pending", async () => {
     const context = makeContext();
     let finish!: () => void;
