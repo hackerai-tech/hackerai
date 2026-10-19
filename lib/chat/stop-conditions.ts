@@ -1,3 +1,4 @@
+import type { ToolResultCycle } from "./tool-loop-observer";
 import type { StopCondition } from "ai";
 import {
   detectDoomLoop,
@@ -115,10 +116,16 @@ export const POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON =
   "compaction-incomplete";
 
 export function doomLoopDetected(state: {
+  getToolResultCycle?: () => ToolResultCycle | undefined;
   onFired: (result: DoomLoopResult) => void;
 }): StopCondition<any> {
   return ({ steps }) => {
-    const result = detectDoomLoop(steps as unknown as MinimalStep[]);
+    const result = detectDoomLoop(
+      steps as unknown as MinimalStep[],
+      state.getToolResultCycle
+        ? (state.getToolResultCycle() ?? null)
+        : undefined,
+    );
     if (result.severity === "halt") {
       state.onFired(result);
       return true;
