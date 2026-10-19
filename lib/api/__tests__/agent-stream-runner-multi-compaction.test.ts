@@ -690,6 +690,114 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each(["agent", "ask"])(
+    "recovers rejected Agent requests without replacing saved history; mode=%s",
+    async (mode) => {
+      const sdk = jest.requireActual("ai");
+      const wrap = jest.mocked(require("ai").wrapLanguageModel);
+      wrap.mockImplementation(sdk.wrapLanguageModel);
+      try {
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const original = uiMessage("original", "old evidence ".repeat(1000));
+        const saved = structuredClone(original);
+        const state = initAgentStreamState([original], {
+          usedTokens: 4000,
+          maxTokens: 128000,
+        });
+        state.sourceUiMessages = [original];
+        const tracker = {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization() {
+            this.hasSummarized = true;
+            this.summarizationCount++;
+          },
+          recordSummarizationUsage: jest.fn(),
+        };
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Completed inspection found marker ABC. Continue verification.</context_summary>",
+          ),
+          summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+        });
+        const rejected = Object.assign(
+          new Error("Content-Length exceeds 5242880 byte limit"),
+          { statusCode: 413 },
+        );
+        const doStream = jest
+          .fn()
+          .mockRejectedValueOnce(rejected)
+          .mockImplementation(async () => ({
+            stream: new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+          }));
+        const model = {
+          specificationVersion: "v3",
+          provider: "test",
+          modelId: "test-model",
+          supportedUrls: {},
+          doGenerate: jest.fn(),
+          doStream,
+        };
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            trackedProvider: { languageModel: () => model },
+            usageTracker: {},
+            summarizationTracker: tracker,
+          }) as any,
+          state,
+        )) as any;
+        const raw: ModelMessage[] = [
+          { role: "user", content: "old evidence ".repeat(1000) },
+        ];
+        const prepared = await stream.prepareStep({ steps: [], messages: raw });
+        const request = (prepared.model ?? stream.model).doStream({
+          prompt: [
+            { role: "system", content: "system" },
+            { role: "user", content: [{ type: "text", text: raw[0].content }] },
+          ],
+        });
+        if (mode === "ask") {
+          await expect(request).rejects.toBe(rejected);
+          expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+        } else {
+          await request;
+          expect(doStream).toHaveBeenCalledTimes(2);
+          expect(tracker.recordSummarizationUsage).toHaveBeenCalledTimes(1);
+          expect(tracker.summarizationCount).toBe(1);
+          expect(mockCompactModelMessagesInRun).toHaveBeenCalledWith(
+            expect.objectContaining({
+              transcriptModelMessages: raw,
+              sourceUiMessages: [saved],
+            }),
+          );
+          const next: ModelMessage = {
+            role: "assistant",
+            content: "new verification after recovery",
+          };
+          const following = await stream.prepareStep({
+            steps: [{ toolResults: [], response: { messages: [next] } }],
+            messages: [...raw, next],
+          });
+          const content = JSON.stringify(following.messages);
+          expect(content).toContain("Completed inspection found marker ABC");
+          expect(content).toContain("new verification after recovery");
+          expect(content).not.toContain("old evidence old evidence");
+        }
+        expect(state.finalMessages).toEqual([saved]);
+        expect(state.sourceUiMessages).toEqual([saved]);
+      } finally {
+        wrap.mockImplementation(({ model }: any) => model);
+      }
+    },
+  );
+
   it.each([
     { enabled: false, tokens: 190_000 },
     { enabled: true, tokens: 190_000 },
@@ -1040,7 +1148,7 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each(["agent", "ask"] as const)(
-    "uses the %s byte ceiling across model changes",
+    "passes the %s pressure policy across model changes",
     async (mode) => {
       let modelId = "deepseek/deepseek-v4.1-flash";
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
