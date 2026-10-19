@@ -1,7 +1,15 @@
 import {
+  AGENT_MODEL_CONTEXT_FLAG,
+  type AgentModelContextVariant,
+} from "@/lib/experiments/agent-model-context";
+import {
   PAID_DEEPSEEK_1017_KEY,
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
+import {
+  FREE_AGENT_DEEPSEEK_1017_KEY,
+  FREE_AGENT_MODEL_OUTCOME_EVENT,
+} from "@/lib/experiments/free-agent-deepseek-1017";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import {
   freeAgentBudgetProperties,
@@ -849,22 +857,18 @@ export function createChatLogger(config: ChatLoggerConfig) {
         providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
-        ...(attributedProviderName && {
-          provider_name: attributedProviderName,
-          provider_name_source: "openrouter_error_metadata",
-        }),
+        // Clear response-level attribution inherited from diagnostic context.
+        // A previous successful step does not identify this failed call.
+        provider_name: attributedProviderName,
+        provider_name_source: attributedProviderName
+          ? "openrouter_error_metadata"
+          : undefined,
         ...(configuredModel && { configured_model: configuredModel }),
         ...(requestedModelSlug && { requested_model_slug: requestedModelSlug }),
         ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
-        ...(openrouterGenerationId && {
-          openrouter_generation_id: openrouterGenerationId,
-        }),
-        ...(openRouterMetadata.openrouter_request_id && {
-          openrouter_request_id: openRouterMetadata.openrouter_request_id,
-        }),
-        ...(openRouterMetadata.openrouter_upstream_id && {
-          openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
-        }),
+        openrouter_generation_id: openrouterGenerationId,
+        openrouter_request_id: openRouterMetadata.openrouter_request_id,
+        openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
       };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
@@ -1325,6 +1329,7 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  agentModelContextVariant?: AgentModelContextVariant;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
@@ -1393,6 +1398,7 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  agentModelContextVariant,
   cacheHistoryTelemetry,
   usageMeasurement,
   abliteratedProviderSummary,
@@ -1603,6 +1609,9 @@ export function captureAgentRun({
       uuid: agentRunEventUuid(triggerRunId, "hackerai-agent_run"),
     }),
     properties: {
+      ...(agentModelContextVariant && {
+        [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]: agentModelContextVariant,
+      }),
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
@@ -1768,14 +1777,22 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
-  if (args.experiment?.key === PAID_DEEPSEEK_1017_KEY) {
+  const isFreeModelExperiment =
+    args.experiment?.key === FREE_AGENT_DEEPSEEK_1017_KEY;
+  if (
+    args.experiment &&
+    (args.experiment.key === PAID_DEEPSEEK_1017_KEY || isFreeModelExperiment)
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,
-        event: PAID_MODEL_OUTCOME_EVENT,
+        event: isFreeModelExperiment
+          ? FREE_AGENT_MODEL_OUTCOME_EVENT
+          : PAID_MODEL_OUTCOME_EVENT,
         properties: {
           ...getExperimentAnalyticsProperties(args.experiment),
           ...args.usageMeasurement,
+          ...freeAgentBudgetProperties(args.freeAgentBudget),
           chat_id: args.chatId,
           message_id: args.responseMessageId ?? args.experiment.requestId,
           mode,
@@ -1817,7 +1834,7 @@ export function captureAgentCompletionAnalytics(
             args.stepLimitTelemetry?.stepLimitReached ?? false,
           sandbox_type: sandboxInfo?.type,
           sandbox_provider: sandboxInfo?.provider,
-          $insert_id: `${args.experiment.requestId}:paid-model-outcome`,
+          $insert_id: `${args.experiment.requestId}:${isFreeModelExperiment ? "free-agent-model-outcome" : "paid-model-outcome"}`,
           $process_person_profile: false,
         },
       });
@@ -1895,6 +1912,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    agentModelContextVariant: args.agentModelContextVariant,
     cacheHistoryTelemetry: args.cacheHistoryTelemetry,
     usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,

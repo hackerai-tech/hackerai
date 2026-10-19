@@ -40,6 +40,9 @@ jest.doMock("@/lib/ai/providers", () => ({
 }));
 jest.doMock("@/lib/ai/abliteration", () => ({
   ABLITERATION_MODEL_KEY: "model-abliterated",
+  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
+  isAbliterationModel: (name: string) =>
+    name === "model-abliterated" || name === "model-abliterated-large-v2",
   isAbliterationConfigured: () => true,
 }));
 const mockFlag = jest.fn<() => Promise<boolean | null>>();

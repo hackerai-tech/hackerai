@@ -3,6 +3,7 @@ import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
 } from "./paid-deepseek-1017";
+import { FREE_AGENT_DEEPSEEK_1017_KEY } from "./free-agent-deepseek-1017";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
 import { myProvider, type ModelName } from "@/lib/ai/providers";
@@ -13,7 +14,10 @@ export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof PAID_DEEPSEEK_1017_KEY;
+  key:
+    | typeof PAID_AGENT_FLASH_RETURN_KEY
+    | typeof PAID_DEEPSEEK_1017_KEY
+    | typeof FREE_AGENT_DEEPSEEK_1017_KEY;
   requestId?: string;
   startedAt?: number;
   baselineModel?: string;
@@ -47,6 +51,11 @@ export async function evaluateFlashRouting({
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || limitRescue || modelPolicyActive) return undefined;
   const selector = selectedModelOverride ?? "auto";
+  const freeEligible =
+    subscription === "free" &&
+    mode === "agent" &&
+    selectedModel === "model-glm-5.3-flash-agent" &&
+    !hasImages;
   const paidEligible =
     ["pro", "pro-plus", "ultra", "team"].includes(subscription) &&
     (selector === "auto" || selector === "hackerai-pro") &&
@@ -56,11 +65,16 @@ export async function evaluateFlashRouting({
       "model-glm-5.3-flash",
       "model-grok-4.5",
     ].includes(selectedModel);
-  if (paidEligible) {
+  const modelExperimentKey = freeEligible
+    ? FREE_AGENT_DEEPSEEK_1017_KEY
+    : paidEligible
+      ? PAID_DEEPSEEK_1017_KEY
+      : undefined;
+  if (modelExperimentKey) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
         posthog,
-        PAID_DEEPSEEK_1017_KEY,
+        modelExperimentKey,
         userId,
         {
           subscription_tier: subscription,
@@ -68,7 +82,7 @@ export async function evaluateFlashRouting({
       );
       if (variant !== "control" && variant !== "test") return undefined;
       return {
-        key: PAID_DEEPSEEK_1017_KEY,
+        key: modelExperimentKey,
         variant,
         modelKey: variant === "test" ? DEEPSEEK_1017_MODEL_KEY : selectedModel,
         configuredModel:
@@ -165,7 +179,10 @@ export function createFlashRoutingExposureRecorder({
     )
       return;
     recorded = true;
-    if (assignment.key === PAID_DEEPSEEK_1017_KEY)
+    if (
+      assignment.key === PAID_DEEPSEEK_1017_KEY ||
+      assignment.key === FREE_AGENT_DEEPSEEK_1017_KEY
+    )
       assignment.requestId = requestId;
     try {
       posthog.capture({

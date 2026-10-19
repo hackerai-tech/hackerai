@@ -73,3 +73,42 @@ it.each(["agent", "ask"] as const)(
     expect(context).toContain("Verify webhook replay defense");
   },
 );
+
+it.each([
+  ["agent", true, true],
+  ["agent", false, false],
+  ["ask", true, false],
+] as const)(
+  "retains long resumed history only for enabled Agent (%s, %s)",
+  async (mode, enabled, retained) => {
+    mockQuery.mockReset();
+    const older = {
+      id: "older-evidence",
+      role: "user",
+      parts: [{ type: "text", text: "Candidate A was rejected." }],
+    };
+    const recent = {
+      id: "recent",
+      role: "assistant",
+      parts: [{ type: "text", text: " ordinary".repeat(210_000) }],
+    };
+    mockQuery.mockResolvedValueOnce({ id: "chat-test" }).mockResolvedValueOnce({
+      page: [recent, older],
+      isDone: true,
+      continueCursor: null,
+    });
+    const result = await getMessagesByChatId({
+      chatId: "chat-test",
+      userId: "user-test",
+      subscription: "pro",
+      mode,
+      agentModelContextEnabled: enabled,
+      newMessages: [],
+    });
+    expect(
+      result.truncatedMessages.some(
+        (message) => message.id === "older-evidence",
+      ),
+    ).toBe(retained);
+  },
+);

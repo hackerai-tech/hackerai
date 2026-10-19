@@ -1,3 +1,4 @@
+import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -1898,10 +1899,37 @@ export const agentLongTask = task({
         country: payload.regionalSubscriptionCountry,
         surface: "agent_worker",
       });
+      const userCustomizationPromise = getUserCustomization({ userId });
+      const maxExtraUsageConfig =
+        selectedModelOverride === "hackerai-max"
+          ? await buildExtraUsageConfig({
+              userId,
+              subscription,
+              userCustomization: await userCustomizationPromise,
+              organizationId,
+            })
+          : undefined;
+      // Resolve Max entitlement before granting its larger history allowance.
+      if (selectedModelOverride === "hackerai-max") {
+        selectedModelOverride =
+          normalizeMaxModelForSubscription(
+            selectedModelOverride,
+            subscription,
+            { extraUsageAvailable: canUseExtraUsage(maxExtraUsageConfig!) },
+          ) ?? undefined;
+      }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
+      const agentModelContextVariant = await getAgentModelContextVariant(
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+      );
+      runReporting.setAgentModelContextVariant(agentModelContextVariant);
+      const agentModelContextEnabled = agentModelContextVariant === "test";
       const [userCustomization, fetched] = await Promise.all([
-        getUserCustomization({ userId }),
+        userCustomizationPromise,
         getMessagesByChatId({
           chatId,
           userId,
@@ -1909,6 +1937,7 @@ export const agentLongTask = task({
           newMessages: [],
           regenerate,
           mode,
+          agentModelContextEnabled,
         }),
       ]);
       const { chat, fileTokens } = fetched;
@@ -1927,15 +1956,16 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
       const attachmentCounts = countFileAttachments(messagesForProcessing);
-      const baseExtraUsageConfigPromise = buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
+
       const [projectContext, baseExtraUsageConfig] = await Promise.all([
         projectContextPromise,
-        baseExtraUsageConfigPromise,
+        maxExtraUsageConfig ??
+          buildExtraUsageConfig({
+            userId,
+            subscription,
+            userCustomization,
+            organizationId,
+          }),
       ]);
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
@@ -3739,6 +3769,8 @@ export const agentLongTask = task({
               systemPromptTokens,
               ctxSystemTokens,
               ctxMaxTokens,
+              agentModelContextEnabled,
+              agentModelContextVariant,
               streamStartTime,
               triggerRunId: ctx.run.id,
               contextUsageOn,

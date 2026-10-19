@@ -26,8 +26,8 @@ describe("getProviderPromptPressure", () => {
     return messages;
   };
 
-  it("allows larger histories in Agent mode without a model selector", () => {
-    const messages = historyWithBytes(700_000);
+  it("does not compact Agent at the former byte threshold, while preserving Ask", () => {
+    const messages = historyWithBytes(2_000_000);
     expect(getProviderPromptPressure(messages, { mode: "agent" })).toBeNull();
     expect(getProviderPromptPressure(messages, { mode: "ask" })).toMatchObject({
       reason: "serialized_message_bytes",
@@ -38,7 +38,6 @@ describe("getProviderPromptPressure", () => {
   });
 
   it.each([
-    { mode: "agent" as const, limit: 1_800_000 },
     { mode: "ask" as const, limit: 600_000 },
     { mode: undefined, limit: 600_000 },
   ])("compacts exactly at the $mode byte ceiling", ({ mode, limit }) => {
