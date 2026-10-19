@@ -1,4 +1,8 @@
 import {
+  readCloudWorkspaceState,
+  assertCloudWorkspaceAvailable,
+} from "@/lib/ai/tools/utils/cloud-workspace-guard";
+import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
@@ -537,6 +541,18 @@ export const createAgentTriggerPost =
         retryNetworkFailure: true,
         signal: req.signal,
       });
+      // Serialize cloud Agent admission with recovery before a run is queued.
+      // The same activity/fence CAS protects acquisition and cached clients.
+      if (
+        process.env.CLOUD_DISK_RECOVERY_TARGETS &&
+        (!sandboxPreference || sandboxPreference === "e2b")
+      ) {
+        const workspace = await readCloudWorkspaceState(userId);
+        await assertCloudWorkspaceAvailable(
+          userId,
+          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+        );
+      }
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({

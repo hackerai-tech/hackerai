@@ -165,6 +165,7 @@ async function observeWorkspace(
 
 export async function recoverE2BDiskOnly(
   auth: DiskRecoveryAuthorization,
+  customer?: { consentKey: string; assertIdle: () => Promise<void> },
 ): Promise<Record<string, unknown>> {
   // Enforce authorization even if a future caller bypasses the CLI.
   validateDiskRecoveryAuthorization(auth);
@@ -202,19 +203,55 @@ export async function recoverE2BDiskOnly(
       ...connectionOptions,
       requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
     });
-  assertIdentity(await getInfo(), auth);
+  const assertTarget = async () => {
+    const info = await getInfo();
+    assertIdentity(info, auth);
+    if (
+      customer &&
+      (info.lifecycle?.autoResume !== false ||
+        info.lifecycle?.onTimeout !== "pause")
+    )
+      throw new DiskRecoveryError(
+        "traffic",
+        "Inbound auto-resume cannot be safely isolated",
+      );
+    // Unknown extra metadata can encode a preservation hold or provider action.
+    if (
+      customer &&
+      Object.keys(info.metadata ?? {}).some(
+        (key) =>
+          ![
+            "userID",
+            "e2bCluster",
+            "template",
+            "sandboxVersion",
+            "secure",
+          ].includes(key),
+      )
+    )
+      throw new DiskRecoveryError(
+        "preservation",
+        "Workspace requires operator review",
+      );
+  };
+  await assertTarget();
+  if (customer) await customer.assertIdle();
   const claim = await claimE2BDiskRecovery({
     userId: auth.userId,
     sandboxId: auth.sandboxId,
     region: auth.region,
     token: auth.idempotencyKey,
     operatorId: auth.operatorId,
+    ...(customer && {
+      customerConsent: { key: customer.consentKey, token: auth.idempotencyKey },
+    }),
   });
   let stage = "identity";
   try {
     // Recheck after fencing: never reboot a sandbox that was started by
     // inbound auto-resume or a connection already in flight.
-    assertIdentity(await getInfo(), auth);
+    await assertTarget();
+    if (customer) await customer.assertIdle();
     stage = "reboot";
     const sandbox = await Sandbox.connect(auth.sandboxId, {
       ...connectionOptions,
@@ -229,6 +266,23 @@ export async function recoverE2BDiskOnly(
       );
     await claim.update({ step: "reboot_connected" });
     stage = "inventory";
+    const probePath = `/home/user/.hackerai-recovery-${auth.idempotencyKey}`;
+    const probe = hmac(fingerprintKey, auth.idempotencyKey);
+    if (customer) {
+      // The random path is exclusive to this attempt. Test only our own bytes.
+      await sandbox.files.write(probePath, probe, {
+        requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
+      });
+      if (
+        (await sandbox.files.read(probePath, {
+          requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
+        })) !== probe
+      )
+        throw new DiskRecoveryError(
+          "file_access",
+          "Recovery probe readback failed",
+        );
+    }
     const observed = await observeWorkspace(sandbox, fingerprintKey);
     await claim.update({ step: "inventory_observed", ...observed });
     stage = "backup";
@@ -237,6 +291,35 @@ export async function recoverE2BDiskOnly(
     const backup = await sandbox.createSnapshot({
       requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
     });
+    if (customer) {
+      if (!backup.snapshotId)
+        throw new DiskRecoveryError(
+          "backup",
+          "Provider did not return a backup receipt",
+        );
+      const backups = Sandbox.listSnapshots({
+        ...connectionOptions,
+        sandboxId: auth.sandboxId,
+        requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
+      });
+      let found = false;
+      let pages = 0;
+      do {
+        if (++pages > 10)
+          throw new DiskRecoveryError(
+            "backup",
+            "Backup inventory exceeds safe bound",
+          );
+        found = (await backups.nextItems()).some(
+          (item) => item.snapshotId === backup.snapshotId,
+        );
+      } while (!found && backups.hasNext);
+      if (!found)
+        throw new DiskRecoveryError(
+          "backup",
+          "Backup could not be independently verified",
+        );
+    }
     await claim.update({
       step: "backup_created",
       backupSnapshotId: backup.snapshotId,
@@ -249,6 +332,7 @@ export async function recoverE2BDiskOnly(
       );
     if ((await getInfo()).state !== "paused")
       throw new DiskRecoveryError(stage, "Pause state could not be verified");
+    if (customer) await assertTarget();
     await claim.update({ step: "recovered_state_paused" });
     stage = "normal_resume";
     const resumed = await Sandbox.connect(auth.sandboxId, {
@@ -256,6 +340,21 @@ export async function recoverE2BDiskOnly(
       requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
       timeoutMs: 30 * 60 * 1000,
     });
+    if (customer && resumed.sandboxId !== auth.sandboxId)
+      throw new DiskRecoveryError(
+        "normal_resume",
+        "Provider returned a different sandbox",
+      );
+    if (
+      customer &&
+      (await resumed.files.read(probePath, {
+        requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
+      })) !== probe
+    )
+      throw new DiskRecoveryError(
+        "file_persistence",
+        "Recovery probe did not persist across normal resume",
+      );
     const after = await observeWorkspace(resumed, fingerprintKey);
     if (after.metadataHmacSha256 !== observed.metadataHmacSha256)
       throw new DiskRecoveryError(
@@ -263,6 +362,10 @@ export async function recoverE2BDiskOnly(
         "Top-level file metadata changed after normal resume",
       );
     await claim.update({ step: "normal_resume_verified" });
+    if (customer)
+      await resumed.files.remove(probePath, {
+        requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
+      });
     stage = "final_pause";
     if (!(await resumed.pause({ requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS })))
       throw new DiskRecoveryError(
@@ -274,6 +377,7 @@ export async function recoverE2BDiskOnly(
         stage,
         "Final pause state could not be verified",
       );
+    if (customer) await assertTarget();
     await claim.update({ step: "final_state_paused" });
     const result = {
       token: auth.idempotencyKey,
@@ -289,6 +393,8 @@ export async function recoverE2BDiskOnly(
     await claim.finish(JSON.stringify(result));
     return result;
   } catch (error) {
+    if (customer)
+      await claim.update({ step: "support_required" }).catch(() => {});
     // This fence intentionally has no TTL. A timed-out SDK call can still
     // finish provider-side, and automatic retries could discard more state.
     let fence: "retained" | "unknown" = "unknown";

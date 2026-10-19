@@ -1,3 +1,7 @@
+import {
+  recordResumeFailure,
+  clearResumeFailures,
+} from "@/lib/cloud-recovery/store";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
 import { e2bNetwork } from "@/lib/cloud-network/policy";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
@@ -120,6 +124,8 @@ export const ensureSandboxConnection = async (
       create_attempts: attempts,
     });
   };
+  let failedTarget:
+    { sandboxId: string; template: string; sandboxVersion: string } | undefined;
   try {
     options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
@@ -142,6 +148,16 @@ export const ensureSandboxConnection = async (
         info.metadata?.sandboxVersion !== SANDBOX_VERSION
       )
         throw new Error("Pinned E2B workspace identity mismatch");
+      if (
+        info.state === "paused" &&
+        info.metadata?.template &&
+        info.metadata?.sandboxVersion
+      )
+        failedTarget = {
+          sandboxId: info.sandboxId,
+          template: info.metadata.template,
+          sandboxVersion: info.metadata.sandboxVersion,
+        };
       options.reportStage?.("connect");
       const sandbox = await retryWithBackoff(
         () =>
@@ -158,6 +174,7 @@ export const ensureSandboxConnection = async (
         },
       );
       signal?.throwIfAborted();
+      await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
       setSandbox(sandbox);
       reportBoot("reuse_existing", 0);
       return { sandbox };
@@ -247,6 +264,16 @@ export const ensureSandboxConnection = async (
         );
       }
 
+      if (
+        existingSandboxInfo.state === "paused" &&
+        existingSandboxInfo.metadata?.template &&
+        existingSandboxInfo.metadata?.sandboxVersion
+      )
+        failedTarget = {
+          sandboxId: existingSandboxInfo.sandboxId,
+          template: existingSandboxInfo.metadata.template,
+          sandboxVersion: existingSandboxInfo.metadata.sandboxVersion,
+        };
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
@@ -268,6 +295,7 @@ export const ensureSandboxConnection = async (
           },
         );
         signal?.throwIfAborted();
+        await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -342,6 +370,21 @@ export const ensureSandboxConnection = async (
     }
     throw lastError;
   } catch (error) {
+    if (failedTarget && options.acquisitionId && options.triggerRegion) {
+      const status =
+        error && typeof error === "object"
+          ? ((error as { statusCode?: number; status?: number }).statusCode ??
+            (error as { status?: number }).status)
+          : undefined;
+      await recordResumeFailure({
+        userId: userID,
+        ...failedTarget,
+        region: options.triggerRegion,
+        acquisitionId: options.acquisitionId,
+        uncertain:
+          signal?.aborted === true || !status || ![400, 422].includes(status),
+      }).catch(() => {});
+    }
     signal?.throwIfAborted();
     const candidate =
       error && typeof error === "object"
