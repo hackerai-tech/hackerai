@@ -202,6 +202,16 @@ describe("security validation subagent runtime contracts", () => {
       "await verifyResultEvidence(",
       "markSubagentFinalizing(",
     );
+    expectMarkerOrder(
+      acceptResult,
+      "await waitForBrowserHandoff(activeAbort.signal)",
+      "await observeFinalization(",
+    );
+    const onFinish = child.slice(
+      child.indexOf("onFinish: async () =>"),
+      child.indexOf("onStepFinish: async"),
+    );
+    expect(onFinish).toContain("!resultValue && !activeAbort.signal.aborted");
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );

@@ -787,6 +787,18 @@ export const subagentTask = task({
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
+              // Finalizing ends browser ownership. Keep it running until the
+              // user returns control, and reconsider a result prepared earlier.
+              if (
+                !activeAbort.signal.aborted &&
+                (await waitForBrowserHandoff(activeAbort.signal))
+              ) {
+                return {
+                  accepted: false,
+                  error:
+                    "Human browser takeover completed. Read the handoff context and take a fresh browser snapshot before submitting the result again.",
+                };
+              }
               const finalizing = await observeFinalization(
                 "result_submission",
                 Boolean(resultValue),
@@ -1509,7 +1521,8 @@ export const subagentTask = task({
                   attemptError = error;
                 },
                 onFinish: async () => {
-                  if (!activeAbort.signal.aborted)
+                  // Accepted results already waited before ending ownership.
+                  if (!resultValue && !activeAbort.signal.aborted)
                     await waitForBrowserHandoff(activeAbort.signal);
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
