@@ -157,7 +157,19 @@ export async function claimE2BDiskRecovery(args: {
     (previous.phase !== "e2b" ||
       previous.destinationId !== args.sandboxId ||
       previous.region !== args.region ||
-      previous.recoveryPending !== undefined)
+      previous.recoveryPending !== undefined ||
+      (args.customerConsent &&
+        Object.keys(previous).some(
+          (key) =>
+            ![
+              "version",
+              "phase",
+              "token",
+              "sourceId",
+              "destinationId",
+              "region",
+            ].includes(key),
+        )))
   )
     throw new CloudWorkspaceUnavailableError();
   const state: RecoveryState = {

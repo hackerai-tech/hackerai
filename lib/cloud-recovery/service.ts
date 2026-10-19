@@ -158,7 +158,18 @@ async function assertEligible(
     (workspace.phase !== "e2b" ||
       workspace.destinationId !== auth.sandboxId ||
       workspace.region !== auth.region ||
-      workspace.recoveryPending !== undefined)
+      workspace.recoveryPending !== undefined ||
+      Object.keys(workspace).some(
+        (key) =>
+          ![
+            "version",
+            "phase",
+            "token",
+            "sourceId",
+            "destinationId",
+            "region",
+          ].includes(key),
+      ))
   )
     throw new RecoveryUnavailable();
   if (await recoveryRedis().exists(`cloud_workspace_activity:v1:${userId}`))
@@ -209,6 +220,7 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
   if (!(await enabled(userId))) return { status: "hidden" };
   const consent = await readConsent(userId);
   if (consent) {
+    const workspace = await readCloudWorkspaceState(userId);
     const result = (await readE2BDiskRecoveryResult(userId)) as {
       token?: string;
       status?: string;
@@ -219,11 +231,14 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
       result?.token === consent.token &&
       result.status === "verified_paused" &&
       result.sandboxId === consent.target.sandboxId &&
-      result.region === consent.target.region
+      result.region === consent.target.region &&
+      workspace?.phase === "e2b" &&
+      workspace.destinationId === consent.target.sandboxId &&
+      workspace.region === consent.target.region &&
+      workspace.recoveryPending === undefined
     )
       return { status: "recovered" };
     if (consent.status === "failed") return { status: "support" };
-    const workspace = await readCloudWorkspaceState(userId);
     if (
       workspace?.phase === "recovery" ||
       ["confirmed", "executing"].includes(consent.status)
@@ -303,6 +318,9 @@ export async function executeCustomerRecovery(
   )
     throw new RecoveryUnavailable();
   try {
+    // A delayed dispatch is not permission to reboot hours after confirmation.
+    if (Date.now() - consent.issuedAt > 10 * 60000)
+      throw new RecoveryUnavailable();
     const auth = await assertEligible(userId, consent);
     const entitlement = await getCurrentAgentEntitlementContext({ userId });
     if (entitlement.subscription === "free") throw new RecoveryUnavailable();

@@ -333,6 +333,14 @@ it("a completion receipt must match the exact sandbox and region", async () => {
     sandboxId: target.sandboxId,
     region: target.region,
   });
+  jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+    version: 1,
+    phase: "e2b",
+    token,
+    sourceId: target.sandboxId,
+    destinationId: target.sandboxId,
+    region: target.region,
+  });
   expect(await recoveryView("owner")).toEqual({ status: "recovered" });
 });
 it("an interrupted task becomes support-only while keeping its receipt", async () => {
@@ -343,4 +351,58 @@ it("an interrupted task becomes support-only while keeping its receipt", async (
   });
   expect((await recoveryView("owner")).status).toBe("support");
   expect(decideConsent).not.toHaveBeenCalled();
+});
+
+it("does not execute stale queued consent", async () => {
+  jest.mocked(readConsent).mockResolvedValue({
+    ...consent,
+    status: "confirmed",
+    issuedAt: Date.now() - 11 * 60000,
+  });
+  await expect(
+    executeCustomerRecovery("owner", token, "us-east-1"),
+  ).rejects.toThrow();
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  expect(failConsent).toHaveBeenCalledWith("owner", token);
+});
+it.each(["E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "E2B_DEBUG"])(
+  "refuses an unverified provider override: %s",
+  async (name) => {
+    process.env[name] =
+      name === "E2B_DEBUG" ? "true" : "https://unverified.example.test";
+    expect(await recoveryView("owner")).toEqual({ status: "support" });
+    expect(Sandbox.getInfo).not.toHaveBeenCalled();
+  },
+);
+it("a completed receipt cannot hide a newer durable recovery fence", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "executing" });
+  jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
+    token,
+    status: "verified_paused",
+    sandboxId: target.sandboxId,
+    region: target.region,
+  });
+  jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+    phase: "recovery",
+    token: "other-recovery",
+    step: "support_required",
+    startedAt: new Date().toISOString(),
+  } as never);
+  expect((await recoveryView("owner")).status).toBe("support");
+});
+
+it("refuses unrecognized workspace preservation fields", async () => {
+  jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+    version: 1,
+    phase: "e2b",
+    token,
+    sourceId: target.sandboxId,
+    destinationId: target.sandboxId,
+    region: target.region,
+    preservationHold: "pending",
+  } as never);
+  expect(await recoveryView("owner")).toEqual({ status: "support" });
+  expect(offerConsent).not.toHaveBeenCalled();
 });

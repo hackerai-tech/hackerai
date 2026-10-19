@@ -254,3 +254,22 @@ describe("cloud workspace guard", () => {
     await expect(readCloudWorkspaceState("user-1")).resolves.toBeNull();
   });
 });
+
+it("refuses a customer claim when a preservation field appeared before fencing", async () => {
+  mockGet.mockResolvedValue({ ...recovered, preservationHold: "pending" });
+  mockEval.mockClear();
+  await expect(
+    claimE2BDiskRecovery({
+      userId: "user-1",
+      sandboxId: recovered.destinationId,
+      region: "us-east-1",
+      token: "customer-attempt",
+      operatorId: "customer:user-1",
+      customerConsent: {
+        key: "cloud_recovery_consent:v1:user-1",
+        token: "customer-attempt",
+      },
+    }),
+  ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+  expect(mockEval).not.toHaveBeenCalled();
+});
