@@ -136,11 +136,14 @@ describe("model improvement control", () => {
     expect(screen.getByRole("switch")).toBeDisabled();
     expect(screen.getByRole("switch")).not.toBeChecked();
     expect(screen.getByRole("status")).toHaveTextContent("Saving…");
+    expect(toast.success).not.toHaveBeenCalled();
     await user.click(screen.getByRole("switch"));
     expect(save).toHaveBeenCalledTimes(1);
     setMockQueryResult({ enabled: false, updatedAt: 123 });
     await act(async () => request.resolve(null));
     expect(screen.getByRole("switch")).not.toBeChecked();
+    expect(toast.success).toHaveBeenCalledWith("Model improvement disabled.");
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     view.unmount();
     render(<DataControlsTab />);
     expect(screen.getByRole("switch")).not.toBeChecked();
@@ -162,6 +165,7 @@ describe("model improvement control", () => {
         ),
       );
       expect(save).toHaveBeenCalledWith({ enabled: !enabled });
+      expect(toast.success).not.toHaveBeenCalled();
       expect(screen.getByRole("switch")).toHaveAttribute(
         "aria-checked",
         String(enabled),
@@ -181,6 +185,9 @@ describe("model improvement control", () => {
         expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
       );
       expect(save).toHaveBeenLastCalledWith({ enabled: !enabled });
+      expect(toast.success).toHaveBeenCalledWith(
+        enabled ? "Model improvement disabled." : "Model improvement enabled.",
+      );
       expect(screen.getByRole("switch")).toHaveAttribute(
         "aria-checked",
         String(!enabled),

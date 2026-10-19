@@ -57,6 +57,9 @@ const DataControlsTab = () => {
     setFailedModelImprovement(null);
     try {
       await saveModelImprovement({ enabled });
+      toast.success(
+        enabled ? "Model improvement enabled." : "Model improvement disabled.",
+      );
     } catch {
       setFailedModelImprovement(enabled);
       toast.error(
@@ -143,10 +146,7 @@ const DataControlsTab = () => {
                 ? "Sign in with an active account to manage this preference."
                 : isSavingModelImprovement
                   ? "Saving…"
-                  : modelImprovement.updatedAt === null &&
-                      modelImprovement.enabled
-                    ? "On by default. Changes are saved to your account."
-                    : `${modelImprovement.enabled ? "On" : "Off"}. Saved to your account.`}
+                  : null}
           </p>
           {modelImprovement && failedModelImprovement !== null && (
             <div className="mt-2 space-y-2">
