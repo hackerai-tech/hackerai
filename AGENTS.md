@@ -30,6 +30,11 @@ contracts and authorization boundaries.
 
 ## Documentation and Skills
 
+Repository documentation is public. Keep internal product and business plans,
+experiment plans and readouts, rollout evidence, and account-specific operational
+notes in Linear under the owning issue or a team document. Do not recreate
+`docs/internal/` or commit those materials elsewhere in the repository.
+
 Keep documentation for decisions, cross-service constraints, operational
 procedures, and pitfalls that are hard to infer from the code. Put local
 implementation explanations beside the code they explain. Avoid file catalogs,
