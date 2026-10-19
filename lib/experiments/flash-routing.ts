@@ -1,5 +1,4 @@
 import {
-  PAID_DEEPSEEK_1017_KEY,
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
 } from "./paid-deepseek-1017";
@@ -14,10 +13,7 @@ export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key:
-    | typeof PAID_AGENT_FLASH_RETURN_KEY
-    | typeof PAID_DEEPSEEK_1017_KEY
-    | typeof FREE_AGENT_DEEPSEEK_1017_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_AGENT_DEEPSEEK_1017_KEY;
   requestId?: string;
   startedAt?: number;
   baselineModel?: string;
@@ -56,20 +52,9 @@ export async function evaluateFlashRouting({
     mode === "agent" &&
     selectedModel === "model-glm-5.3-flash-agent" &&
     !hasImages;
-  const paidEligible =
-    ["pro", "pro-plus", "ultra", "team"].includes(subscription) &&
-    (selector === "auto" || selector === "hackerai-pro") &&
-    [
-      "model-deepseek-v4-flash-vision-pro",
-      "model-deepseek-v4-flash-vision",
-      "model-glm-5.3-flash",
-      "model-grok-4.5",
-    ].includes(selectedModel);
   const modelExperimentKey = freeEligible
     ? FREE_AGENT_DEEPSEEK_1017_KEY
-    : paidEligible
-      ? PAID_DEEPSEEK_1017_KEY
-      : undefined;
+    : undefined;
   if (modelExperimentKey) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
@@ -153,7 +138,6 @@ export function createFlashRoutingExposureRecorder({
   mode,
   subscription,
   requestId,
-  controlContinuationModel,
 }: {
   posthog: Pick<PostHog, "capture"> | null;
   assignment: FlashRoutingAssignment | undefined;
@@ -161,28 +145,18 @@ export function createFlashRoutingExposureRecorder({
   mode: ChatMode;
   subscription: SubscriptionTier;
   requestId: string;
-  /** The normal post-compaction route, resolved by the shared runner policy. */
-  controlContinuationModel?: string;
 }): (configuredModel: string) => void {
   let recorded = false;
   return (configuredModel) => {
-    const isControlContinuation =
-      assignment?.key === PAID_DEEPSEEK_1017_KEY &&
-      assignment.variant === "control" &&
-      mode === "agent" &&
-      configuredModel === controlContinuationModel;
     if (
       recorded ||
       !posthog ||
       !assignment ||
-      (configuredModel !== assignment.configuredModel && !isControlContinuation)
+      configuredModel !== assignment.configuredModel
     )
       return;
     recorded = true;
-    if (
-      assignment.key === PAID_DEEPSEEK_1017_KEY ||
-      assignment.key === FREE_AGENT_DEEPSEEK_1017_KEY
-    )
+    if (assignment.key === FREE_AGENT_DEEPSEEK_1017_KEY)
       assignment.requestId = requestId;
     try {
       posthog.capture({
@@ -195,9 +169,6 @@ export function createFlashRoutingExposureRecorder({
           mode,
           selected_model: assignment.modelKey,
           configured_model: configuredModel,
-          ...(isControlContinuation && {
-            assigned_configured_model: assignment.configuredModel,
-          }),
           request_id: requestId,
           message_id: requestId,
           baseline_model: assignment.baselineModel,

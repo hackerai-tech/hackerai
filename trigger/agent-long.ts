@@ -1,3 +1,4 @@
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
@@ -236,7 +237,6 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
-  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
@@ -2114,6 +2114,16 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      selectedModel = resolvePaidProAutoModel({
+        userId,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
       const requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
@@ -2449,15 +2459,6 @@ export const agentLongTask = task({
               createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
-                controlContinuationModel:
-                  activeFlashRoutingAssignment &&
-                  createTrackedProvider().languageModel(
-                    resolveAgentModelAfterSummarization(
-                      activeFlashRoutingAssignment.modelKey,
-                      mode,
-                      false,
-                    ),
-                  ).modelId,
                 userId,
                 mode,
                 subscription,

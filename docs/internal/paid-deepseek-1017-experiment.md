@@ -3,23 +3,32 @@
 Decision, owner, review criteria, rollback thresholds and cleanup plan:
 [HAC-181](https://linear.app/hackerai/issue/HAC-181).
 
-Authenticated paid Pro/Auto requests are assigned by stable user ID in both Ask
-and Agent. Control retains the resolved route; treatment uses the exact
-`deepseek/deepseek-v4.1-flash-1017` snapshot with high reasoning. Native image
-inputs and later image tool results keep that snapshot. Explicit Standard/Max,
-free users, allowance rescue, existing moderated model policy, subagent defaults
-and compaction models are outside this comparison. Current safety and
-entitlement gates still run first. Missing/inactive/unrecognized flags and flag
-service failures preserve baseline behavior.
+The owner closed Production experiment 492909 and Preview QA experiment 492910
+on October 19, 2026, requesting full paid Pro/Auto rollout before the planned
+review. This is an early shipping decision, not a conclusive response-quality win.
+Historical experiment results and the request-joined SQL readout remain available.
 
-`paid_pro_auto_deepseek_1017_v1` is configured independently in Preview PostHog
-401167 (100% eligible treatment) and Production 144137 (100% eligible enrollment,
-50/50 control/test). Deployment alone does not launch either experiment. Verify
-Vercel and Trigger independently against the designated Convex account and
-PostHog project before activating. Production requires the reviewed PR to be
-merged and both runtimes deployed. A flag change then affects new requests;
-existing requests retain their assignment. Disabling the flag restores baseline
-for new requests without a redeploy.
+Authenticated paid Pro/Auto requests in Ask and Agent now resolve to the exact
+`deepseek/deepseek-v4.1-flash-1017` snapshot with high reasoning after existing
+moderation and rescue gates. Native image inputs and later image tool results
+keep that snapshot. Explicit Standard/Max, Free, allowance rescue, moderated
+model policy, subagent defaults and compaction models remain outside this route.
+The separate Free Agent 1017 experiment remains flag-controlled.
+
+`paid_pro_auto_deepseek_1017_v1` remains active independently in Preview PostHog
+401167 and Production 144137, with 100% eligible enrollment and control 0% / test
+100%, targeting pro/pro-plus/ultra/team. This preserves treatment on older
+Vercel/Trigger deployments until cleanup is deployed. The shipped resolver no
+longer evaluates this flag or emits new paid experiment assignments, exposures
+or experiment-specific outcomes; ordinary usage and completion analytics remain.
+A new request picks up the remote rollout without a deployment; an in-flight
+request keeps its assignment. Deploy the cleanup to both Vercel and Trigger to
+remove the runtime flag dependency. Archive the flags only after both runtimes
+have deployed the cleanup and older in-flight runs have drained. After cleanup,
+rollback requires reverting the routing change and deploying both runtimes;
+disabling the retired flag no longer changes the shipped code.
+
+## Historical measurement contract
 
 Assignment does not emit exposure. `flash_routing_experiment_exposed` fires once
 at the matching provider request, using the original assistant ID as
@@ -57,17 +66,16 @@ ratio mismatch on unique users, repeat-user clustering and feedback response
 bias before deciding. A natural completed answer is a technical outcome, not
 proof that the user's task was solved.
 
-## Acceptance before activation
+## Verification of the shipped route
 
 On the actual Preview URL, use the repository's configured paid test account.
 Verify Auto and Pro in Ask and a bounded Agent request, including a harmless
 tool call, native image input/tool result, reload persistence, cancellation and
 bounded fallback. Confirm exact requested/served snapshot and high reasoning,
-one exposure per original request, terminal linkage to the displayed message,
-actual cost and first-chunk timing. Submit thumbs feedback and confirm the
-user/message join. Verify free, Standard/Max, allowance rescue and moderated
-routes do not enroll. Exercise both cloud and local/desktop transports when
+no paid experiment exposure or assignment, and ordinary requested/served model,
+completion and cost telemetry. Submit thumbs feedback and confirm the
+user/message join. Verify Free, Standard/Max, allowance rescue and moderated
+routes retain their existing policy. Exercise both cloud and local/desktop transports when
 available; an unavailable transport remains a listed manual verification item.
-Read back both flags and runtime PostHog identities separately. Keep Production
-inactive until Preview acceptance and the Production Vercel/Trigger deployment
-are verified. No Convex schema or credential changes are required.
+Read back both flags and runtime PostHog identities separately. No Convex schema
+or credential changes are required.
