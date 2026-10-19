@@ -557,13 +557,11 @@ describe("E2B sandbox lease lifecycle", () => {
   });
 
   it("creates a new workspace with its stored network restrictions already applied", async () => {
-    jest
-      .mocked(readNetworkSettings)
-      .mockResolvedValueOnce({
-        policy: { mode: "restricted", allow: ["example.test"] },
-        revision: 3,
-        status: "ready",
-      });
+    jest.mocked(readNetworkSettings).mockResolvedValueOnce({
+      policy: { mode: "restricted", allow: ["example.test"] },
+      revision: 3,
+      status: "ready",
+    });
     sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
     sandboxApi.create.mockResolvedValue({ sandboxId: "restricted-workspace" });
     await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });
@@ -1012,6 +1010,17 @@ describe("E2B sandbox lease lifecycle", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("never replaces a known paused workspace after a not-found resume response", async () => {
+    listSandbox({ state: "paused" });
+    sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
+    sandboxApi.create.mockClear();
+    await expect(
+      ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toThrow();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
   it("creates a replacement without killing when the listed sandbox is gone", async () => {

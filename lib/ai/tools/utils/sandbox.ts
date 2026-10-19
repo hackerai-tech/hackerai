@@ -303,8 +303,9 @@ export const ensureSandboxConnection = async (
         signal?.throwIfAborted();
         // Handle specific error cases
         if (
-          e instanceof NotFoundError ||
-          (e instanceof Error && e.message?.includes("not found"))
+          existingSandboxInfo.state !== "paused" &&
+          (e instanceof NotFoundError ||
+            (e instanceof Error && e.message?.includes("not found")))
         ) {
           console.error(
             `[${userID}] Sandbox ${existingSandboxInfo.sandboxId} expired/deleted, creating new one`,
