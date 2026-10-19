@@ -38,6 +38,9 @@ export type UploadedFileInfo = {
   sizeBytes: number;
 };
 
+export type GeneratedFileUploadPhase =
+  "file_metadata" | "upload_url" | "transfer" | "file_registration";
+
 /**
  * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
  * file. Presigned S3 URLs are intentionally not persisted in tool output
@@ -457,7 +460,19 @@ export async function uploadSandboxFileToConvex(args: {
   mediaType?: string;
   name?: string;
   storageRegion?: S3StorageRegion;
+  onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
+  const recordPhase = (phase: GeneratedFileUploadPhase) => {
+    try {
+      if (args.onPhase) {
+        void Promise.resolve(args.onPhase(phase)).catch(() => {
+          // An async observer must not create an unhandled rejection either.
+        });
+      }
+    } catch {
+      // Optional diagnostics must not affect the upload or its original error.
+    }
+  };
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
       "NEXT_PUBLIC_CONVEX_URL is required for sandbox file uploads",
@@ -474,6 +489,7 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
   const name = args.name || getFileNameFromPath(fullPath);
+  recordPhase("file_metadata");
   const fileSize = await getSandboxFileSize(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
@@ -494,6 +510,7 @@ export async function uploadSandboxFileToConvex(args: {
   let s3Key: string;
   let storageLocation: S3StorageLocation;
   try {
+    recordPhase("upload_url");
     const generatedUrl = args.storageRegion
       ? await generateS3UploadUrl(
           name,
@@ -526,6 +543,7 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   try {
+    recordPhase("transfer");
     await uploadGeneratedFileFromSandboxToUrl({
       sandbox,
       fullPath,
@@ -553,6 +571,7 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   try {
+    recordPhase("file_registration");
     const saved = await convex.action(
       api.fileActions.saveSandboxGeneratedFile,
       {

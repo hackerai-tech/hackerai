@@ -1,7 +1,10 @@
 import { tool } from "ai";
 import type { SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
-import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import {
+  uploadSandboxFileToConvex,
+  type GeneratedFileUploadPhase,
+} from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
 import { waitForForegroundCommands } from "./utils/foreground-commands";
@@ -27,6 +30,21 @@ export const createGetTerminalFiles = (context: ToolContext) => {
       let relayRecoverySucceeded = false;
       let streamNotificationFailures = 0;
       let foregroundCommandsWaited = 0;
+      type FailurePhase =
+        | GeneratedFileUploadPhase
+        | "sandbox_setup"
+        | "background_process"
+        | "relay_recovery"
+        | "finalization"
+        | "unknown";
+      let currentPhase: FailurePhase = "sandbox_setup";
+      let completedDeliveryCount = 0;
+      const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      const countFailure = (phase: FailurePhase, count = 1) => {
+        if (count > 0) {
+          failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + count;
+        }
+      };
       const recordOutcome = (delivered: number, failed: number) => {
         try {
           phLogger.event("agent_file_delivery_completed", {
@@ -38,6 +56,8 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             requested_file_count: files.length,
             delivered_file_count: delivered,
             failed_file_count: failed,
+            file_delivery_diagnostic_version: 1,
+            failure_phase_counts: failurePhaseCounts,
             relay_recovery_attempted: relayRecoveryAttempted,
             relay_recovery_succeeded: relayRecoverySucceeded,
             sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
@@ -62,6 +82,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         if (foregroundCommandsWaited > 0) {
           ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
         }
+        currentPhase = "unknown";
 
         const uploadWithRelayRecovery = async (filePath: string) => {
           try {
@@ -70,6 +91,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               userId: context.userID,
               fullPath: filePath,
               storageRegion: context.triggerRegion,
+              onPhase: (phase) => {
+                currentPhase = phase;
+              },
             });
           } catch (error) {
             if (
@@ -81,6 +105,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             relayRecoveryAttempted = true;
+            currentPhase = "relay_recovery";
             await sandboxManager.recoverLocalConnection(
               sandbox.getConnectionId(),
               "command_relay_unsubscribed",
@@ -101,6 +126,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               userId: context.userID,
               fullPath: filePath,
               storageRegion: context.triggerRegion,
+              onPhase: (phase) => {
+                currentPhase = phase;
+              },
             });
           }
         };
@@ -118,6 +146,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          currentPhase = "sandbox_setup";
           const originalPath = files[i];
           const pathsToTry: string[] = [];
 
@@ -140,6 +169,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
 
           let fileProcessed = false;
           let lastError: string | null = null;
+          let lastFailurePhase: FailurePhase = "unknown";
 
           for (const filePath of pathsToTry) {
             // Check if this specific file is being written to by a background process
@@ -159,6 +189,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                   path: originalPath,
                   reason: `Background process still running: [${processDetails}]`,
                 });
+                countFailure("background_process");
                 fileProcessed = true;
                 break;
               }
@@ -167,7 +198,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
+              currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
+              currentPhase = "finalization";
 
               context.fileAccumulator.add({
                 fileId: saved.fileId,
@@ -215,17 +248,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 storageStatus: "stored",
                 validation: "not_performed_by_delivery_tool",
               });
+              completedDeliveryCount += 1;
               fileProcessed = true;
               break; // Success! No need to try other paths
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
+              lastFailurePhase = currentPhase;
               // Continue to try next path
             }
           }
 
           // If none of the paths worked, add to blocked files
           if (!fileProcessed) {
+            // Count the terminal outcome once per requested file, after all
+            // candidate paths/recovery. Successful alternate paths add no failure.
+            countFailure(lastFailurePhase);
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,
@@ -255,6 +293,18 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         };
       } catch (error) {
         const errorMsg = resolveToolErrorMessage(error);
+        // The existing outer error returns the whole batch as failed. Retain
+        // observed failures; stored files whose results were discarded have no
+        // known upload failure phase. Only the remaining files inherit this phase.
+        const countedFailures = Object.values(failurePhaseCounts).reduce(
+          (total, count) => total + count,
+          0,
+        );
+        countFailure("unknown", completedDeliveryCount);
+        countFailure(
+          currentPhase,
+          files.length - countedFailures - completedDeliveryCount,
+        );
         recordOutcome(0, files.length);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
