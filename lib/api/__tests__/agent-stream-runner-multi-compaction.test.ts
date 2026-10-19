@@ -24,6 +24,10 @@ const mockBuildProviderOptions = jest.fn(() => ({}));
 const mockHistoryFlag = jest.fn(async () => false);
 const mockAbliterationConfigured = jest.fn(() => false);
 const mockAppendAssistantDelta = jest.fn();
+const mockPruneToolOutputs = jest.fn((messages: UIMessage[]) => ({
+  messages,
+  prunedCount: 0,
+}));
 jest.mock("@/lib/ai/abliteration", () => ({
   ...jest.requireActual("@/lib/ai/abliteration"),
   isAbliterationConfigured: () => mockAbliterationConfigured(),
@@ -112,10 +116,7 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     action: "none",
     messages,
   }),
-  pruneToolOutputs: (messages: UIMessage[]) => ({
-    messages,
-    prunedCount: 0,
-  }),
+  pruneToolOutputs: mockPruneToolOutputs,
   pruneModelMessages: (messages: ModelMessage[]) => ({
     messages,
     prunedCount: 0,
@@ -665,6 +666,126 @@ describe("retry served-model telemetry", () => {
 });
 
 describe("createAgentStream repeated compaction", () => {
+  it.each([false, true])(
+    "retains a checkpoint after canonical tool pruning with a covered run tail=%s",
+    async (hasRunTail) => {
+      const convert = jest.mocked(require("ai").convertToModelMessages);
+      const previousConvert = convert.getMockImplementation();
+      convert.mockImplementation(
+        jest.requireActual("ai").convertToModelMessages,
+      );
+      try {
+        const source: UIMessage[] = [
+          uiMessage("user", "Inspect the fixture"),
+          {
+            id: "tool",
+            role: "assistant",
+            parts: [
+              { type: "step-start" },
+              {
+                type: "tool-run_terminal_cmd",
+                toolCallId: "completed",
+                state: "output-available",
+                input: { cmd: "inspect" },
+                output: { stdout: "old tool evidence ".repeat(10000) },
+              },
+            ],
+          },
+        ];
+        const state = initAgentStreamState(source, {
+          usedTokens: 100,
+          maxTokens: 200_000,
+        });
+        const context = createTestStreamContext({
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+        });
+        mockGetProviderPromptPressure.mockReturnValue({
+          reason: "serialized_message_bytes",
+        });
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Verified checkpoint</context_summary>",
+          ),
+          summarizationUsage: {},
+        });
+        const first = (await createAgentStream(
+          "test-model",
+          context as any,
+          state,
+        )) as any;
+        const runTail: ModelMessage[] = hasRunTail
+          ? [
+              {
+                role: "assistant",
+                content: "Completed work covered by the checkpoint",
+              },
+            ]
+          : [];
+        const raw = [...first.messages, ...runTail];
+        await first.prepareStep({ steps: [], messages: raw });
+        expect(state.providerRecoveryContext).toBeDefined();
+        const checkpointMessages = state.providerRecoveryContext!.messages;
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const actualPrune = jest.requireActual(
+          "@/lib/chat/compaction/prune-tool-outputs",
+        ).pruneToolOutputs;
+        mockPruneToolOutputs.mockImplementationOnce((messages) =>
+          actualPrune(messages, 0, 0),
+        );
+        await first.prepareStep({
+          steps: [{ toolResults: [] }],
+          messages: raw,
+        });
+        expect(JSON.stringify(state.finalMessages)).not.toContain(
+          "old tool evidence",
+        );
+        state.finalMessages = [
+          ...state.finalMessages,
+          ...(hasRunTail
+            ? [
+                {
+                  id: "covered",
+                  role: "assistant" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "Completed work covered by the checkpoint",
+                    },
+                  ],
+                },
+              ]
+            : []),
+          uiMessage("resume", "Continue safely"),
+        ];
+        const replacement = (await createAgentStream(
+          "test-model",
+          context as any,
+          state,
+        )) as any;
+        expect(JSON.stringify(replacement.messages)).toContain(
+          "Verified checkpoint",
+        );
+        expect(JSON.stringify(replacement.messages)).toContain(
+          "Continue safely",
+        );
+        expect(
+          replacement.messages.slice(0, checkpointMessages.length),
+        ).toEqual(checkpointMessages);
+        expect(replacement.messages).toHaveLength(
+          checkpointMessages.length + 1,
+        );
+      } finally {
+        convert.mockImplementation(previousConvert);
+      }
+    },
+  );
   it("retains a compacted prefix and only appends new evidence on provider replacement", async () => {
     mockGetProviderPromptPressure.mockReturnValue({
       reason: "serialized_message_bytes",
@@ -726,6 +847,9 @@ describe("createAgentStream repeated compaction", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPruneToolOutputs
+      .mockReset()
+      .mockImplementation((messages) => ({ messages, prunedCount: 0 }));
     mockAppendAssistantDelta.mockReset().mockReturnValue({ detected: false });
     mockHistoryFlag.mockResolvedValue(false);
     mockLoadHistory

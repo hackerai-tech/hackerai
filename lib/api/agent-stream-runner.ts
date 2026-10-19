@@ -2023,12 +2023,37 @@ export async function createAgentStream(
         if (pruneResult.prunedCount > 0) {
           state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
-          if (ctx.mode === "agent")
+          if (ctx.mode === "agent") {
+            const previousSourceDigests = initialSourceDigests;
             initialSourceDigests = sourceMessageDigests(
               await convertToModelMessages(state.finalMessages, {
                 tools: promptSerializationTools,
               }),
             );
+            const checkpoint = state.providerRecoveryContext;
+            // Pruning changes canonical output representation, not the work
+            // already summarized. Rebase only that verified source prefix;
+            // the checkpoint may also cover later SDK responses from this run.
+            const coveredPrefix = Math.min(
+              previousSourceDigests.length,
+              checkpoint?.source.length ?? 0,
+            );
+            if (
+              checkpoint &&
+              coveredPrefix > 0 &&
+              previousSourceDigests.length === initialSourceDigests.length &&
+              checkpoint.source
+                .slice(0, coveredPrefix)
+                .every(
+                  (digest, index) => digest === previousSourceDigests[index],
+                )
+            ) {
+              checkpoint.source = [
+                ...initialSourceDigests.slice(0, coveredPrefix),
+                ...checkpoint.source.slice(coveredPrefix),
+              ];
+            }
+          }
         }
 
         if (
