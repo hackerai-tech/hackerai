@@ -356,6 +356,10 @@ it("opens full-screen control with only an Exit takeover overlay and restores fo
   ).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => {
+    jest.advanceTimersByTime(0);
+  });
+  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
   expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
   expect(actions.map((body) => body.action)).toEqual(["take"]);
   await act(async () => {

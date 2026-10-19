@@ -868,6 +868,17 @@ export function AgentBrowserPreview({
       >
         <DialogContent
           className="grid max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto sm:max-w-lg"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            // This dialog has no Radix trigger. Restore remote keyboard input
+            // on cancel, or the preview control after a successful handoff.
+            const target = fullScreen
+              ? human
+                ? inputRef.current
+                : resumeButtonRef.current
+              : openButtonRef.current;
+            target?.focus({ preventScroll: true });
+          }}
           onEscapeKeyDown={(event) => {
             if (busy) event.preventDefault();
           }}
