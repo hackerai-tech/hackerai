@@ -115,6 +115,7 @@ export const DOOM_LOOP_FINISH_REASON = "doom-loop";
 export const POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON =
   "compaction-incomplete";
 
+/** Evaluate after onStepFinish so the result cycle includes the settled step. */
 export function doomLoopDetected(state: {
   getToolResultCycle?: () => ToolResultCycle | undefined;
   onFired: (result: DoomLoopResult) => void;

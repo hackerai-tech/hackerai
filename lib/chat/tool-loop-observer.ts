@@ -116,10 +116,12 @@ export class ToolLoopObserver {
   private currentCycle: ToolResultCycle | undefined;
   private reported = new Set<string>();
 
+  /** Latest completed-step cycle, including laps that do not emit a nudge. */
   getCurrentCycle(): ToolResultCycle | undefined {
     return this.currentCycle;
   }
 
+  /** Break evidence continuity while retaining per-request telemetry limits. */
   reset(): void {
     this.history = [];
     this.currentCycle = undefined;
@@ -139,6 +141,7 @@ export class ToolLoopObserver {
     results: readonly ToolResult[],
     allowedTools: ReadonlySet<string>,
   ): ToolResultCycle | undefined {
+    const previousCycle = this.currentCycle;
     this.currentCycle = undefined;
     const clear = () => {
       this.reset();
@@ -203,11 +206,14 @@ export class ToolLoopObserver {
           repeatCount: laps,
           cycleLength: period,
         };
-        // The stop decision needs the current cycle on every step, while
-        // telemetry and recovery nudges remain bounded to the original laps.
-        return (REPORT_LAPS as readonly number[]).includes(laps)
-          ? this.currentCycle
-          : undefined;
+        // Rotating ABABAB into BABABA is still the same lap. Expose current
+        // state to the hard stop, but only emit a nudge when a threshold is
+        // first reached. A gap or changed result clears previousCycle.
+        const reachedThreshold =
+          (REPORT_LAPS as readonly number[]).includes(laps) &&
+          (previousCycle?.repeatCount !== laps ||
+            previousCycle.cycleLength !== period);
+        return reachedThreshold ? this.currentCycle : undefined;
       }
     }
     return undefined;
