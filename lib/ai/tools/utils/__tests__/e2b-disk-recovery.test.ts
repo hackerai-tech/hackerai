@@ -12,7 +12,7 @@ import {
 import { createHmac } from "node:crypto";
 
 jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
+  Sandbox: { getInfo: jest.fn(), connect: jest.fn(), listSnapshots: jest.fn() },
 }));
 jest.mock("../cloud-workspace-guard", () => ({
   claimE2BDiskRecovery: jest.fn(),
@@ -285,5 +285,151 @@ describe("disk-only recovery", () => {
       stage: "normal_resume",
     });
     expect(finish).not.toHaveBeenCalled();
+  });
+});
+
+describe("customer recovery verification", () => {
+  const idle = jest.fn();
+  const write = jest.fn();
+  const read = jest.fn();
+  const remove = jest.fn();
+  const customer = {
+    consentKey: "cloud_recovery_consent:v1:user-1",
+    assertIdle: idle,
+  };
+  beforeEach(() => {
+    idle.mockResolvedValue(undefined);
+    getInfo.mockImplementation(
+      async () =>
+        ({
+          ...info,
+          state:
+            connect.mock.calls.length > pause.mock.calls.length
+              ? "running"
+              : "paused",
+          lifecycle: { autoResume: true, onTimeout: "pause" },
+        }) as never,
+    );
+    let bytes = "";
+    write.mockImplementation(async (_path, value) => {
+      bytes = value;
+    });
+    read.mockImplementation(async () => bytes);
+    remove.mockResolvedValue(undefined);
+    connect.mockResolvedValue({
+      sandboxId: auth.sandboxId,
+      commands: { run },
+      files: { list, write, read, remove },
+      pause,
+      createSnapshot: snapshot,
+    } as never);
+    jest.mocked(Sandbox.listSnapshots).mockReturnValue({
+      hasNext: false,
+      nextItems: async () => [{ snapshotId: "backup-1" }],
+    } as never);
+  });
+  it("requires a known pause lifecycle, even when auto-resume is enabled", async () => {
+    getInfo.mockResolvedValueOnce({
+      ...info,
+      lifecycle: { onTimeout: "pause" },
+    } as never);
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "traffic",
+    });
+    expect(claim).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  });
+  it("retains the fence and does not retry when a conflicting provider start refuses reboot", async () => {
+    connect.mockRejectedValueOnce(
+      Object.assign(new Error("conflict"), { status: 409 }),
+    );
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reboot",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
+    expect(finish).not.toHaveBeenCalled();
+  });
+  it("proves our own bytes persisted across normal resume before releasing", async () => {
+    await expect(recoverE2BDiskOnly(auth, customer)).resolves.toMatchObject({
+      status: "verified_ready",
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(idle).toHaveBeenCalledTimes(2);
+    expect(claim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerConsent: {
+          key: customer.consentKey,
+          token: auth.idempotencyKey,
+        },
+      }),
+    );
+    expect(
+      connect.mock.calls.filter(([, opts]) => opts?.onResume === "reboot"),
+    ).toHaveLength(1);
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+  it("keeps the fence on lost probe contents", async () => {
+    read.mockResolvedValueOnce("corrupt");
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "inventory",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
+  });
+  it("keeps the fence when bytes change across resume", async () => {
+    const probe = createHmac("sha256", key)
+      .update(auth.idempotencyKey)
+      .digest("hex");
+    read.mockResolvedValueOnce(probe).mockResolvedValueOnce("different");
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "normal_resume",
+    });
+    expect(finish).not.toHaveBeenCalled();
+  });
+  it("does not replace the memory snapshot without independent backup readback", async () => {
+    jest
+      .mocked(Sandbox.listSnapshots)
+      .mockReturnValue({ hasNext: false, nextItems: async () => [] } as never);
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "backup",
+    });
+    expect(pause).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+  it("leaves a durable fence after a timeout and never retries reboot", async () => {
+    connect.mockRejectedValueOnce(new Error("provider timeout"));
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reboot",
+    });
+    state.mockResolvedValue({
+      phase: "recovery",
+      token: auth.idempotencyKey,
+    } as never);
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "fenced",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(finish).not.toHaveBeenCalled();
+  });
+  it("does not publish readiness if final normal reconnection fails", async () => {
+    const sandbox = {
+      sandboxId: auth.sandboxId,
+      commands: { run },
+      files: { list, write, read, remove },
+      pause,
+      createSnapshot: snapshot,
+    } as never;
+    connect
+      .mockResolvedValueOnce(sandbox)
+      .mockResolvedValueOnce(sandbox)
+      .mockRejectedValueOnce(new Error("reconnect timeout"));
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reconnect",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
   });
 });

@@ -1,3 +1,4 @@
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -231,7 +232,6 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
-  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
 } from "@/lib/api/agent-stream-runner";
 import {
@@ -650,6 +650,16 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      selectedModel = resolvePaidProAutoModel({
+        userId,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
       const requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
@@ -660,7 +670,6 @@ export const createChatHandler = () => {
         subscription,
         selectedModel,
         hasImages: requestHasImages,
-        selectedModelOverride,
         limitRescue: Boolean(limitRescue),
         modelPolicyActive: Boolean(
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
@@ -826,15 +835,6 @@ export const createChatHandler = () => {
       const recordFlashRoutingExposure = createFlashRoutingExposureRecorder({
         posthog,
         assignment: activeFlashRoutingAssignment,
-        controlContinuationModel:
-          activeFlashRoutingAssignment &&
-          createTrackedProvider().languageModel(
-            resolveAgentModelAfterSummarization(
-              activeFlashRoutingAssignment.modelKey,
-              mode,
-              false,
-            ),
-          ).modelId,
         userId,
         mode,
         subscription,

@@ -138,6 +138,7 @@ export async function claimE2BDiskRecovery(args: {
   region: TriggerRunRegion;
   token: string;
   operatorId: string;
+  customerConsent?: { key: string; token: string };
 }): Promise<{
   state: RecoveryState;
   update: (
@@ -156,7 +157,19 @@ export async function claimE2BDiskRecovery(args: {
     (previous.phase !== "e2b" ||
       previous.destinationId !== args.sandboxId ||
       previous.region !== args.region ||
-      previous.recoveryPending !== undefined)
+      previous.recoveryPending !== undefined ||
+      (args.customerConsent &&
+        Object.keys(previous).some(
+          (key) =>
+            ![
+              "version",
+              "phase",
+              "token",
+              "sourceId",
+              "destinationId",
+              "region",
+            ].includes(key),
+        )))
   )
     throw new CloudWorkspaceUnavailableError();
   const state: RecoveryState = {
@@ -174,9 +187,14 @@ export async function claimE2BDiskRecovery(args: {
   // A different owner, malformed record, or cleanup fence is never overwritten.
   const claimed = await redis.eval(
     `local raw = redis.call('GET', KEYS[1]);
+     if ARGV[4] ~= '' then
+       local consentRaw = redis.call('GET', KEYS[4]);
+       local ok, consent = pcall(cjson.decode, consentRaw or '')
+       if not ok or consent.token ~= ARGV[4] or consent.status ~= 'confirmed' or consent.target.sandboxId ~= ARGV[5] or consent.target.region ~= ARGV[6] then return 0 end
+     end
      if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
      local last = redis.call('GET', KEYS[3]);
-     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or result.status ~= 'verified_paused' or result.token == ARGV[3] then return 0 end end
+     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or (result.status ~= 'verified_paused' and result.status ~= 'verified_ready') or result.token == ARGV[3] then return 0 end end
      if ARGV[1] == '' then if raw then return 0 end
      else
        local function equal(a, b)
@@ -190,13 +208,22 @@ export async function claimE2BDiskRecovery(args: {
        local expectedOk, expected = pcall(cjson.decode, ARGV[1])
        if not ok or not expectedOk or not equal(current, expected) then return 0 end
      end
+     if ARGV[4] ~= '' then local consent = cjson.decode(redis.call('GET', KEYS[4])); consent.status = 'executing'; redis.call('SET', KEYS[4], cjson.encode(consent)) end
      redis.call('SET', KEYS[1], ARGV[2]); return 1`,
     [
       keyFor(args.userId),
       activityKeyFor(args.userId),
       recoveryResultKeyFor(args.userId),
+      ...(args.customerConsent ? [args.customerConsent.key] : []),
     ],
-    [previous ? JSON.stringify(previous) : "", serialized, args.token],
+    [
+      previous ? JSON.stringify(previous) : "",
+      serialized,
+      args.token,
+      args.customerConsent?.token ?? "",
+      args.sandboxId,
+      args.region,
+    ],
   );
   if (claimed !== 1) throw new CloudWorkspaceUnavailableError();
   return {
@@ -219,7 +246,22 @@ export async function claimE2BDiskRecovery(args: {
          if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end
          return 1`,
         [keyFor(args.userId), recoveryResultKeyFor(args.userId)],
-        [serialized, previous ? JSON.stringify(previous) : "", result],
+        [
+          serialized,
+          previous
+            ? JSON.stringify(previous)
+            : args.customerConsent
+              ? JSON.stringify({
+                  version: 1,
+                  phase: "e2b",
+                  token: args.token,
+                  sourceId: args.sandboxId,
+                  destinationId: args.sandboxId,
+                  region: args.region,
+                })
+              : "",
+          result,
+        ],
       );
       if (finished !== 1) throw new CloudWorkspaceUnavailableError();
     },

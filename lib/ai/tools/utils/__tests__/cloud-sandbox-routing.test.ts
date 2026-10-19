@@ -1,3 +1,5 @@
+jest.mock("@/lib/cloud-recovery/store", () => ({ readFailures: jest.fn() }));
+import { readFailures } from "@/lib/cloud-recovery/store";
 jest.mock("@/lib/cloud-network/service", () => ({
   readNetworkSettings: jest.fn(async () => null),
   ensureCloudNetwork: jest.fn(async () => {}),
@@ -278,4 +280,34 @@ describe("E2B cloud acquisition", () => {
       jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
     ).not.toHaveProperty("workspace_guard_reason");
   });
+});
+
+it("pins ordinary retries to a failed workspace even if discovery would return empty", async () => {
+  const original = process.env.CLOUD_DISK_RECOVERY_TARGETS;
+  process.env.CLOUD_DISK_RECOVERY_TARGETS = "configured";
+  read.mockResolvedValue(null);
+  available.mockResolvedValue(undefined);
+  jest.mocked(readFailures).mockResolvedValue({
+    sandboxId: "failed-existing",
+    region: "us-east-1",
+  } as never);
+  ensure.mockRejectedValueOnce(new Error("workspace not found"));
+  const publish = jest.fn();
+  try {
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: publish,
+        context: { triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow("workspace not found");
+    expect(ensure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ destinationId: "failed-existing" }),
+    );
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    if (original === undefined) delete process.env.CLOUD_DISK_RECOVERY_TARGETS;
+    else process.env.CLOUD_DISK_RECOVERY_TARGETS = original;
+  }
 });

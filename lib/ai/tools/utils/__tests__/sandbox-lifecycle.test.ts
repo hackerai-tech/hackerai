@@ -1,3 +1,8 @@
+jest.mock("@/lib/cloud-recovery/store", () => ({
+  recordResumeFailure: jest.fn(async () => {}),
+  clearResumeFailures: jest.fn(async () => {}),
+}));
+import { recordResumeFailure } from "@/lib/cloud-recovery/store";
 jest.mock("@/lib/cloud-network/service", () => ({
   readNetworkSettings: jest.fn(async () => null),
   ensureCloudNetwork: jest.fn(async () => {}),
@@ -33,7 +38,7 @@ jest.mock("../cloud-workspace-guard", () => ({
 }));
 
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { Sandbox } from "@e2b/code-interpreter";
+import { Sandbox, TimeoutError } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -557,13 +562,11 @@ describe("E2B sandbox lease lifecycle", () => {
   });
 
   it("creates a new workspace with its stored network restrictions already applied", async () => {
-    jest
-      .mocked(readNetworkSettings)
-      .mockResolvedValueOnce({
-        policy: { mode: "restricted", allow: ["example.test"] },
-        revision: 3,
-        status: "ready",
-      });
+    jest.mocked(readNetworkSettings).mockResolvedValueOnce({
+      policy: { mode: "restricted", allow: ["example.test"] },
+      revision: 3,
+      status: "ready",
+    });
     sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
     sandboxApi.create.mockResolvedValue({ sandboxId: "restricted-workspace" });
     await ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() });
@@ -1012,6 +1015,85 @@ describe("E2B sandbox lease lifecycle", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it.each([
+    ["v12", "terminal-agent-sandbox", "us", true],
+    ["v11", "terminal-agent-sandbox", "us", false],
+    ["v12", "legacy-template", "us", false],
+    ["v12", "terminal-agent-sandbox", "eu", false],
+  ])(
+    "records only pinned-compatible paused targets: %s / %s / %s",
+    async (version, template, cluster, recorded) => {
+      process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+      listSandbox({
+        state: "paused",
+        metadata: {
+          userID: "user-1",
+          sandboxVersion: version as string,
+          template: template as string,
+          e2bCluster: cluster as string,
+        },
+      });
+      sandboxApi.connect.mockRejectedValue(
+        Object.assign(new Error("resume rejected"), { statusCode: 400 }),
+      );
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          {
+            acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+            triggerRegion: "us-east-1",
+          },
+        ),
+      ).rejects.toThrow();
+      expect(recordResumeFailure).toHaveBeenCalledTimes(recorded ? 1 : 0);
+    },
+  );
+
+  it.each([true, false])(
+    "marks only SDK connection deadlines as reconcilable: %s",
+    async (deadline) => {
+      process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+      listSandbox({
+        state: "paused",
+        metadata: {
+          userID: "user-1",
+          sandboxVersion: "v12",
+          template: "terminal-agent-sandbox",
+          e2bCluster: "us",
+        },
+      });
+      sandboxApi.connect.mockRejectedValue(
+        deadline
+          ? new TimeoutError("requestTimeoutMs exceeded")
+          : new Error("unknown connection failure"),
+      );
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          {
+            acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+            triggerRegion: "us-east-1",
+          },
+        ),
+      ).rejects.toThrow();
+      expect(recordResumeFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ uncertain: true, timeoutOnly: deadline }),
+      );
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never replaces a known paused workspace after a not-found resume response", async () => {
+    listSandbox({ state: "paused" });
+    sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
+    sandboxApi.create.mockClear();
+    await expect(
+      ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toThrow();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
   it("creates a replacement without killing when the listed sandbox is gone", async () => {

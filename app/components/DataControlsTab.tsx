@@ -43,20 +43,30 @@ const DataControlsTab = () => {
   const saveModelImprovement = useMutation(
     api.userCustomization.setModelImprovementPreference,
   );
-  const [isSavingModelImprovement, setIsSavingModelImprovement] =
-    useState(false);
+  const [pendingModelImprovement, setPendingModelImprovement] = useState<
+    boolean | null
+  >(null);
+  const [failedModelImprovement, setFailedModelImprovement] = useState<
+    boolean | null
+  >(null);
+  const isSavingModelImprovement = pendingModelImprovement !== null;
 
   const handleModelImprovementChange = async (enabled: boolean) => {
     if (!modelImprovement || isSavingModelImprovement) return;
-    setIsSavingModelImprovement(true);
+    setPendingModelImprovement(enabled);
+    setFailedModelImprovement(null);
     try {
       await saveModelImprovement({ enabled });
+      toast.success(
+        enabled ? "Model improvement enabled." : "Model improvement disabled.",
+      );
     } catch {
+      setFailedModelImprovement(enabled);
       toast.error(
         "Couldn't save your model improvement preference. Please try again.",
       );
     } finally {
-      setIsSavingModelImprovement(false);
+      setPendingModelImprovement(null);
     }
   };
 
@@ -138,12 +148,33 @@ const DataControlsTab = () => {
                   ? "Saving…"
                   : null}
           </p>
+          {modelImprovement && failedModelImprovement !== null && (
+            <div className="mt-2 space-y-2">
+              <p role="alert" className="text-sm text-destructive">
+                Your change wasn&apos;t saved. The switch shows your saved
+                preference.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  handleModelImprovementChange(failedModelImprovement)
+                }
+              >
+                Retry saving preference
+              </Button>
+            </div>
+          )}
         </div>
         <Switch
           id="model-improvement"
           className="mt-1 shrink-0 data-[state=checked]:bg-blue-600"
           aria-describedby="model-improvement-description model-improvement-status"
-          checked={modelImprovement?.enabled ?? false}
+          checked={
+            modelImprovement
+              ? (pendingModelImprovement ?? modelImprovement.enabled)
+              : false
+          }
           disabled={!modelImprovement || isSavingModelImprovement}
           onCheckedChange={handleModelImprovementChange}
         />

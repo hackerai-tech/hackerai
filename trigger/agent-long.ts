@@ -1,3 +1,7 @@
+import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
+import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
+import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
@@ -34,6 +38,7 @@ import {
   generateId,
   type UIMessageStreamWriter,
   UIMessage,
+  convertToModelMessages,
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import {
@@ -236,7 +241,6 @@ import {
   initAgentStreamState,
   resetServedModelTelemetryForRetry,
   retryUsesDifferentModel,
-  resolveAgentModelAfterSummarization,
   type AgentStreamContext,
   type AgentStreamState,
 } from "@/lib/api/agent-stream-runner";
@@ -279,7 +283,7 @@ import {
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
-  getNextDeepSeekProDisconnectRetryModel,
+  getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
@@ -2114,6 +2118,16 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      selectedModel = resolvePaidProAutoModel({
+        userId,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
       const requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
@@ -2124,7 +2138,6 @@ export const agentLongTask = task({
         subscription,
         selectedModel,
         hasImages: requestHasImages,
-        selectedModelOverride,
         limitRescue: Boolean(limitRescue),
         modelPolicyActive: Boolean(
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
@@ -2449,15 +2462,6 @@ export const agentLongTask = task({
               createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
-                controlContinuationModel:
-                  activeFlashRoutingAssignment &&
-                  createTrackedProvider().languageModel(
-                    resolveAgentModelAfterSummarization(
-                      activeFlashRoutingAssignment.modelKey,
-                      mode,
-                      false,
-                    ),
-                  ).modelId,
                 userId,
                 mode,
                 subscription,
@@ -3150,10 +3154,15 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel =
+              !(mode === "agent" && selectedModelOverride === "hackerai-max") &&
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    selectedModel,
+                    mode,
+                    selectedModelOverride,
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -4683,7 +4692,8 @@ export const agentLongTask = task({
                               )
                             : shouldRetryWithoutImageToolResults
                               ? selectedModel
-                              : providerContentBlocked
+                              : providerContentBlocked &&
+                                  selectedModelOverride !== "hackerai-max"
                                 ? getContentFilterRetryModel(
                                     selectedModel,
                                     mode,
@@ -4872,6 +4882,9 @@ export const agentLongTask = task({
                                       ? prepareProviderDisconnectContinuation(
                                           normalizedRetryMessages,
                                           {
+                                            allowEmptyResponse:
+                                              selectedModelOverride ===
+                                              "hackerai-max",
                                             allowCompletedTail:
                                               isProviderResponseTimeout(
                                                 state.providerError,
@@ -4879,12 +4892,63 @@ export const agentLongTask = task({
                                           },
                                         )
                                       : undefined;
+                                  const nextRecoveryMessages:
+                                    UIMessage[] | undefined = nextContinuation
+                                    ? [
+                                        ...state.finalMessages,
+                                        ...nextContinuation.messages,
+                                        {
+                                          id: generateId(),
+                                          role: "user",
+                                          parts: [
+                                            {
+                                              type: "text",
+                                              text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                            },
+                                          ],
+                                        },
+                                      ]
+                                    : undefined;
+                                  let requiredContextTokens: number | undefined;
+                                  if (
+                                    selectedModelOverride === "hackerai-max" &&
+                                    nextRecoveryMessages
+                                  ) {
+                                    try {
+                                      const raw = await convertToModelMessages(
+                                        nextRecoveryMessages,
+                                        {
+                                          tools: createPromptSerializationTools(
+                                            streamCtx.tools,
+                                          ),
+                                        },
+                                      );
+                                      const projected =
+                                        restoreProviderRecoveryContext(
+                                          state.providerRecoveryContext,
+                                          raw,
+                                        ) ?? raw;
+                                      requiredContextTokens =
+                                        estimateSummaryInputTokens(projected) +
+                                        streamCtx.systemPromptTokens +
+                                        safeCountTokens(
+                                          (await streamCtx.cloudNetworkPrompt?.()) ??
+                                            "",
+                                        );
+                                    } catch {
+                                      // Unknown input size cannot admit the smaller fallback.
+                                    }
+                                  }
                                   const finalRetryModel = nextContinuation
-                                    ? getNextDeepSeekProDisconnectRetryModel({
+                                    ? getNextProviderDisconnectRetryModel({
                                         originalModel: selectedModel,
                                         failedModel: retryModel,
                                         completedRetryCount:
                                           providerRecoveryAttempts,
+                                        selectedModelOverride,
+                                        agentModelContextEnabled,
+                                        subscription,
+                                        requiredContextTokens,
                                       })
                                     : undefined;
 
@@ -4907,20 +4971,7 @@ export const agentLongTask = task({
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;
-                                    state.finalMessages = [
-                                      ...state.finalMessages,
-                                      ...nextContinuation.messages,
-                                      {
-                                        id: generateId(),
-                                        role: "user",
-                                        parts: [
-                                          {
-                                            type: "text",
-                                            text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
-                                          },
-                                        ],
-                                      },
-                                    ];
+                                    state.finalMessages = nextRecoveryMessages!;
                                     const finalRetryStartTime = Date.now();
                                     const preservedFileIds =
                                       getFileAccumulator()

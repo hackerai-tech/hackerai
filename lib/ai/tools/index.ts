@@ -145,6 +145,11 @@ export const createTools = (
         type: "data-cloud-connection-error",
         data: { code: "timeout", workspacePreserved: true },
       }),
+    onFailure: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "unavailable", workspacePreserved: true },
+      }),
     provider: runtimePolicy.cloudSandboxProvider,
     selectionReason: runtimePolicy.cloudSandboxSelectionReason,
     subscription,

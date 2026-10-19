@@ -6,7 +6,7 @@ import {
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
-  getNextDeepSeekProDisconnectRetryModel,
+  getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
@@ -160,10 +160,10 @@ describe("prepareProviderDisconnectContinuation", () => {
   });
 });
 
-describe("getNextDeepSeekProDisconnectRetryModel", () => {
+describe("getNextProviderDisconnectRetryModel", () => {
   it("uses GLM 5.3 and then one final Kimi retry", () => {
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-deepseek-v4-pro-0813",
         completedRetryCount: 0,
@@ -171,7 +171,7 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
     ).toBe("model-glm-5.3");
 
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-glm-5.3",
         completedRetryCount: 1,
@@ -181,21 +181,21 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 
   it("stops after Kimi and does not affect other original models", () => {
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-grok-4.6",
         completedRetryCount: 1,
       }),
     ).toBeUndefined();
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-kimi-k3",
         completedRetryCount: 2,
       }),
     ).toBeUndefined();
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-grok-4.6",
         failedModel: "model-grok-4.6",
         completedRetryCount: 0,
@@ -807,4 +807,83 @@ describe("provider recovery decisions", () => {
     });
     expect(JSON.stringify(diagnostics)).not.toContain("private");
   });
+});
+
+describe("Agent Max final recovery admission", () => {
+  it.each([213999, 214000, 214001, undefined, NaN, -1])(
+    "checks Grok capacity for %s estimated tokens",
+    (requiredContextTokens) => {
+      expect(
+        getNextProviderDisconnectRetryModel({
+          originalModel: "model-glm-5.3",
+          failedModel: "model-deepseek-v4.1-flash-1017-pro",
+          completedRetryCount: 1,
+          selectedModelOverride: "hackerai-max",
+          agentModelContextEnabled: true,
+          requiredContextTokens,
+        }),
+      ).toBe(
+        requiredContextTokens === 213999 || requiredContextTokens === 214000
+          ? "model-grok-4.6"
+          : undefined,
+      );
+    },
+  );
+  it.each([180000, 180001])(
+    "keeps the control group's existing context threshold for %s estimated tokens",
+    (requiredContextTokens) => {
+      expect(
+        getNextProviderDisconnectRetryModel({
+          originalModel: "model-glm-5.3",
+          failedModel: "model-deepseek-v4.1-flash-1017-pro",
+          completedRetryCount: 1,
+          selectedModelOverride: "hackerai-max",
+          requiredContextTokens,
+        }),
+      ).toBe(requiredContextTokens === 180000 ? "model-grok-4.6" : undefined);
+    },
+  );
+  it("never starts a third recovery or returns to Kimi", () => {
+    expect(
+      getNextProviderDisconnectRetryModel({
+        originalModel: "model-glm-5.3",
+        failedModel: "model-grok-4.6",
+        completedRetryCount: 2,
+        selectedModelOverride: "hackerai-max",
+        requiredContextTokens: 1000,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+it("allows an explicitly enabled empty pre-stream recovery but never drops an uncertain tool", () => {
+  expect(prepareProviderDisconnectContinuation([])).toBeUndefined();
+  expect(
+    prepareProviderDisconnectContinuation([], { allowEmptyResponse: true }),
+  ).toEqual({
+    messages: [],
+    removedPartCount: 0,
+    preservedCompletedToolCount: 0,
+    preservedUnknownToolCount: 0,
+    preservedTextPartCount: 0,
+  });
+  expect(
+    prepareProviderDisconnectContinuation(
+      [
+        {
+          id: "pending",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "uncertain",
+              state: "input-available",
+              input: { cmd: "mutation" },
+            },
+          ],
+        },
+      ],
+      { allowEmptyResponse: true },
+    ),
+  ).toBeUndefined();
 });
