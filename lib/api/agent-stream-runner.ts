@@ -1579,7 +1579,11 @@ export async function createAgentStream(
     rejectedRequestSource = {
       messages: args.messages,
       rawMessages: args.rawMessages ?? args.messages,
-      stepIndex: args.stepIndex,
+      // Summarization markers use the local, zero-based SDK step index.
+      stepIndex:
+        args.source === "initial"
+          ? 0
+          : Math.max(0, args.stepIndex - generationStepOffset - 1),
     };
     latestProviderRequestDiagnostics = buildProviderRequestDiagnostics({
       modelName: args.modelName,

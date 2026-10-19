@@ -705,10 +705,12 @@ describe("createAgentStream repeated compaction", () => {
           maxTokens: 128000,
         });
         state.sourceUiMessages = [original];
+        const recordSummaryStep = jest.fn();
         const tracker = {
           hasSummarized: false,
           summarizationCount: 0,
-          recordSummarization() {
+          recordSummarization(step: number) {
+            recordSummaryStep(step);
             this.hasSummarized = true;
             this.summarizationCount++;
           },
@@ -771,6 +773,7 @@ describe("createAgentStream repeated compaction", () => {
           expect(doStream).toHaveBeenCalledTimes(2);
           expect(tracker.recordSummarizationUsage).toHaveBeenCalledTimes(1);
           expect(tracker.summarizationCount).toBe(1);
+          expect(recordSummaryStep).toHaveBeenCalledWith(0);
           expect(mockCompactModelMessagesInRun).toHaveBeenCalledWith(
             expect.objectContaining({
               transcriptModelMessages: raw,
