@@ -40,8 +40,18 @@ export function CloudWorkspaceRecovery({
     return () => controller.abort();
   }, [refresh]);
   useEffect(() => {
-    if (view.status !== "recovering" && view.status !== "waiting") return;
+    // The acquisition deadline can close its stream before failure persistence
+    // finishes. Reconcile that event independently, with six reads and backoff.
+    const checkingRecordedFailure =
+      view.status === "hidden" && surface === "cloud_connection_error";
+    if (
+      view.status !== "recovering" &&
+      view.status !== "waiting" &&
+      !checkingRecordedFailure
+    )
+      return;
     const controller = new AbortController();
+    let hiddenChecks = 0;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
@@ -49,15 +59,23 @@ export function CloudWorkspaceRecovery({
       } catch {
         if (!controller.signal.aborted) setError(true);
       }
-      if (!controller.signal.aborted)
-        timer = setTimeout(() => void poll(), 5000);
+      if (
+        !controller.signal.aborted &&
+        (!checkingRecordedFailure || ++hiddenChecks < 6)
+      )
+        timer = setTimeout(
+          () => void poll(),
+          checkingRecordedFailure
+            ? Math.min(5000 * 2 ** hiddenChecks, 30000)
+            : 5000,
+        );
     };
     timer = setTimeout(() => void poll(), 5000);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view.status, refresh]);
+  }, [view.status, refresh, surface]);
   useEffect(() => {
     if (
       view.status === "offered" &&

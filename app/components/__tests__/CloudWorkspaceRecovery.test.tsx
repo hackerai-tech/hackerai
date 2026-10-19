@@ -147,3 +147,61 @@ it("offers actionable support and a reference without transmitting customer cont
   ).toHaveLength(0);
   delete (window as Window & { Intercom?: unknown }).Intercom;
 });
+
+it("finds a delayed failure record after the timed-out stream has already closed", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(respond({ status: "hidden" }))
+      .mockResolvedValueOnce(respond({ status: "hidden" }))
+      .mockResolvedValue(respond({ status: "offered", token }));
+    render(<CloudWorkspaceRecovery surface="cloud_connection_error" />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(15000);
+    });
+    expect(
+      screen.getByRole("button", { name: "Recover workspace" }),
+    ).toBeEnabled();
+    expect(
+      fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+    ).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("bounds status retries when the event never produces a recoverable record", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockResolvedValue(respond({ status: "hidden" }));
+    render(<CloudWorkspaceRecovery surface="cloud_connection_error" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(180000);
+    });
+    const settledReads = fetchMock.mock.calls.length;
+    expect(settledReads).toBeGreaterThan(1);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(settledReads);
+    expect(
+      fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+    ).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+it("does not poll a healthy hidden workspace banner without a cloud failure event", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockResolvedValue(respond({ status: "hidden" }));
+    render(<CloudWorkspaceRecovery surface="workspace_status" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(180000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
