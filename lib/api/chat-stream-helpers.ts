@@ -756,6 +756,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
+  /** Max uses explicit recovery so each model gets its own reasoning policy. */
+  selectedModelOverride?: SelectedModel;
   /** Preserve the authenticated free Ask policy across model retries. */
   isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
@@ -796,8 +798,14 @@ const getFallbackKeys = (
 /** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
-  _mode: ChatMode,
+  mode: ChatMode,
+  selectedModelOverride?: SelectedModel,
 ): ModelName {
+  if (mode === "agent" && selectedModelOverride === "hackerai-max") {
+    return modelName === DEEPSEEK_1017_MODEL_KEY
+      ? "model-grok-4.6"
+      : DEEPSEEK_1017_MODEL_KEY;
+  }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
     return "model-deepseek-v4-pro-0813";
   }
@@ -941,9 +949,13 @@ const resolveSlug = (modelName: string): string | undefined => {
  */
 export function getFallbackSlugs(
   modelName?: string,
-  _mode?: ChatMode,
+  mode?: ChatMode,
   options: FallbackOptions = {},
 ): string[] {
+  // Transparent fallbacks share reasoning options and can lower context capacity.
+  // Max instead uses bounded, context-checked app-side recovery attempts.
+  if (mode === "agent" && options.selectedModelOverride === "hackerai-max")
+    return [];
   const fallbackKeys = getFallbackKeys(modelName);
   const excludedModelSlugs = options.excludedModelSlugs ?? [];
   return (
@@ -1104,7 +1116,13 @@ export function buildProviderOptions(
   // GLM titles need mandatory reasoning, kept low for the small output budget.
   const reasoning =
     modelName === DEEPSEEK_1017_MODEL_KEY
-      ? { enabled: true, effort: "high" }
+      ? {
+          enabled: true,
+          effort:
+            mode === "agent" && options.selectedModelOverride === "hackerai-max"
+              ? "max"
+              : "high",
+        }
       : isTitleGeneration
         ? { enabled: true, effort: "low" }
         : isStandardGlmFlashVision

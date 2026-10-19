@@ -665,6 +665,65 @@ describe("retry served-model telemetry", () => {
 });
 
 describe("createAgentStream repeated compaction", () => {
+  it("retains a compacted prefix and only appends new evidence on provider replacement", async () => {
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: uiMessage(
+        "summary",
+        "<context_summary>Verified checkpoint</context_summary>",
+      ),
+      summarizationUsage: {},
+    });
+    const original = uiMessage("original", "old evidence ".repeat(10000));
+    const state = initAgentStreamState([original], {
+      usedTokens: 100,
+      maxTokens: 200_000,
+    });
+    const context = createTestStreamContext({
+      agentModelContextEnabled: true,
+      selectedModelOverride: "hackerai-max",
+      usageTracker: {},
+      summarizationTracker: {
+        hasSummarized: true,
+        summarizationCount: 1,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
+      },
+    });
+    const first = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    await first.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: first.messages,
+    });
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    state.finalMessages = [
+      original,
+      uiMessage("new", "completed verification after checkpoint"),
+      uiMessage("resume", "Continue safely"),
+    ];
+    const replacement = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(JSON.stringify(replacement.messages)).toContain(
+      "Verified checkpoint",
+    );
+    expect(JSON.stringify(replacement.messages)).toContain(
+      "completed verification after checkpoint",
+    );
+    expect(JSON.stringify(replacement.messages)).not.toContain("old evidence");
+    expect(state.finalMessages[0]).toBe(original);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockAppendAssistantDelta.mockReset().mockReturnValue({ detected: false });

@@ -1475,3 +1475,50 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe("agent-model-free");
   });
 });
+
+describe("Agent Max explicit provider recovery", () => {
+  const snapshot = "model-deepseek-v4.1-flash-1017-pro";
+  it("selects DeepSeek 1017 then Grok without changing Ask or non-Max recovery", () => {
+    expect(
+      getRetryFallbackModel("model-glm-5.3", "agent", "hackerai-max"),
+    ).toBe(snapshot);
+    expect(getRetryFallbackModel(snapshot, "agent", "hackerai-max")).toBe(
+      "model-grok-4.6",
+    );
+    expect(getRetryFallbackModel("model-glm-5.3", "ask", "hackerai-max")).toBe(
+      "model-kimi-k3",
+    );
+    expect(getRetryFallbackModel("model-glm-5.3", "agent")).toBe(
+      "model-kimi-k3",
+    );
+  });
+  it("sends maximum reasoning only on the explicit Max DeepSeek attempt", () => {
+    const options = buildProviderOptions(true, "user", snapshot, "agent", {
+      selectedModelOverride: "hackerai-max",
+    });
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "max",
+    });
+    expect(options.openrouter.models).toBeUndefined();
+    expect(
+      buildProviderOptions(true, "user", snapshot, "ask", {
+        selectedModelOverride: "hackerai-max",
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "high" });
+  });
+  it("keeps a large GLM Max request from inheriting Grok's smaller budget", () => {
+    const options = buildProviderOptions(
+      true,
+      "user",
+      "model-glm-5.3",
+      "agent",
+      { selectedModelOverride: "hackerai-max" },
+    );
+    expect(options.openrouter.models).toBeUndefined();
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
+});

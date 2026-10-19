@@ -1,5 +1,9 @@
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
+  restoreProviderRecoveryContext,
+  type ProviderRecoveryContext,
+} from "@/lib/chat/provider-recovery-context";
+import {
   AGENT_MODEL_CONTEXT_FLAG,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
@@ -425,6 +429,7 @@ export type AgentStreamState = {
   /** One actual context-budget exposure across retries in this run. */
   agentContextBudgetExposed?: boolean;
   requestSizeRecovery?: { attempted: boolean };
+  providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
   /** Snapshot when onFinish starts, before cancellation during async settlement. */
@@ -1156,6 +1161,7 @@ export async function createAgentStream(
       responseModel: state.responseModel,
       fallbackModels: getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       }),
     });
 
@@ -1304,6 +1310,7 @@ export async function createAgentStream(
       visionRoute: preVisionModelName !== effectiveModelName,
       fallbackModels: getFallbackSlugs(effectiveModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       }),
     };
     ctx.onModelStepSelected?.(effectiveModelName);
@@ -1345,6 +1352,7 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        selectedModelOverride: ctx.selectedModelOverride,
         cacheSessionId,
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
@@ -1547,6 +1555,10 @@ export async function createAgentStream(
       baseMessages: [{ role: "user", content: summary }],
       rawMessageCursor: rejectedRequestSource.rawMessages.length,
     };
+    saveProviderRecoveryContext(
+      rollingContextCheckpoint.baseMessages,
+      rejectedRequestSource.rawMessages,
+    );
     lastCompactionRawMessageCount = rejectedRequestSource.rawMessages.length;
     lastPreparedInputEstimate =
       safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens;
@@ -1643,6 +1655,19 @@ export async function createAgentStream(
       Date.now() - initialSerializationStartedAt,
     );
   }
+  // Capture source identities before applying the provider-only checkpoint.
+  // Later retries serialize the canonical transcript, including completed tools.
+  let initialSourceDigests =
+    ctx.mode === "agent" ? sourceMessageDigests(initialSerializedMessages) : [];
+  const recoveredContext =
+    ctx.mode === "agent"
+      ? restoreProviderRecoveryContext(
+          state.providerRecoveryContext,
+          initialSerializedMessages,
+        )
+      : undefined;
+  if (recoveredContext) initialSerializedMessages = recoveredContext;
+  else state.providerRecoveryContext = undefined;
   if (maxContextEnabled) {
     activeModelInputTokens =
       estimateSummaryInputTokens(initialSerializedMessages) +
@@ -1653,6 +1678,7 @@ export async function createAgentStream(
   let networkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
   let networkTokens = safeCountTokens(networkSection);
   const historyEligible =
+    !recoveredContext &&
     !networkSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
@@ -1836,6 +1862,19 @@ export async function createAgentStream(
     initialModelInfo.modelName,
     false, // prepareStep must get a chance to compact before enforcing the budget.
   );
+  const saveProviderRecoveryContext = (
+    messages: ModelMessage[],
+    raw: ModelMessage[],
+  ) => {
+    if (ctx.mode !== "agent") return;
+    state.providerRecoveryContext = {
+      source: [
+        ...initialSourceDigests,
+        ...sourceMessageDigests(raw.slice(initialModelMessages.length)),
+      ],
+      messages,
+    };
+  };
   recordProviderRequestDiagnostics({
     modelName: initialModelInfo.modelName,
     requestedSlug: initialModelInfo.requestedSlug,
@@ -1984,6 +2023,12 @@ export async function createAgentStream(
         if (pruneResult.prunedCount > 0) {
           state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
+          if (ctx.mode === "agent")
+            initialSourceDigests = sourceMessageDigests(
+              await convertToModelMessages(state.finalMessages, {
+                tools: promptSerializationTools,
+              }),
+            );
         }
 
         if (
@@ -2070,6 +2115,12 @@ export async function createAgentStream(
                 state.ctxUsage = result.contextUsage;
               }
               state.finalMessages = result.summarizedMessages;
+              if (ctx.mode === "agent")
+                initialSourceDigests = sourceMessageDigests(
+                  await convertToModelMessages(state.finalMessages, {
+                    tools: promptSerializationTools,
+                  }),
+                );
               // Durable summary changed the source projection: restart replay from its checkpoint.
               historyReplay.reset();
               state.transcriptSourceMessages = undefined;
@@ -2122,6 +2173,9 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
+              // Durable summarization replaced the source UI itself. A run-local
+              // checkpoint from the old source must no longer be replayed.
+              state.providerRecoveryContext = undefined;
               if (historyEnabled) {
                 sourceModelMessages = await convertToModelMessages(
                   result.summarizedMessages,
@@ -2295,6 +2349,7 @@ export async function createAgentStream(
                   baseMessages: nextBaseMessages,
                   rawMessageCursor: rawModelMessages.length,
                 };
+                saveProviderRecoveryContext(nextBaseMessages, rawModelMessages);
                 if (historyEnabled) {
                   lastHistoryResponseCursor =
                     rawModelMessages.length - initialModelMessages.length;
@@ -2963,6 +3018,7 @@ export async function createAgentStream(
 
       const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       });
       state.fallbackServed = resolveFallbackServedTelemetry({
         requestedModel: lastRequestedSlug,
@@ -3110,6 +3166,7 @@ export async function createAgentStream(
       if (!isXaiSafetyError(error)) {
         const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
           hasMultimodalToolResults: streamHasImageViewResults,
+          selectedModelOverride: ctx.selectedModelOverride,
         });
         ctx.chatLogger?.recordProviderError(error, {
           mode: ctx.mode,
