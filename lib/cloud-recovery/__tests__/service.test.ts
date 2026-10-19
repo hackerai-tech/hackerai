@@ -553,3 +553,27 @@ it("never treats an unknown old outcome as a reconciled deadline", async () => {
   expect(await recoveryView("owner")).toMatchObject({ status: "support" });
   expect(Sandbox.getInfo).not.toHaveBeenCalled();
 });
+
+it("rollout rollback hides new offers but preserves support for consumed consent", async () => {
+  jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(false);
+  jest.mocked(readConsent).mockResolvedValue(consent);
+  expect(await recoveryView("owner")).toEqual({ status: "hidden" });
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "executing" });
+  expect(await recoveryView("owner")).toEqual({
+    status: "support",
+    reference: "CR-7ad19af5",
+  });
+  await expect(confirmRecovery("owner", token, true)).rejects.toThrow();
+  expect(Sandbox.getInfo).not.toHaveBeenCalled();
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+it("removes the deferred card when ordinary reconnection already resolved the incident", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "declined" });
+  jest.mocked(readFailures).mockResolvedValue(null);
+  expect(await recoveryView("owner")).toEqual({ status: "hidden" });
+  expect(renewConsent).not.toHaveBeenCalled();
+});

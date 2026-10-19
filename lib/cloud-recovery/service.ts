@@ -224,8 +224,11 @@ async function assertEligible(
   return auth;
 }
 async function currentRecoveryView(userId: string): Promise<RecoveryView> {
-  if (!(await enabled(userId))) return { status: "hidden" };
+  if (!process.env.CLOUD_DISK_RECOVERY_TARGETS) return { status: "hidden" };
+  const active = await enabled(userId);
   let consent = await readConsent(userId);
+  if (!active && (!consent || ["offered", "declined"].includes(consent.status)))
+    return { status: "hidden" };
   if (consent) {
     const workspace = await readCloudWorkspaceState(userId);
     const result = (await readE2BDiskRecoveryResult(userId)) as {
@@ -255,7 +258,9 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
             : "support",
       };
     }
-    if (consent.status === "failed") return { status: "support" };
+    // Turning off a rollout prevents new action, but must not hide an incident
+    // that already consumed consent or strand the customer without support.
+    if (!active || consent.status === "failed") return { status: "support" };
     if (
       workspace?.phase === "recovery" ||
       ["confirmed", "executing"].includes(consent.status)
@@ -275,9 +280,9 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
         step: workspace?.phase === "recovery" ? workspace.step : "queued",
       };
     }
+    if (!(await readFailures(userId))) return { status: "hidden" };
     if (consent.status === "declined")
       return { status: "declined", token: consent.token };
-    if (!(await readFailures(userId))) return { status: "hidden" };
     if (Date.now() - consent.issuedAt > 10 * 60000) {
       // A stale warning can be reviewed again; it never granted permission to act.
       const renewed = await renewConsent(userId, consent);
