@@ -4943,6 +4943,8 @@ export const agentLongTask = task({
                                         completedRetryCount:
                                           providerRecoveryAttempts,
                                         selectedModelOverride,
+                                        agentModelContextEnabled,
+                                        subscription,
                                         requiredContextTokens,
                                       })
                                     : undefined;

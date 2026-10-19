@@ -2,6 +2,7 @@ import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import type { SubscriptionTier } from "@/types";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import {
   isStaticToolUIPart,
@@ -157,12 +158,16 @@ export const getNextProviderDisconnectRetryModel = ({
   failedModel,
   completedRetryCount,
   selectedModelOverride,
+  agentModelContextEnabled,
+  subscription,
   requiredContextTokens,
 }: {
   originalModel: string;
   failedModel: string;
   completedRetryCount: number;
   selectedModelOverride?: string;
+  agentModelContextEnabled?: boolean;
+  subscription?: SubscriptionTier;
   requiredContextTokens?: number;
 }):
   | (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number]
@@ -178,9 +183,9 @@ export const getNextProviderDisconnectRetryModel = ({
     )
       return;
     const grokBudget = getAgentContextBudget({
-      enabled: true,
+      enabled: agentModelContextEnabled,
       mode: "agent",
-      subscription: "pro",
+      subscription,
       modelId: "x-ai/grok-4.6",
     });
     return requiredContextTokens <= getSummarizationThresholdTokens(grokBudget)
