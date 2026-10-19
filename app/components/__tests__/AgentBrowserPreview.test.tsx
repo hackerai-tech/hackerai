@@ -998,7 +998,7 @@ it("commits IME text once without sending intermediate composition or Process ke
       isComposing: true,
     });
     fireEvent.input(keyboard, {
-      target: { value: "\u200bに" },
+      target: { value: "に" },
       inputType: "insertCompositionText",
       isComposing: true,
     });
@@ -1006,7 +1006,7 @@ it("commits IME text once without sending intermediate composition or Process ke
   expect(actions.filter((a) => a.action === "input")).toEqual([]);
   await act(async () => {
     fireEvent.input(keyboard, {
-      target: { value: "\u200b日本語🙂" },
+      target: { value: "日本語🙂" },
       inputType: "insertCompositionText",
       isComposing: true,
     });
@@ -1029,9 +1029,9 @@ it("forwards soft-keyboard input, deletion and return without requiring keydown"
     hidden: true,
   });
   for (const [value, inputType] of [
-    ["\u200bAZ!?", "insertText"],
+    ["AZ!?", "insertText"],
     ["", "deleteContentBackward"],
-    ["\u200b\n", "insertLineBreak"],
+    ["\n", "insertLineBreak"],
   ]) {
     await act(async () => {
       fireEvent.input(keyboard, { target: { value }, inputType });
@@ -1112,11 +1112,69 @@ it("lets Android unidentified key events reach native input instead of cancellin
   expect(actions.filter((a) => a.action === "input")).toEqual([]);
   await act(async () => {
     fireEvent.input(keyboard, {
-      target: { value: "\u200bAndroid" },
+      target: { value: "Android" },
       inputType: "insertText",
     });
   });
   expect(
     actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
   ).toEqual([{ kind: "text", text: "Android" }]);
+});
+
+it("never leaks a keyboard placeholder into the remote input", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  }) as HTMLTextAreaElement;
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: `P${keyboard.value}` },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "P" }]);
+});
+
+it("handles soft-keyboard backspace on an empty bridge before the browser drops the input event", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  const deletion = new InputEvent("beforeinput", {
+    bubbles: true,
+    cancelable: true,
+    inputType: "deleteContentBackward",
+  });
+  await act(async () => {
+    fireEvent(keyboard, deletion);
+  });
+  expect(deletion.defaultPrevented).toBe(true);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "key", key: "Backspace", code: "Backspace", modifiers: 0 },
+  ]);
+});
+it("preserves user-provided zero-width characters", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "A\u200bB" },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "A\u200bB" }]);
 });

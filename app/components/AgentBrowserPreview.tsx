@@ -68,6 +68,20 @@ export function AgentBrowserPreview({
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const keyboardActiveRef = useRef(false);
+  const keyboardBeforeInputRef = useRef<
+    ((event: InputEvent, element: HTMLTextAreaElement) => void) | null
+  >(null);
+  const attachKeyboard = useCallback((element: HTMLTextAreaElement | null) => {
+    keyboardRef.current = element;
+    if (!element) return;
+    const listener = (event: InputEvent) =>
+      keyboardBeforeInputRef.current?.(event, element);
+    element.addEventListener("beforeinput", listener);
+    return () => {
+      element.removeEventListener("beforeinput", listener);
+      if (keyboardRef.current === element) keyboardRef.current = null;
+    };
+  }, []);
   const touchRef = useRef<{
     id: number;
     x: number;
@@ -613,9 +627,9 @@ export function AgentBrowserPreview({
   };
 
   const commitKeyboard = (element: HTMLTextAreaElement, inputType?: string) => {
-    const text = element.value.replace(/^\u200b/, "");
+    const text = element.value;
     // Reset after commit, never while the IME is still composing.
-    element.value = "\u200b";
+    element.value = "";
     if (inputType === "deleteContentBackward")
       sendInput({
         kind: "key",
@@ -629,6 +643,26 @@ export function AgentBrowserPreview({
       sendInput({ kind: "key", key: "Enter", code: "Enter", modifiers: 0 });
     else if (text) sendText(text);
   };
+
+  useLayoutEffect(() => {
+    keyboardBeforeInputRef.current = (event, element) => {
+      // Empty editable elements may emit beforeinput but no input on deletion.
+      // Handle those edits without inserting a sentinel into the user's text.
+      if (!event.cancelable || event.isComposing || composingRef.current)
+        return;
+      if (
+        [
+          "deleteContentBackward",
+          "deleteContentForward",
+          "insertLineBreak",
+          "insertParagraph",
+        ].includes(event.inputType)
+      ) {
+        event.preventDefault();
+        commitKeyboard(element, event.inputType);
+      }
+    };
+  });
 
   const point = (event: {
     currentTarget: HTMLImageElement;
@@ -830,14 +864,14 @@ export function AgentBrowserPreview({
           >
             {human && (
               <textarea
-                ref={keyboardRef}
+                ref={attachKeyboard}
                 aria-label="Type in remote browser"
                 tabIndex={-1}
                 onFocus={() => {
                   keyboardActiveRef.current = true;
                 }}
                 disabled={frameStale || busy}
-                defaultValue={"\u200b"}
+                defaultValue=""
                 autoComplete="off"
                 autoCapitalize="off"
                 autoCorrect="off"
