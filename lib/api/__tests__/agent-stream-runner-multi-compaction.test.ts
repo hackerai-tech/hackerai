@@ -690,9 +690,14 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
-  it.each(["agent", "ask"])(
-    "recovers rejected Agent requests without replacing saved history; mode=%s",
-    async (mode) => {
+  it.each([
+    { mode: "agent", modelName: "test-model", authorized: true },
+    { mode: "agent", modelName: "test-model", authorized: false },
+    { mode: "agent", modelName: "model-abliterated", authorized: true },
+    { mode: "ask", modelName: "test-model", authorized: true },
+  ])(
+    "preserves history and authorization on recovery: $mode/$modelName/authorized=$authorized",
+    async ({ mode, modelName, authorized }) => {
       const sdk = jest.requireActual("ai");
       const wrap = jest.mocked(require("ai").wrapLanguageModel);
       wrap.mockImplementation(sdk.wrapLanguageModel);
@@ -746,9 +751,10 @@ describe("createAgentStream repeated compaction", () => {
           doStream,
         };
         const stream = (await createAgentStream(
-          "test-model",
+          modelName,
           createTestStreamContext({
             mode,
+            platformAuthorized: authorized,
             trackedProvider: { languageModel: () => model },
             usageTracker: {},
             summarizationTracker: tracker,
@@ -771,6 +777,12 @@ describe("createAgentStream repeated compaction", () => {
         } else {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
+          const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
+          if (authorized && modelName !== "model-abliterated") {
+            expect(retryText).toContain(PLATFORM_AUTHORIZATION_ANNOTATION);
+          } else {
+            expect(retryText).not.toContain("<platform_authorization>");
+          }
           expect(tracker.recordSummarizationUsage).toHaveBeenCalledTimes(1);
           expect(tracker.summarizationCount).toBe(1);
           expect(recordSummaryStep).toHaveBeenCalledWith(0);

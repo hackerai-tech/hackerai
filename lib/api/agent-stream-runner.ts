@@ -1524,7 +1524,18 @@ export async function createAgentStream(
       .map((part) => part.text)
       .join("\n");
     if (!summaryText.trim()) return undefined;
-    return summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
+    const recoveryPrompt =
+      summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
+    // The immediate retry bypasses prepareProviderMessages. Apply the same
+    // trusted annotation policy to both the retry and its rolling checkpoint.
+    const [annotatedMessage] = preparePlatformAuthorizationForModel(
+      [{ role: "user", content: recoveryPrompt }],
+      hasPlatformAnnotationContext(),
+      activeStepModelName,
+    );
+    return typeof annotatedMessage?.content === "string"
+      ? annotatedMessage.content
+      : recoveryPrompt;
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
