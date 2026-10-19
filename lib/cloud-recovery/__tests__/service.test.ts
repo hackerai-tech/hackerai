@@ -577,3 +577,46 @@ it("removes the deferred card when ordinary reconnection already resolved the in
   expect(await recoveryView("owner")).toEqual({ status: "hidden" });
   expect(renewConsent).not.toHaveBeenCalled();
 });
+
+it.each(["offered", "declined"] as const)(
+  "rebinds an unconsumed %s receipt when a new workspace has its own eligible incident",
+  async (status) => {
+    const nextTarget = { ...target, sandboxId: "next-workspace" };
+    const nextToken = "2ad19af5-4d14-4d4b-aab7-90734610a6da";
+    const oldConsent = { ...consent, status };
+    jest.mocked(readConsent).mockResolvedValue(oldConsent);
+    jest.mocked(readFailures).mockResolvedValue(nextTarget);
+    jest.mocked(renewConsent).mockResolvedValue({
+      ...consent,
+      token: nextToken,
+      target: nextTarget,
+    });
+    const nextInfo = { ...info, sandboxId: nextTarget.sandboxId };
+    jest.mocked(Sandbox.getInfo).mockResolvedValue(nextInfo as never);
+    jest.mocked(Sandbox.list).mockReturnValue({
+      hasNext: false,
+      nextItems: async () => [nextInfo],
+    } as never);
+    expect(await recoveryView("owner")).toMatchObject({
+      status: "offered",
+      token: nextToken,
+    });
+    expect(renewConsent).toHaveBeenCalledWith("owner", oldConsent, nextTarget);
+    expect(decideConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);
+it.each(["confirmed", "executing", "failed"] as const)(
+  "never rebinds a consumed %s receipt to a later workspace",
+  async (status) => {
+    jest.mocked(readConsent).mockResolvedValue({ ...consent, status });
+    jest
+      .mocked(readFailures)
+      .mockResolvedValue({ ...target, sandboxId: "next-workspace" });
+    expect((await recoveryView("owner")).status).toBe(
+      status === "failed" ? "support" : "recovering",
+    );
+    expect(renewConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);

@@ -144,9 +144,14 @@ export async function failConsent(userId: string, token: string) {
 }
 
 /** Reopening or refreshing an unconsumed offer cannot reset an attempted recovery. */
-export async function renewConsent(userId: string, consent: RecoveryConsent) {
+export async function renewConsent(
+  userId: string,
+  consent: RecoveryConsent,
+  target: ResumeFailures = consent.target,
+) {
   const next: RecoveryConsent = {
     ...consent,
+    target,
     token: randomUUID(),
     status: "offered",
     issuedAt: Date.now(),

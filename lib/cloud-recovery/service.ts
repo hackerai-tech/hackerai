@@ -280,7 +280,15 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
         step: workspace?.phase === "recovery" ? workspace.step : "queued",
       };
     }
-    if (!(await readFailures(userId))) return { status: "hidden" };
+    const currentFailures = await readFailures(userId);
+    if (!currentFailures) return { status: "hidden" };
+    if (!sameTarget(currentFailures, consent.target)) {
+      // Only an unconsumed warning may move to a new incident. Fresh consent
+      // and every eligibility check still precede any provider action.
+      const renewed = await renewConsent(userId, consent, currentFailures);
+      if (!renewed) return { status: "waiting" };
+      consent = renewed;
+    }
     if (consent.status === "declined")
       return { status: "declined", token: consent.token };
     if (Date.now() - consent.issuedAt > 10 * 60000) {
