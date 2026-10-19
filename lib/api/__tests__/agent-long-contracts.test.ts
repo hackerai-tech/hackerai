@@ -643,7 +643,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     expect(agentPartialSaveRouteSrc).toMatch(/getUserID\(req\)/);
     expect(agentPartialSaveRouteSrc).toMatch(
-      /assertUserCanAccessChatHistory\(userId\)/,
+      /await assertUserCanAccessChatHistory\(userId,\s*\{\s*retryNetworkFailure:\s*true,\s*signal:\s*req\.signal,?\s*\}\)/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(
       /getChatById\(\{\s*id:\s*body\.chatId\s*\}\)/,
