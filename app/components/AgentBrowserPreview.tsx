@@ -563,6 +563,8 @@ export function AgentBrowserPreview({
     };
   }, [fullScreen]);
 
+  // Keep this viewport on resume: the Agent must inspect the layout the user
+  // just edited, taking a fresh snapshot instead of reusing old coordinates.
   const viewportWidth = visibleViewport?.width;
   const viewportHeight = visibleViewport?.height;
   useEffect(() => {

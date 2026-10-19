@@ -1479,6 +1479,7 @@ export async function createAgentStream(
         stepIndex: number;
       }
     | undefined;
+  let rejectedRequestRecoveryMessages: ModelMessage[] | undefined;
   const compactRejectedRequest = async (): Promise<string | undefined> => {
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
@@ -1540,16 +1541,21 @@ export async function createAgentStream(
     if (!summaryText.trim()) return undefined;
     const recoveryPrompt =
       summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
-    // The immediate retry bypasses prepareProviderMessages. Apply the same
-    // trusted annotation policy to both the retry and its rolling checkpoint.
-    const [annotatedMessage] = preparePlatformAuthorizationForModel(
+    // This retry bypasses prepareStep and prepareProviderMessages. Re-read
+    // private handoff instructions after lossy summarization, then apply the
+    // same trusted annotation policy at the provider boundary.
+    const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+    rejectedRequestRecoveryMessages = projectHandoffNotes(
       [{ role: "user", content: recoveryPrompt }],
+      handoffNotes,
+    );
+    return preparePlatformAuthorizationForModel(
+      rejectedRequestRecoveryMessages,
       hasPlatformAnnotationContext(),
       activeStepModelName,
-    );
-    return typeof annotatedMessage?.content === "string"
-      ? annotatedMessage.content
-      : recoveryPrompt;
+    )
+      .map((message) => message.content)
+      .join("\n\n");
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
@@ -1558,7 +1564,11 @@ export async function createAgentStream(
     historyEnabled = false;
     historyReplay.reset();
     rollingContextCheckpoint = {
-      baseMessages: [{ role: "user", content: summary }],
+      // Keep notes as separate messages so subsequent projection recognizes
+      // them and does not inject the same private update twice.
+      baseMessages: rejectedRequestRecoveryMessages ?? [
+        { role: "user", content: summary },
+      ],
       rawMessageCursor: rejectedRequestSource.rawMessages.length,
     };
     saveProviderRecoveryContext(

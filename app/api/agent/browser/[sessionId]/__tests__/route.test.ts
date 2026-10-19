@@ -110,6 +110,14 @@ beforeEach(() => {
   mockFailure = "capture";
 });
 
+const jsonBody = (value: unknown) =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+      controller.close();
+    },
+  });
+
 const take = () =>
   post(
     {
@@ -118,7 +126,7 @@ const take = () =>
         origin: "https://preview.example",
         "content-type": "application/json",
       }),
-      json: async () => ({ action: "take", browserSessionName: "default" }),
+      body: jsonBody({ action: "take", browserSessionName: "default" }),
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
@@ -163,7 +171,7 @@ it("sends a validated input burst through one lease and rejects invalid bursts b
           origin: "https://preview.example",
           "content-type": "application/json",
         }),
-        json: async () => ({ action: "input", grant: "g".repeat(43), inputs }),
+        body: jsonBody({ action: "input", grant: "g".repeat(43), inputs }),
       } as NextRequest,
       { params: Promise.resolve({ sessionId: mockSessionId }) },
     );
@@ -193,7 +201,7 @@ const exitTakeover = (note: unknown = "") =>
         origin: "https://preview.example",
         "content-type": "application/json",
       }),
-      json: async () => ({
+      body: jsonBody({
         action: "resume",
         requestId: "11111111-1111-4111-8111-111111111111",
         browserSessionName: "default",
@@ -346,7 +354,7 @@ const resize = (width: unknown, height: unknown) =>
         origin: "https://preview.example",
         "content-type": "application/json",
       }),
-      json: async () => ({
+      body: jsonBody({
         action: "viewport",
         grant: "g".repeat(43),
         width,
@@ -403,3 +411,33 @@ it("refuses resize after browser session selection changes", async () => {
     expect.anything(),
   );
 });
+
+it.each([undefined, "1"])(
+  "rejects oversized streamed bodies despite Content-Length=%s",
+  async (length) => {
+    const cancel = jest.fn();
+    const headers = new Headers({
+      origin: "https://preview.example",
+      "content-type": "application/json",
+    });
+    if (length) headers.set("content-length", length);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"note":"'));
+        controller.enqueue(new TextEncoder().encode("é".repeat(5000)));
+      },
+      cancel,
+    });
+    const response = await post(
+      {
+        url: "https://preview.example/api/agent/browser/test",
+        headers,
+        body,
+      } as NextRequest,
+      { params: Promise.resolve({ sessionId: mockSessionId }) },
+    );
+    expect(response.status).toBe(413);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);

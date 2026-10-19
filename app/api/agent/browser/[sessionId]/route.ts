@@ -118,7 +118,27 @@ export async function POST(
   try {
     if (Number(request.headers.get("content-length") ?? 0) > 10_000)
       return json({ error: "Input too large" }, 413);
-    body = (await request.json()) as BrowserAction;
+    const reader = request.body?.getReader();
+    if (!reader) return json({ error: "Invalid input" }, 400);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 10_000) {
+          void reader.cancel().catch(() => undefined);
+          return json({ error: "Input too large" }, 413);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    body = JSON.parse(
+      new TextDecoder().decode(Buffer.concat(chunks)),
+    ) as BrowserAction;
   } catch {
     return json({ error: "Invalid input" }, 400);
   }

@@ -929,11 +929,26 @@ describe("createAgentStream repeated compaction", () => {
           doGenerate: jest.fn(),
           doStream,
         };
+        let handoffReadCount = 0;
         const stream = (await createAgentStream(
           modelName,
           createTestStreamContext({
             mode,
             platformAuthorized: authorized,
+            getBrowserHandoffNotes: async () => [
+              {
+                id: "handoff-recovery",
+                text: "HANDOFF: keep my selected account.",
+              },
+              ...(++handoffReadCount > 1
+                ? [
+                    {
+                      id: "handoff-late",
+                      text: "LATE HANDOFF: preserve this new update.",
+                    },
+                  ]
+                : []),
+            ],
             trackedProvider: { languageModel: () => model },
             usageTracker: {},
             summarizationTracker: tracker,
@@ -957,6 +972,10 @@ describe("createAgentStream repeated compaction", () => {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
+          expect(retryText).toContain("HANDOFF: keep my selected account.");
+          expect(retryText).toContain(
+            "LATE HANDOFF: preserve this new update.",
+          );
           if (authorized && modelName !== "model-abliterated") {
             expect(retryText).toContain(PLATFORM_AUTHORIZATION_ANNOTATION);
           } else {
@@ -983,6 +1002,12 @@ describe("createAgentStream repeated compaction", () => {
           expect(content).toContain("Completed inspection found marker ABC");
           expect(content).toContain("new verification after recovery");
           expect(content).not.toContain("old evidence old evidence");
+          expect(
+            content.match(/HANDOFF: keep my selected account./g),
+          ).toHaveLength(1);
+          expect(
+            content.match(/LATE HANDOFF: preserve this new update./g),
+          ).toHaveLength(1);
         }
         expect(state.finalMessages).toEqual([saved]);
         expect(state.sourceUiMessages).toEqual([saved]);
