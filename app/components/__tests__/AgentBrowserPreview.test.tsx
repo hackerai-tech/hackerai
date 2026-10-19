@@ -1091,3 +1091,32 @@ it("scrolls touch swipes without clicking and sends a tap only on release", asyn
     { kind: "up", x: 100, y: 200 },
   ]);
 });
+
+it("lets Android unidentified key events reach native input instead of cancelling them", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  const key = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key: "Unidentified",
+    keyCode: 229,
+  });
+  await act(async () => {
+    fireEvent(keyboard, key);
+  });
+  expect(key.defaultPrevented).toBe(false);
+  expect(actions.filter((a) => a.action === "input")).toEqual([]);
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "\u200bAndroid" },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "Android" }]);
+});

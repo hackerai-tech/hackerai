@@ -76,6 +76,7 @@ export function AgentBrowserPreview({
   } | null>(null);
   const resizingRef = useRef(false);
   const [resizing, setResizing] = useState(false);
+  const [touchDevice, setTouchDevice] = useState(false);
   const [visibleViewport, setVisibleViewport] = useState<{
     width: number;
     height: number;
@@ -525,6 +526,9 @@ export function AgentBrowserPreview({
   // Layout follows the visible area, including keyboard occlusion and rotation.
   useEffect(() => {
     if (!fullScreen) return;
+    setTouchDevice(
+      window.matchMedia?.("(any-pointer: coarse)").matches ?? false,
+    );
     const measure = () => {
       const viewport = window.visualViewport;
       setVisibleViewport({
@@ -680,6 +684,8 @@ export function AgentBrowserPreview({
       frameStale ||
       composingRef.current ||
       event.nativeEvent.isComposing ||
+      event.nativeEvent.keyCode === 229 ||
+      event.key === "Unidentified" ||
       event.key === "Process" ||
       event.key === "Dead"
     )
@@ -694,9 +700,8 @@ export function AgentBrowserPreview({
     if (
       event.target === keyboardRef.current &&
       event.key.length === 1 &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey
+      ((!event.metaKey && !event.ctrlKey && !event.altKey) ||
+        event.getModifierState("AltGraph"))
     )
       return;
     event.preventDefault();
@@ -872,6 +877,7 @@ export function AgentBrowserPreview({
                 if (!human || frameStale || resizingRef.current) return;
                 event.preventDefault();
                 if (event.pointerType === "touch") {
+                  setTouchDevice(true);
                   touchRef.current = {
                     id: event.pointerId,
                     x: event.clientX,
@@ -973,16 +979,20 @@ export function AgentBrowserPreview({
             : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
         }
       >
-        {fullScreen && human && (visibleViewport?.width ?? 1024) < 768 && (
-          <button
-            type="button"
-            aria-label="Show browser keyboard"
-            onClick={() => keyboardRef.current?.focus({ preventScroll: true })}
-            className="pointer-events-auto inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border"
-          >
-            <Keyboard size={16} aria-hidden /> Keyboard
-          </button>
-        )}
+        {fullScreen &&
+          human &&
+          (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
+            <button
+              type="button"
+              aria-label="Show browser keyboard"
+              onClick={() =>
+                keyboardRef.current?.focus({ preventScroll: true })
+              }
+              className="pointer-events-auto inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border"
+            >
+              <Keyboard size={16} aria-hidden /> Keyboard
+            </button>
+          )}
         {takingControl ||
         human ||
         effectiveState === "recovery" ||
