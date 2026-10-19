@@ -321,6 +321,37 @@ export async function captureBrowserFrame(
   };
 }
 
+/** Resize only the currently granted session; callers hold the input lease. */
+export async function resizeBrowserViewport(
+  sandbox: Sandbox,
+  session: BrowserSessionLocation,
+  browserSessionName: string,
+  width: number,
+  height: number,
+) {
+  if (
+    ![width, height].every(
+      (value) => Number.isInteger(value) && value >= 240 && value <= 2560,
+    )
+  )
+    throw new Error("Invalid browser viewport");
+  const result = await sandbox.commands.run(
+    `agent-browser set viewport ${width} ${height} 1`,
+    {
+      ...buildSandboxCommandOptions(sandbox),
+      envs: {
+        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
+        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
+        AGENT_BROWSER_SESSION: browserSessionName,
+      },
+      timeoutMs: 7_000,
+    },
+  );
+  if (result.exitCode !== 0)
+    throw new BrowserPreviewUnavailable("disconnected");
+  return captureBrowserFrame(sandbox, session, browserSessionName, true);
+}
+
 export async function sendBrowserInput(
   sandbox: Sandbox,
   session: BrowserSessionLocation,

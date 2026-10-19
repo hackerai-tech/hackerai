@@ -15,6 +15,7 @@ import {
   getActiveBrowserSessionName,
   getPrivateStreamPort,
   sendBrowserInput,
+  resizeBrowserViewport,
   setAgentBrowserPaused,
   startBrowserRelay,
   renewBrowserRelay,
@@ -98,6 +99,8 @@ type BrowserAction = {
   grant?: unknown;
   input?: unknown;
   inputs?: unknown;
+  width?: unknown;
+  height?: unknown;
   requestId?: unknown;
   note?: unknown;
 };
@@ -393,9 +396,22 @@ export async function POST(
     }
     return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
   }
-  if (body.action === "input") {
-    const events =
-      body.inputs !== undefined
+  if (body.action === "input" || body.action === "viewport") {
+    const resizing = body.action === "viewport";
+    if (
+      resizing &&
+      ![body.width, body.height].every(
+        (value) =>
+          typeof value === "number" &&
+          Number.isInteger(value) &&
+          value >= 240 &&
+          value <= 2560,
+      )
+    )
+      return json({ error: "Invalid browser viewport" }, 400);
+    const events = resizing
+      ? []
+      : body.inputs !== undefined
         ? normalizeBrowserInputBatch(body.inputs)
         : normalizeBrowserInput(body.input);
     if (!events) return json({ error: "Invalid browser input" }, 400);
@@ -417,6 +433,16 @@ export async function POST(
         session.controlledSessionName
       )
         return json({ state: "stale" }, 409);
+      if (resizing) {
+        const frame = await resizeBrowserViewport(
+          sandbox,
+          session,
+          session.controlledSessionName,
+          body.width as number,
+          body.height as number,
+        );
+        return json({ frame });
+      }
       await sendBrowserInput(
         sandbox,
         session,

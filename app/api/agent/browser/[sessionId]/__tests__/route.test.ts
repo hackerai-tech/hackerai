@@ -12,6 +12,9 @@ const mockCapture = jest.fn(async () => {
     throw new Error("Capture failed");
   return { image: "fresh" };
 });
+const mockResize = jest.fn(async (..._args: unknown[]) => ({
+  image: "resized",
+}));
 const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
@@ -74,6 +77,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
       super(state);
     }
   },
+  resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
   renewBrowserRelay: async () => undefined,
@@ -332,4 +336,70 @@ it("drains late relay startup before rollback after capture fails", async () => 
   expect((await pending).status).toBe(503);
   expect(mockStopRelay).toHaveBeenCalledTimes(1);
   expect(mockPaused).toBe(false);
+});
+
+const resize = (width: unknown, height: unknown) =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+      }),
+      json: async () => ({
+        action: "viewport",
+        grant: "g".repeat(43),
+        width,
+        height,
+      }),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it("resizes the granted browser under the existing input lease", async () => {
+  mockFailure = "";
+  const result = await resize(390, 844);
+  expect(result.status).toBe(200);
+  expect(await result.json()).toEqual({ frame: { image: "resized" } });
+  expect(mockMutation).toHaveBeenCalledWith(
+    "beginInputForBackend",
+    expect.objectContaining({ grant: "g".repeat(43) }),
+  );
+  expect(mockResize).toHaveBeenCalledWith(
+    {},
+    expect.anything(),
+    "default",
+    390,
+    844,
+  );
+  expect(mockMutation).toHaveBeenCalledWith(
+    "finishInputForBackend",
+    expect.anything(),
+  );
+});
+it.each([
+  [239, 844],
+  [390, 2561],
+  ["390", 844],
+  [390.5, 844],
+])(
+  "rejects invalid viewport %s x %s before touching the sandbox",
+  async (width, height) => {
+    expect((await resize(width, height)).status).toBe(400);
+    expect(mockResize).not.toHaveBeenCalled();
+  },
+);
+it("refuses resize when the grant is no longer current", async () => {
+  mockMutation.mockResolvedValueOnce(false);
+  expect((await resize(390, 844)).status).toBe(409);
+  expect(mockResize).not.toHaveBeenCalled();
+});
+it("refuses resize after browser session selection changes", async () => {
+  mockFailure = "identity";
+  expect((await resize(390, 844)).status).toBe(409);
+  expect(mockResize).not.toHaveBeenCalled();
+  expect(mockMutation).toHaveBeenCalledWith(
+    "finishInputForBackend",
+    expect.anything(),
+  );
 });

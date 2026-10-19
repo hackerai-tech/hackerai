@@ -1,5 +1,10 @@
 import { useQuery } from "convex/react";
-import { Maximize2, MousePointerClick, RefreshCw } from "lucide-react";
+import {
+  Keyboard,
+  Maximize2,
+  MousePointerClick,
+  RefreshCw,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -60,6 +65,23 @@ export function AgentBrowserPreview({
   const [previewState, setPreviewState] = useState("loading");
   const [fullScreen, setFullScreen] = useState(false);
   const inputRef = useRef<HTMLDivElement>(null);
+  const keyboardRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const keyboardActiveRef = useRef(false);
+  const touchRef = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  const resizingRef = useRef(false);
+  const [resizing, setResizing] = useState(false);
+  const [visibleViewport, setVisibleViewport] = useState<{
+    width: number;
+    height: number;
+    top: number;
+    left: number;
+  } | null>(null);
   const openButtonRef = useRef<HTMLButtonElement>(null);
   const [relayUrl, setRelayUrl] = useState<string | null>(null);
   const relaySequence = useRef(0);
@@ -150,6 +172,10 @@ export function AgentBrowserPreview({
     grantRef.current = null;
     exposedRef.current = null;
     resumingRef.current = false;
+    resizingRef.current = false;
+    setResizing(false);
+    keyboardActiveRef.current = false;
+    composingRef.current = false;
     bufferedInputs.current = [];
     drainingInputs.current = false;
   }, [sessionId, noteStorageKey]);
@@ -437,6 +463,11 @@ export function AgentBrowserPreview({
   const sendInput = (input: BrowserInput) => {
     const activeGrant = grantRef.current;
     if (!activeGrant || frameStale || resumingRef.current) return;
+    if (
+      resizingRef.current &&
+      ["move", "down", "up", "wheel"].includes(input.kind)
+    )
+      return;
     // Moves are advisory; do not let them delay clicks or keystrokes.
     if (input.kind === "move" && drainingInputs.current) return;
     const buffer = bufferedInputs.current;
@@ -491,6 +522,110 @@ export function AgentBrowserPreview({
       });
   };
 
+  // Layout follows the visible area, including keyboard occlusion and rotation.
+  useEffect(() => {
+    if (!fullScreen) return;
+    const measure = () => {
+      const viewport = window.visualViewport;
+      setVisibleViewport({
+        width: Math.round(viewport?.width ?? window.innerWidth),
+        height: Math.round(viewport?.height ?? window.innerHeight),
+        top: viewport?.offsetTop ?? 0,
+        left: viewport?.offsetLeft ?? 0,
+      });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("scroll", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("scroll", measure);
+    };
+  }, [fullScreen]);
+
+  const viewportWidth = visibleViewport?.width;
+  const viewportHeight = visibleViewport?.height;
+  useEffect(() => {
+    if (!fullScreen || !grant || !viewportWidth || !viewportHeight) return;
+    const width = Math.max(240, Math.min(2560, viewportWidth));
+    const height = Math.max(240, Math.min(2560, viewportHeight));
+    let cancelled = false;
+    resizingRef.current = true;
+    setResizing(true);
+    // Coalesce keyboard animation and rotation. Serialize with input so no click
+    // can use coordinates from a frame captured before the resize.
+    const timer = setTimeout(() => {
+      inputQueue.current = inputQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (cancelled || grantRef.current !== grant || resumingRef.current)
+            return;
+          try {
+            const data = await post({
+              action: "viewport",
+              grant,
+              width,
+              height,
+            });
+            if (cancelled || grantRef.current !== grant) return;
+            if (!data.frame) throw new Error("Browser resize unavailable");
+            setFrame(data.frame);
+            setFrameSeenAt(Date.now());
+            setPreviewState("ready");
+          } catch {
+            if (cancelled || grantRef.current !== grant) return;
+            grantRef.current = null;
+            setGrant(null);
+            setPreviewState("recovery");
+            setError(
+              "Browser resize disconnected. Reconnect before continuing.",
+            );
+          } finally {
+            if (!cancelled) {
+              resizingRef.current = false;
+              setResizing(false);
+            }
+          }
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    fullScreen,
+    grant,
+    visibleViewport?.width,
+    visibleViewport?.height,
+    post,
+  ]);
+
+  const sendText = (text: string) => {
+    const chars = [...text.replace(/\r\n?/g, "\n")];
+    for (let i = 0; i < chars.length; i += 31)
+      sendInput({ kind: "text", text: chars.slice(i, i + 31).join("") });
+  };
+
+  const commitKeyboard = (element: HTMLTextAreaElement, inputType?: string) => {
+    const text = element.value.replace(/^\u200b/, "");
+    // Reset after commit, never while the IME is still composing.
+    element.value = "\u200b";
+    if (inputType === "deleteContentBackward")
+      sendInput({
+        kind: "key",
+        key: "Backspace",
+        code: "Backspace",
+        modifiers: 0,
+      });
+    else if (inputType === "deleteContentForward")
+      sendInput({ kind: "key", key: "Delete", code: "Delete", modifiers: 0 });
+    else if (inputType === "insertLineBreak" || inputType === "insertParagraph")
+      sendInput({ kind: "key", key: "Enter", code: "Enter", modifiers: 0 });
+    else if (text) sendText(text);
+  };
+
   const point = (event: {
     currentTarget: HTMLImageElement;
     clientX: number;
@@ -539,14 +674,30 @@ export function AgentBrowserPreview({
     };
   });
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!human || frameStale) return;
+  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (
+      !human ||
+      frameStale ||
+      composingRef.current ||
+      event.nativeEvent.isComposing ||
+      event.key === "Process" ||
+      event.key === "Dead"
+    )
+      return;
     if (event.key === "Escape") {
       event.preventDefault();
       resumeButtonRef.current?.focus();
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v")
+      return;
+    if (
+      event.target === keyboardRef.current &&
+      event.key.length === 1 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    )
       return;
     event.preventDefault();
     if (
@@ -672,6 +823,35 @@ export function AgentBrowserPreview({
               }
             }}
           >
+            {human && (
+              <textarea
+                ref={keyboardRef}
+                aria-label="Type in remote browser"
+                tabIndex={-1}
+                onFocus={() => {
+                  keyboardActiveRef.current = true;
+                }}
+                disabled={frameStale || busy}
+                defaultValue={"\u200b"}
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="absolute left-0 top-0 h-px w-px resize-none overflow-hidden opacity-0 text-base"
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                  composingRef.current = false;
+                  commitKeyboard(event.currentTarget);
+                }}
+                onInput={(event) => {
+                  const native = event.nativeEvent as InputEvent;
+                  if (!composingRef.current && !native.isComposing)
+                    commitKeyboard(event.currentTarget, native.inputType);
+                }}
+              />
+            )}
             {/* Dynamic frames are authenticated data URLs from the server. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -680,8 +860,8 @@ export function AgentBrowserPreview({
               draggable={false}
               className={
                 fullScreen
-                  ? "block h-auto max-h-full w-auto max-w-full select-none"
-                  : "block h-auto w-full select-none"
+                  ? "block h-auto max-h-full w-auto max-w-full touch-none select-none"
+                  : "block h-auto w-full touch-none select-none"
               }
               onLoad={() => {
                 if (exposedRef.current === sessionId) return;
@@ -689,21 +869,59 @@ export function AgentBrowserPreview({
                 void post({ action: "exposure" }).catch(() => undefined);
               }}
               onPointerDown={(event) => {
-                if (!human || frameStale) return;
+                if (!human || frameStale || resizingRef.current) return;
                 event.preventDefault();
-                inputRef.current?.focus({ preventScroll: true });
+                if (event.pointerType === "touch") {
+                  touchRef.current = {
+                    id: event.pointerId,
+                    x: event.clientX,
+                    y: event.clientY,
+                    moved: false,
+                  };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  return;
+                }
+                keyboardRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 sendInput({ kind: "down", ...xy });
               }}
               onPointerUp={(event) => {
-                if (!human || frameStale) return;
+                if (!human || frameStale || resizingRef.current) return;
                 const xy = point(event);
-                if (xy) sendInput({ kind: "up", ...xy });
+                const touch = touchRef.current;
+                if (touch && touch.id === event.pointerId) {
+                  if (!touch.moved && xy) {
+                    sendInput({ kind: "down", ...xy });
+                    sendInput({ kind: "up", ...xy });
+                  }
+                  touchRef.current = null;
+                } else if (xy) sendInput({ kind: "up", ...xy });
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }}
+              onPointerCancel={() => {
+                touchRef.current = null;
+              }}
               onPointerMove={(event) => {
+                const touch = touchRef.current;
+                if (touch && touch.id === event.pointerId) {
+                  const dx = touch.x - event.clientX,
+                    dy = touch.y - event.clientY;
+                  if (!touch.moved && Math.hypot(dx, dy) < 8) return;
+                  touch.moved = true;
+                  touch.x = event.clientX;
+                  touch.y = event.clientY;
+                  const xy = point(event);
+                  if (xy)
+                    sendInput({
+                      kind: "wheel",
+                      ...xy,
+                      deltaX: Math.max(-2000, Math.min(2000, dx)),
+                      deltaY: Math.max(-2000, Math.min(2000, dy)),
+                    });
+                  return;
+                }
                 if (
                   !human ||
                   frameStale ||
@@ -716,6 +934,14 @@ export function AgentBrowserPreview({
               }}
               ref={attachWheelListener}
             />
+          </div>
+        )}
+        {resizing && human && !takingControl && (
+          <div
+            role="status"
+            className="pointer-events-none absolute top-4 rounded-full bg-background/90 px-3 py-1 text-xs text-muted-foreground"
+          >
+            Adjusting browser…
           </div>
         )}
         {takingControl && (
@@ -747,6 +973,16 @@ export function AgentBrowserPreview({
             : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
         }
       >
+        {fullScreen && human && (visibleViewport?.width ?? 1024) < 768 && (
+          <button
+            type="button"
+            aria-label="Show browser keyboard"
+            onClick={() => keyboardRef.current?.focus({ preventScroll: true })}
+            className="pointer-events-auto inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border"
+          >
+            <Keyboard size={16} aria-hidden /> Keyboard
+          </button>
+        )}
         {takingControl ||
         human ||
         effectiveState === "recovery" ||
@@ -838,6 +1074,16 @@ export function AgentBrowserPreview({
         {!fullScreen && browserContent}
         <DialogContent
           showCloseButton={false}
+          style={
+            visibleViewport
+              ? {
+                  width: visibleViewport.width,
+                  height: visibleViewport.height,
+                  top: visibleViewport.top,
+                  left: visibleViewport.left,
+                }
+              : undefined
+          }
           className="inset-0 top-0 left-0 flex h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-0 p-0 duration-0 sm:max-w-none"
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -876,7 +1122,9 @@ export function AgentBrowserPreview({
             // on cancel, or the preview control after a successful handoff.
             const target = fullScreen
               ? human
-                ? inputRef.current
+                ? keyboardActiveRef.current
+                  ? keyboardRef.current
+                  : inputRef.current
                 : resumeButtonRef.current
               : openButtonRef.current;
             target?.focus({ preventScroll: true });

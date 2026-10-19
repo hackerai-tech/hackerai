@@ -87,6 +87,9 @@ it("releases a takeover that completes after the sidebar closes", async () => {
 it("stops input and resume when the preview disconnects", async () => {
   await mount();
   await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
   (global.fetch as jest.Mock).mockImplementationOnce(async () =>
     response({ state: "disconnected" }, false),
   );
@@ -423,13 +426,21 @@ it("maps full-screen clicks and scrolling to the displayed browser pixels", asyn
     deltaY: 3,
     deltaMode: 1,
   });
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
   screen.getByRole("button", { name: "Exit takeover" }).focus();
   await act(async () => {
     fireEvent(image, down);
     fireEvent(image, up);
     fireEvent(image, wheel);
   });
-  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
+  expect(
+    screen.getByRole("textbox", {
+      name: "Type in remote browser",
+      hidden: true,
+    }),
+  ).toHaveFocus();
   expect(wheel.defaultPrevented).toBe(true);
   expect(
     actions
@@ -918,3 +929,165 @@ it.each([null, [], "gateway error"])(
     expect(screen.getByRole("alert")).toHaveTextContent("Browser unavailable");
   },
 );
+
+it("resizes to the visible phone viewport and coalesces rotation before accepting clicks", async () => {
+  const viewport = new EventTarget() as VisualViewport;
+  Object.assign(viewport, {
+    width: 390,
+    height: 844,
+    offsetTop: 0,
+    offsetLeft: 0,
+  });
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: viewport,
+  });
+  try {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    expect(actions.at(-1)).toMatchObject({
+      action: "viewport",
+      width: 390,
+      height: 844,
+      grant: "grant-a",
+    });
+    expect(
+      screen.getByRole("button", { name: "Show browser keyboard" }),
+    ).toBeEnabled();
+    await act(async () => {
+      Object.assign(viewport, { width: 844, height: 390 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await act(async () => {
+      Object.assign(viewport, { width: 844, height: 350 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    expect(actions.filter((a) => a.action === "viewport")).toEqual([
+      { action: "viewport", width: 390, height: 844, grant: "grant-a" },
+      { action: "viewport", width: 844, height: 350, grant: "grant-a" },
+    ]);
+    expect(screen.getByRole("dialog", { name: "Browser control" })).toHaveStyle(
+      { width: "844px", height: "350px" },
+    );
+  } finally {
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: undefined,
+    });
+  }
+});
+
+it("commits IME text once without sending intermediate composition or Process keys", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  await act(async () => {
+    fireEvent.compositionStart(keyboard);
+    fireEvent.keyDown(keyboard, {
+      key: "Process",
+      code: "KeyA",
+      isComposing: true,
+    });
+    fireEvent.input(keyboard, {
+      target: { value: "\u200bに" },
+      inputType: "insertCompositionText",
+      isComposing: true,
+    });
+  });
+  expect(actions.filter((a) => a.action === "input")).toEqual([]);
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "\u200b日本語🙂" },
+      inputType: "insertCompositionText",
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(keyboard, { data: "日本語🙂" });
+    fireEvent.input(keyboard, {
+      inputType: "insertFromComposition",
+      data: "日本語🙂",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "日本語🙂" }]);
+});
+
+it("forwards soft-keyboard input, deletion and return without requiring keydown", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  for (const [value, inputType] of [
+    ["\u200bAZ!?", "insertText"],
+    ["", "deleteContentBackward"],
+    ["\u200b\n", "insertLineBreak"],
+  ]) {
+    await act(async () => {
+      fireEvent.input(keyboard, { target: { value }, inputType });
+    });
+  }
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "text", text: "AZ!?" },
+    { kind: "key", key: "Backspace", code: "Backspace", modifiers: 0 },
+    { kind: "key", key: "Enter", code: "Enter", modifiers: 0 },
+  ]);
+});
+
+it("scrolls touch swipes without clicking and sends a tap only on release", async () => {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  const image = screen.getByAltText(
+    "Current Agent browser viewport",
+  ) as HTMLImageElement;
+  image.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 800, height: 600 }) as DOMRect;
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  const touch = async (type: string, y: number) => {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: 100,
+      clientY: y,
+    });
+    Object.defineProperties(event, {
+      pointerType: { value: "touch" },
+      pointerId: { value: 1 },
+    });
+    await act(async () => {
+      fireEvent(image, event);
+    });
+  };
+  await touch("pointerdown", 300);
+  await touch("pointermove", 200);
+  await touch("pointerup", 200);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "wheel", x: 100, y: 200, deltaX: 0, deltaY: 100 }]);
+  actions.length = 0;
+  await touch("pointerdown", 200);
+  expect(actions).toEqual([]);
+  await touch("pointerup", 200);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "down", x: 100, y: 200 },
+    { kind: "up", x: 100, y: 200 },
+  ]);
+});

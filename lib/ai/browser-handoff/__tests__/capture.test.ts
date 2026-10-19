@@ -1,4 +1,4 @@
-import { captureBrowserFrame } from "../server";
+import { captureBrowserFrame, resizeBrowserViewport } from "../server";
 import type { Sandbox } from "@e2b/code-interpreter";
 
 jest.mock("server-only", () => ({}));
@@ -106,4 +106,42 @@ it("keeps cached-frame age unknown for ordinary viewing", async () => {
     `data:image/jpeg;base64,${cached.toString("base64")}`,
   );
   expect(sandbox.files.read).not.toHaveBeenCalled();
+});
+
+it("resizes only the bound browser session and returns a fresh frame", async () => {
+  const sandbox = fixture();
+  const result = await resizeBrowserViewport(
+    sandbox as unknown as Sandbox,
+    location,
+    "child-one",
+    390,
+    844,
+  );
+  expect(sandbox.commands.run).toHaveBeenCalledWith(
+    "agent-browser set viewport 390 844 1",
+    expect.objectContaining({
+      envs: {
+        AGENT_BROWSER_SOCKET_DIR: `${location.directory}/sockets`,
+        AGENT_BROWSER_CONFIG: `${location.directory}/config.json`,
+        AGENT_BROWSER_SESSION: "child-one",
+      },
+    }),
+  );
+  expect(result.image).toBe(
+    `data:image/jpeg;base64,${fresh.toString("base64")}`,
+  );
+  expect(result.browserSessionName).toBe("child-one");
+});
+it("rejects unbounded viewport dimensions before executing a command", async () => {
+  const sandbox = fixture();
+  await expect(
+    resizeBrowserViewport(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      99999,
+      844,
+    ),
+  ).rejects.toThrow("Invalid browser viewport");
+  expect(sandbox.commands.run).not.toHaveBeenCalled();
 });
