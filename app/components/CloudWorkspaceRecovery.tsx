@@ -163,8 +163,8 @@ export function CloudWorkspaceRecovery({
       ) : view.status === "support" ? (
         <>
           <p role="alert">
-            Your cloud workspace needs support to recover safely. Your existing
-            workspace is preserved for review.
+            Your cloud workspace needs support to recover safely. Contact
+            support to review its status before trying recovery again.
           </p>
           {view.reference && (
             <p className="mt-2 text-muted-foreground">
