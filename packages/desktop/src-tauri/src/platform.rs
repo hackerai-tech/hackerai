@@ -1,4 +1,4 @@
-/// Stops console children (bash, cmd, taskkill) from opening a visible window:
+/// Stops console children (bash, cmd, taskkill) from opening a visible window.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
