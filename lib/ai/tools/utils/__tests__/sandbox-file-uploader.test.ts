@@ -141,6 +141,26 @@ describe("uploadSandboxFileToConvex", () => {
     ).resolves.toMatchObject({ fileId: "file_123", sizeBytes: 10 });
   });
 
+  test.each([false, true])(
+    "an async diagnostics rejection cannot change the upload outcome (upload fails: %s)",
+    async (uploadFails) => {
+      const sandbox = makeSandbox(10);
+      const uploadError = Object.freeze(new Error("private-metadata-error"));
+      if (uploadFails) sandbox.commands.run.mockRejectedValueOnce(uploadError);
+      const result = uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/report.txt",
+        onPhase: async () => {
+          throw new Error("observer unavailable");
+        },
+      });
+
+      if (uploadFails) await expect(result).rejects.toBe(uploadError);
+      else await expect(result).resolves.toMatchObject({ fileId: "file_123" });
+    },
+  );
+
   test("mints a fresh user-scoped URL for an uploaded sandbox file", async () => {
     mockConvexAction.mockResolvedValueOnce([
       "https://s3.example/download?signature=fresh",

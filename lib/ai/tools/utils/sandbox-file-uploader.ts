@@ -460,11 +460,15 @@ export async function uploadSandboxFileToConvex(args: {
   mediaType?: string;
   name?: string;
   storageRegion?: S3StorageRegion;
-  onPhase?: (phase: GeneratedFileUploadPhase) => void;
+  onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
   const recordPhase = (phase: GeneratedFileUploadPhase) => {
     try {
-      args.onPhase?.(phase);
+      if (args.onPhase) {
+        void Promise.resolve(args.onPhase(phase)).catch(() => {
+          // An async observer must not create an unhandled rejection either.
+        });
+      }
     } catch {
       // Optional diagnostics must not affect the upload or its original error.
     }

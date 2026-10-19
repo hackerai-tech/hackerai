@@ -139,6 +139,56 @@ describe("get_terminal_files", () => {
     );
   });
 
+  it.each([false, true])(
+    "retains earlier failure phases when later setup aborts the batch (stored earlier: %s)",
+    async (storedEarlier) => {
+      const context = makeContext();
+      const info = jest.mocked(context.sandboxManager.getSandboxInfo);
+      if (storedEarlier) info.mockReturnValueOnce(null);
+      info.mockImplementationOnce(() => {
+        throw new Error("private-later-setup-error");
+      });
+      if (storedEarlier) {
+        mockUploadSandboxFileToConvex.mockResolvedValueOnce({
+          fileId: "stored-file" as never,
+          url: "https://files.example/private",
+          tokens: 0,
+          name: "stored.txt",
+          mediaType: "text/plain",
+          sizeBytes: 1,
+        });
+      }
+      mockUploadSandboxFileToConvex.mockImplementationOnce(async (args) => {
+        args.onPhase?.("transfer");
+        throw new Error("private-transfer-error");
+      });
+      const files = [
+        ...(storedEarlier ? ["/stored.txt"] : []),
+        "/failed.txt",
+        "later.txt",
+      ];
+
+      const result = await runTool(createGetTerminalFiles(context), { files });
+
+      // Keep the existing whole-batch error result, while retaining the phase
+      // already observed for the earlier failed file. Earlier stored files have
+      // no known upload failure phase when this outer error discards the result.
+      expect(result).toMatchObject({ files: [], deliveryReceipts: [] });
+      expect(phLogger.event).toHaveBeenLastCalledWith(
+        "agent_file_delivery_completed",
+        expect.objectContaining({
+          delivered_file_count: 0,
+          failed_file_count: files.length,
+          failure_phase_counts: {
+            transfer: 1,
+            sandbox_setup: 1,
+            ...(storedEarlier ? { unknown: 1 } : {}),
+          },
+        }),
+      );
+    },
+  );
+
   it("does not upload when delivery is stopped while creation is pending", async () => {
     const context = makeContext();
     let finish!: () => void;

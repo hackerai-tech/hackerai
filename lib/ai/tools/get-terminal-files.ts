@@ -38,9 +38,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | "finalization"
         | "unknown";
       let currentPhase: FailurePhase = "sandbox_setup";
-      let failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
-      const countFailure = (phase: FailurePhase) => {
-        failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + 1;
+      let completedDeliveryCount = 0;
+      const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      const countFailure = (phase: FailurePhase, count = 1) => {
+        if (count > 0) {
+          failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + count;
+        }
       };
       const recordOutcome = (delivered: number, failed: number) => {
         try {
@@ -143,6 +146,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          currentPhase = "sandbox_setup";
           const originalPath = files[i];
           const pathsToTry: string[] = [];
 
@@ -244,6 +248,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 storageStatus: "stored",
                 validation: "not_performed_by_delivery_tool",
               });
+              completedDeliveryCount += 1;
               fileProcessed = true;
               break; // Success! No need to try other paths
             } catch (e) {
@@ -288,7 +293,18 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         };
       } catch (error) {
         const errorMsg = resolveToolErrorMessage(error);
-        failurePhaseCounts = { [currentPhase]: files.length };
+        // The existing outer error returns the whole batch as failed. Retain
+        // observed failures; stored files whose results were discarded have no
+        // known upload failure phase. Only the remaining files inherit this phase.
+        const countedFailures = Object.values(failurePhaseCounts).reduce(
+          (total, count) => total + count,
+          0,
+        );
+        countFailure("unknown", completedDeliveryCount);
+        countFailure(
+          currentPhase,
+          files.length - countedFailures - completedDeliveryCount,
+        );
         recordOutcome(0, files.length);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
