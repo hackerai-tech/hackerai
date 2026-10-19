@@ -72,7 +72,6 @@ describe("paid 1017 routing", () => {
                 ...base,
                 subscription,
                 mode,
-                selectedModelOverride,
                 selectedModel: modelKey,
                 posthog: posthog as never,
               }),

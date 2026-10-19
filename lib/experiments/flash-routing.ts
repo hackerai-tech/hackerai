@@ -1,23 +1,13 @@
-import {
-  DEEPSEEK_1017_MODEL_KEY,
-  DEEPSEEK_1017_SLUG,
-} from "./paid-deepseek-1017";
-import { FREE_AGENT_DEEPSEEK_1017_KEY } from "./free-agent-deepseek-1017";
-import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
 import { myProvider, type ModelName } from "@/lib/ai/providers";
 import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-context";
-import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_AGENT_DEEPSEEK_1017_KEY;
-  requestId?: string;
-  startedAt?: number;
-  baselineModel?: string;
-  selectedModelOverride?: string;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
@@ -31,57 +21,19 @@ export async function evaluateFlashRouting({
   subscription,
   selectedModel,
   hasImages,
-  selectedModelOverride,
   limitRescue = false,
   modelPolicyActive = false,
 }: {
-  posthog: Pick<PostHog, "evaluateFlags" | "getFeatureFlagResult"> | null;
+  posthog: Pick<PostHog, "evaluateFlags"> | null;
   userId: string;
   mode: ChatMode;
   subscription: SubscriptionTier;
   selectedModel: ModelName;
   hasImages: boolean;
-  selectedModelOverride?: SelectedModel;
   limitRescue?: boolean;
   modelPolicyActive?: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || limitRescue || modelPolicyActive) return undefined;
-  const selector = selectedModelOverride ?? "auto";
-  const freeEligible =
-    subscription === "free" &&
-    mode === "agent" &&
-    selectedModel === "model-glm-5.3-flash-agent" &&
-    !hasImages;
-  const modelExperimentKey = freeEligible
-    ? FREE_AGENT_DEEPSEEK_1017_KEY
-    : undefined;
-  if (modelExperimentKey) {
-    try {
-      const variant = await getPostHogFlagWithoutExposure(
-        posthog,
-        modelExperimentKey,
-        userId,
-        {
-          subscription_tier: subscription,
-        },
-      );
-      if (variant !== "control" && variant !== "test") return undefined;
-      return {
-        key: modelExperimentKey,
-        variant,
-        modelKey: variant === "test" ? DEEPSEEK_1017_MODEL_KEY : selectedModel,
-        configuredModel:
-          variant === "test"
-            ? DEEPSEEK_1017_SLUG
-            : myProvider.languageModel(selectedModel).modelId,
-        baselineModel: selectedModel,
-        selectedModelOverride: selector,
-        startedAt: Date.now(),
-      };
-    } catch {
-      return undefined;
-    }
-  }
   if (hasImages) return undefined;
   const key =
     mode === "agent" &&
@@ -156,8 +108,6 @@ export function createFlashRoutingExposureRecorder({
     )
       return;
     recorded = true;
-    if (assignment.key === FREE_AGENT_DEEPSEEK_1017_KEY)
-      assignment.requestId = requestId;
     try {
       posthog.capture({
         distinctId: userId,
@@ -171,8 +121,6 @@ export function createFlashRoutingExposureRecorder({
           configured_model: configuredModel,
           request_id: requestId,
           message_id: requestId,
-          baseline_model: assignment.baselineModel,
-          selected_model_override: assignment.selectedModelOverride,
           exposure_surface: "provider_request",
           $process_person_profile: false,
         },
