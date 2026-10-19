@@ -889,3 +889,32 @@ it("ignores a heartbeat failure while ownership is being returned", async () => 
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
 });
+
+it.each([false, true])(
+  "reports unavailable for a non-JSON response (ok: %s)",
+  async (ok) => {
+    await mount();
+    handleAction = async () =>
+      ({
+        ok,
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      }) as Response;
+    await takeControl();
+    expect(screen.getByRole("alert")).toHaveTextContent("Browser unavailable");
+    expect(
+      screen.getByRole("button", { name: "Take control of Agent browser" }),
+    ).toBeEnabled();
+  },
+);
+
+it.each([null, [], "gateway error"])(
+  "rejects malformed successful response %p",
+  async (body) => {
+    await mount();
+    handleAction = async () => response(body);
+    await takeControl();
+    expect(screen.getByRole("alert")).toHaveTextContent("Browser unavailable");
+  },
+);

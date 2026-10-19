@@ -276,6 +276,7 @@ export const beginTakeoverForBackend = mutation({
       args.grant.length < 32 ||
       (row.input_expires_at ?? 0) > Date.now() ||
       (!["agent", "recovery"].includes(row.state) &&
+        !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now()) &&
         !(
           ["human", "claiming"].includes(row.state) &&
           (row.grant_expires_at ?? 0) <= Date.now()

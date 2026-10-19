@@ -459,3 +459,35 @@ it.each([" \n\t", "A.b@C-d! \n日本語 😀", "A".repeat(4000)])(
     expect(rows.messages).toHaveLength(1);
   },
 );
+
+it.each([
+  [29_999, false, false],
+  [30_000, false, true],
+  [30_001, false, true],
+  [30_001, true, false],
+])(
+  "recovers a resume claim aged %i ms with input pending=%s: %s",
+  async (age, inputPending, expected) => {
+    jest.useFakeTimers();
+    try {
+      const { ctx, rows, register, scope } = fixture();
+      await register();
+      Object.assign(rows.browser_handoffs[0], {
+        state: "resuming",
+        updated_at: Date.now() - Number(age),
+        input_expires_at: inputPending ? Date.now() + 1000 : undefined,
+      });
+      expect(
+        await browser.beginTakeoverForBackend.handler(ctx as never, {
+          ...scope,
+          grant: "g".repeat(43),
+        }),
+      ).toBe(expected);
+      expect(rows.browser_handoffs[0].state).toBe(
+        expected ? "claiming" : "resuming",
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);

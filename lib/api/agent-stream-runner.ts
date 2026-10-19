@@ -2882,17 +2882,16 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
-      // A final response can arrive while the user is taking control. Hold normal
-      // completion so caller cleanup cannot close the browser underneath them.
-      ctx.onModelStreamFinish?.();
-      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
       state.providerTerminalFinishReasonBeforeAbort =
         !ctx.abortController.signal.aborted &&
         (finishResult.finishReason === "error" ||
           isProviderContentFilterFinishReason(finishResult.finishReason))
           ? finishResult.finishReason
           : undefined;
+      // A final response can arrive while the user is taking control. Hold normal
+      // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
+      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (

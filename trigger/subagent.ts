@@ -1223,6 +1223,7 @@ export const subagentTask = task({
               { role: "user", content: prompt },
             ];
             const parentUpdates = new Map<string, ModelMessage>();
+            const projectHandoffNotes = createBrowserHandoffNoteProjector();
             const beginStructuredResultRecovery = async (
               reason: "missing_result" | "reserved_step_budget",
             ): Promise<boolean> => {
@@ -1332,7 +1333,6 @@ export const subagentTask = task({
               let attemptError: unknown;
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
-              const projectHandoffNotes = createBrowserHandoffNoteProjector();
               const generation = streamText({
                 // Keep tool-loop step results without retaining every serialized prompt.
                 experimental_include: { requestBody: false },

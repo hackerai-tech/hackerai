@@ -165,7 +165,9 @@ export function AgentBrowserPreview({
         cache: "no-store",
         keepalive,
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+      if (!data || typeof data !== "object" || Array.isArray(data))
+        throw new Error("Browser unavailable");
       if (!response.ok)
         throw new Error(data.state ?? data.error ?? "Browser unavailable");
       return data;
@@ -912,7 +914,7 @@ export function AgentBrowserPreview({
               }
             }}
             maxLength={4000}
-            disabled={busy || !!exitRequestId.current}
+            disabled={busy || exitRetryAvailable}
             className="min-h-32 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           {!session && (

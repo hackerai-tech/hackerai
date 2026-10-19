@@ -166,7 +166,6 @@ jest.mock("@/lib/utils/error-utils", () => ({
   ...jest.requireActual("@/lib/utils/error-utils"),
   classifyProviderOverflowError: () => null,
   isProviderContentBlockedFinishReasonError: () => false,
-  isProviderContentFilterFinishReason: () => false,
 }));
 
 const {
@@ -1425,6 +1424,38 @@ describe("createAgentStream repeated compaction", () => {
     cancel(new Error("Stopped"));
     await rejected;
   });
+
+  it.each(["error", "content-filter"])(
+    "preserves provider %s when cancellation interrupts the handoff wait",
+    async (finishReason) => {
+      const controller = new AbortController();
+      let cancel!: (error: Error) => void;
+      const gate = new Promise<boolean>((_, reject) => {
+        cancel = reject;
+      });
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          waitForBrowserHandoff: () => gate,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const pending = stream.onFinish({ finishReason });
+      const rejected = expect(pending).rejects.toThrow("Stopped");
+      await Promise.resolve();
+      controller.abort();
+      cancel(new Error("Stopped"));
+      await rejected;
+      expect(state.providerTerminalFinishReasonBeforeAbort).toBe(finishReason);
+    },
+  );
 
   it("delivers a saved handoff note to the next model request without replacing the task", async () => {
     const state = initAgentStreamState(
