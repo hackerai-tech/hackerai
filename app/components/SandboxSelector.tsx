@@ -1,7 +1,5 @@
 "use client";
 
-import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
-
 import {
   Check,
   Cloud,
@@ -356,10 +354,7 @@ export function SandboxSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent
-        className="w-[240px] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-1"
-        align="start"
-      >
+      <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
           <button
             key={cloudOption.id}
@@ -396,10 +391,6 @@ export function SandboxSelector({
               value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />
             )}
           </button>
-
-          {!isFreeUser && value === "e2b" && (
-            <CloudWorkspaceRecovery surface="workspace_status" />
-          )}
 
           {desktopOptions.map((option) => {
             const OptionIcon = option.icon;

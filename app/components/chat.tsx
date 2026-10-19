@@ -2427,14 +2427,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               branchedFromChatTitle={branchedFromChatTitle}
             />
 
-            {cloudConnectionFailure?.chatId === chatId &&
-              sandboxPreference === "e2b" && (
-                <div className="mx-auto w-full max-w-[768px] px-4">
-                  <CloudWorkspaceRecovery
-                    key={cloudConnectionFailure.sequence}
-                  />
-                </div>
-              )}
+            {sandboxPreference === "e2b" && subscription !== "free" && (
+              <div className="mx-auto w-full max-w-[768px] px-4">
+                <CloudWorkspaceRecovery
+                  key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
+                  surface={
+                    cloudConnectionFailure?.chatId === chatId
+                      ? "cloud_connection_error"
+                      : "workspace_status"
+                  }
+                />
+              </div>
+            )}
 
             {/* Chat interface */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0">

@@ -1,5 +1,5 @@
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
-import { decideConsent, recordResumeFailure } from "../store";
+import { decideConsent, recordResumeFailure, renewConsent } from "../store";
 jest.mock("@/lib/posthog/server", () => ({
   getPostHogBooleanFlagDecisionForUser: jest.fn(),
 }));
@@ -55,4 +55,17 @@ it("records the confirmation timestamp, and no confirmation timestamp for declin
   expect(saved.issuedAt).toBe(consent.issuedAt);
   await decideConsent("owner", consent, false);
   expect(JSON.parse(mockEval.mock.calls[1][2][1]).confirmedAt).toBeUndefined();
+});
+
+it("persists the new server-selected target when an unconsumed warning is rebound", async () => {
+  const consent = {
+    token,
+    target,
+    status: "declined" as const,
+    issuedAt: Date.now() - 60000,
+  };
+  const nextTarget = { ...target, sandboxId: "next-workspace" };
+  await renewConsent("owner", consent, nextTarget);
+  const saved = JSON.parse(mockEval.mock.calls[0][2][1]);
+  expect(saved).toMatchObject({ target: nextTarget, status: "offered" });
 });

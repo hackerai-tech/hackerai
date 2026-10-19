@@ -185,8 +185,10 @@ After verified recovery the customer can start a new request without reloading.
 Completed tool actions and old jobs are never automatically replayed. The
 operator CLI retains its `verified_paused` outcome and final paused state.
 
-The recovery card appears on a cloud acquisition failure and in the Cloud
-selector so navigation or a deferred choice does not hide it permanently.
+The recovery card is a persistent banner while Cloud is selected. It reads
+server state on navigation/reload and refreshes on cloud acquisition failures,
+so a live stream event or opening a menu is not required to rediscover progress
+or a deferred warning.
 Waiting is polled automatically. Support opens a customer-sendable Messenger
 draft with only the opaque incident reference and status; the help center and
 visible reference remain available if Messenger is blocked.
