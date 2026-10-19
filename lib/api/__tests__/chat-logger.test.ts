@@ -1,8 +1,4 @@
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
-import {
-  FREE_AGENT_DEEPSEEK_1017_KEY,
-  FREE_AGENT_MODEL_OUTCOME_EVENT,
-} from "@/lib/experiments/free-agent-deepseek-1017";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
 import path from "path";
@@ -2704,107 +2700,6 @@ describe("createChatLogger provider stream timeout", () => {
     }
   });
 });
-
-it.each([
-  ["success", true, "stop", true],
-  ["error", false, "error", false],
-  ["aborted", true, "stop", false],
-  ["success", false, "stop", false],
-  ["success", true, "length", false],
-] as const)(
-  "retains Free Agent experiment attribution through %s and recovery",
-  (outcome, hasResponseContent, finishReason, naturalCompletion) => {
-    const capture = jest.fn();
-    const experiment = {
-      key: FREE_AGENT_DEEPSEEK_1017_KEY,
-      variant: "test",
-      requestId: "original-free-request",
-      startedAt: Date.now() - 200,
-      firstModelChunkAt: Date.now() - 100,
-    };
-    captureAgentCompletionAnalytics({
-      posthog: { capture },
-      userId: "free-user",
-      chatId: "free-chat",
-      endpoint: "/api/agent-long",
-      mode: "agent",
-      subscription: "free",
-      outcome,
-      hasResponseContent,
-      finishReason,
-      experiment,
-      freeAgentBudget: { variant: "control" },
-      selectedModel: "model-deepseek-v4.1-flash-1017-pro",
-      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
-      responseModel: "z-ai/glm-5.3-flash",
-      responseMessageId: "recovered-free-message",
-      fallbackServed: true,
-      sandboxInfo: { type: "desktop" },
-      abliteratedProviderSummary: undefined,
-      chatLogger: undefined,
-    });
-    captureUsageCost({
-      posthog: { capture },
-      userId: "free-user",
-      chatId: "free-chat",
-      endpoint: "/api/agent-long",
-      mode: "agent",
-      subscription: "free",
-      experiment,
-      usage: {
-        model: "auto",
-        type: "included",
-        inputTokens: 100,
-        outputTokens: 50,
-        totalTokens: 150,
-        costDollars: 0.03,
-        includedCostDollars: 0.03,
-        extraUsageCostDollars: 0,
-        uncoveredCostDollars: 0,
-        includedPointsDeducted: 100,
-        extraUsagePointsDeducted: 0,
-        uncoveredPoints: 0,
-        usageDeductionFailed: false,
-        modelCostDollars: 0.02,
-        nonModelCostDollars: 0.01,
-        costSource: "provider",
-      },
-    });
-    const events = capture.mock.calls.map(([event]) => event as any);
-    expect(
-      events.filter((event) => event.event === FREE_AGENT_MODEL_OUTCOME_EVENT),
-    ).toHaveLength(1);
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        event: FREE_AGENT_MODEL_OUTCOME_EVENT,
-        properties: expect.objectContaining({
-          experiment_key: FREE_AGENT_DEEPSEEK_1017_KEY,
-          experiment_request_id: "original-free-request",
-          message_id: "recovered-free-message",
-          outcome,
-          natural_completion: naturalCompletion,
-          fallback_served: true,
-          free_agent_budget_experiment_variant: "control",
-          $insert_id: "original-free-request:free-agent-model-outcome",
-        }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        event: "hackerai-usage_cost",
-        properties: expect.objectContaining({
-          experiment_key: FREE_AGENT_DEEPSEEK_1017_KEY,
-          experiment_request_id: "original-free-request",
-          cost_dollars: 0.03,
-          model_cost_dollars: 0.02,
-        }),
-      }),
-    );
-    expect(
-      events.some((event) => event.event === "paid_model_response_outcome"),
-    ).toBe(false);
-  },
-);
 
 it.each([
   ["ask", "success", true, "stop", false, true],

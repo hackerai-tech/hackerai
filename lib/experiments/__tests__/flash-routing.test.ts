@@ -17,7 +17,7 @@ const freeAsk = {
 const freeAgent = {
   ...freeAsk,
   mode: "agent" as const,
-  selectedModel: "agent-model-free",
+  selectedModel: "model-glm-5.3-flash-agent",
 };
 const paid = {
   ...freeAsk,

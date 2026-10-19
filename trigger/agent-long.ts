@@ -2138,7 +2138,6 @@ export const agentLongTask = task({
         subscription,
         selectedModel,
         hasImages: requestHasImages,
-        selectedModelOverride,
         limitRescue: Boolean(limitRescue),
         modelPolicyActive: Boolean(
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
