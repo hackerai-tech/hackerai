@@ -36,9 +36,12 @@ export function CloudWorkspaceRecovery({
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal).catch(() => {});
+    void refresh(controller.signal).catch(() => {
+      if (!controller.signal.aborted && surface === "cloud_connection_error")
+        setError(true);
+    });
     return () => controller.abort();
-  }, [refresh]);
+  }, [refresh, surface]);
   useEffect(() => {
     // The acquisition deadline can close its stream before failure persistence
     // finishes. Reconcile that event independently, with six reads and backoff.
@@ -128,14 +131,14 @@ export function CloudWorkspaceRecovery({
       window.open("https://help.hackerai.co/", "_blank", "noopener,noreferrer");
     }
   }
-  if (view.status === "hidden") return null;
+  if (view.status === "hidden" && !error) return null;
   return (
     <div
       className="mt-3 rounded-lg border p-4 text-sm"
       aria-label="Cloud workspace recovery"
     >
       <p className="font-medium mb-2">Cloud workspace</p>
-      {view.status === "declined" ? (
+      {view.status === "hidden" ? null : view.status === "declined" ? (
         <>
           <p>Recovery is available whenever you’re ready.</p>
           <Button
@@ -216,8 +219,9 @@ export function CloudWorkspaceRecovery({
       )}
       {error && (
         <p className="mt-2" role="alert">
-          We couldn’t check recovery status. Your confirmation won’t be sent
-          again.
+          {view.status === "hidden"
+            ? "Workspace status couldn’t be checked. Try again when your connection returns."
+            : "We couldn’t check recovery status. Your confirmation won’t be sent again."}
           <Button
             className="ml-2"
             size="sm"

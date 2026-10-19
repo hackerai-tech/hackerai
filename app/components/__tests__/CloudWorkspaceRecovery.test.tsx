@@ -205,3 +205,26 @@ it("does not poll a healthy hidden workspace banner without a cloud failure even
     jest.useRealTimers();
   }
 });
+
+it("keeps a manual status check after failed background reads exhaust their window", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockRejectedValue(new Error("offline"));
+    render(<CloudWorkspaceRecovery surface="cloud_connection_error" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(180000);
+    });
+    const check = screen.getByRole("button", { name: "Check status" });
+    expect(check).toBeEnabled();
+    fetchMock.mockResolvedValue(respond({ status: "offered", token }));
+    fireEvent.click(check);
+    expect(
+      await screen.findByRole("button", { name: "Recover workspace" }),
+    ).toBeEnabled();
+    expect(
+      fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+    ).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
