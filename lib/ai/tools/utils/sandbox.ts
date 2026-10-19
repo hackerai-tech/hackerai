@@ -266,8 +266,10 @@ export const ensureSandboxConnection = async (
 
       if (
         existingSandboxInfo.state === "paused" &&
-        existingSandboxInfo.metadata?.template &&
-        existingSandboxInfo.metadata?.sandboxVersion
+        existingSandboxInfo.metadata?.template === createCluster.template &&
+        existingSandboxInfo.metadata?.sandboxVersion === SANDBOX_VERSION &&
+        existingSandboxInfo.metadata?.e2bCluster === createCluster.cluster &&
+        existingCluster.cluster === createCluster.cluster
       )
         failedTarget = {
           sandboxId: existingSandboxInfo.sandboxId,

@@ -323,6 +323,7 @@ it("a completion receipt must match the exact sandbox and region", async () => {
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
     status: "verified_paused",
+    completedAt: new Date().toISOString(),
     sandboxId: "other",
     region: target.region,
   });
@@ -330,6 +331,7 @@ it("a completion receipt must match the exact sandbox and region", async () => {
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
     status: "verified_paused",
+    completedAt: new Date().toISOString(),
     sandboxId: target.sandboxId,
     region: target.region,
   });
@@ -381,6 +383,7 @@ it("a completed receipt cannot hide a newer durable recovery fence", async () =>
   jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
     token,
     status: "verified_paused",
+    completedAt: new Date().toISOString(),
     sandboxId: target.sandboxId,
     region: target.region,
   });
@@ -405,4 +408,53 @@ it("refuses unrecognized workspace preservation fields", async () => {
   } as never);
   expect(await recoveryView("owner")).toEqual({ status: "support" });
   expect(offerConsent).not.toHaveBeenCalled();
+});
+
+it("a newer failure supersedes a verified receipt without allowing another reboot", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "executing" });
+  jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+    version: 1,
+    phase: "e2b",
+    token,
+    sourceId: target.sandboxId,
+    destinationId: target.sandboxId,
+    region: target.region,
+  });
+  jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
+    token,
+    status: "verified_paused",
+    sandboxId: target.sandboxId,
+    region: target.region,
+    completedAt: new Date(Date.now() - 60000).toISOString(),
+  });
+  jest
+    .mocked(readFailures)
+    .mockResolvedValue({ ...target, lastFailedAt: Date.now() });
+  expect(await recoveryView("owner")).toEqual({ status: "support" });
+  expect(offerConsent).not.toHaveBeenCalled();
+});
+it("allows a timely confirmed consent even when the original offer is old", async () => {
+  jest.mocked(readConsent).mockResolvedValue({
+    ...consent,
+    status: "confirmed",
+    issuedAt: Date.now() - 13 * 60000,
+    confirmedAt: Date.now() - 4 * 60000,
+  });
+  await expect(
+    executeCustomerRecovery("owner", token, target.region),
+  ).resolves.toEqual({ status: "verified" });
+});
+it("refuses a stale confirmation timestamp", async () => {
+  jest.mocked(readConsent).mockResolvedValue({
+    ...consent,
+    status: "confirmed",
+    issuedAt: Date.now() - 15 * 60000,
+    confirmedAt: Date.now() - 11 * 60000,
+  });
+  await expect(
+    executeCustomerRecovery("owner", token, target.region),
+  ).rejects.toThrow();
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });

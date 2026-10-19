@@ -22,6 +22,7 @@ import {
   type DiskRecoveryAuthorization,
 } from "@/lib/ai/tools/utils/e2b-disk-recovery";
 import {
+  RECOVERY_FLAG,
   consentKey,
   readConsent,
   readFailures,
@@ -33,7 +34,6 @@ import {
   type ResumeFailures,
 } from "./store";
 
-export const RECOVERY_FLAG = "cloud-workspace-customer-recovery";
 const manifestSchema = z
   .object({
     environment: z.enum(["preview", "production"]),
@@ -226,6 +226,7 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
       status?: string;
       sandboxId?: string;
       region?: string;
+      completedAt?: string;
     } | null;
     if (
       result?.token === consent.token &&
@@ -236,8 +237,17 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
       workspace.destinationId === consent.target.sandboxId &&
       workspace.region === consent.target.region &&
       workspace.recoveryPending === undefined
-    )
-      return { status: "recovered" };
+    ) {
+      const failures = await readFailures(userId);
+      const completedAt = Date.parse(result.completedAt ?? "");
+      return {
+        status:
+          Number.isFinite(completedAt) &&
+          (!failures || failures.lastFailedAt <= completedAt)
+            ? "recovered"
+            : "support",
+      };
+    }
     if (consent.status === "failed") return { status: "support" };
     if (
       workspace?.phase === "recovery" ||
@@ -246,7 +256,7 @@ export async function recoveryView(userId: string): Promise<RecoveryView> {
       const started =
         workspace?.phase === "recovery"
           ? Date.parse(workspace.startedAt)
-          : consent.issuedAt;
+          : (consent.confirmedAt ?? consent.issuedAt);
       // Interrupted/expired work remains fenced and is never retried by the UI.
       return {
         status:
@@ -319,7 +329,7 @@ export async function executeCustomerRecovery(
     throw new RecoveryUnavailable();
   try {
     // A delayed dispatch is not permission to reboot hours after confirmation.
-    if (Date.now() - consent.issuedAt > 10 * 60000)
+    if (Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000)
       throw new RecoveryUnavailable();
     const auth = await assertEligible(userId, consent);
     const entitlement = await getCurrentAgentEntitlementContext({ userId });

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 
+export const RECOVERY_FLAG = "cloud-workspace-customer-recovery";
 export const failureKey = (userId: string) =>
   `cloud_resume_failures:v1:${userId}`;
 export const consentKey = (userId: string) =>
@@ -22,6 +24,7 @@ export const consentSchema = z.object({
   target: failureSchema,
   status: z.enum(["offered", "declined", "confirmed", "executing", "failed"]),
   issuedAt: z.number(),
+  confirmedAt: z.number().optional(),
 });
 export type RecoveryConsent = z.infer<typeof consentSchema>;
 export function recoveryRedis() {
@@ -50,6 +53,15 @@ export async function recordResumeFailure(args: {
 }) {
   // No new runtime writes until the environment has an explicit recovery target.
   if (!process.env.CLOUD_DISK_RECOVERY_TARGETS) return;
+  if (
+    (await getPostHogBooleanFlagDecisionForUser(
+      RECOVERY_FLAG,
+      args.userId,
+      undefined,
+      { sendFeatureFlagEvents: false },
+    )) !== true
+  )
+    return;
   const next = failureSchema.parse({
     ...args,
     attempts: [args.acquisitionId],
@@ -94,7 +106,11 @@ export async function decideConsent(
   consent: RecoveryConsent,
   confirmed: boolean,
 ) {
-  const next = { ...consent, status: confirmed ? "confirmed" : "declined" };
+  const next = {
+    ...consent,
+    status: confirmed ? "confirmed" : "declined",
+    ...(confirmed && { confirmedAt: Date.now() }),
+  };
   const changed = await recoveryRedis().eval(
     `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end
      local current = cjson.decode(raw)

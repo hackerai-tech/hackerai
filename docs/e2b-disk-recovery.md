@@ -116,7 +116,10 @@ The chat error surface can offer one disk-only recovery confirmation for an
 owned workspace after two **distinct ordinary acquisitions** fail to resume the
 same paused sandbox. SDK retries share an acquisition ID. A single failure
 leaves normal retry behavior intact. Successful acquisition clears the failure
-record. Customer recovery never invokes a model or replays a previous action.
+record. New failure records are limited to users assigned the recovery flag and
+identities compatible with the pinned retry path. Existing pins remain intact
+when the rollout is disabled; disabling a feature never authorizes replacement.
+Customer recovery never invokes a model or replays a previous action.
 
 The customer path is deliberately narrower than the operator CLI. It requires:
 
@@ -150,7 +153,10 @@ Consent is an immutable, user-scoped receipt with a random UUID and the
 server-selected target. It expires for confirmation after ten minutes. Decline,
 confirmation and execution survive reloads. Only the winner of the atomic
 confirmation dispatches a task; the atomic workspace claim changes confirmed
-consent to executing before any provider mutation. Task retries are disabled.
+consent to executing before any provider mutation. Execution must begin within
+ten minutes of the recorded confirmation time (legacy receipts fall back to the
+offer time). A completed receipt is superseded by any later resume failure and
+then routes to support, without authorizing another reboot. Task retries are disabled.
 A lost dispatch response is support-only, because the task may have started.
 Confirmed/executing receipts never permit another recovery attempt, even after
 an interruption. Operators must reconcile receipts/fences before future changes;
