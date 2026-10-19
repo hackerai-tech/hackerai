@@ -93,14 +93,6 @@ jest.mock("@/lib/chat/summarization", () => ({
 jest.mock("@/lib/chat/summarization/provider-pressure", () => ({
   getProviderPromptPressure: mockGetProviderPromptPressure,
 }));
-jest.mock("@/lib/chat/doom-loop-detection", () => ({
-  detectDoomLoop: () => ({
-    severity: "none",
-    toolNames: [],
-    consecutiveCount: 0,
-  }),
-  generateDoomLoopNudge: () => "",
-}));
 jest.mock("@/lib/chat/agent-long-provider-retry", () => ({
   createAssistantContentLoopMonitor: () => ({
     appendDelta: (...args: unknown[]) => mockAppendAssistantDelta(...args),
@@ -2968,6 +2960,194 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.streamFinishReason).toBe("step-limit");
   });
 
+  it.each([
+    "changing-output",
+    "polling",
+    "missing-result",
+    "progress-between-retries",
+  ])("does not halt Agent for %s despite repeated inputs", async (scenario) => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const toolName =
+      scenario === "polling" ? "interact_terminal_session" : "file";
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { [toolName]: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 6; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName,
+            input: { action: "read", path: "/fixture" },
+          },
+        ],
+        toolResults:
+          scenario === "missing-result"
+            ? []
+            : [
+                {
+                  toolCallId: `call-${i}`,
+                  output:
+                    scenario === "changing-output" ||
+                    (scenario === "progress-between-retries" && i === 3)
+                      ? `new evidence ${i}`
+                      : "unchanged",
+                },
+              ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-1)({ steps })).toBe(false);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).not.toContain("[LOOP DETECTED]");
+    expect(state.stoppedDueToDoomLoop).toBe(false);
+  });
+
+  it.each([1, 2, 4])(
+    "halts an unchanged %i-step Agent cycle across provider replacement after settlement",
+    async (period) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const onAgentGuardrail = jest.fn();
+      const settleUsageAfterStep = jest.fn();
+      const context = createTestStreamContext({
+        tools: { file: {} },
+        onAgentGuardrail,
+        settleUsageAfterStep,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any;
+      let stream = (await createAgentStream(
+        "test-model",
+        context,
+        state,
+      )) as any;
+      let steps: any[] = [];
+      for (let i = 0; i < period * 5; i++) {
+        if (i === period * 3) {
+          stream = (await createAgentStream(
+            "test-model",
+            context,
+            state,
+          )) as any;
+          steps = [];
+          const prepared = await stream.prepareStep({
+            steps,
+            messages: [{ role: "user", content: "Continue" }],
+          });
+          expect(JSON.stringify(prepared.messages)).toContain(
+            "[REPEATED TOOL RESULTS]",
+          );
+          stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+        }
+        const step = {
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: `call-${i}`,
+              toolName: "file",
+              input: { path: `/fixture-${i % period}` },
+            },
+          ],
+          toolResults: [
+            { toolCallId: `call-${i}`, output: `unchanged ${i % period}` },
+          ],
+        };
+        steps.push(step);
+        await stream.onStepFinish(step);
+        expect(settleUsageAfterStep).toHaveBeenCalledTimes(i + 1);
+        expect(await stream.stopWhen.at(-1)({ steps })).toBe(
+          i === period * 5 - 1,
+        );
+      }
+      expect(state.stoppedDueToDoomLoop).toBe(true);
+      expect(onAgentGuardrail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "repeated_tool_result_cycle",
+          action: "halt",
+          repeat_count: 5,
+          cycle_length: period,
+        }),
+      );
+      await stream.onFinish({
+        finishReason: "tool-calls",
+        usage: {},
+        response: { modelId: "test-model" },
+      });
+      expect(state.streamFinishReason).toBe("doom-loop");
+    },
+  );
+
+  it.each(["ask", "empty-todo", "empty-command"])(
+    "preserves the %s hard stop",
+    async (scenario) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const toolName =
+        scenario === "empty-todo"
+          ? "todo_write"
+          : scenario === "empty-command"
+            ? "run_terminal_cmd"
+            : "file";
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode: scenario === "ask" ? "ask" : "agent",
+          tools: { [toolName]: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const steps = [];
+      for (let i = 0; i < 5; i++) {
+        const step = {
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: `call-${i}`,
+              toolName,
+              input: scenario === "ask" ? { path: "/fixture" } : {},
+            },
+          ],
+          toolResults: [],
+        };
+        steps.push(step);
+        await stream.onStepFinish(step);
+        expect(await stream.stopWhen.at(-1)({ steps })).toBe(i === 4);
+      }
+      expect(state.stoppedDueToDoomLoop).toBe(true);
+    },
+  );
+
   it("observes unchanged results across provider replacement without affecting settlement", async () => {
     const onAgentGuardrail = jest.fn();
     const settleUsageAfterStep = jest.fn();
@@ -3062,6 +3242,8 @@ describe("createAgentStream repeated compaction", () => {
     });
     await expect(replacement.onStepFinish(step)).resolves.toBeUndefined();
     expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
+    expect(await replacement.stopWhen.at(-1)({ steps: [step] })).toBe(false);
+    expect(state.pendingToolCycleRecovery).toBeUndefined();
   });
 
   it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {

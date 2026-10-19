@@ -1195,6 +1195,9 @@ export async function createAgentStream(
   ): DoomLoopRecovery => {
     const loopCheck = detectDoomLoop(
       steps as Parameters<typeof detectDoomLoop>[0],
+      // Agent repetition nudges come from the same result-aware observer as
+      // the hard stop. Keep only malformed-input recovery in this path.
+      isAgentMode(ctx.mode) ? null : undefined,
     );
 
     if (loopCheck.severity === "none") {
@@ -2597,6 +2600,9 @@ export async function createAgentStream(
         },
       }),
       doomLoopDetected({
+        getToolResultCycle: isAgentMode(ctx.mode)
+          ? () => state.toolLoopObserver.getCurrentCycle()
+          : undefined,
         onFired: (result) => {
           state.stoppedDueToDoomLoop = true;
           reportGuardrail({
@@ -2604,6 +2610,9 @@ export async function createAgentStream(
             action: "halt",
             tool_names: result.toolNames,
             repeat_count: result.consecutiveCount,
+            ...(result.cycleLength !== undefined
+              ? { cycle_length: result.cycleLength }
+              : {}),
           });
         },
       }),
@@ -2811,6 +2820,9 @@ export async function createAgentStream(
             toolResults ?? [],
             new Set(Object.keys(ctx.tools)),
           );
+          if (!state.toolLoopObserver.getCurrentCycle()) {
+            state.pendingToolCycleRecovery = undefined;
+          }
           if (observation) {
             if (
               state.toolCycleRecoveryCount < 2 &&
@@ -2828,7 +2840,9 @@ export async function createAgentStream(
             });
           }
         } catch {
-          // Diagnostic inspection must not prevent settlement of completed work.
+          // Unknown progress must not reuse an earlier cycle or block settlement.
+          state.toolLoopObserver.reset();
+          state.pendingToolCycleRecovery = undefined;
         }
       }
       const budgetDecision =
