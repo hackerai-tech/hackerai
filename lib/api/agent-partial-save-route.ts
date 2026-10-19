@@ -281,7 +281,10 @@ export const createAgentPartialSavePost =
     try {
       userId = await getUserID(req);
       stage = "history_access";
-      await assertUserCanAccessChatHistory(userId);
+      await assertUserCanAccessChatHistory(userId, {
+        retryNetworkFailure: true,
+        signal: req.signal,
+      });
       stage = "rate_limit";
       await assertPartialSaveRateLimit(userId);
 

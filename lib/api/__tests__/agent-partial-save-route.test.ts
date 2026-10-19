@@ -15,6 +15,17 @@ const mockUpdateChat = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
 const mockCreateRedisClient = jest.fn();
 const mockVerifyAgentRunCorrelationToken = jest.fn();
+const mockSuspensionQuery = jest.fn();
+
+jest.mock("server-only", () => ({}), { virtual: true });
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    userSuspensions: { getActiveChatAccessBlockByUser: "history-access" },
+  },
+}));
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ query: mockSuspensionQuery }),
+}));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -130,6 +141,7 @@ describe("createAgentPartialSavePost", () => {
     infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
+    mockSuspensionQuery.mockReset();
     mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
     mockCreateRedisClient.mockReturnValue(null);
     mockVerifyAgentRunCorrelationToken.mockReturnValue(true);
@@ -157,6 +169,101 @@ describe("createAgentPartialSavePost", () => {
     },
   };
   const diagnosticRequestId = "96gzc-1791986448417-ffa75b7dd65b";
+
+  const useRealHistoryGuard = () => {
+    const actual =
+      jest.requireActual<typeof import("@/lib/suspensions")>(
+        "@/lib/suspensions",
+      );
+    mockAssertUserCanAccessChatHistory.mockImplementation(
+      actual.assertUserCanAccessChatHistory as never,
+    );
+  };
+
+  it("saves once after a real history gate recovers from a transport failure", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(null as never);
+    const controller = new AbortController();
+    const req = { ...request(), signal: controller.signal };
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ saved: true });
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockVerifyAgentRunCorrelationToken).toHaveBeenCalledTimes(1);
+    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+  });
+
+  it("does not parse or save when the recovered authoritative history read blocks access", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce({
+        category: "support_confirmed_fraud",
+        source: "support",
+        source_id: "PRIVATE_BLOCK_CANARY",
+      } as never);
+    const req = request();
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(403);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockVerifyAgentRunCorrelationToken).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify([...warnSpy.mock.calls, ...infoSpy.mock.calls]),
+    ).not.toContain("PRIVATE_BLOCK_CANARY");
+  });
+
+  it("stops before private input and writes after the history read retry is exhausted", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery.mockRejectedValue(
+      new TypeError("fetch failed") as never,
+    );
+    const req = request();
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(500);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
+  it("cancels history-read backoff without a second read or any write", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    const controller = new AbortController();
+    mockSuspensionQuery.mockRejectedValue(
+      new TypeError("fetch failed") as never,
+    );
+    warnSpy.mockImplementation((message) => {
+      if (String(message).includes('"event":"history_access_gate_read_retry"'))
+        controller.abort();
+    });
+    const req = { ...request(), signal: controller.signal };
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(500);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(1);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
 
   const deferred = () => {
     let resolve!: (value?: any) => void;
@@ -512,7 +619,10 @@ describe("createAgentPartialSavePost", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual({ saved: true });
     expect(mockGetUserID).toHaveBeenCalled();
-    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1");
+    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1", {
+      retryNetworkFailure: true,
+      signal: undefined,
+    });
     expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({
