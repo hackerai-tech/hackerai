@@ -21,6 +21,26 @@ function setup() {
 }
 
 describe("Agent run reporting", () => {
+  it.each(["control", "test"] as const)(
+    "preserves %s assignment on normal and fallback completion",
+    (variant) => {
+      const { reporter, events } = setup();
+      reporter.setAgentModelContextVariant(variant);
+      const capture = jest.fn(() => {
+        throw new Error("enqueue failed");
+      });
+      reporter.captureTerminal(capture, { outcome: "error" });
+      expect(capture).toHaveBeenCalledWith({
+        outcome: "error",
+        agentModelContextVariant: variant,
+      });
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties["$feature/agent_model_context_v1"]).toBe(
+        variant,
+      );
+    },
+  );
+
   it("reports database setup failure once without pretending missing costs are zero", () => {
     const { reporter, events } = setup();
     reporter.fail(

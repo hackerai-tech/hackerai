@@ -868,6 +868,53 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each(["control", "test", undefined] as const)(
+    "records actual Max experiment exposure once across retries for %s",
+    async (variant) => {
+      const modelId = "z-ai/glm-5.3";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const ctx = createTestStreamContext({
+        agentModelContextEnabled: variant === "test",
+        agentModelContextVariant: variant,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: { languageModel: () => ({ modelId }) },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const first = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      expect(
+        jest
+          .mocked(phLogger.event)
+          .mock.calls.filter(
+            ([name]) => name === "agent_model_context_exposed",
+          ),
+      ).toHaveLength(0);
+      first.experimental_onStepStart({ model: { modelId } });
+      const retry = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      retry.experimental_onStepStart({ model: { modelId } });
+      const exposures = jest
+        .mocked(phLogger.event)
+        .mock.calls.filter(([name]) => name === "agent_model_context_exposed");
+      expect(exposures).toHaveLength(variant ? 1 : 0);
+      if (variant)
+        expect(exposures[0][1]).toMatchObject({
+          experiment_variant: variant,
+          "$feature/agent_model_context_v1": variant,
+        });
+    },
+  );
+
   it.each([
     ["x-ai/grok-4.6", 234_000],
     ["abliterated-model", 200_000],

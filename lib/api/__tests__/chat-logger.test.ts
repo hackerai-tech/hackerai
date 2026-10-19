@@ -235,6 +235,37 @@ describe("captureToolCalls", () => {
 });
 
 describe("captureAgentRun", () => {
+  it.each(["control", "test"] as const)(
+    "attributes the normal run outcome to context %s",
+    (variant) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "user",
+        chatId: "chat",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome: "success",
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "model-glm-5.3",
+        configuredModelId: "z-ai/glm-5.3",
+        abliteratedProviderSummary: undefined,
+        agentModelContextVariant: variant,
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "hackerai-agent_run",
+          properties: expect.objectContaining({
+            "$feature/agent_model_context_v1": variant,
+          }),
+        }),
+      );
+    },
+  );
+
   it("captures one sanitized agent run event with sandbox type", () => {
     const capture = jest.fn();
 
