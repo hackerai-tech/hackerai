@@ -471,7 +471,9 @@ function SkillsControl({
                     </Button>
                     {library && (
                       <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-                        {visibleSkills?.length} / {library.length}
+                        {search.trim() || filter !== "all"
+                          ? `${visibleSkills?.length} of ${library.length}`
+                          : `${library.length} ${library.length === 1 ? "skill" : "skills"}`}
                       </span>
                     )}
                   </div>
@@ -513,7 +515,7 @@ function SkillsControl({
                     <div className="flex h-full min-h-56 flex-col items-center justify-center py-10 text-center">
                       <BookOpen
                         aria-hidden="true"
-                        className="mb-4 size-8 text-muted-foreground/70"
+                        className="mb-4 size-8 shrink-0 text-muted-foreground/70"
                       />
                       <h3 className="text-sm font-medium">No skills yet</h3>
                       <p className="mt-2 max-w-72 text-sm leading-relaxed text-muted-foreground">
@@ -577,14 +579,15 @@ function SkillsControl({
                             <label className="flex items-center gap-2">
                               <input
                                 type="checkbox"
-                                className="size-3.5 rounded border-border accent-current"
+                                aria-label="Default for new chats"
+                                className="size-3.5 accent-foreground dark:[color-scheme:dark]"
                                 checked={skill.isDefault}
                                 disabled={!ready}
-                                onChange={(e) =>
+                                onChange={(event) =>
                                   void perform(() =>
                                     setDefault({
                                       id: skill.id,
-                                      enabled: e.target.checked,
+                                      enabled: event.target.checked,
                                     }),
                                   )
                                 }
