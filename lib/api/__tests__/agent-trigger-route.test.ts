@@ -294,6 +294,70 @@ describe("web request correlation at Agent dispatch", () => {
       );
     },
   );
+  it.each(["save_chat", "reset_stream", "save_user_message"])(
+    "attributes a blocked initial persistence operation to %s without admitting the run early",
+    async (step) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        let finish!: () => void;
+        mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+          ({ onPersistenceStep }: any) => {
+            onPersistenceStep(step);
+            return new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          },
+        );
+        const response = start("/api/agent", "full_access", requestId);
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+          event: "agent_start_slow_request",
+          stage: "persist_user_message",
+          initial_persistence_step: step,
+        });
+        expect(warn.mock.calls[0][0]).not.toContain("private-prompt-canary");
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        finish();
+        expect((await response).status).toBe(200);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        warn.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("does not attach the completed persistence step to a later startup stage", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+        async ({ onPersistenceStep }: any) => {
+          onPersistenceStep("save_user_message");
+        },
+      );
+      let finish!: (token: string) => void;
+      mockCreatePublicToken.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const response = start("/api/agent", "full_access", requestId);
+      await jest.advanceTimersByTimeAsync(10_000);
+      const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("create_tokens_and_associate_run");
+      expect(diagnostic).not.toHaveProperty("initial_persistence_step");
+      finish("test-token");
+      expect((await response).status).toBe(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe("Agent trigger route lifecycle", () => {

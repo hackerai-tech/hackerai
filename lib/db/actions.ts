@@ -1203,6 +1203,9 @@ export async function saveMessage({
   }
 }
 
+export type InitialChatPersistenceStep =
+  "save_chat" | "reset_stream" | "save_user_message";
+
 export async function handleInitialChatAndUserMessage({
   chatId,
   userId,
@@ -1211,6 +1214,7 @@ export async function handleInitialChatAndUserMessage({
   chat,
   isHidden,
   projectId,
+  onPersistenceStep,
 }: {
   chatId: string;
   userId: string;
@@ -1219,7 +1223,15 @@ export async function handleInitialChatAndUserMessage({
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
   projectId?: string;
+  onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
+  const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
+    try {
+      onPersistenceStep?.(step);
+    } catch {
+      // Diagnostics must not interrupt or retry persistence.
+    }
+  };
   if (!chat) {
     // Save new chat and get the document _id
     let title = "New Chat";
@@ -1241,6 +1253,7 @@ export async function handleInitialChatAndUserMessage({
     // Ensure title is a string and truncate safely
     title = (title ?? "New Chat").substring(0, 100);
 
+    reportPersistenceStep("save_chat");
     await saveChat({
       id: chatId,
       userId,
@@ -1260,11 +1273,13 @@ export async function handleInitialChatAndUserMessage({
   // Regeneration skips the user-message write that clears cancellation. Reset
   // it after ownership validation, before tools or cancellation polling start.
   if (regenerate && chat) {
+    reportPersistenceStep("reset_stream");
     await prepareForNewStream({ chatId });
   }
 
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
+    reportPersistenceStep("save_user_message");
     await saveMessage({
       chatId,
       userId,

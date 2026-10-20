@@ -20,6 +20,7 @@ import {
   getChatById,
   getUserCustomization,
   handleInitialChatAndUserMessage,
+  type InitialChatPersistenceStep,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
@@ -477,6 +478,7 @@ export const createAgentTriggerPost =
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
     let stage = "parse_request";
+    let initialPersistenceStep: InitialChatPersistenceStep | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -502,6 +504,9 @@ export const createAgentTriggerPost =
           chat_id: diagnosticContext.chatId,
           trigger_run_id: diagnosticContext.runId,
           stage,
+          ...(stage === "persist_user_message" && initialPersistenceStep
+            ? { initial_persistence_step: initialPersistenceStep }
+            : {}),
           elapsed_ms: Date.now() - routeStartedAt,
         }),
       );
@@ -723,7 +728,11 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        onPersistenceStep: (step) => {
+          initialPersistenceStep = step;
+        },
       });
+      initialPersistenceStep = undefined;
 
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
