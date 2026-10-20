@@ -1943,6 +1943,81 @@ it("persists server routing markers alongside usage only for assistant messages"
   expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
 });
 
+describe("initial chat persistence diagnostics", () => {
+  const messages = [
+    {
+      id: "message-1",
+      parts: [{ type: "text" as const, text: "private-canary" }],
+    },
+  ];
+
+  it.each([
+    ["save_chat", null, false, "chats:saveChat"],
+    [
+      "reset_stream",
+      { user_id: "user-1" },
+      true,
+      "chatStreams:prepareForNewStream",
+    ],
+    ["save_user_message", { user_id: "user-1" }, false, "messages:saveMessage"],
+  ] as const)(
+    "reports %s while that persistence operation is still waiting",
+    async (step, chat, regenerate, operation) => {
+      const { handleInitialChatAndUserMessage, mockMutation } =
+        await loadSaveMessageWithMocks();
+      let finish!: (value: any) => void;
+      mockMutation.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onPersistenceStep = jest.fn();
+      let settled = false;
+      const pending = handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat,
+        regenerate,
+        onPersistenceStep,
+      }).then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(onPersistenceStep.mock.calls).toEqual([[step]]);
+      const { getFunctionName } = await import("convex/server");
+      expect(getFunctionName(mockMutation.mock.calls[0]![0] as any)).toBe(
+        operation,
+      );
+      finish({ id: "message-1" });
+      await pending;
+      expect(settled).toBe(true);
+    },
+  );
+
+  it("persists the chat and message in order even if diagnostic reporting throws", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await expect(
+      handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat: null,
+        onPersistenceStep: () => {
+          throw new Error("diagnostic unavailable");
+        },
+      }),
+    ).resolves.toBeUndefined();
+    const { getFunctionName } = await import("convex/server");
+    expect(
+      mockMutation.mock.calls.map(([fn]) => getFunctionName(fn as any)),
+    ).toEqual(["chats:saveChat", "messages:saveMessage"]);
+  });
+});
+
 describe("regenerated chat initialization", () => {
   const args = {
     chatId: "chat-1",
@@ -1993,10 +2068,16 @@ describe("regenerated chat initialization", () => {
   it("does not clear another owner's cancellation state", async () => {
     const { handleInitialChatAndUserMessage, mockMutation } =
       await loadSaveMessageWithMocks();
+    const onPersistenceStep = jest.fn();
     await expect(
-      handleInitialChatAndUserMessage({ ...args, userId: "other-user" }),
+      handleInitialChatAndUserMessage({
+        ...args,
+        userId: "other-user",
+        onPersistenceStep,
+      }),
     ).rejects.toThrow();
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(onPersistenceStep).not.toHaveBeenCalled();
   });
 
   it("stops initialization when cancellation cleanup fails", async () => {
