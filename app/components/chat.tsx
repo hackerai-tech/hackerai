@@ -25,6 +25,7 @@ import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ComposerOverlay } from "./ComposerOverlay";
+import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -2656,6 +2657,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
+                  {showChatLayout && (
+                    <BrowserHandoffEntry chatId={chatId} messages={messages} />
+                  )}
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}

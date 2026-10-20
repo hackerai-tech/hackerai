@@ -1015,51 +1015,57 @@ export function AgentBrowserPreview({
             : "flex shrink-0 flex-col gap-2 px-3 py-2 text-xs text-muted-foreground"
         }
       >
-        {fullScreen &&
-          human &&
-          (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
+        <div
+          className={
+            fullScreen ? "flex items-center justify-center gap-2" : "contents"
+          }
+        >
+          {fullScreen &&
+            human &&
+            (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
+              <button
+                type="button"
+                aria-label="Show browser keyboard"
+                onClick={() =>
+                  keyboardRef.current?.focus({ preventScroll: true })
+                }
+                className="pointer-events-auto order-2 inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Keyboard size={16} aria-hidden /> Keyboard
+              </button>
+            )}
+          {takingControl ||
+          human ||
+          effectiveState === "recovery" ||
+          hasTakenControl ? (
             <button
+              ref={resumeButtonRef}
               type="button"
-              aria-label="Show browser keyboard"
-              onClick={() =>
-                keyboardRef.current?.focus({ preventScroll: true })
-              }
-              className="pointer-events-auto inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border"
+              onClick={() => {
+                setExitOpen(true);
+                setError(null);
+              }}
+              disabled={busy}
+              className={`${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
             >
-              <Keyboard size={16} aria-hidden /> Keyboard
+              Exit takeover
             </button>
-          )}
-        {takingControl ||
-        human ||
-        effectiveState === "recovery" ||
-        hasTakenControl ? (
-          <button
-            ref={resumeButtonRef}
-            type="button"
-            onClick={() => {
-              setExitOpen(true);
-              setError(null);
-            }}
-            disabled={busy}
-            className={`${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
-          >
-            Exit takeover
-          </button>
-        ) : !fullScreen ? (
-          <span>
-            {!session
-              ? session === undefined
-                ? "Checking whether this Agent has an active browser session."
-                : runActive
-                  ? "Take control is available after an eligible Cloud Agent opens its browser."
-                  : "This Agent run has ended, so browser control is unavailable. Ask the Agent to reopen the page and wait for you to take control."
-              : !liveSelection
-                ? "This browser is live. Take control to pause the Agent; the tool history below is earlier."
-                : frameStale
-                  ? "Take control will be available when the live browser preview connects."
-                  : "Take control to click and type. The Agent’s browser actions pause until you resume."}
-          </span>
-        ) : null}
+          ) : !fullScreen ? (
+            <span>
+              {!session
+                ? session === undefined
+                  ? "Checking whether this Agent has an active browser session."
+                  : runActive
+                    ? "Take control is available after an eligible Cloud Agent opens its browser."
+                    : "This Agent run has ended, so browser control is unavailable. Ask the Agent to reopen the page and wait for you to take control."
+                : !liveSelection
+                  ? "This browser is live. Take control to pause the Agent; the tool history below is earlier."
+                  : frameStale
+                    ? "Take control will be available when the live browser preview connects."
+                    : "Take control to click and type. The Agent’s browser actions pause until you resume."}
+            </span>
+          ) : null}
+        </div>
         {session && !liveSelection && onJumpToLive && (
           <button
             type="button"
@@ -1186,8 +1192,8 @@ export function AgentBrowserPreview({
             Tell HackerAI what you did
           </DialogTitle>
           <DialogDescription>
-            Briefly describe what you did, such as signing in or filling in
-            details, so HackerAI can continue from here. This is optional.
+            Add an optional note, such as “I signed in,” to help HackerAI
+            continue. You can also continue without a note.
           </DialogDescription>
           <textarea
             aria-label="What did you do? (optional)"
@@ -1209,7 +1215,7 @@ export function AgentBrowserPreview({
             }}
             maxLength={4000}
             disabled={busy || exitRetryAvailable}
-            className="min-h-32 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="h-24 min-h-20 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           {!session && (
             <p className="text-sm text-muted-foreground">
