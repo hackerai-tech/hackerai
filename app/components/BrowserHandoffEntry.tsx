@@ -15,6 +15,7 @@ type ReminderPreference = {
   chatId: string;
   availableHidden: boolean;
   dismissedAttention: string | null;
+  acknowledgedSession: string | null;
 };
 
 /** Passive discovery stays dismissed; a new handoff can still request attention. */
@@ -31,9 +32,14 @@ export function BrowserHandoffEntry({
     const readPreference = () => {
       let availableHidden = false;
       let dismissedAttention: string | null = null;
+      let acknowledgedSession: string | null = null;
       try {
         const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
         availableHidden = saved?.availableHidden === true;
+        acknowledgedSession =
+          typeof saved?.acknowledgedSession === "string"
+            ? saved.acknowledgedSession
+            : null;
         dismissedAttention =
           typeof saved?.dismissedAttention === "string"
             ? saved.dismissedAttention
@@ -41,7 +47,12 @@ export function BrowserHandoffEntry({
       } catch {
         // Storage may be unavailable. Dismissal still works for this mount.
       }
-      setPreference({ chatId, availableHidden, dismissedAttention });
+      setPreference({
+        chatId,
+        availableHidden,
+        dismissedAttention,
+        acknowledgedSession,
+      });
     };
     readPreference();
     const onStorage = (event: StorageEvent) => {
@@ -72,16 +83,18 @@ export function BrowserHandoffEntry({
   if (sidebarOpen || !session || !browserTool || preference?.chatId !== chatId)
     return null;
 
-  // Do not use updatedAt for passive discovery: ordinary browser work updates it.
-  // For an explicit handoff it identifies a new request, even in the same session.
+  // Only a new wait request or recovery problem should interrupt an acknowledged
+  // session. Claiming, human control, and resuming belong to the same takeover.
   const attentionKey =
-    session.state === "agent"
-      ? null
-      : `${session.sessionId}:${session.state}:${session.updatedAt}`;
+    session.state === "waiting" || session.state === "recovery"
+      ? `${session.sessionId}:${session.state}:${session.updatedAt}`
+      : null;
   if (
     attentionKey
       ? preference.dismissedAttention === attentionKey
-      : preference.availableHidden
+      : session.state === "agent"
+        ? preference.availableHidden
+        : preference.acknowledgedSession === session.sessionId
   )
     return null;
 
@@ -90,6 +103,7 @@ export function BrowserHandoffEntry({
       chatId,
       availableHidden: true,
       dismissedAttention: attentionKey,
+      acknowledgedSession: session.sessionId,
     };
     setPreference(next);
     try {

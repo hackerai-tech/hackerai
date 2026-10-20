@@ -192,3 +192,28 @@ it("recovers from malformed preferences and syncs dismissal from another tab", (
   );
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
+
+it("keeps acknowledged takeover transitions quiet while surfacing recovery", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  for (const state of ["claiming", "human", "resuming", "agent"]) {
+    mockSidebarOpen = true;
+    mockSession = { state, sessionId: "session", updatedAt: 3 };
+    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    mockSidebarOpen = false;
+    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  }
+  view.unmount();
+  mockSession = { state: "human", sessionId: "session", updatedAt: 4 };
+  const reloaded = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  mockSession = { state: "recovery", sessionId: "session", updatedAt: 4 };
+  reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Agent paused");
+});
