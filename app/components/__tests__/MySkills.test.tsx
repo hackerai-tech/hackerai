@@ -147,7 +147,11 @@ it("exports through the shared native/browser save flow and handles cancellation
   mockDownload.mockResolvedValue({ outcome: "canceled" });
   render(<MySkills chatId="chat-1" />);
   fireEvent.click(await screen.findByRole("button", { name: "Manage skills" }));
-  fireEvent.click(screen.getByRole("button", { name: "Export API review" }));
+  fireEvent.keyDown(
+    screen.getByRole("button", { name: "Actions for API review" }),
+    { key: "Enter" },
+  );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Export API review" }));
   await waitFor(() =>
     expect(mockDownload).toHaveBeenCalledWith({
       filename: "SKILL.md",
@@ -184,7 +188,10 @@ it("supports a library opened outside the picker without a duplicate trigger", a
   render(<MySkills open onOpenChange={onOpenChange} />);
   expect(await screen.findByRole("dialog", { name: "Skills" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "Manage skills" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "New skill" }));
+  fireEvent.keyDown(screen.getByRole("button", { name: "Add", exact: true }), {
+    key: "Enter",
+  });
+  fireEvent.click(screen.getByRole("menuitem", { name: "New skill" }));
   expect(screen.getByLabelText("Name")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
   expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -201,7 +208,11 @@ it("preserves an unsaved editor when the composer remounts, and closes it on cha
     </SkillsManagerProvider>,
   );
   fireEvent.click(screen.getByRole("button", { name: "Open library" }));
-  fireEvent.click(await screen.findByRole("button", { name: "New skill" }));
+  fireEvent.keyDown(
+    await screen.findByRole("button", { name: "Add", exact: true }),
+    { key: "Enter" },
+  );
+  fireEvent.click(screen.getByRole("menuitem", { name: "New skill" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
     target: { value: "Unsaved draft" },
   });
@@ -226,4 +237,19 @@ it("preserves an unsaved editor when the composer remounts, and closes it on cha
     </SkillsManagerProvider>,
   );
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("filters the library by name or description and recovers from no matches", async () => {
+  render(<MySkills open />);
+  const search = await screen.findByRole("textbox", { name: "Search skills" });
+  fireEvent.change(search, { target: { value: "missing" } });
+  expect(screen.getByText("No matching skills")).toBeVisible();
+  expect(screen.queryByText("API review")).toBeNull();
+  fireEvent.change(search, { target: { value: "for apis" } });
+  expect(screen.getByText("API review")).toBeVisible();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Defaults", exact: true }),
+  );
+  expect(screen.getByText("API review")).toBeVisible();
+  expect(mockSelect).not.toHaveBeenCalled();
 });

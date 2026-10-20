@@ -279,3 +279,26 @@ it("does not select a skill when moving keyboard focus backward", () => {
   expect(mockSelect).not.toHaveBeenCalled();
   expect(screen.getByRole("listbox")).toBeVisible();
 });
+
+it.each([0, 3])(
+  "keeps forward Tab in search from selecting with %i selected skills",
+  (count) => {
+    mockSelection = mockLibrary.slice(0, count);
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+    const search = screen.getByRole("combobox", { name: "Search skills" });
+    fireEvent.change(search, { target: { value: "Report" } });
+    fireEvent.keyDown(search, { key: "Tab" });
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("listbox", { name: "Skills" })).toBeVisible();
+  },
+);
+
+it("completes an inline dollar token with forward Tab", async () => {
+  render(<Harness />);
+  const input = typeAt("Review $API");
+  fireEvent.keyDown(input, { key: "Tab" });
+  await waitFor(() => expect(input).toHaveValue("Review "));
+  expect(mockSelect).toHaveBeenCalledWith({ chatId: "chat-1", ids: ["one"] });
+});

@@ -221,7 +221,10 @@ export function ComposerSkillsProvider({
     }
     if (
       (event.key === "Enter" && !event.shiftKey) ||
-      (event.key === "Tab" && !event.shiftKey && matches.length > 0)
+      (event.key === "Tab" &&
+        !event.shiftKey &&
+        token.current !== null &&
+        matches.length > 0)
     ) {
       event.preventDefault();
       if (matches[activeIndex]) pick(matches[activeIndex]);

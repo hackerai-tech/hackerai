@@ -11,12 +11,29 @@ import {
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useConvex, useConvexAuth, useMutation, useQuery } from "convex/react";
-import { BookOpen, Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import {
+  BookOpen,
+  ChevronDown,
+  Download,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { downloadFile } from "@/lib/utils/file-download";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -174,6 +191,8 @@ function SkillsControl({
   const [editor, setEditor] = useState<Editor>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "defaults">("all");
   const fileInput = useRef<HTMLInputElement>(null);
   const client = useConvex();
   const library = useQuery(api.userSkills.list, {});
@@ -211,6 +230,17 @@ function SkillsControl({
         surface: conversationText === undefined ? "library" : "conversation",
       });
   }, [open, conversationText]);
+  const visibleSkills = library?.filter(
+    (skill) =>
+      (filter === "all" || skill.isDefault) &&
+      `${skill.name} ${skill.description}`
+        .toLocaleLowerCase()
+        .includes(search.trim().toLocaleLowerCase()),
+  );
+  function newSkill() {
+    setError("");
+    setEditor({ source: "manual", draft: { ...emptyDraft } });
+  }
   const ready = !busy && !disabled && library !== undefined;
   return (
     <>
@@ -244,9 +274,14 @@ function SkillsControl({
           }
         }}
       >
-        <DialogContent className="flex max-h-[min(85dvh,48rem)] flex-col gap-0 overflow-hidden rounded-2xl border-border/70 bg-background p-0 sm:max-w-lg">
-          <DialogHeader className="shrink-0 gap-1.5 border-b border-border/60 px-6 py-5 pr-12 text-left">
-            <DialogTitle className="text-base">
+        <DialogContent
+          className={cn(
+            "flex max-h-[min(88dvh,48rem)] flex-col gap-0 overflow-hidden rounded-2xl border-border/70 bg-background p-0",
+            editor ? "sm:max-w-xl" : "h-[min(80dvh,42rem)] sm:max-w-3xl",
+          )}
+        >
+          <DialogHeader className="shrink-0 gap-1.5 border-b border-border/60 px-5 py-5 pr-12 text-left sm:px-8 sm:py-6">
+            <DialogTitle className="text-lg font-semibold tracking-tight">
               {editor
                 ? editor.source === "manual"
                   ? "New skill"
@@ -258,14 +293,19 @@ function SkillsControl({
             <DialogDescription>
               {editor
                 ? "Save instructions you want to reuse. Leave out credentials and details specific to one chat."
-                : "Your workflows, ready to reuse in any chat."}
+                : "Your private workflows, ready to use in HackerAI."}
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 overflow-y-auto px-6 py-5">
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col",
+              editor && "overflow-y-auto px-5 py-5 sm:px-8",
+            )}
+          >
             {error && (
               <p
                 role="alert"
-                className="mb-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                className="m-4 shrink-0 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
               >
                 {error}
               </p>
@@ -357,38 +397,85 @@ function SkillsControl({
                 </div>
               </form>
             ) : (
-              <div className="space-y-4">
-                {!!library?.length && (
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
-                      {library.length}{" "}
-                      {library.length === 1 ? "skill" : "skills"}
-                    </span>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        className="bg-foreground text-background hover:bg-foreground/90"
-                        onClick={() =>
-                          setEditor({
-                            source: "manual",
-                            draft: { ...emptyDraft },
-                          })
-                        }
-                      >
-                        <Plus className="size-4" />
-                        New skill
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => fileInput.current?.click()}
-                      >
-                        <Upload className="size-4" />
-                        Import
-                      </Button>
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 space-y-4 px-5 pt-5 pb-3 sm:px-8">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="relative min-w-0 flex-1 sm:max-w-64">
+                      <Search
+                        aria-hidden="true"
+                        className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
+                      />
+                      <Input
+                        aria-label="Search skills"
+                        placeholder="Search skills"
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        className="h-9 bg-transparent pl-9 shadow-none"
+                      />
                     </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!ready}
+                          className="h-9 shrink-0 gap-1.5 bg-transparent shadow-none"
+                        >
+                          <Plus className="size-4" /> Add{" "}
+                          <ChevronDown className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="end"
+                        className="w-52 rounded-xl p-1.5"
+                      >
+                        <DropdownMenuItem onSelect={newSkill}>
+                          <Pencil /> New skill
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => fileInput.current?.click()}
+                        >
+                          <Upload /> Import Markdown
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
-                )}
+                  <div
+                    className="flex items-center gap-1"
+                    role="group"
+                    aria-label="Filter skills"
+                  >
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={filter === "all"}
+                      onClick={() => setFilter("all")}
+                      className={cn(
+                        "h-8 px-3 font-normal text-muted-foreground",
+                        filter === "all" && "bg-muted text-foreground",
+                      )}
+                    >
+                      All skills
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={filter === "defaults"}
+                      onClick={() => setFilter("defaults")}
+                      className={cn(
+                        "h-8 px-3 font-normal text-muted-foreground",
+                        filter === "defaults" && "bg-muted text-foreground",
+                      )}
+                    >
+                      Defaults
+                    </Button>
+                    {library && (
+                      <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                        {visibleSkills?.length} / {library.length}
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <input
                   ref={fileInput}
                   type="file"
@@ -414,166 +501,183 @@ function SkillsControl({
                     });
                   }}
                 />
-                {library === undefined ? (
-                  <p
-                    role="status"
-                    className="py-12 text-center text-sm text-muted-foreground"
-                  >
-                    Loading skills…
-                  </p>
-                ) : library.length === 0 ? (
-                  <div className="flex flex-col items-center px-2 py-7 text-center">
-                    <div className="mb-4 flex size-11 items-center justify-center rounded-xl border border-border/60 bg-muted/60">
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8">
+                  {library === undefined ? (
+                    <p
+                      role="status"
+                      className="py-20 text-center text-sm text-muted-foreground"
+                    >
+                      Loading skills…
+                    </p>
+                  ) : library.length === 0 ? (
+                    <div className="flex h-full min-h-56 flex-col items-center justify-center py-10 text-center">
                       <BookOpen
                         aria-hidden="true"
-                        className="size-5 text-muted-foreground"
+                        className="mb-4 size-8 text-muted-foreground/70"
                       />
-                    </div>
-                    <h3 className="text-sm font-medium">
-                      Save your first skill
-                    </h3>
-                    <p className="mt-2 max-w-64 text-sm leading-relaxed text-muted-foreground">
-                      Turn a repeatable workflow into instructions you can add
-                      to any chat.
-                    </p>
-                    <div className="mt-5 flex flex-wrap justify-center gap-2">
-                      <Button
-                        size="sm"
-                        className="bg-foreground text-background hover:bg-foreground/90"
-                        onClick={() =>
-                          setEditor({
-                            source: "manual",
-                            draft: { ...emptyDraft },
-                          })
-                        }
-                      >
-                        <Plus className="size-4" />
-                        New skill
-                      </Button>
+                      <h3 className="text-sm font-medium">No skills yet</h3>
+                      <p className="mt-2 max-w-72 text-sm leading-relaxed text-muted-foreground">
+                        Save a workflow you want HackerAI to follow, then choose
+                        it in any chat.
+                      </p>
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => fileInput.current?.click()}
+                        className="mt-5 bg-transparent shadow-none"
+                        onClick={newSkill}
+                        disabled={!ready}
                       >
-                        <Upload className="size-4" />
-                        Import Markdown
+                        <Plus className="size-4" /> New skill
                       </Button>
                     </div>
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {library.map((skill) => (
-                      <li
-                        key={skill.id}
-                        className="space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p
-                              title={skill.name}
-                              className="line-clamp-2 text-sm font-medium break-words"
-                            >
-                              {skill.name}
-                            </p>
-                            <p
-                              title={skill.description}
-                              className="line-clamp-2 text-sm text-muted-foreground break-words"
-                            >
-                              {skill.description}
-                            </p>
+                  ) : visibleSkills?.length === 0 ? (
+                    <div className="flex h-full min-h-48 flex-col items-center justify-center gap-2 text-center">
+                      <Search
+                        aria-hidden="true"
+                        className="mb-2 size-6 text-muted-foreground/70"
+                      />
+                      <p className="text-sm font-medium">
+                        {search.trim()
+                          ? "No matching skills"
+                          : "No default skills"}
+                      </p>
+                      <p className="max-w-64 text-sm text-muted-foreground">
+                        {search.trim()
+                          ? "Try a different name or description."
+                          : "Mark a skill as a default to include it in new chats."}
+                      </p>
+                    </div>
+                  ) : (
+                    <ul className="divide-y divide-border/50">
+                      {visibleSkills?.map((skill) => (
+                        <li key={skill.id} className="group relative py-4">
+                          <div className="flex items-start gap-3 pr-9">
+                            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-border/50 bg-muted/50">
+                              <BookOpen
+                                aria-hidden="true"
+                                className="size-4 text-muted-foreground"
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p
+                                title={skill.name}
+                                className="line-clamp-2 text-sm font-medium break-words"
+                              >
+                                {skill.name}
+                              </p>
+                              <p
+                                title={skill.description}
+                                className="mt-1 line-clamp-2 text-sm leading-5 text-muted-foreground break-words"
+                              >
+                                {skill.description}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                          <label className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={skill.isDefault}
-                              disabled={!ready}
-                              onChange={(e) =>
-                                void perform(() =>
-                                  setDefault({
-                                    id: skill.id,
-                                    enabled: e.target.checked,
-                                  }),
-                                )
-                              }
-                            />
-                            Default for new chats
-                          </label>
-                          <div className="flex shrink-0">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Edit ${skill.name}`}
-                              disabled={busy}
-                              onClick={() =>
-                                void perform(async () => {
-                                  const draft = await client.query(
-                                    api.userSkills.get,
-                                    { id: skill.id },
-                                  );
-                                  setEditor({
-                                    id: skill.id,
-                                    draft,
-                                    source: "edit",
-                                  });
-                                })
-                              }
-                            >
-                              <Pencil className="size-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Export ${skill.name}`}
-                              disabled={busy}
-                              onClick={() =>
-                                void perform(async () => {
-                                  const draft = await client.query(
-                                    api.userSkills.get,
-                                    { id: skill.id },
-                                  );
-                                  const result = await downloadFile({
-                                    filename: "SKILL.md",
-                                    content: exportSkill(draft),
-                                    mimeType: "text/markdown;charset=utf-8",
-                                  });
-                                  if (result.outcome === "failed")
-                                    throw new Error(
-                                      "Unable to export skill. Please retry.",
-                                    );
-                                })
-                              }
-                            >
-                              <Download className="size-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Delete ${skill.name}`}
-                              disabled={busy}
-                              onClick={() => {
-                                if (
-                                  window.confirm(
-                                    `Delete “${skill.name}”? This removes it from your library and future loads.`,
+                          <div className="mt-2.5 flex items-center justify-between gap-2 pl-[3.25rem] text-xs text-muted-foreground">
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                className="size-3.5 rounded border-border accent-current"
+                                checked={skill.isDefault}
+                                disabled={!ready}
+                                onChange={(e) =>
+                                  void perform(() =>
+                                    setDefault({
+                                      id: skill.id,
+                                      enabled: e.target.checked,
+                                    }),
                                   )
-                                )
-                                  void perform(() => remove({ id: skill.id }));
-                              }}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
+                                }
+                              />
+                              Default for new chats
+                            </label>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute top-3 right-0 size-8 text-muted-foreground"
+                                  aria-label={`Actions for ${skill.name}`}
+                                  disabled={busy}
+                                >
+                                  <MoreHorizontal className="size-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent
+                                align="end"
+                                className="w-40 rounded-xl p-1.5"
+                              >
+                                <DropdownMenuItem
+                                  aria-label={`Edit ${skill.name}`}
+                                  disabled={busy}
+                                  onSelect={() =>
+                                    void perform(async () => {
+                                      const draft = await client.query(
+                                        api.userSkills.get,
+                                        { id: skill.id },
+                                      );
+                                      setEditor({
+                                        id: skill.id,
+                                        draft,
+                                        source: "edit",
+                                      });
+                                    })
+                                  }
+                                >
+                                  <Pencil className="size-4" /> Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  aria-label={`Export ${skill.name}`}
+                                  disabled={busy}
+                                  onSelect={() =>
+                                    void perform(async () => {
+                                      const draft = await client.query(
+                                        api.userSkills.get,
+                                        { id: skill.id },
+                                      );
+                                      const result = await downloadFile({
+                                        filename: "SKILL.md",
+                                        content: exportSkill(draft),
+                                        mimeType: "text/markdown;charset=utf-8",
+                                      });
+                                      if (result.outcome === "failed")
+                                        throw new Error(
+                                          "Unable to export skill. Please retry.",
+                                        );
+                                    })
+                                  }
+                                >
+                                  <Download className="size-4" /> Export
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  aria-label={`Delete ${skill.name}`}
+                                  disabled={busy}
+                                  onSelect={() => {
+                                    if (
+                                      window.confirm(
+                                        `Delete “${skill.name}”? This removes it from your library and future loads.`,
+                                      )
+                                    )
+                                      void perform(() =>
+                                        remove({ id: skill.id }),
+                                      );
+                                  }}
+                                >
+                                  <Trash2 className="size-4" /> Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
           </div>
           {!editor && (
-            <div className="shrink-0 border-t border-border/60 bg-muted/30 px-6 py-3 text-xs text-muted-foreground">
+            <div className="shrink-0 border-t border-border/50 px-5 py-3 sm:px-8 text-xs text-muted-foreground">
               <p>
                 Type{" "}
                 <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-foreground">
