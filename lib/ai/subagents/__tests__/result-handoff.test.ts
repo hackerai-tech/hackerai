@@ -2,6 +2,38 @@ import { verifySubagentResultAfterHandoff } from "../result-handoff";
 
 const accepted = { accepted: true as const, result: { summary: "verified" } };
 
+it("rejects recovered output when onFinish already waited through a takeover", async () => {
+  const verify = jest.fn(async () => accepted);
+  const result = await verifySubagentResultAfterHandoff({
+    modelNoteIds: ["previous-note"],
+    getNotes: async () => [
+      { id: "previous-note" },
+      { id: "blank-note-from-takeover-during-generation" },
+    ],
+    // Control has already returned before acceptResult starts verification.
+    waitForControl: async () => false,
+    verify,
+    signal: new AbortController().signal,
+  });
+  expect(result).toMatchObject({
+    accepted: false,
+    error: expect.stringContaining("fresh browser snapshot"),
+  });
+  expect(verify).not.toHaveBeenCalled();
+});
+
+it("accepts a fresh result generated with the completed handoff context", async () => {
+  await expect(
+    verifySubagentResultAfterHandoff({
+      modelNoteIds: ["second", "first"],
+      getNotes: async () => [{ id: "first" }, { id: "second" }],
+      waitForControl: async () => false,
+      verify: async () => accepted,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toBe(accepted);
+});
+
 it("rejects a takeover completed entirely during evidence verification, including a blank note", async () => {
   let notes: Array<{ id: string; text: string }> = [];
   const result = await verifySubagentResultAfterHandoff({

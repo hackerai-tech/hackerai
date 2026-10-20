@@ -71,6 +71,7 @@ describe("subagent finalization during browser handoff", () => {
         run_id: "run",
         expires_at: Date.now() + 60_000,
         state,
+        exit_note_ids: [] as string[],
       };
       const patch = jest.fn<any>().mockImplementation(async (_id, value) => {
         Object.assign(child, value);
@@ -90,6 +91,7 @@ describe("subagent finalization during browser handoff", () => {
         serviceKey: "key",
         subagentId: "child",
         triggerRunId: "run",
+        modelHandoffNoteIds: [] as string[],
       };
       await expect(markFinalizingForBackend.handler(ctx, args)).resolves.toBe(
         "pending_browser_handoff",
@@ -97,6 +99,13 @@ describe("subagent finalization during browser handoff", () => {
       expect(child.status).toBe("running");
       expect(patch).not.toHaveBeenCalled();
       handoff.state = "agent";
+      // A whole takeover can also finish between verification and this mutation.
+      handoff.exit_note_ids = ["saved-blank-note"];
+      await expect(markFinalizingForBackend.handler(ctx, args)).resolves.toBe(
+        "pending_browser_handoff",
+      );
+      expect(child.status).toBe("running");
+      args.modelHandoffNoteIds = ["saved-blank-note"];
       await expect(markFinalizingForBackend.handler(ctx, args)).resolves.toBe(
         "updated",
       );

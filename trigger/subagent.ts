@@ -759,6 +759,7 @@ export const subagentTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            let modelHandoffNoteIds: string[] = [];
             const acceptResult = async (input: unknown) => {
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
@@ -791,13 +792,19 @@ export const subagentTask = task({
                 getNotes: getBrowserHandoffNotes,
                 waitForControl: waitForBrowserHandoff,
                 signal: activeAbort.signal,
+                modelNoteIds: modelHandoffNoteIds,
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
               const finalizing = await observeFinalization(
                 "result_submission",
                 Boolean(resultValue),
-                () => markSubagentFinalizing(row.subagent_id, ctx.run.id),
+                () =>
+                  markSubagentFinalizing(
+                    row.subagent_id,
+                    ctx.run.id,
+                    modelHandoffNoteIds,
+                  ),
               );
               if (finalizing === "pending_messages") {
                 deferredForParentUpdate = true;
@@ -1491,6 +1498,7 @@ export const subagentTask = task({
                   }
                   const serializedMessages = JSON.stringify(messages);
                   const handoffNotes = await getBrowserHandoffNotes();
+                  modelHandoffNoteIds = handoffNotes.map(({ id }) => id);
                   const messagesWithUpdates = [
                     ...projectHandoffNotes(
                       messages as ModelMessage[],

@@ -972,6 +972,7 @@ export const markFinalizingForBackend = mutation({
     serviceKey: v.string(),
     subagentId: v.string(),
     triggerRunId: v.string(),
+    modelHandoffNoteIds: v.optional(v.array(v.string())),
   },
   returns: v.union(
     v.literal("updated"),
@@ -1012,7 +1013,11 @@ export const markFinalizingForBackend = mutation({
       handoff?.user_id === row.user_id &&
       handoff.run_id === args.triggerRunId &&
       handoff.expires_at > Date.now() &&
-      !["agent", "closed"].includes(handoff.state)
+      (!["agent", "closed"].includes(handoff.state) ||
+        (args.modelHandoffNoteIds !== undefined &&
+          (handoff.exit_note_ids ?? []).some(
+            (id) => !args.modelHandoffNoteIds?.includes(id),
+          )))
     )
       return "pending_browser_handoff" as const;
     await ctx.db.patch(row._id, {

@@ -204,6 +204,10 @@ describe("security validation subagent runtime contracts", () => {
     );
     expect(acceptResult).toContain("getNotes: getBrowserHandoffNotes");
     expect(acceptResult).toContain("waitForControl: waitForBrowserHandoff");
+    expect(acceptResult).toContain("modelNoteIds: modelHandoffNoteIds");
+    expect(child).toContain(
+      "modelHandoffNoteIds = handoffNotes.map(({ id }) => id)",
+    );
     const onFinish = child.slice(
       child.indexOf("onFinish: async () =>"),
       child.indexOf("onStepFinish: async"),
