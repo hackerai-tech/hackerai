@@ -220,7 +220,7 @@ export function ComposerSkillsProvider({
       return true;
     }
     if (
-      (event.key === "Enter" && !event.shiftKey) ||
+      (event.key === "Enter" && !event.shiftKey && matches.length > 0) ||
       (event.key === "Tab" &&
         !event.shiftKey &&
         token.current !== null &&

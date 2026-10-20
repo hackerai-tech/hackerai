@@ -878,6 +878,8 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  // Surface selection lookup failures rather than silently answer without
+  // methodology the user may have explicitly selected. Disabled skills return null.
   const privateSkillTools = await resolvePrivateSkillTools(
     ctx.userId,
     ctx.chatId,

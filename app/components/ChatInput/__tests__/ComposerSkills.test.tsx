@@ -196,6 +196,19 @@ it("supports button search and keyboard navigation while respecting an explicit 
   );
 });
 
+it.each(["echo $HOME", "$(whoami)", "costs $100"])(
+  "lets Enter submit %s when no skill matches",
+  (message) => {
+    render(<Harness />);
+    const input = typeAt(message);
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockSubmit).toHaveBeenCalledTimes(1);
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(input).toHaveValue(message);
+  },
+);
+
 it("enforces the three-skill limit and disables changes during a response", async () => {
   mockSelection = mockLibrary.slice(0, 3);
   const { rerender } = render(<Harness />);
