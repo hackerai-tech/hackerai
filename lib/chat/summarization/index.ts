@@ -588,8 +588,11 @@ const generateSummaryTextWithRetry = async ({
           abortSignal?.throwIfAborted();
           const languageModel = myProvider.languageModel(modelName);
           const attemptStartedAt = Date.now();
-          const isTreatmentGlm =
-            assignment.flagEnabled === true &&
+          // Expanded Max recovery needs the same complete-checkpoint safeguards
+          // even when the separate moderation compaction experiment is paused.
+          const isStructuredGlm =
+            (assignment.expandedMaxContext === true ||
+              assignment.flagEnabled === true) &&
             modelName === "model-glm-5.3-flash";
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
@@ -612,7 +615,7 @@ const generateSummaryTextWithRetry = async ({
                   }
                 : buildStartupCompactionProviderOptions(
                     providerOptions,
-                    isTreatmentGlm ? mode : undefined,
+                    isStructuredGlm ? mode : undefined,
                   ),
               abortSignal,
               modelMessages,
@@ -623,10 +626,10 @@ const generateSummaryTextWithRetry = async ({
                 maxRetries: 0,
                 // Allow longer checkpoints to finish, but start recovery before
                 // a stalled GLM request consumes the former 90s deadline.
-                timeout: isTreatmentGlm ? 75_000 : 60_000,
+                timeout: isStructuredGlm ? 75_000 : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
-                maxOutputTokens: isTreatmentGlm ? 16384 : 8192,
-                structuredSummary: isTreatmentGlm,
+                maxOutputTokens: isStructuredGlm ? 16384 : 8192,
+                structuredSummary: isStructuredGlm,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
                 onDiscardedUsage: (usage) => {
