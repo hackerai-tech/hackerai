@@ -260,6 +260,15 @@ describe("get_terminal_files", () => {
 
       const result = await runTool(createGetTerminalFiles(context), { files });
 
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_file_delivery_setup_failed",
+        expect.objectContaining({
+          setup_stage: "path_preparation",
+          abort_signal_aborted: false,
+          requested_file_count: files.length,
+        }),
+      );
       // Keep the existing whole-batch error result, while retaining the phase
       // already observed for the earlier failed file. Earlier stored files have
       // no known upload failure phase when this outer error discards the result.

@@ -40,8 +40,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | "unknown";
       let currentPhase: FailurePhase = "sandbox_setup";
       let setupStage:
-        "initial_acquisition" | "foreground_wait" | "reacquisition" | null =
-        "initial_acquisition";
+        | "initial_acquisition"
+        | "foreground_wait"
+        | "reacquisition"
+        | "path_preparation"
+        | null = "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
       const countFailure = (phase: FailurePhase, count = 1) => {
@@ -154,6 +157,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
 
         for (let i = 0; i < files.length; i++) {
           currentPhase = "sandbox_setup";
+          setupStage = "path_preparation";
           const originalPath = files[i];
           const pathsToTry: string[] = [];
 
@@ -174,6 +178,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             pathsToTry.push(originalPath);
           }
 
+          setupStage = null;
           let fileProcessed = false;
           let lastError: string | null = null;
           let lastFailurePhase: FailurePhase = "unknown";
