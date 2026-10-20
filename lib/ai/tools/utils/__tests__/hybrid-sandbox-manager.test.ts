@@ -147,24 +147,28 @@ describe("stable environment acquisition", () => {
     }
   });
 
-  it.each(["free", "pro"] as const)(
-    "blocks wrong-host and cloud fallback for %s",
-    async (subscription) => {
+  it.each([
+    "environment:machine-a",
+    "desktop",
+    "00000000-0000-4000-8000-000000000001",
+  ])(
+    "keeps offline selection %s on its reconnect flow without opening another sandbox",
+    async (preference) => {
       const manager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
-        "environment:machine-a",
+        preference,
         "service-key",
         null,
-        subscription,
+        "pro",
       );
       jest
         .spyOn(manager, "listConnections")
         .mockResolvedValue([makeConnection({ environmentId: "machine-b" })]);
-      await expect(manager.getSandbox()).rejects.toThrow(
+      await expect(manager.getSandboxContextForPrompt()).rejects.toThrow(
         "selected computer is disconnected",
       );
-      await expect(manager.getSandboxContextForPrompt()).rejects.toThrow(
+      await expect(manager.getSandbox()).rejects.toThrow(
         "selected computer is disconnected",
       );
       const writer = { write: jest.fn() };
@@ -180,7 +184,8 @@ describe("stable environment acquisition", () => {
         message: expect.stringContaining("selected computer is disconnected"),
       });
       expect(writer.write).not.toHaveBeenCalled();
-      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+      expect(manager.getEffectivePreference()).toBe(preference);
+      expect(manager.peekFallbackInfo()).toBeNull();
     },
   );
 
@@ -382,84 +387,33 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     warnSpy.mockRestore();
   });
 
-  it("records a desktop-to-cloud fallback before the first tool call", async () => {
-    mockConvexQuery.mockResolvedValue([]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-    );
-
-    const context = await manager.getSandboxContextForPrompt();
-    const fallbackInfo = manager.consumeFallbackInfo();
-
-    expect(context).toBeNull();
-    expect(fallbackInfo).toMatchObject({
-      occurred: true,
-      reason: "no_local_connections",
-      requestedPreference: "desktop",
-      actualSandbox: "e2b",
-      actualSandboxName: "Cloud",
-    });
-    expect(manager.consumeFallbackInfo()).toBeNull();
-  });
-
-  it("does not record a cloud fallback for free users without a local connection", async () => {
-    mockConvexQuery.mockResolvedValue([]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "free",
-    );
-
-    await manager.getSandboxContextForPrompt();
-
-    expect(manager.consumeFallbackInfo()).toBeNull();
-  });
-
-  it("records a fallback when the selected local connection is unavailable", async () => {
-    mockConvexQuery.mockResolvedValue([
-      makeConnection({
-        connectionId: "remote-conn",
-        name: "Lab VM",
-        isDesktop: false,
-        osInfo: {
-          platform: "linux",
-          arch: "x64",
-          release: "6.8",
-          hostname: "lab-vm",
-        },
-      }),
-    ]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-    );
-
-    const context = await manager.getSandboxContextForPrompt();
-
-    expect(context).toContain("Hostname: lab-vm");
-    expect(manager.consumeFallbackInfo()).toMatchObject({
-      occurred: true,
-      reason: "connection_unavailable",
-      requestedPreference: "desktop",
-      actualSandbox: "remote-conn",
-      actualSandboxName: "Lab VM",
-    });
-  });
+  it.each(["free", "pro"] as const)(
+    "reports a disconnected legacy computer before allocating Cloud for %s",
+    async (subscription) => {
+      // Resolving the old owned session cannot upgrade clients without a
+      // persistent identity. The following connection listing is empty.
+      const preference = "00000000-0000-4000-8000-000000000001";
+      mockConvexQuery.mockResolvedValueOnce(preference).mockResolvedValue([]);
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        preference,
+        "service-key",
+        null,
+        subscription,
+      );
+      await expect(manager.getSandboxContextForPrompt()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+      mockConvexQuery.mockResolvedValueOnce(preference).mockResolvedValue([]);
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+      expect(manager.peekFallbackInfo()).toBeNull();
+    },
+  );
 
   it("builds a cloud reminder that blocks host-drive assumptions", () => {
     const reminder = getSandboxFallbackPromptReminder({
