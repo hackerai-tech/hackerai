@@ -152,21 +152,43 @@ async function getSandboxFileSize(
     // Desktop already provides shell-independent metadata. A POSIX stat or
     // cmd.exe fallback can fail even when the native bridge can read the file.
     // Preserve native errors instead of bypassing them through another adapter.
-    const metadata = await sandbox.files.stat(fullPath);
-    if (metadata.kind === "missing") {
-      throw new Error(`File not found: ${fullPath}`);
+    let failureReason:
+      | "stat_failed"
+      | "file_missing"
+      | "not_regular_file"
+      | "invalid_file_size" = "stat_failed";
+    try {
+      const metadata = await sandbox.files.stat(fullPath);
+      if (metadata.kind === "missing") {
+        failureReason = "file_missing";
+        throw new Error(`File not found: ${fullPath}`);
+      }
+      if (metadata.kind !== "file") {
+        failureReason = "not_regular_file";
+        throw new Error(`Cannot upload ${fullPath}: not a regular file`);
+      }
+      if (
+        typeof metadata.sizeBytes !== "number" ||
+        !Number.isSafeInteger(metadata.sizeBytes) ||
+        metadata.sizeBytes < 0
+      ) {
+        failureReason = "invalid_file_size";
+        throw new Error("Desktop file bridge returned an invalid file size");
+      }
+      return metadata.sizeBytes;
+    } catch (error) {
+      try {
+        logger.warn("sandbox_generated_file_native_stat_failed", {
+          event: "sandbox_generated_file_native_stat_failed",
+          service: "chat-handler",
+          ...getSandboxLogFields(sandbox),
+          failure_reason: failureReason,
+        });
+      } catch {
+        // Diagnostics must preserve the original metadata failure.
+      }
+      throw error;
     }
-    if (metadata.kind !== "file") {
-      throw new Error(`Cannot upload ${fullPath}: not a regular file`);
-    }
-    if (
-      typeof metadata.sizeBytes !== "number" ||
-      !Number.isSafeInteger(metadata.sizeBytes) ||
-      metadata.sizeBytes < 0
-    ) {
-      throw new Error("Desktop file bridge returned an invalid file size");
-    }
-    return metadata.sizeBytes;
   }
 
   const quotedPath = shellQuote(fullPath);

@@ -305,6 +305,7 @@ describe("uploadSandboxFileToConvex", () => {
       expect(saved.sizeBytes).toBe(size);
       expect(stat).toHaveBeenCalledWith("C:\\repo\\report & review!.zip");
       expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
       expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
         "report & review!.zip",
         "application/octet-stream",
@@ -315,57 +316,128 @@ describe("uploadSandboxFileToConvex", () => {
   );
 
   test.each([
-    [{ kind: "missing", path: "C:\\repo\\report.zip" }, /File not found/],
-    [{ kind: "not_file", path: "C:\\repo\\report.zip" }, /not a regular file/],
-    [{ kind: "file", sizeBytes: -1 }, /invalid file size/],
-    [{ kind: "file", sizeBytes: NaN }, /invalid file size/],
-    [{ kind: "file", sizeBytes: 1.5 }, /invalid file size/],
-    [{ kind: "file", sizeBytes: undefined }, /invalid file size/],
+    [
+      { kind: "missing", path: "C:\\repo\\report.zip" },
+      /File not found/,
+      "file_missing",
+    ],
+    [
+      { kind: "not_file", path: "C:\\repo\\report.zip" },
+      /not a regular file/,
+      "not_regular_file",
+    ],
+    [{ kind: "file", sizeBytes: -1 }, /invalid file size/, "invalid_file_size"],
+    [
+      { kind: "file", sizeBytes: NaN },
+      /invalid file size/,
+      "invalid_file_size",
+    ],
+    [
+      { kind: "file", sizeBytes: 1.5 },
+      /invalid file size/,
+      "invalid_file_size",
+    ],
+    [
+      { kind: "file", sizeBytes: undefined },
+      /invalid file size/,
+      "invalid_file_size",
+    ],
     [
       { kind: "file", sizeBytes: MAX_GENERATED_FILE_SIZE_BYTES + 1 },
       /exceeds the maximum generated file size/,
+      undefined,
     ],
-  ])("rejects native preflight %j before upload", async (metadata, message) => {
-    const sandbox = {
-      ...makeSandbox(42, false, true),
-      supportsNativeFileRelay: () => true,
-    };
-    Object.assign(sandbox.files, {
-      stat: jest.fn().mockResolvedValue(metadata),
-    });
+  ])(
+    "rejects native preflight %j before upload",
+    async (metadata, message, reason) => {
+      const sandbox = {
+        ...makeSandbox(42, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      Object.assign(sandbox.files, {
+        stat: jest.fn().mockResolvedValue(metadata),
+      });
 
-    await expect(
-      uploadSandboxFileToConvex({
-        sandbox: sandbox as any,
-        userId: "u1",
-        fullPath: "C:\\repo\\report.zip",
-      }),
-    ).rejects.toThrow(message);
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\repo\\report.zip",
+        }),
+      ).rejects.toThrow(message);
 
-    expect(sandbox.commands.run).not.toHaveBeenCalled();
-    expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
-    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
-    expect(mockConvexAction).not.toHaveBeenCalled();
-  });
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
+      const diagnostics = consoleWarnSpy.mock.calls
+        .map(([entry]) => JSON.parse(entry))
+        .filter(
+          (entry) =>
+            entry.event === "sandbox_generated_file_native_stat_failed",
+        );
+      expect(diagnostics).toEqual(
+        reason
+          ? [
+              {
+                level: "warn",
+                message: "sandbox_generated_file_native_stat_failed",
+                timestamp: expect.any(String),
+                event: "sandbox_generated_file_native_stat_failed",
+                service: "chat-handler",
+                sandbox_type: "desktop",
+                failure_reason: reason,
+              },
+            ]
+          : [],
+      );
+    },
+  );
 
-  test("preserves a native permission denial without falling back to a shell", async () => {
-    const sandbox = {
-      ...makeSandbox(42),
-      supportsNativeFileRelay: () => true,
-    };
-    const error = new Error("Metadata error: permission denied");
-    Object.assign(sandbox.files, { stat: jest.fn().mockRejectedValue(error) });
+  test.each([false, true])(
+    "preserves a native denial without shell fallback when logging fails: %s",
+    async (loggingFails) => {
+      const sandbox = {
+        ...makeSandbox(42),
+        supportsNativeFileRelay: () => true,
+      };
+      const error = Object.freeze(
+        new Error("Metadata error: private permission denial"),
+      );
+      const stat = jest.fn().mockRejectedValue(error);
+      Object.assign(sandbox.files, { stat });
+      if (loggingFails) {
+        consoleWarnSpy.mockImplementation(() => {
+          throw new Error("logger unavailable");
+        });
+      }
 
-    await expect(
-      uploadSandboxFileToConvex({
-        sandbox: sandbox as any,
-        userId: "u1",
-        fullPath: "/protected/report.zip",
-      }),
-    ).rejects.toBe(error);
-    expect(sandbox.commands.run).not.toHaveBeenCalled();
-    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
-  });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/protected/report.zip",
+        }),
+      ).rejects.toBe(error);
+      expect(stat).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
+      if (!loggingFails) {
+        expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(consoleWarnSpy.mock.calls[0][0])).toEqual({
+          level: "warn",
+          message: "sandbox_generated_file_native_stat_failed",
+          timestamp: expect.any(String),
+          event: "sandbox_generated_file_native_stat_failed",
+          service: "chat-handler",
+          sandbox_type: "desktop",
+          failure_reason: "stat_failed",
+        });
+      }
+    },
+  );
 
   test("falls back to command upload when native Centrifugo upload fails", async () => {
     const sandbox = makeSandbox(1234);
