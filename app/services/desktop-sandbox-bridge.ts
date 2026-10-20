@@ -79,6 +79,7 @@ const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -282,6 +283,8 @@ export class DesktopSandboxBridge {
   private consecutiveHeartbeatFailures = 0;
   private relayUnavailableAt: number | null = null;
   private successfulRelayConnections = 0;
+  private relayStarted = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly relayTelemetry = new DesktopRelayTelemetry(
     captureAuthenticatedEvent,
   );
@@ -393,10 +396,31 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private watchRelayReconnect(): void {
+    if (!this.relayStarted || this.reconnectTimer || this.isStoppingOrStopped)
+      return;
+    // Centrifuge pins its first working transport. A fresh bridge lets its
+    // WebSocket/HTTP fallback negotiation run again after a persistent outage.
+    // Only a ready subscription clears this deadline, not a socket handshake.
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("error", { errorType: "reconnect_readiness" });
+      this.terminateClient("transport_disconnected");
+    }, DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS);
+  }
+
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayStarted = false;
+    this.clearReconnectTimer();
     this.relayTelemetry.flush();
     const client = this.client;
     const subscription = this.subscription;
@@ -562,6 +586,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         code: ctx.code,
@@ -603,6 +628,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         source: "subscription",
@@ -612,6 +638,7 @@ export class DesktopSandboxBridge {
     });
     subscription.on("subscribed", (ctx) => {
       if (this.isStoppingOrStopped) return;
+      this.clearReconnectTimer();
       this.config.onConnectionState?.("connected");
       this.logRelayState("connected", {
         source: "subscription",
@@ -770,6 +797,7 @@ export class DesktopSandboxBridge {
     if (wasStopped() || this.connectionId !== connectionId) {
       throw new Error("Desktop bridge stopped before relay became ready");
     }
+    this.relayStarted = true;
     this.config.onConnectionState?.("connected");
     this.startHeartbeat();
 
@@ -1871,6 +1899,8 @@ export class DesktopSandboxBridge {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayStarted = false;
+    this.clearReconnectTimer();
     this.relayTelemetry.flush();
     this.publishQueue = null;
     this.operationRouter?.stop();

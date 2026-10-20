@@ -445,6 +445,16 @@ describe("useSandboxPreference", () => {
         }
 
         expect(bridgeInstances).toHaveLength(7);
+        // A socket that drops before a full minute is not a stable recovery.
+        // Its old reset timer must not replenish the finite retry budget.
+        act(() => bridgeConfigs.at(-1)?.onConnectionState?.("connected"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(50_000);
+        });
+        act(() => bridgeConfigs.at(-1)?.onConnectionState?.("connecting"));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10_000);
+        });
         act(() => {
           bridgeConfigs.at(-1)?.onTerminated?.("connection_inactive");
         });

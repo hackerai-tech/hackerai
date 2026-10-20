@@ -301,6 +301,9 @@ export function useSandboxPreference(
                     if (state === "connected") {
                       bridgeRecoveryExhausted = false;
                       scheduleStableRecoveryReset(generation);
+                    } else if (bridgeStableResetTimer) {
+                      clearTimeout(bridgeStableResetTimer);
+                      bridgeStableResetTimer = null;
                     }
                     bridgeStateListener?.(state === "connected", state);
                   },
