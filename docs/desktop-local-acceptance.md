@@ -118,8 +118,12 @@ or a packaged app is needed, create a task-owned JSON override at
 ```
 
 Choose a task-specific identifier/title and substitute the verified frontend
-port. This override merges with the base Tauri configuration; it does not grant
-new permissions. Check the merged CSP, remote URL scopes, native command bridge,
+port. Before building, copy the current base window's `userAgent` and
+`backgroundThrottling` into this window override. The `windows` array replaces
+the base array: omitting these fields makes Agent mode reject the QA app as a
+legacy client and can suspend its bridge in the background. The rest of the
+override merges with the base Tauri configuration; it does not grant new
+permissions. Check the merged CSP, remote URL scopes, native command bridge,
 and authentication/deep-link behavior. Add only the necessary local scopes in
 the QA override; do not weaken the installed app's permissions.
 
