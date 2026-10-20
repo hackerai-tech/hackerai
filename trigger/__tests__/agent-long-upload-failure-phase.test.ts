@@ -3,6 +3,7 @@ import path from "node:path";
 import ts from "typescript";
 import { ChatSDKError } from "@/lib/errors";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
+import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 
 // Execute the real classifier and terminal recorder without registering a task
 // or loading the Agent's model, billing, and sandbox dependencies.
@@ -63,6 +64,7 @@ async function recordFailure(
   const dependencies = {
     ChatSDKError,
     extractErrorDetails,
+    parseCloudAcquisitionStage,
     metadata,
     triggerLogger,
     addAgentLongTags,
@@ -159,6 +161,51 @@ it("keeps metadata-free errors compatible with the terminal recorder", async () 
   );
   expect(metadata.set.mock.calls.map(([key]) => key)).not.toContain(
     "uploadFailurePhase",
+  );
+});
+
+it.each(["connect", "workspace_lookup", "unknown"])(
+  "preserves bounded cloud acquisition stage %s in terminal diagnostics",
+  async (stage) => {
+    const { metadata, triggerLogger } = await recordFailure(
+      new ChatSDKError("bad_request:sandbox", "Cloud connection timed out", {
+        upload_failure_kind: "url",
+        upload_failure_phase: "acquisition",
+        upload_failure_acquisition_stage: stage,
+      }),
+    );
+    expect(metadata.set).toHaveBeenCalledWith(
+      "uploadFailureAcquisitionStage",
+      stage,
+    );
+    expect(triggerLogger.error).toHaveBeenCalledWith(
+      "[agent-long] run failed",
+      expect.objectContaining({ uploadFailureAcquisitionStage: stage }),
+    );
+  },
+);
+
+it.each([
+  ["acquisition", "PRIVATE_STAGE_CANARY"],
+  ["acquisition", { stage: "connect" }],
+  ["transfer", "connect"],
+  [undefined, "connect"],
+])("omits unsupported or unrelated cloud stage %p/%p", async (phase, stage) => {
+  const { metadata, triggerLogger } = await recordFailure(
+    new ChatSDKError("bad_request:sandbox", "Upload failed", {
+      upload_failure_kind: "url",
+      upload_failure_phase: phase,
+      upload_failure_acquisition_stage: stage,
+    }),
+  );
+  expect(metadata.set.mock.calls.map(([key]) => key)).not.toContain(
+    "uploadFailureAcquisitionStage",
+  );
+  expect(
+    triggerLogger.error.mock.calls[0][1].uploadFailureAcquisitionStage,
+  ).toBeUndefined();
+  expect(JSON.stringify(triggerLogger.error.mock.calls)).not.toContain(
+    "PRIVATE_STAGE_CANARY",
   );
 });
 
