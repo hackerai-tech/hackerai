@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import type { SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
 import {
   uploadSandboxFileToConvex,
   type GeneratedFileUploadPhase,
@@ -38,6 +39,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | "finalization"
         | "unknown";
       let currentPhase: FailurePhase = "sandbox_setup";
+      let setupStage:
+        "initial_acquisition" | "foreground_wait" | "reacquisition" | null =
+        "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
       const countFailure = (phase: FailurePhase, count = 1) => {
@@ -74,14 +78,17 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         // SDK tool calls in one model step execute concurrently. A file may
         // still be being created by another foreground call in this context.
         // Acquire first so immediately scheduled sibling calls can register.
+        setupStage = "foreground_wait";
         foregroundCommandsWaited = await waitForForegroundCommands(
           context,
           abortSignal,
         );
         // A pending command can recover/reconnect the selected sandbox.
         if (foregroundCommandsWaited > 0) {
+          setupStage = "reacquisition";
           ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
         }
+        setupStage = null;
         currentPhase = "unknown";
 
         const uploadWithRelayRecovery = async (filePath: string) => {
@@ -292,6 +299,21 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           failedFiles: blockedFiles,
         };
       } catch (error) {
+        if (setupStage !== null) {
+          try {
+            // Record the interrupted step, not a guessed cause. Errors and file
+            // paths can contain private content; cancellation is presence only.
+            logger.warn("agent_file_delivery_setup_failed", {
+              setup_stage: setupStage,
+              abort_signal_aborted: abortSignal?.aborted ?? false,
+              chat_id: context.chatId.slice(0, 128),
+              trigger_run_id: context.triggerRunId?.slice(0, 128) ?? null,
+              requested_file_count: files.length,
+            });
+          } catch {
+            // Diagnostics must preserve the original failed-batch result.
+          }
+        }
         const errorMsg = resolveToolErrorMessage(error);
         // The existing outer error returns the whole batch as failed. Retain
         // observed failures; stored files whose results were discarded have no

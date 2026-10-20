@@ -5,6 +5,9 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn() },
 }));
 
+jest.mock("@/lib/logger", () => ({ logger: { warn: jest.fn() } }));
+
+import { logger } from "@/lib/logger";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import type { ToolContext } from "@/types";
@@ -109,6 +112,7 @@ describe("get_terminal_files", () => {
       files: [{ path: "recovered.txt" }],
       failedFiles: [{ path: "missing.txt" }, { path: "/failed-upload.txt" }],
     });
+    expect(logger.warn).not.toHaveBeenCalled();
     const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
     expect(fields).toMatchObject({
       delivered_file_count: 1,
@@ -137,6 +141,92 @@ describe("get_terminal_files", () => {
         failure_phase_counts: { sandbox_setup: 2 },
       }),
     );
+  });
+
+  it.each([false, true])(
+    "logs bounded acquisition diagnostics even if the logger throws (%s)",
+    async (loggingThrows) => {
+      const context = makeContext({ triggerRunId: "run-opaque" });
+      const error = new Error(
+        "PRIVATE setup path /secret/file signed-url?token=secret",
+      );
+      jest
+        .mocked(context.sandboxManager.getSandbox)
+        .mockRejectedValueOnce(error);
+      if (loggingThrows)
+        jest.mocked(logger.warn).mockImplementationOnce(() => {
+          throw new Error("logger unavailable");
+        });
+      const result = await runTool(createGetTerminalFiles(context), {
+        files: ["/secret/one", "/secret/two"],
+      });
+      expect(result).toMatchObject({
+        files: [],
+        failedFiles: [
+          { path: "/secret/one", reason: error.message },
+          { path: "/secret/two", reason: error.message },
+        ],
+      });
+      expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_file_delivery_setup_failed",
+        {
+          setup_stage: "initial_acquisition",
+          abort_signal_aborted: false,
+          chat_id: "chat-1",
+          trigger_run_id: "run-opaque",
+          requested_file_count: 2,
+        },
+      );
+      expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toMatch(
+        /PRIVATE|secret|token|logger unavailable/,
+      );
+    },
+  );
+
+  it("distinguishes sandbox reacquisition after foreground commands without retrying", async () => {
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandbox)
+      .mockResolvedValueOnce({ sandbox: { id: "sandbox-1" } } as never)
+      .mockRejectedValueOnce(new Error("PRIVATE reacquisition"));
+    let finish!: () => void;
+    const command = trackForegroundCommand(
+      context,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      const delivery = runTool(createGetTerminalFiles(context), {
+        files: ["/secret/file"],
+      });
+      // Let delivery reach the real foreground wait before the command finishes.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(context.sandboxManager.getSandbox).toHaveBeenCalledTimes(1);
+      finish();
+      const result = await delivery;
+      expect(result).toMatchObject({
+        files: [],
+        deliveryReceipts: [],
+        failedFiles: [{ path: "/secret/file" }],
+      });
+      expect(context.sandboxManager.getSandbox).toHaveBeenCalledTimes(2);
+      expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_file_delivery_setup_failed",
+        expect.objectContaining({
+          setup_stage: "reacquisition",
+          abort_signal_aborted: false,
+          requested_file_count: 1,
+        }),
+      );
+    } finally {
+      finish();
+      await command;
+    }
   });
 
   it.each([false, true])(
@@ -212,6 +302,13 @@ describe("get_terminal_files", () => {
         failedFiles: [{ path: "/tmp/report.txt" }],
       });
       expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_file_delivery_setup_failed",
+        expect.objectContaining({
+          setup_stage: "foreground_wait",
+          abort_signal_aborted: true,
+        }),
+      );
     } finally {
       finish();
       await command;
