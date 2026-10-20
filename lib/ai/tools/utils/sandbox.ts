@@ -1,8 +1,18 @@
-import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
+import {
+  recordResumeFailure,
+  clearResumeFailures,
+} from "@/lib/cloud-recovery/store";
+import { readNetworkSettings } from "@/lib/cloud-network/service";
+import { e2bNetwork } from "@/lib/cloud-network/policy";
+import {
+  CloudAcquisitionTimeoutError,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
   NotFoundError,
+  TimeoutError,
   classifyE2BError,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
@@ -118,6 +128,8 @@ export const ensureSandboxConnection = async (
       create_attempts: attempts,
     });
   };
+  let failedTarget:
+    { sandboxId: string; template: string; sandboxVersion: string } | undefined;
   try {
     options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
@@ -140,6 +152,16 @@ export const ensureSandboxConnection = async (
         info.metadata?.sandboxVersion !== SANDBOX_VERSION
       )
         throw new Error("Pinned E2B workspace identity mismatch");
+      if (
+        info.state === "paused" &&
+        info.metadata?.template &&
+        info.metadata?.sandboxVersion
+      )
+        failedTarget = {
+          sandboxId: info.sandboxId,
+          template: info.metadata.template,
+          sandboxVersion: info.metadata.sandboxVersion,
+        };
       options.reportStage?.("connect");
       const sandbox = await retryWithBackoff(
         () =>
@@ -156,6 +178,7 @@ export const ensureSandboxConnection = async (
         },
       );
       signal?.throwIfAborted();
+      await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
       setSandbox(sandbox);
       reportBoot("reuse_existing", 0);
       return { sandbox };
@@ -245,6 +268,18 @@ export const ensureSandboxConnection = async (
         );
       }
 
+      if (
+        existingSandboxInfo.state === "paused" &&
+        existingSandboxInfo.metadata?.template === createCluster.template &&
+        existingSandboxInfo.metadata?.sandboxVersion === SANDBOX_VERSION &&
+        existingSandboxInfo.metadata?.e2bCluster === createCluster.cluster &&
+        existingCluster.cluster === createCluster.cluster
+      )
+        failedTarget = {
+          sandboxId: existingSandboxInfo.sandboxId,
+          template: existingSandboxInfo.metadata.template,
+          sandboxVersion: existingSandboxInfo.metadata.sandboxVersion,
+        };
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
@@ -266,6 +301,7 @@ export const ensureSandboxConnection = async (
           },
         );
         signal?.throwIfAborted();
+        await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -273,8 +309,9 @@ export const ensureSandboxConnection = async (
         signal?.throwIfAborted();
         // Handle specific error cases
         if (
-          e instanceof NotFoundError ||
-          (e instanceof Error && e.message?.includes("not found"))
+          existingSandboxInfo.state !== "paused" &&
+          (e instanceof NotFoundError ||
+            (e instanceof Error && e.message?.includes("not found")))
         ) {
           console.error(
             `[${userID}] Sandbox ${existingSandboxInfo.sandboxId} expired/deleted, creating new one`,
@@ -306,7 +343,11 @@ export const ensureSandboxConnection = async (
 
       signal?.throwIfAborted();
       try {
+        const networkSettings = await readNetworkSettings(userID);
         const sandbox = await Sandbox.create(createCluster.template, {
+          ...(networkSettings
+            ? { network: e2bNetwork(networkSettings.policy) }
+            : {}),
           ...createCluster.connectionOptions,
           ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
@@ -336,6 +377,31 @@ export const ensureSandboxConnection = async (
     }
     throw lastError;
   } catch (error) {
+    if (failedTarget && options.acquisitionId && options.triggerRegion) {
+      const status =
+        error && typeof error === "object"
+          ? ((error as { statusCode?: number; status?: number }).statusCode ??
+            (error as { status?: number }).status)
+          : undefined;
+      await recordResumeFailure({
+        userId: userID,
+        ...failedTarget,
+        region: options.triggerRegion,
+        acquisitionId: options.acquisitionId,
+        uncertain:
+          signal?.aborted === true || !status || ![400, 422].includes(status),
+        // Only a known connection deadline can be reconciled by the customer
+        // path. Cancellation, authentication errors and unknown outcomes remain
+        // support-only; a deadline still waits for the complete idle window.
+        timeoutOnly:
+          phase === "connect" &&
+          (signal?.aborted
+            ? signal.reason instanceof CloudAcquisitionTimeoutError &&
+              signal.reason.acquisitionStage === "connect"
+            : error instanceof TimeoutError &&
+              !error.message.includes("sandbox timeout")),
+      }).catch(() => {});
+    }
     signal?.throwIfAborted();
     const candidate =
       error && typeof error === "object"

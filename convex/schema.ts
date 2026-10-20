@@ -1,3 +1,5 @@
+import { networkPolicy } from "./cloudNetworkValidators";
+import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -206,6 +208,18 @@ export default defineSchema({
   })
     .index("by_user", ["user_id"])
     .index("by_user_default", ["user_id", "is_default"]),
+  cloud_network_settings: defineTable({
+    user_id: v.string(),
+    policy: networkPolicy,
+    revision: v.number(),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("applying"),
+      v.literal("failed"),
+    ),
+    token: v.optional(v.string()),
+    leaseUntil: v.optional(v.number()),
+  }).index("by_user_id", ["user_id"]),
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
     "by_visitor",
     ["visitor_id"],
@@ -251,8 +265,38 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
+  // Normal chat/account deletion still cleans these records. No bulk migration.
+  engagement_scopes: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+    active: v.boolean(),
+    revision: v.number(),
+    rules: v.array(scopeRule),
+    restrictions: v.array(v.string()),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("processing"),
+      v.literal("unavailable"),
+      v.literal("ambiguous"),
+    ),
+    clarification: v.string(),
+    clarificationRequested: v.boolean(),
+    source_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+  engagement_scope_events: defineTable({
+    chat_id: v.string(),
+    source_id: v.string(),
+    source_text: v.string(),
+    source_kind: v.union(v.literal("user_message"), v.literal("user_edit")),
+    status: v.union(v.literal("pending"), v.literal("applied")),
+    revision: v.number(),
+    policy: v.optional(scopePolicy),
+  }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
     user_skill_ids: v.optional(v.array(v.id("user_skills"))),
+    // Legacy field retained for existing chat documents only.
+    engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
     title: v.string(),
     user_id: v.string(),
@@ -858,6 +902,9 @@ export default defineSchema({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
+    // A saved product preference, not consent or eligibility for a data export.
+    model_improvement_enabled: v.optional(v.boolean()),
+    model_improvement_updated_at: v.optional(v.number()),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema
     // so old rows still pass validation.

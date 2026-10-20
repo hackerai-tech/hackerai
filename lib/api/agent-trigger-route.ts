@@ -1,4 +1,8 @@
 import {
+  readCloudWorkspaceState,
+  assertCloudWorkspaceAvailable,
+} from "@/lib/ai/tools/utils/cloud-workspace-guard";
+import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
@@ -16,6 +20,7 @@ import {
   getChatById,
   getUserCustomization,
   handleInitialChatAndUserMessage,
+  type InitialChatPersistenceStep,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
@@ -473,6 +478,7 @@ export const createAgentTriggerPost =
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
     let stage = "parse_request";
+    let initialPersistenceStep: InitialChatPersistenceStep | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -498,6 +504,9 @@ export const createAgentTriggerPost =
           chat_id: diagnosticContext.chatId,
           trigger_run_id: diagnosticContext.runId,
           stage,
+          ...(stage === "persist_user_message" && initialPersistenceStep
+            ? { initial_persistence_step: initialPersistenceStep }
+            : {}),
           elapsed_ms: Date.now() - routeStartedAt,
         }),
       );
@@ -537,6 +546,18 @@ export const createAgentTriggerPost =
         retryNetworkFailure: true,
         signal: req.signal,
       });
+      // Serialize cloud Agent admission with recovery before a run is queued.
+      // The same activity/fence CAS protects acquisition and cached clients.
+      if (
+        process.env.CLOUD_DISK_RECOVERY_TARGETS &&
+        (!sandboxPreference || sandboxPreference === "e2b")
+      ) {
+        const workspace = await readCloudWorkspaceState(userId);
+        await assertCloudWorkspaceAvailable(
+          userId,
+          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+        );
+      }
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({
@@ -707,7 +728,11 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        onPersistenceStep: (step) => {
+          initialPersistenceStep = step;
+        },
       });
+      initialPersistenceStep = undefined;
 
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
@@ -810,6 +835,15 @@ export const createAgentTriggerPost =
       const triggerApiMethod = approvalSessionId
         ? "sessions.start"
         : "tasks.trigger";
+      const requestId = req.headers.get("x-vercel-id");
+      const webRequestId =
+        requestId &&
+        requestId.length <= 128 &&
+        /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+          requestId,
+        )
+          ? requestId
+          : undefined;
       const triggerMetadata = {
         status: "queued",
         chatId,
@@ -817,6 +851,9 @@ export const createAgentTriggerPost =
         subscription,
         loginRequired: false,
         endpoint,
+        // Task metadata identifies its creating request. Session metadata may
+        // reflect a later cached start; it does not prove that start made a run.
+        ...(webRequestId ? { webRequestId } : {}),
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,

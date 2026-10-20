@@ -30,6 +30,11 @@ contracts and authorization boundaries.
 
 ## Documentation and Skills
 
+Repository documentation is public. Keep internal product and business plans,
+experiment plans and readouts, rollout evidence, and account-specific operational
+notes in Linear under the owning issue or a team document. Do not recreate
+`docs/internal/` or commit those materials elsewhere in the repository.
+
 Keep documentation for decisions, cross-service constraints, operational
 procedures, and pitfalls that are hard to infer from the code. Put local
 implementation explanations beside the code they explain. Avoid file catalogs,
@@ -72,6 +77,12 @@ reviewable branch, wait for its Preview deployment, verify the deployed commit
 and the designated Preview backend/worker, and test through Computer Use. Keep
 Preview and Production environment boundaries; do not use Production as a test
 fallback. Preview UI success does not replace required tests or CI.
+
+Before detailed Preview QA, verify the designated Preview backend and Trigger
+worker, then use the existing Preview test account to complete one harmless
+Agent request and confirm its saved response survives reload. Resolve
+configuration failures before continuing. Never use masked configuration values
+as credentials or substitute Production.
 
 Run `pnpm test:changed` for local iteration: it runs Jest tests related to
 uncommitted changes with one worker, plus the Node tooling suites outside Jest.
@@ -149,6 +160,17 @@ For production Vercel logs, use `--no-branch` unless intentionally investigating
 a preview branch. Avoid hard-coding current revenue, user counts, team-share
 percentages, pricing, or other volatile metrics in durable instructions; use
 qualitative direction and source-of-truth references instead.
+
+## OpenRouter Request Diagnostics
+
+Check existing provider telemetry first. If attribution or usage metadata is
+missing and a recorded generation ID is available, call
+`GET https://openrouter.ai/api/v1/generation?id=<generation_id>` using the existing
+`OPENROUTER_API_KEY` from the authorized environment source. Load the key inside
+the request process; never print it, place it in command arguments, or copy
+environment files between checkouts. Return only provider, model, timing, token
+usage, cost, and finish reason. Report missing records or lookup failures without
+inferring an upstream provider or requesting a new key before checking access.
 
 ## Feature Rollouts and Measurement
 
@@ -252,6 +274,11 @@ independently. Keep one parent thread responsible for coordinating scope,
 avoiding overlap, and integrating results.
 
 ## Visual Verification
+
+For new user-facing workflows, define one concrete acceptance example before
+implementation, including relevant history or environment changes. Inspect the
+first functional desktop and narrow-screen layouts early, before extensive
+polish. Ask the user only when a material product decision remains unclear.
 
 Use visual verification in the same PR thread by default when the PR changes UI,
 chat message rendering, file/image display, onboarding, pricing, sandbox

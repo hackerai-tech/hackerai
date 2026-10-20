@@ -643,7 +643,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     expect(agentPartialSaveRouteSrc).toMatch(/getUserID\(req\)/);
     expect(agentPartialSaveRouteSrc).toMatch(
-      /assertUserCanAccessChatHistory\(userId\)/,
+      /await assertUserCanAccessChatHistory\(userId,\s*\{\s*retryNetworkFailure:\s*true,\s*signal:\s*req\.signal,?\s*\}\)/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(
       /getChatById\(\{\s*id:\s*body\.chatId\s*\}\)/,
@@ -897,7 +897,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "runtimeSettlementWatchdog?.arm()",
       budgetIdx,
     );
-    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const abortIdx = taskSrc.indexOf(
+      'stopSignal.abort("active_runtime_budget")',
+      armIdx,
+    );
     const stalledEventIdx = taskSrc.indexOf(
       'event: "agent_long_runtime_settlement_stalled"',
       abortIdx,
@@ -1624,7 +1627,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1678,7 +1681,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
     );
     expect(taskSrc).toMatch(
-      /hasTerminalProviderStreamError\s*&&\s*\(shouldRecoverAbliterationStreamError \|\|\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+      /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
+    );
+    expect(taskSrc).toMatch(
+      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
     expect(taskSrc).toMatch(
       /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,
@@ -1688,13 +1697,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
-      /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+      /getNextProviderDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
     );
     expect(taskSrc).toMatch(
       /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
     );
     expect(
-      taskSrc.match(/getNextDeepSeekProDisconnectRetryModel\(\{/g),
+      taskSrc.match(/getNextProviderDisconnectRetryModel\(\{/g),
     ).toHaveLength(1);
     const finalRetryCacheBaselineIdx = taskSrc.indexOf(
       "preFallbackCacheRead =",

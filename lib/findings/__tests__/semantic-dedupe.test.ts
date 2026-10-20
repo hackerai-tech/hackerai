@@ -14,7 +14,7 @@ jest.mock("ai", () => ({
 }));
 jest.mock("@/lib/ai/providers", () => ({
   myProvider: { languageModel: jest.fn(() => "model") },
-  resolveTierToProviderKey: () => "model",
+  resolveAgentTierToProviderKey: () => "model",
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   buildProviderOptions: () => ({

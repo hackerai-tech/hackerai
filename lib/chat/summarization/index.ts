@@ -1,10 +1,13 @@
 import "server-only";
 
+import { getCompactionResponseFormat } from "./structured-summary";
+
 import {
   CompactionModelPolicy,
-  COMPACTION_PRIMARY_MODEL,
+  MAX_CONTEXT_SUMMARY_INPUT_TOKENS,
   hasStructuredCompactionSummary,
 } from "@/lib/chat/summarization/compaction-policy";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 
 import {
   UIMessage,
@@ -31,6 +34,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
   isRecoverableStartupCompactionError,
+  isCompactionTimeout,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
   InvalidCompactionSummaryError,
@@ -262,10 +266,27 @@ const buildContextCompactionProviderOptions = (
 
 const buildStartupCompactionProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
+  structuredMode?: ChatMode,
 ): Record<string, Record<string, unknown>> => ({
   openrouter: {
     ...buildContextCompactionProviderOptions(providerOptions).openrouter,
-    provider: { sort: "throughput", data_collection: "deny" },
+    // Request JSON at the adapter boundary; validate after capturing billable usage.
+    ...(structuredMode
+      ? { response_format: getCompactionResponseFormat(structuredMode) }
+      : {}),
+    provider: {
+      sort: structuredMode ? "latency" : "throughput",
+      ...(structuredMode
+        ? {
+            require_parameters: true,
+            // Modal can stop with reasoning but no final checkpoint. Prefer the
+            // validated route, retaining other providers and model fallback.
+            order: ["baseten"],
+            ignore: ["modal"],
+          }
+        : {}),
+      data_collection: "deny",
+    },
   },
 });
 
@@ -557,7 +578,9 @@ const generateSummaryTextWithRetry = async ({
       const models = [
         assignment.model,
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        ...STARTUP_COMPACTION_FALLBACK_MODELS,
+        ...(assignment.expandedMaxContext
+          ? []
+          : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
       let servedModel: string | undefined;
       try {
@@ -565,6 +588,12 @@ const generateSummaryTextWithRetry = async ({
           abortSignal?.throwIfAborted();
           const languageModel = myProvider.languageModel(modelName);
           const attemptStartedAt = Date.now();
+          // Expanded Max recovery needs the same complete-checkpoint safeguards
+          // even when the separate moderation compaction experiment is paused.
+          const isStructuredGlm =
+            (assignment.expandedMaxContext === true ||
+              assignment.flagEnabled === true) &&
+            modelName === "model-glm-5.3-flash";
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
             variant: assignment.policy,
@@ -578,20 +607,29 @@ const generateSummaryTextWithRetry = async ({
               chatSystemPrompt,
               hasExistingSummary,
               undefined,
-              modelName === COMPACTION_PRIMARY_MODEL
+              isAbliterationModel(modelName)
                 ? {
                     abliteration: {
                       reasoningEffort: "low",
                     },
                   }
-                : buildStartupCompactionProviderOptions(providerOptions),
+                : buildStartupCompactionProviderOptions(
+                    providerOptions,
+                    isStructuredGlm ? mode : undefined,
+                  ),
               abortSignal,
               modelMessages,
-              summaryInputMaxTokens,
+              assignment.expandedMaxContext
+                ? MAX_CONTEXT_SUMMARY_INPUT_TOKENS
+                : summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                timeout: 60_000,
-                maxOutputTokens: 8192,
+                // Allow longer checkpoints to finish, but start recovery before
+                // a stalled GLM request consumes the former 90s deadline.
+                timeout: isStructuredGlm ? 75_000 : 60_000,
+                // GLM shares this budget between mandatory reasoning and text.
+                maxOutputTokens: isStructuredGlm ? 16384 : 8192,
+                structuredSummary: isStructuredGlm,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
                 onDiscardedUsage: (usage) => {
@@ -620,6 +658,14 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ? "aborted" : "error",
               Date.now() - attemptStartedAt,
               discardedUsage,
+              abortSignal?.aborted
+                ? "canceled"
+                : error instanceof InvalidCompactionSummaryError
+                  ? error.reason
+                  : isCompactionTimeout(error)
+                    ? "timeout"
+                    : "provider_error",
+              error,
             );
             markSummarizationAttemptError(
               error,
@@ -630,7 +676,12 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ||
               index === models.length - 1 ||
               !(
-                modelName === COMPACTION_PRIMARY_MODEL ||
+                isAbliterationModel(modelName) ||
+                // A cheaper primary can reject a request with a non-retryable
+                // provider error (for example HTTP 400). Still try the assigned
+                // Abliteration fallback once; never retry caller cancellation.
+                (index === 0 &&
+                  isAbliterationModel(assignment.fallbackModel)) ||
                 error instanceof InvalidCompactionSummaryError ||
                 isMalformedProviderJsonError(error) ||
                 isRecoverableStartupCompactionError(error)

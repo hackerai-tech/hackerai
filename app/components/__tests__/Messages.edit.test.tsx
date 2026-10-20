@@ -14,6 +14,8 @@ import {
 import { Messages } from "../Messages";
 import type { ChatMessage } from "@/types";
 import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-react";
+import { ConvexError } from "convex/values";
+import { toast } from "sonner";
 
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
@@ -22,6 +24,7 @@ jest.mock("../MessageItem", () => ({
     lastUserMessageIndex,
     message,
     onStartEdit,
+    onBranchMessage,
     status,
   }: {
     canEdit: boolean;
@@ -29,6 +32,7 @@ jest.mock("../MessageItem", () => ({
     lastUserMessageIndex?: number;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
+    onBranchMessage: (messageId: string) => Promise<void>;
     status: string;
   }) => (
     <div
@@ -36,6 +40,13 @@ jest.mock("../MessageItem", () => ({
       data-status={status}
       data-last-user-message-index={lastUserMessageIndex}
     >
+      <button
+        type="button"
+        aria-label={`Branch ${message.id}`}
+        onClick={() => onBranchMessage(message.id)}
+      >
+        Branch
+      </button>
       {isEditing ? (
         <div data-testid="message-editor">Editing {message.id}</div>
       ) : canEdit ? (
@@ -174,6 +185,53 @@ function AutoResumeState({
 }
 
 describe("Messages virtualized row invalidation", () => {
+  it.each([
+    [
+      new ConvexError({ code: "BRANCH_HISTORY_TOO_LARGE" }),
+      "Try branching from an earlier message.",
+    ],
+    [
+      new Error("BRANCH_HISTORY_TOO_LARGE private details"),
+      "Failed to branch task. Please try again.",
+    ],
+  ])(
+    "handles errors from an alternate branch callback (%#)",
+    async (error, expected) => {
+      const toastError = jest.spyOn(toast, "error");
+      const branch = jest.fn().mockRejectedValue(error);
+      render(
+        <DataStreamProvider>
+          <Messages
+            chatId="chat-1"
+            messages={messages}
+            setMessages={jest.fn()}
+            onRegenerate={jest.fn()}
+            onRetry={jest.fn()}
+            onEditMessage={jest.fn()}
+            onBranchMessage={branch}
+            status="ready"
+            error={null}
+            scrollRef={createRef<HTMLElement>()}
+            contentRef={createRef<HTMLElement>()}
+            isMobile
+          />
+        </DataStreamProvider>,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Branch assistant-1" }),
+      );
+      await waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith(
+          expect.stringContaining(expected),
+        ),
+      );
+      expect(branch).toHaveBeenCalledTimes(1);
+      expect(branch).toHaveBeenCalledWith("assistant-1");
+      expect(screen.getByTestId("message-assistant-1")).toBeInTheDocument();
+      toastError.mockRestore();
+    },
+  );
+
   beforeEach(() => {
     mockLegendListScrollToIndex.mockReset();
     mockLegendListScrollToIndex.mockResolvedValue(undefined);

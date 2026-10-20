@@ -5,6 +5,7 @@ const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
 jest.mock("@/lib/ai/abliteration", () => ({
   ABLITERATION_MODEL_KEY: "model-abliterated",
+  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
   isAbliterationConfigured: mockConfigured,
 }));
 jest.mock("@/lib/posthog/server", () => ({
@@ -103,6 +104,35 @@ describe("compaction model assignment and telemetry", () => {
     });
     expect(mockEvent).not.toHaveBeenCalled();
   });
+  it.each(["agent", "ask"] as const)(
+    "expands only Agent Max compaction, mode=%s",
+    async (mode) => {
+      const assignment = await new CompactionModelPolicy({
+        ...context,
+        mode,
+        expandedMaxContext: true,
+      }).resolve();
+      expect(assignment.model).toBe(
+        mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
+      );
+      expect(assignment.expandedMaxContext).toBe(
+        mode === "agent" ? true : undefined,
+      );
+    },
+  );
+  it("preserves moderation-based selection with the larger Max fallback", async () => {
+    mockFlag.mockResolvedValue(true);
+    expect(
+      await new CompactionModelPolicy({
+        ...context,
+        expandedMaxContext: true,
+      }).resolve(),
+    ).toMatchObject({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated-large-v2",
+      expandedMaxContext: true,
+    });
+  });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses the moderation decision for %s in Ask and Agent",
     async (subscription) => {
@@ -123,7 +153,7 @@ describe("compaction model assignment and telemetry", () => {
             fallbackModel: platformAuthorized
               ? "model-glm-5.3-flash"
               : "model-abliterated",
-            policy: "moderation_glm53_abliteration_fallback_v1",
+            policy: "moderation_glm53_abliteration_recovery_v2",
             flagEnabled: true,
           });
           expect(mockEvent).not.toHaveBeenCalled();
@@ -156,6 +186,28 @@ describe("compaction model assignment and telemetry", () => {
       expect.objectContaining({ compaction_flag_enabled: null }),
     );
   });
+  it.each([
+    [false, true],
+    [true, false],
+  ])(
+    "does not report moderation routing for flag=%s configured=%s",
+    async (flagEnabled, configured) => {
+      mockFlag.mockResolvedValue(flagEnabled);
+      mockConfigured.mockReturnValue(configured);
+      const policy = new CompactionModelPolicy({
+        ...context,
+        platformAuthorized: true,
+      });
+      policy.start(await policy.resolve(), "durable");
+      expect(mockEvent).toHaveBeenLastCalledWith(
+        "compaction_model_started",
+        expect.objectContaining({
+          compaction_moderation_selected: true,
+          compaction_moderation_routed: false,
+        }),
+      );
+    },
+  );
   it("keeps GLM without an Abliteration fallback when credentials are absent", async () => {
     mockFlag.mockResolvedValue(true);
     mockConfigured.mockReturnValue(false);
@@ -176,7 +228,7 @@ describe("compaction model assignment and telemetry", () => {
     expect(await policy.resolve()).toBe(first);
     expect(mockFlag).toHaveBeenCalledTimes(1);
     expect(mockFlag).toHaveBeenCalledWith(
-      "moderation_compaction_v1",
+      "moderation_compaction_recovery_v2",
       "test-user",
       { subscription_tier: "pro" },
       { sendFeatureFlagEvents: false },

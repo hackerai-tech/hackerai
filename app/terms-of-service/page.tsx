@@ -160,8 +160,26 @@ export default function TermsOfServicePage() {
               may not be unique, and similar Output may be provided to other
               users. If you create a shared link, the shared content becomes
               accessible to anyone with the link and may be viewed, copied, or
-              indexed. Any feedback or suggestions you provide may be used by us
-              without restriction or compensation.
+              indexed. Product feedback or suggestions you voluntarily provide
+              may be used to improve the Service without compensation. This
+              feedback permission does not make your chats, files, findings, or
+              other task content available for commercial data licensing.
+            </p>
+            <p className="mt-2">
+              Any future use of Input or Output for model training, evaluation,
+              or commercial licensing to AI partners will be subject to the
+              program notice, your settings, applicable law, and any required
+              agreement or consent. You retain ownership of your content. The
+              service license above does not by itself authorize partner data
+              licensing. See{" "}
+              <Link
+                href="/privacy-policy#data-contributions"
+                className={linkClassName}
+              >
+                Model improvement and data licensing
+              </Link>{" "}
+              in our Privacy Policy for the default-on preference, opt-out, and
+              limits on eligible content. Partner data collection is not active.
             </p>
           </section>
 
@@ -370,7 +388,9 @@ export default function TermsOfServicePage() {
               required by law, provide additional notice. Changes take effect
               when posted unless we state otherwise. Your continued use after
               the effective date constitutes acceptance, and if you do not agree
-              you must stop using the Service.
+              you must stop using the Service. Continued use does not override
+              your model improvement opt-out or substitute for any consent
+              required for new program partners, purposes, or eligible content.
             </p>
           </section>
 
@@ -399,16 +419,16 @@ export default function TermsOfServicePage() {
             <h2 className="mb-2 text-xl font-semibold">17. General</h2>
             <p>
               These Terms, together with the Privacy Policy and any
-              plan-specific terms presented in the Service, are the entire
-              agreement between you and us regarding the Service. If any
-              provision is held invalid, it will be enforced to the maximum
-              extent permissible and the remaining provisions remain in full
-              effect. Our failure to enforce any provision is not a waiver. You
-              may not assign these Terms without our consent; we may assign them
-              in connection with a merger, acquisition, or sale of assets.
-              Nothing in these Terms creates a partnership, agency, or
-              employment relationship. Questions about these Terms can be sent
-              through our{" "}
+              plan-specific terms and any separate contributor agreement you
+              affirmatively accept, are the entire agreement between you and us
+              regarding the Service. If any provision is held invalid, it will
+              be enforced to the maximum extent permissible and the remaining
+              provisions remain in full effect. Our failure to enforce any
+              provision is not a waiver. You may not assign these Terms without
+              our consent; we may assign them in connection with a merger,
+              acquisition, or sale of assets. Nothing in these Terms creates a
+              partnership, agency, or employment relationship. Questions about
+              these Terms can be sent through our{" "}
               <a
                 href={HELP_CENTER_URL}
                 target="_blank"

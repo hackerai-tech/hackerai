@@ -1,9 +1,14 @@
 import { tool } from "ai";
 import type { SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
-import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import { logger } from "@/lib/logger";
+import {
+  uploadSandboxFileToConvex,
+  type GeneratedFileUploadPhase,
+} from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import { waitForForegroundCommands } from "./utils/foreground-commands";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -21,18 +26,45 @@ export const createGetTerminalFiles = (context: ToolContext) => {
     inputSchema: createGetTerminalFilesToolSchema({
       modelName: context.getCurrentModelName?.() ?? context.modelName,
     }).inputSchema,
-    execute: async ({ files }: { files: string[] }) => {
+    execute: async ({ files }: { files: string[] }, { abortSignal }) => {
       let relayRecoveryAttempted = false;
       let relayRecoverySucceeded = false;
       let streamNotificationFailures = 0;
+      let foregroundCommandsWaited = 0;
+      type FailurePhase =
+        | GeneratedFileUploadPhase
+        | "sandbox_setup"
+        | "background_process"
+        | "relay_recovery"
+        | "finalization"
+        | "unknown";
+      let currentPhase: FailurePhase = "sandbox_setup";
+      let setupStage:
+        | "initial_acquisition"
+        | "foreground_wait"
+        | "reacquisition"
+        | "path_preparation"
+        | null = "initial_acquisition";
+      let completedDeliveryCount = 0;
+      const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      const countFailure = (phase: FailurePhase, count = 1) => {
+        if (count > 0) {
+          failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + count;
+        }
+      };
       const recordOutcome = (delivered: number, failed: number) => {
         try {
           phLogger.event("agent_file_delivery_completed", {
             userId: context.userID,
+            chat_id: context.chatId,
+            trigger_run_id: context.triggerRunId ?? null,
+            foreground_commands_waited: foregroundCommandsWaited,
             stream_notification_failed_count: streamNotificationFailures,
             requested_file_count: files.length,
             delivered_file_count: delivered,
             failed_file_count: failed,
+            file_delivery_diagnostic_version: 1,
+            failure_phase_counts: failurePhaseCounts,
             relay_recovery_attempted: relayRecoveryAttempted,
             relay_recovery_succeeded: relayRecoverySucceeded,
             sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
@@ -46,6 +78,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           sandboxManager,
         });
 
+        // SDK tool calls in one model step execute concurrently. A file may
+        // still be being created by another foreground call in this context.
+        // Acquire first so immediately scheduled sibling calls can register.
+        setupStage = "foreground_wait";
+        foregroundCommandsWaited = await waitForForegroundCommands(
+          context,
+          abortSignal,
+        );
+        // A pending command can recover/reconnect the selected sandbox.
+        if (foregroundCommandsWaited > 0) {
+          setupStage = "reacquisition";
+          ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
+        }
+        setupStage = null;
+        currentPhase = "unknown";
+
         const uploadWithRelayRecovery = async (filePath: string) => {
           try {
             return await uploadSandboxFileToConvex({
@@ -53,6 +101,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               userId: context.userID,
               fullPath: filePath,
               storageRegion: context.triggerRegion,
+              onPhase: (phase) => {
+                currentPhase = phase;
+              },
             });
           } catch (error) {
             if (
@@ -64,6 +115,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             relayRecoveryAttempted = true;
+            currentPhase = "relay_recovery";
             await sandboxManager.recoverLocalConnection(
               sandbox.getConnectionId(),
               "command_relay_unsubscribed",
@@ -84,6 +136,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               userId: context.userID,
               fullPath: filePath,
               storageRegion: context.triggerRegion,
+              onPhase: (phase) => {
+                currentPhase = phase;
+              },
             });
           }
         };
@@ -101,6 +156,8 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          currentPhase = "sandbox_setup";
+          setupStage = "path_preparation";
           const originalPath = files[i];
           const pathsToTry: string[] = [];
 
@@ -121,8 +178,10 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             pathsToTry.push(originalPath);
           }
 
+          setupStage = null;
           let fileProcessed = false;
           let lastError: string | null = null;
+          let lastFailurePhase: FailurePhase = "unknown";
 
           for (const filePath of pathsToTry) {
             // Check if this specific file is being written to by a background process
@@ -142,6 +201,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                   path: originalPath,
                   reason: `Background process still running: [${processDetails}]`,
                 });
+                countFailure("background_process");
                 fileProcessed = true;
                 break;
               }
@@ -150,7 +210,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
+              currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
+              currentPhase = "finalization";
 
               context.fileAccumulator.add({
                 fileId: saved.fileId,
@@ -198,17 +260,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 storageStatus: "stored",
                 validation: "not_performed_by_delivery_tool",
               });
+              completedDeliveryCount += 1;
               fileProcessed = true;
               break; // Success! No need to try other paths
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
+              lastFailurePhase = currentPhase;
               // Continue to try next path
             }
           }
 
           // If none of the paths worked, add to blocked files
           if (!fileProcessed) {
+            // Count the terminal outcome once per requested file, after all
+            // candidate paths/recovery. Successful alternate paths add no failure.
+            countFailure(lastFailurePhase);
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,
@@ -237,7 +304,34 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           failedFiles: blockedFiles,
         };
       } catch (error) {
+        if (setupStage !== null) {
+          try {
+            // Record the interrupted step, not a guessed cause. Errors and file
+            // paths can contain private content; cancellation is presence only.
+            logger.warn("agent_file_delivery_setup_failed", {
+              setup_stage: setupStage,
+              abort_signal_aborted: abortSignal?.aborted ?? false,
+              chat_id: context.chatId.slice(0, 128),
+              trigger_run_id: context.triggerRunId?.slice(0, 128) ?? null,
+              requested_file_count: files.length,
+            });
+          } catch {
+            // Diagnostics must preserve the original failed-batch result.
+          }
+        }
         const errorMsg = resolveToolErrorMessage(error);
+        // The existing outer error returns the whole batch as failed. Retain
+        // observed failures; stored files whose results were discarded have no
+        // known upload failure phase. Only the remaining files inherit this phase.
+        const countedFailures = Object.values(failurePhaseCounts).reduce(
+          (total, count) => total + count,
+          0,
+        );
+        countFailure("unknown", completedDeliveryCount);
+        countFailure(
+          currentPhase,
+          files.length - countedFailures - completedDeliveryCount,
+        );
         recordOutcome(0, files.length);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,

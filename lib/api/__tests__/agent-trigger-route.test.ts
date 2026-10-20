@@ -52,7 +52,7 @@ jest.mock("@/app/posthog", () => ({
 jest.mock("next/server", () => ({
   after: jest.fn(),
   NextRequest: class NextRequest {},
-  NextResponse: class NextResponse {},
+  NextResponse: MockResponse,
 }));
 
 jest.mock("@trigger.dev/sdk", () => ({
@@ -114,6 +114,251 @@ const {
   shouldRequireAgentApprovalDeploymentPin,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
+
+describe("web request correlation at Agent dispatch", () => {
+  const { idempotencyKeys, sessions } = require("@trigger.dev/sdk");
+  const { getChatById, getUserCustomization } = require("@/lib/db/actions");
+  const {
+    stripLocalDesktopSourcePaths,
+  } = require("@/lib/utils/sandbox-file-utils");
+  const previousSecret = process.env.AGENT_RUN_CORRELATION_SECRET;
+  const requestId = "iad1::iad1-1792071667623-a1bd20d0daef";
+  const retryRequestId = "iad1::iad1-1792071667624-b1bd20d0daef";
+  const dispatchPaths = [
+    ["/api/agent", "full_access"],
+    ["/api/agent-long", "full_access"],
+    ["/api/agent", "ask_approval"],
+    ["/api/agent-long", "auto_review"],
+  ] as const;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.AGENT_RUN_CORRELATION_SECRET = "test-only-correlation-secret";
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-1",
+      subscription: "pro",
+    });
+    getChatById.mockResolvedValue(null);
+    getUserCustomization.mockResolvedValue(null);
+    stripLocalDesktopSourcePaths.mockImplementation(
+      (messages: unknown) => messages,
+    );
+    idempotencyKeys.create.mockImplementation(async (parts: string[]) =>
+      parts.join(":"),
+    );
+    mockTriggerTask.mockResolvedValue({ id: "run-existing" });
+    sessions.start.mockResolvedValue({ runId: "run-existing", isCached: true });
+    mockSetActiveTriggerRun.mockResolvedValue("updated");
+    mockCreatePublicToken.mockReset().mockResolvedValue("test-token");
+    jest.spyOn(console, "info").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (previousSecret === undefined)
+      delete process.env.AGENT_RUN_CORRELATION_SECRET;
+    else process.env.AGENT_RUN_CORRELATION_SECRET = previousSecret;
+  });
+
+  const start = (
+    endpoint: "/api/agent" | "/api/agent-long",
+    agentPermissionMode: string,
+    header?: string,
+    body: Record<string, unknown> = {},
+  ) =>
+    createAgentTriggerPost({ endpoint })({
+      headers: new Headers(
+        header === undefined ? {} : { "x-vercel-id": header },
+      ),
+      json: async () => ({
+        chatId: "chat-1",
+        agentPermissionMode,
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "private-prompt-canary" }],
+          },
+        ],
+        webRequestId: "untrusted-body-canary",
+        ...body,
+      }),
+    } as any);
+
+  it.each([
+    ["send", {}],
+    ["regenerate", { regenerate: true, messages: [] }],
+    ["continue", { isAutoContinue: true }],
+  ])(
+    "admits %s on a legacy chat without depending on retired scope storage",
+    async (_operation, body) => {
+      getChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        engagement_scope_expected: true,
+        update_time: 1,
+      });
+      const response = await start(
+        "/api/agent",
+        "full_access",
+        requestId,
+        body,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ runId: "run-existing" });
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat-1", userId: "user-1" }),
+      );
+      expect(mockTriggerTask).toHaveBeenCalledWith(
+        "agent-long",
+        expect.objectContaining({ chatId: "chat-1" }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it.each(dispatchPaths)(
+    "correlates %s %s without changing retry identity or payload",
+    async (endpoint, mode) => {
+      const first = await start(endpoint, mode, requestId);
+      const retry = await start(endpoint, mode, retryRequestId);
+      expect(first.status).toBe(200);
+      expect(retry.status).toBe(200);
+      expect(await first.json()).toMatchObject({ runId: "run-existing" });
+      expect(await retry.json()).toMatchObject({ runId: "run-existing" });
+
+      const approval = mode !== "full_access";
+      const calls = approval
+        ? sessions.start.mock.calls
+        : mockTriggerTask.mock.calls;
+      const firstMetadata = approval
+        ? calls[0][0].metadata
+        : calls[0][2].metadata;
+      const retryMetadata = approval
+        ? calls[1][0].metadata
+        : calls[1][2].metadata;
+      expect(firstMetadata).toMatchObject({
+        webRequestId: requestId,
+        endpoint,
+      });
+      expect(retryMetadata.webRequestId).toBe(retryRequestId);
+      expect(JSON.stringify(firstMetadata)).not.toMatch(
+        /private-prompt-canary|untrusted-body-canary/,
+      );
+      const payload = approval
+        ? calls[0][0].triggerConfig.basePayload
+        : calls[0][1];
+      expect(payload).not.toHaveProperty("webRequestId");
+      expect(idempotencyKeys.create.mock.calls).toEqual([
+        [
+          ["agent-run", "user-1", "chat-1", "send", "message-1"],
+          { scope: "global" },
+        ],
+        [
+          ["agent-run", "user-1", "chat-1", "send", "message-1"],
+          { scope: "global" },
+        ],
+      ]);
+      if (approval) {
+        expect(calls[0][0].externalId).toBe(calls[1][0].externalId);
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+      } else {
+        expect(calls[0][2].idempotencyKey).toBe(calls[1][2].idempotencyKey);
+        expect(calls[1][2].idempotencyKeyTTL).toBe("6h");
+        expect(sessions.start).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    undefined,
+    "",
+    "private-target-canary",
+    `${requestId}?private-target-canary`,
+    "a".repeat(129),
+  ])(
+    "omits a missing or unsafe request header (%s) from task and session metadata",
+    async (header) => {
+      for (const [endpoint, mode] of dispatchPaths) {
+        expect((await start(endpoint, mode, header)).status).toBe(200);
+      }
+      const metadata = [
+        ...mockTriggerTask.mock.calls.map((call: any[]) => call[2].metadata),
+        ...sessions.start.mock.calls.map((call: any[]) => call[0].metadata),
+      ];
+      expect(metadata).toHaveLength(dispatchPaths.length);
+      for (const item of metadata)
+        expect(item).not.toHaveProperty("webRequestId");
+      expect(JSON.stringify(metadata)).not.toMatch(
+        /private-target-canary|untrusted-body-canary/,
+      );
+    },
+  );
+  it.each(["save_chat", "reset_stream", "save_user_message"])(
+    "attributes a blocked initial persistence operation to %s without admitting the run early",
+    async (step) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        let finish!: () => void;
+        mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+          ({ onPersistenceStep }: any) => {
+            onPersistenceStep(step);
+            return new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          },
+        );
+        const response = start("/api/agent", "full_access", requestId);
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+          event: "agent_start_slow_request",
+          stage: "persist_user_message",
+          initial_persistence_step: step,
+        });
+        expect(warn.mock.calls[0][0]).not.toContain("private-prompt-canary");
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        finish();
+        expect((await response).status).toBe(200);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        warn.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("does not attach the completed persistence step to a later startup stage", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+        async ({ onPersistenceStep }: any) => {
+          onPersistenceStep("save_user_message");
+        },
+      );
+      let finish!: (token: string) => void;
+      mockCreatePublicToken.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const response = start("/api/agent", "full_access", requestId);
+      await jest.advanceTimersByTimeAsync(10_000);
+      const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("create_tokens_and_associate_run");
+      expect(diagnostic).not.toHaveProperty("initial_persistence_step");
+      finish("test-token");
+      expect((await response).status).toBe(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+});
 
 describe("Agent trigger route lifecycle", () => {
   beforeEach(() => {

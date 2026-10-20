@@ -3200,6 +3200,280 @@ describe("CentrifugoSandbox", () => {
       expect((error as Error).message).not.toContain("X-Amz-Signature");
     });
 
+    it.each([
+      { client: "curl", exitCode: 26, desktop: true, platform: "windows" },
+      { client: "wget", exitCode: 8, desktop: false, platform: "posix" },
+      { client: "powershell", exitCode: 1, desktop: true, platform: "windows" },
+      { client: "curl", exitCode: Infinity, desktop: false, platform: "posix" },
+      { client: "curl", exitCode: 26, desktop: false, platform: "posix" },
+      { client: "curl", exitCode: 35, desktop: true, platform: "posix" },
+    ])(
+      "records bounded $client upload failure diagnostics without transfer details",
+      async ({ client, exitCode, desktop, platform }) => {
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const { sandbox } = createWindowsBashSandbox();
+        (sandbox as any).connectionInfo.isDesktop = desktop;
+        if (platform === "posix")
+          (sandbox as any).connectionInfo.osInfo.platform = "linux";
+        (sandbox as any).httpClient = client;
+        const cleanup = jest.fn().mockResolvedValue(undefined);
+        jest
+          .spyOn(sandbox as any, "preparePowerShellCommand")
+          .mockResolvedValue({
+            command: "private prepared upload command",
+            cleanup,
+          });
+        const path = "C:\\private\\report-secret.txt";
+        const url =
+          "https://storage.example.com/private-key?X-Amz-Signature=secret";
+        const run = jest.fn(async (command: string) =>
+          command.includes("head -1")
+            ? { stdout: "GNU Wget", stderr: "", exitCode: 0 }
+            : {
+                stdout: `private stdout ${url}`,
+                stderr: `private stderr ${path} ${url}`,
+                exitCode,
+              },
+        );
+        (sandbox as any).commands.run = run;
+        try {
+          await expect(
+            sandbox.files.uploadToUrl(path, url, "private/media-type"),
+          ).rejects.toThrow("Failed to upload file:");
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0][0]).toBe("[centrifugo-http]");
+          const serialized = warn.mock.calls[0][1] as string;
+          expect(JSON.parse(serialized)).toEqual({
+            level: "warn",
+            event: "sandbox_file_upload_command_failed",
+            sandbox_type: desktop ? "desktop" : "local",
+            platform,
+            http_client: client,
+            exit_code: Number.isSafeInteger(exitCode) ? exitCode : null,
+          });
+          expect(serialized.length).toBeLessThan(220);
+          for (const sensitive of [
+            path,
+            url,
+            "secret",
+            "private",
+            "stdout",
+            "stderr",
+          ])
+            expect(serialized).not.toContain(sensitive);
+          expect(run).toHaveBeenCalledTimes(client === "wget" ? 2 : 1);
+          expect(cleanup).toHaveBeenCalledTimes(
+            client === "powershell" ? 1 : 0,
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("checks only the selected upload input and keeps paths and command output out of diagnostics", async () => {
+      const { execFileSync } = jest.requireActual("node:child_process");
+      const { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } =
+        jest.requireActual("node:fs");
+      const { tmpdir } = jest.requireActual("node:os");
+      const directory = mkdtempSync(`${tmpdir()}/hackerai-upload-probe-`);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sentinel = `${directory}/PROBE_EXECUTED`;
+      const selectedPath = `${directory}/report'$(touch PROBE_EXECUTED)`;
+      writeFileSync(selectedPath, "private file contents");
+      mkdirSync(`${directory}/folder`);
+      try {
+        for (const [path, expected] of [
+          [selectedPath, [true, true, true]],
+          [`${directory}/missing`, [false, false, false]],
+          [`${directory}/folder`, [true, false, true]],
+        ] as const) {
+          const sandbox = createDesktopSandbox();
+          (sandbox as any).connectionInfo.osInfo.platform = "darwin";
+          (sandbox as any).httpClient = "curl";
+          const run = jest.fn(async (command: string, options: unknown) => {
+            if (command.includes("__HACKERAI_UPLOAD_READ_FLAGS__:")) {
+              expect(options).toEqual({ timeoutMs: 2_000, displayName: "" });
+              return {
+                stdout: execFileSync("/bin/sh", ["-c", command], {
+                  encoding: "utf8",
+                  cwd: directory,
+                }),
+                stderr: "private probe output",
+                exitCode: 0,
+              };
+            }
+            return {
+              stdout: "private upload output",
+              stderr: "read failed",
+              exitCode: 26,
+            };
+          });
+          (sandbox as any).commands.run = run;
+          await expect(
+            sandbox.files.uploadToUrl(
+              path,
+              "https://example.com/?secret",
+              "text/plain",
+            ),
+          ).rejects.toThrow("Failed to upload file: read failed");
+          const diagnostic = JSON.parse(warn.mock.calls.at(-1)![1] as string);
+          expect(diagnostic).toEqual({
+            level: "warn",
+            event: "sandbox_file_upload_input_diagnostic",
+            sandbox_type: "desktop",
+            platform: "posix",
+            http_client: "curl",
+            exit_code: 26,
+            probe_status: "complete",
+            input_exists: expected[0],
+            input_regular_file: expected[1],
+            input_readable_by_shell: expected[2],
+            native_file_relay: true,
+          });
+          expect(JSON.stringify(diagnostic)).not.toMatch(
+            /secret|private|report|folder|missing/,
+          );
+          expect(run).toHaveBeenCalledTimes(2);
+        }
+        expect(existsSync(sentinel)).toBe(false);
+      } finally {
+        warn.mockRestore();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it.each(["throw", "nonzero", "invalid"])(
+      "preserves the upload error when the read diagnostic is %s",
+      async (failure) => {
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const sandbox = createDesktopSandbox();
+        (sandbox as any).connectionInfo.osInfo.platform = "linux";
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).commands.run = jest.fn(async (command: string) => {
+          if (!command.includes("__HACKERAI_UPLOAD_READ_FLAGS__:"))
+            return {
+              stdout: "",
+              stderr: "original upload error",
+              exitCode: 26,
+            };
+          if (failure === "throw")
+            throw new Error("private diagnostic timeout");
+          return {
+            stdout: "private malformed response",
+            stderr: "private details",
+            exitCode: failure === "nonzero" ? 1 : 0,
+          };
+        });
+        try {
+          await expect(
+            sandbox.files.uploadToUrl(
+              "/private/file",
+              "https://example.com",
+              "text/plain",
+            ),
+          ).rejects.toThrow("Failed to upload file: original upload error");
+          const diagnostic = JSON.parse(warn.mock.calls.at(-1)![1] as string);
+          expect(diagnostic).toMatchObject({
+            probe_status:
+              failure === "invalid" ? "invalid_response" : "unavailable",
+            input_exists: null,
+            input_regular_file: null,
+            input_readable_by_shell: null,
+          });
+          expect(JSON.stringify(diagnostic)).not.toContain("private");
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("shares one read probe across concurrent and repeated upload failures", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sandbox = createDesktopSandbox();
+      (sandbox as any).connectionInfo.osInfo.platform = "linux";
+      (sandbox as any).httpClient = "curl";
+      let releaseProbe!: () => void;
+      const probe = new Promise<void>((resolve) => {
+        releaseProbe = resolve;
+      });
+      let secondDiagnosticEntered!: () => void;
+      const concurrentEntry = new Promise<void>((resolve) => {
+        secondDiagnosticEntered = resolve;
+      });
+      const diagnose = (sandbox as any).diagnoseUploadReadFailure.bind(sandbox);
+      let diagnosticEntries = 0;
+      const diagnostic = jest
+        .spyOn(sandbox as any, "diagnoseUploadReadFailure")
+        .mockImplementation(async (path: unknown) => {
+          diagnosticEntries += 1;
+          if (diagnosticEntries === 2) secondDiagnosticEntered();
+          await diagnose(path);
+        });
+      let probes = 0;
+      const run = jest.fn(async (command: string) => {
+        if (command.includes("__HACKERAI_UPLOAD_READ_FLAGS__:")) {
+          probes += 1;
+          await probe;
+          return {
+            stdout: "__HACKERAI_UPLOAD_READ_FLAGS__:111\n",
+            stderr: "",
+            exitCode: 0,
+          };
+        }
+        return { stdout: "", stderr: "read failed", exitCode: 26 };
+      });
+      (sandbox as any).commands.run = run;
+      try {
+        const failures = Promise.allSettled([
+          sandbox.files.uploadToUrl(
+            "/one",
+            "https://example.com",
+            "text/plain",
+          ),
+          sandbox.files.uploadToUrl(
+            "/two",
+            "https://example.com",
+            "text/plain",
+          ),
+        ]);
+        await concurrentEntry;
+        expect(probes).toBe(1);
+        releaseProbe();
+        expect(
+          (await failures).every((result) => result.status === "rejected"),
+        ).toBe(true);
+        await expect(
+          sandbox.files.uploadToUrl(
+            "/three",
+            "https://example.com",
+            "text/plain",
+          ),
+        ).rejects.toThrow("read failed");
+        expect(probes).toBe(1);
+        expect(run).toHaveBeenCalledTimes(4);
+      } finally {
+        releaseProbe();
+        diagnostic.mockRestore();
+        warn.mockRestore();
+      }
+    });
+
+    it("does not emit upload failure diagnostics for a successful command", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { sandbox } = createWindowsBashSandbox();
+      try {
+        await sandbox.files.uploadToUrl(
+          "report.txt",
+          "https://example.com",
+          "text/plain",
+        );
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("uploadToUrl emits Windows curl with --ssl-no-revoke when supported", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
 

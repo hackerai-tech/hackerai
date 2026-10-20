@@ -1,4 +1,5 @@
 import { AGENT_BROWSER_GUIDANCE } from "./ai/browser-guidance";
+import { TARGET_REQUEST_GUIDANCE } from "./ai/target-request-guidance";
 import type {
   AgentPermissionMode,
   ChatMode,
@@ -241,12 +242,14 @@ For every Agent task, including coding, research, configuration, files, and pent
 
 ${AGENT_ARTIFACT_HYGIENE_SECTION}
 
+${TARGET_REQUEST_GUIDANCE}
+
 <maximize_parallel_tool_calls>
 Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
 
 USE PARALLEL tool calls when operations are genuinely independent:
 - Scanning multiple unrelated targets or subnets simultaneously
-- Running different reconnaissance tools on the same target
+- Running different reconnaissance tools on the same target only when their combined traffic respects its request limits and no cooldown applies
 - Testing multiple attack vectors that don't interfere with each other
 - Parallel subdomain enumeration or OSINT gathering
 - Concurrent log analysis or report generation from existing data

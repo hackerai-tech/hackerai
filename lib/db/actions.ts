@@ -1,4 +1,5 @@
 import "server-only";
+import { getAgentHistoryBudget } from "@/lib/ai/agent-context-budget";
 import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
 import {
   countIndependentAbliterationResponses,
@@ -18,7 +19,6 @@ import {
 } from "@/lib/utils/file-token-utils";
 import {
   countMessagesTokens,
-  getMaxTokensForSubscription,
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
@@ -244,6 +244,7 @@ const getUpstreamHttpError = (
 
   const statusMatch =
     message.match(/<title>[^<|]+\|\s*(5\d{2}):/i) ??
+    message.match(/<title>\s*(502)\s+Bad Gateway\s*<\/title>/i) ??
     message.match(/Error code\s+(5\d{2})/i);
   if (!statusMatch) return undefined;
 
@@ -1202,6 +1203,9 @@ export async function saveMessage({
   }
 }
 
+export type InitialChatPersistenceStep =
+  "save_chat" | "reset_stream" | "save_user_message";
+
 export async function handleInitialChatAndUserMessage({
   chatId,
   userId,
@@ -1210,6 +1214,7 @@ export async function handleInitialChatAndUserMessage({
   chat,
   isHidden,
   projectId,
+  onPersistenceStep,
 }: {
   chatId: string;
   userId: string;
@@ -1218,7 +1223,15 @@ export async function handleInitialChatAndUserMessage({
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
   projectId?: string;
+  onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
+  const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
+    try {
+      onPersistenceStep?.(step);
+    } catch {
+      // Diagnostics must not interrupt or retry persistence.
+    }
+  };
   if (!chat) {
     // Save new chat and get the document _id
     let title = "New Chat";
@@ -1240,6 +1253,7 @@ export async function handleInitialChatAndUserMessage({
     // Ensure title is a string and truncate safely
     title = (title ?? "New Chat").substring(0, 100);
 
+    reportPersistenceStep("save_chat");
     await saveChat({
       id: chatId,
       userId,
@@ -1259,11 +1273,13 @@ export async function handleInitialChatAndUserMessage({
   // Regeneration skips the user-message write that clears cancellation. Reset
   // it after ownership validation, before tools or cancellation polling start.
   if (regenerate && chat) {
+    reportPersistenceStep("reset_stream");
     await prepareForNewStream({ chatId });
   }
 
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
+    reportPersistenceStep("save_user_message");
     await saveMessage({
       chatId,
       userId,
@@ -1405,6 +1421,7 @@ export async function getMessagesByChatId({
   subscription,
   mode,
   useClientMessagesForRegenerate,
+  agentModelContextEnabled = false,
 }: {
   chatId: string;
   userId: string;
@@ -1413,6 +1430,7 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
+  agentModelContextEnabled?: boolean;
 }) {
   let chat = undefined;
   let isNewChat = true;
@@ -1516,9 +1534,11 @@ export async function getMessagesByChatId({
             }
           }
 
-          const maxTokens = getMaxTokensForSubscription(subscription, {
+          const maxTokens = getAgentHistoryBudget(
+            subscription,
             mode,
-          });
+            agentModelContextEnabled,
+          );
           const truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
@@ -1585,9 +1605,11 @@ export async function getMessagesByChatId({
             };
 
             // Re-truncate real messages to leave room for the summary message
-            const maxTokens = getMaxTokensForSubscription(subscription, {
+            const maxTokens = getAgentHistoryBudget(
+              subscription,
               mode,
-            });
+              agentModelContextEnabled,
+            );
             const summaryTokens = countMessagesTokens(
               [summaryMessage],
               fileTokensFromLoop,
@@ -1717,6 +1739,7 @@ export async function getMessagesByChatId({
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
     mode,
     userId,
+    agentModelContextEnabled,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -1726,9 +1749,11 @@ export async function getMessagesByChatId({
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any, userId);
-      const maxTokens = getMaxTokensForSubscription(subscription, {
+      const maxTokens = getAgentHistoryBudget(
+        subscription,
         mode,
-      });
+        agentModelContextEnabled,
+      );
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
       const largestFileToken = Object.values(fileTokens).length
         ? Math.max(...Object.values(fileTokens))

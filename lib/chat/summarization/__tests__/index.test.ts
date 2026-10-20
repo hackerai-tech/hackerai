@@ -179,6 +179,53 @@ describe("default compaction policy pipeline", () => {
       expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
     },
   );
+  it("keeps more than 64K source tokens for Max checkpoints and only retries a large-context model", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    mockGenerateText
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        text: JSON.stringify(
+          Object.fromEntries(
+            AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
+              heading.slice(3),
+              "Pending check C; scope fixture.test only.",
+            ]),
+          ),
+        ),
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 20 },
+      });
+    expect((await compact()).needsSummarization).toBe(true);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    expect(mockGenerateText.mock.calls[0][0].providerOptions).toEqual({
+      abliteration: { reasoningEffort: "low" },
+    });
+    for (const [args] of mockGenerateText.mock.calls) {
+      const tokens = estimateSummaryInputTokens(args.messages);
+      expect(tokens).toBeGreaterThan(64_000);
+      expect(tokens).toBeLessThan(490_000);
+    }
+  });
+  it("does not shrink Max source through an unverified fallback when both large summarizers fail", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    mockGenerateText.mockRejectedValue(new Error("Provider unavailable"));
+    expect((await compact()).needsSummarization).toBe(false);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+  });
   it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
     mockGenerateText
       .mockResolvedValueOnce({
@@ -288,7 +335,7 @@ describe("default compaction policy pipeline", () => {
       resolve.mockResolvedValue({
         model: "model-glm-5.3-flash",
         fallbackModel: "model-abliterated",
-        policy: "moderation_glm53_abliteration_fallback_v1",
+        policy: "moderation_glm53_abliteration_recovery_v2",
       });
       mockGenerateText
         .mockResolvedValueOnce({
@@ -317,11 +364,34 @@ describe("default compaction policy pipeline", () => {
       expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
     },
   );
+  it("preserves original history and never persists when every selective attempt refuses", async () => {
+    resolve.mockResolvedValue({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated",
+      policy: "moderation_glm53_abliteration_recovery_v2",
+    });
+    const original = JSON.stringify(fourMessagesAboveThreshold);
+    mockGenerateText.mockResolvedValue({
+      text: "Sorry, I cannot help summarize this conversation.",
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(false);
+    expect(JSON.stringify(fourMessagesAboveThreshold)).toBe(original);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(mockGenerateText).toHaveBeenCalledTimes(4);
+    expect(onDiscardedUsage).toHaveBeenCalledTimes(4);
+    expect(attempt.mock.calls.map((call) => call[4])).toEqual(
+      Array(4).fill("missing_sections"),
+    );
+    expect(finish).toHaveBeenLastCalledWith("error", undefined);
+  });
   it("retries a transient GLM failure but does not retry a canceled treatment", async () => {
     resolve.mockResolvedValue({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      policy: "moderation_glm53_abliteration_recovery_v2",
     });
     mockGenerateText
       .mockRejectedValueOnce({ statusCode: 503 })
@@ -348,7 +418,7 @@ describe("default compaction policy pipeline", () => {
     resolve.mockResolvedValue({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      policy: "moderation_glm53_abliteration_recovery_v2",
     });
     mockGenerateText
       .mockResolvedValueOnce({
@@ -1121,8 +1191,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       chatId: "chat-pressure",
       chatSystemPrompt: "test-system-prompt",
       providerPromptPressure: {
-        reason: "tool_result_count",
-        reasons: ["tool_result_count"],
+        reason: "serialized_message_bytes",
+        reasons: ["serialized_message_bytes"],
         toolResultCount: 101,
         messageCount: 101,
         summarizationMaxTokensOverride: 128_000,
@@ -1325,8 +1395,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       undefined,
       undefined,
       {
-        reason: "tool_result_count",
-        reasons: ["tool_result_count"],
+        reason: "serialized_message_bytes",
+        reasons: ["serialized_message_bytes"],
         toolResultCount: 1,
         messageCount: 1,
         summarizationMaxTokensOverride: 128_000,

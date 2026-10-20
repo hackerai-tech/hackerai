@@ -1,72 +1,33 @@
 import { describe, it, expect } from "@jest/globals";
-import { ASK_MODEL_OPTIONS, AGENT_MODEL_OPTIONS } from "../constants";
-import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
-import type { ChatMode } from "@/types/chat";
+import { AGENT_MODEL_OPTIONS } from "../constants";
+import { myProvider, resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 
-/**
- * Drift guard: every selectable HackerAI tier must resolve to a provider key
- * registered with `myProvider` in *both* modes. Without this, picking the
- * tier from the UI would crash on `myProvider.languageModel()`.
- */
-describe("ModelSelector tier ↔ provider drift", () => {
-  const allOptions = [...ASK_MODEL_OPTIONS, ...AGENT_MODEL_OPTIONS];
-
-  it("every option in both lineups resolves to a registered provider", () => {
-    for (const mode of ["ask", "agent"] as ChatMode[]) {
-      const options =
-        mode === "agent" ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
-      for (const option of options) {
-        const providerKey = resolveTierToProviderKey(option.id, mode);
-        expect(providerKey).not.toBeNull();
-        expect(() =>
-          myProvider.languageModel(providerKey as string),
-        ).not.toThrow();
-      }
+/** Every selectable paid Agent tier must have a registered provider. */
+describe("ModelSelector tier provider drift", () => {
+  it("every Agent option resolves to a registered provider", () => {
+    for (const option of AGENT_MODEL_OPTIONS) {
+      const providerKey = resolveAgentTierToProviderKey(option.id);
+      expect(providerKey).not.toBeNull();
+      expect(() =>
+        myProvider.languageModel(providerKey as string),
+      ).not.toThrow();
     }
   });
 
-  it("ask + agent lineups expose the same tier ids", () => {
-    const askIds = new Set(ASK_MODEL_OPTIONS.map((o) => o.id));
-    const agentIds = new Set(AGENT_MODEL_OPTIONS.map((o) => o.id));
-    expect([...askIds].sort()).toEqual([...agentIds].sort());
+  it.each([
+    ["hackerai-standard", "model-glm-5.3-flash-agent"],
+    ["hackerai-pro", "model-deepseek-v4-flash-vision-pro"],
+    ["hackerai-max", "model-glm-5.3"],
+  ] as const)("resolves the Agent provider for %s", (tier, model) => {
+    expect(resolveAgentTierToProviderKey(tier)).toBe(model);
   });
 
-  it("HackerAI Standard resolves to GLM 5.3 Flash in both modes", () => {
-    expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
-      "model-glm-5.3-flash",
-    );
-    expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-glm-5.3-flash-agent",
-    );
+  it("leaves Auto routing to the caller", () => {
+    expect(resolveAgentTierToProviderKey("auto")).toBeNull();
   });
 
-  it("HackerAI Pro keeps Ask on V4 Pro 0813 and uses V4.1 Flash in Agent", () => {
-    expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-deepseek-v4-pro-0813",
-    );
-    expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-deepseek-v4-flash-vision-pro",
-    );
-  });
-
-  it("HackerAI Max resolves to the same provider in both modes", () => {
-    expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
-      "model-glm-5.3",
-    );
-    expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
-      "model-glm-5.3",
-    );
-  });
-
-  it("'auto' returns null (caller routes to the auto router)", () => {
-    expect(resolveTierToProviderKey("auto", "ask")).toBeNull();
-    expect(resolveTierToProviderKey("auto", "agent")).toBeNull();
-  });
-
-  it("hover-popup descriptions are present for every HackerAI tier", () => {
-    const tiered = allOptions.filter((o) => o.label.startsWith("HackerAI"));
-    expect(tiered.length).toBeGreaterThan(0);
-    for (const option of tiered) {
+  it("includes descriptions for every Agent tier", () => {
+    for (const option of AGENT_MODEL_OPTIONS) {
       expect(option.description).toBeTruthy();
     }
   });

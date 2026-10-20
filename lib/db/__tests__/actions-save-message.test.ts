@@ -304,6 +304,62 @@ describe("saveChat", () => {
 });
 
 describe("getChatById", () => {
+  const cloudflareBadGatewayPage = `<!DOCTYPE html>
+    <html><head><title>502 Bad Gateway</title></head>
+    <body>cloudflare PRIVATE_UPSTREAM_BODY</body></html>`;
+
+  it("recovers a standard Cloudflare 502 lookup within the existing retry budget", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery
+      .mockRejectedValueOnce(new Error(cloudflareBadGatewayPage) as never)
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" } as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(getChatById({ id: "chat-1" })).resolves.toEqual({
+        id: "chat-1",
+        user_id: "user-1",
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(warnSpy.mock.calls[0][0]))).toMatchObject({
+        event: "chat_fetch_retry_scheduled",
+        retry_reason: "convex_upstream_http_5xx",
+        attempt: 1,
+        next_attempt: 2,
+      });
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    "<html><title>502 Bad Gateway</title><body>unrelated host</body></html>",
+    "<html><title>403 Forbidden</title><body>cloudflare</body></html>",
+    "Cloudflare 502 Bad Gateway",
+  ])("does not add retries for an unrelated error page: %s", async (page) => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(new Error(page) as never);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).rejects.toMatchObject({
+        type: "bad_request",
+        metadata: expect.not.objectContaining({
+          db_error_kind: "convex_upstream_http_error",
+        }),
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("retries transient Convex fetch failures before returning a chat", async () => {
     const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
     const fetchError = new TypeError("fetch failed");
@@ -424,56 +480,74 @@ describe("getChatById", () => {
     }
   });
 
-  it("classifies and sanitizes Convex Cloudflare 5xx pages", async () => {
-    const { getChatById, mockPhEvent, mockQuery } =
-      await loadSaveMessageWithMocks();
-    const cloudflareError = new Error(`<!DOCTYPE html>
-      <html><head><title>haiusercontent.com | 520: Web server is returning an unknown error</title></head>
-      <body>Error code 520 Cloudflare Ray ID: <strong>a18f8f8c09cee629</strong> Your IP: 192.0.2.1</body></html>`);
-    mockQuery.mockRejectedValue(cloudflareError as never);
+  it.each([
+    {
+      status: 520,
+      page: `<!DOCTYPE html>
+        <html><head><title>haiusercontent.com | 520: Web server is returning an unknown error</title></head>
+        <body>Error code 520 Cloudflare Ray ID: <strong>a18f8f8c09cee629</strong> Your IP: 192.0.2.1</body></html>`,
+      rayId: "a18f8f8c09cee629",
+    },
+    { status: 502, page: cloudflareBadGatewayPage, rayId: undefined },
+  ])(
+    "classifies and sanitizes exhausted Cloudflare $status lookups",
+    async ({ status, page, rayId }) => {
+      const { getChatById, mockPhEvent, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const cloudflareError = new Error(page);
+      mockQuery.mockRejectedValue(cloudflareError as never);
 
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
 
-    try {
-      const thrown = await getChatById({ id: "chat-1" }).catch(
-        (error) => error,
-      );
+      try {
+        const thrown = await getChatById({ id: "chat-1" }).catch(
+          (error) => error,
+        );
 
-      expect(thrown).toMatchObject({
-        type: "offline",
-        surface: "database",
-        statusCode: 503,
-        metadata: expect.objectContaining({
-          db_operation: "chats.getChatById",
-          db_error_message: "Convex upstream returned HTTP 520",
-          db_error_kind: "convex_upstream_http_error",
-          db_upstream_status_code: 520,
-          db_upstream_ray_id: "a18f8f8c09cee629",
-          db_retry_reason: "convex_upstream_http_5xx",
-        }),
-      });
-      expect(mockQuery).toHaveBeenCalledTimes(3);
-      expect(JSON.stringify(thrown.metadata)).not.toContain("192.0.2.1");
-      expect(thrown.message).not.toContain("192.0.2.1");
-      expect(thrown.cause).toBe(
-        "Database temporarily unavailable: chats.getChatById: Convex upstream returned HTTP 520",
-      );
-      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("192.0.2.1");
-      expect(mockPhEvent).toHaveBeenCalledWith(
-        "database_operation_failed",
-        expect.objectContaining({
-          db_error_message: "Convex upstream returned HTTP 520",
-          db_upstream_status_code: 520,
-          db_upstream_ray_id: "a18f8f8c09cee629",
-        }),
-      );
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      warnSpy.mockRestore();
-      errorSpy.mockRestore();
-    }
-  });
+        expect(thrown).toMatchObject({
+          type: "offline",
+          surface: "database",
+          statusCode: 503,
+          metadata: expect.objectContaining({
+            db_operation: "chats.getChatById",
+            db_error_message: `Convex upstream returned HTTP ${status}`,
+            db_error_kind: "convex_upstream_http_error",
+            db_upstream_status_code: status,
+            db_upstream_ray_id: rayId,
+            db_retry_reason: "convex_upstream_http_5xx",
+          }),
+        });
+        expect(mockQuery).toHaveBeenCalledTimes(3);
+        expect(JSON.stringify(thrown.metadata)).not.toContain("192.0.2.1");
+        expect(thrown.message).not.toContain("192.0.2.1");
+        expect(thrown.cause).toBe(
+          `Database temporarily unavailable: chats.getChatById: Convex upstream returned HTTP ${status}`,
+        );
+        expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("192.0.2.1");
+        expect(mockPhEvent).toHaveBeenCalledWith(
+          "database_operation_failed",
+          expect.objectContaining({
+            db_error_message: `Convex upstream returned HTTP ${status}`,
+            db_upstream_status_code: status,
+            db_upstream_ray_id: rayId,
+          }),
+        );
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        const terminalDiagnostics = JSON.stringify({
+          metadata: thrown.metadata,
+          logs: errorSpy.mock.calls,
+          events: mockPhEvent.mock.calls,
+        });
+        expect(terminalDiagnostics).not.toContain("PRIVATE_UPSTREAM_BODY");
+      } finally {
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    },
+  );
 });
 
 describe("updateChat", () => {
@@ -1869,6 +1943,81 @@ it("persists server routing markers alongside usage only for assistant messages"
   expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
 });
 
+describe("initial chat persistence diagnostics", () => {
+  const messages = [
+    {
+      id: "message-1",
+      parts: [{ type: "text" as const, text: "private-canary" }],
+    },
+  ];
+
+  it.each([
+    ["save_chat", null, false, "chats:saveChat"],
+    [
+      "reset_stream",
+      { user_id: "user-1" },
+      true,
+      "chatStreams:prepareForNewStream",
+    ],
+    ["save_user_message", { user_id: "user-1" }, false, "messages:saveMessage"],
+  ] as const)(
+    "reports %s while that persistence operation is still waiting",
+    async (step, chat, regenerate, operation) => {
+      const { handleInitialChatAndUserMessage, mockMutation } =
+        await loadSaveMessageWithMocks();
+      let finish!: (value: any) => void;
+      mockMutation.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onPersistenceStep = jest.fn();
+      let settled = false;
+      const pending = handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat,
+        regenerate,
+        onPersistenceStep,
+      }).then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(onPersistenceStep.mock.calls).toEqual([[step]]);
+      const { getFunctionName } = await import("convex/server");
+      expect(getFunctionName(mockMutation.mock.calls[0]![0] as any)).toBe(
+        operation,
+      );
+      finish({ id: "message-1" });
+      await pending;
+      expect(settled).toBe(true);
+    },
+  );
+
+  it("persists the chat and message in order even if diagnostic reporting throws", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await expect(
+      handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat: null,
+        onPersistenceStep: () => {
+          throw new Error("diagnostic unavailable");
+        },
+      }),
+    ).resolves.toBeUndefined();
+    const { getFunctionName } = await import("convex/server");
+    expect(
+      mockMutation.mock.calls.map(([fn]) => getFunctionName(fn as any)),
+    ).toEqual(["chats:saveChat", "messages:saveMessage"]);
+  });
+});
+
 describe("regenerated chat initialization", () => {
   const args = {
     chatId: "chat-1",
@@ -1919,10 +2068,16 @@ describe("regenerated chat initialization", () => {
   it("does not clear another owner's cancellation state", async () => {
     const { handleInitialChatAndUserMessage, mockMutation } =
       await loadSaveMessageWithMocks();
+    const onPersistenceStep = jest.fn();
     await expect(
-      handleInitialChatAndUserMessage({ ...args, userId: "other-user" }),
+      handleInitialChatAndUserMessage({
+        ...args,
+        userId: "other-user",
+        onPersistenceStep,
+      }),
     ).rejects.toThrow();
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(onPersistenceStep).not.toHaveBeenCalled();
   });
 
   it("stops initialization when cancellation cleanup fails", async () => {

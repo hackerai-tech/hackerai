@@ -16,6 +16,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useEffect, useRef } from "react";
+import { ConvexError } from "convex/values";
+import { toast } from "sonner";
 
 jest.mock("uuid", () => ({
   v4: () => "queued-message-id",
@@ -53,6 +55,8 @@ jest.mock("@/lib/chat/agent-long-transport", () => ({
   ) => mockResumeAgentLongStream(...args),
 }));
 let mockRouteParams: Record<string, string> = {};
+const mockBranchChat = jest.fn<() => Promise<string | null>>();
+const mockRouterPush = jest.fn();
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
 
@@ -92,6 +96,12 @@ jest.mock("convex/react", () => {
     jest.requireActual<typeof import("convex/react")>("convex/react");
   return {
     ...original,
+    useMutation: (mutation: any) => {
+      const { getFunctionName } = require("convex/server");
+      return getFunctionName(mutation) === "messages:branchChat"
+        ? mockBranchChat
+        : original.useMutation(mutation);
+    },
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
       if (getFunctionName(query) === "localSandbox:listConnections")
@@ -123,7 +133,7 @@ jest.mock("next/navigation", () => ({
     mockRouteParams.id ? `/c/${mockRouteParams.id}` : "/",
   ),
   useRouter: jest.fn(() => ({
-    push: jest.fn(),
+    push: mockRouterPush,
     replace: jest.fn(),
     back: jest.fn(),
     forward: jest.fn(),
@@ -238,12 +248,15 @@ jest.mock("../MemoizedMarkdown", () => ({
 }));
 
 jest.mock("../Messages", () => ({
-  Messages: ({ messages, acquisitionSurvey }: any) => (
+  Messages: ({ messages, acquisitionSurvey, onBranchMessage }: any) => (
     <div
       data-testid="messages-component"
       data-survey-message={acquisitionSurvey?.messageId}
     >
       {messages.length} messages
+      <button type="button" onClick={() => onBranchMessage("assistant-1")}>
+        Branch message
+      </button>
     </div>
   ),
 }));
@@ -455,6 +468,7 @@ describe("Chat Component Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBranchChat.mockReset();
     mockUseAuth.mockReturnValue(defaultAuth);
     global.fetch = originalFetch;
     const convexReact = require("convex/react");
@@ -498,6 +512,80 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it.each([
+      [
+        new ConvexError({ code: "BRANCH_HISTORY_TOO_LARGE" }),
+        "This task is too large to branch at this message. Try branching from an earlier message. Your original task is unchanged.",
+      ],
+      [
+        new ConvexError({ code: "UNAUTHORIZED", message: "private details" }),
+        "Failed to branch task. Please try again.",
+      ],
+    ])(
+      "shows safe branch guidance without navigating on failure (%#)",
+      async (error, expected) => {
+        const toastError = jest.spyOn(toast, "error");
+        mockBranchChat.mockRejectedValueOnce(error);
+        mockUseChat.mockReturnValue({
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              parts: [{ type: "text", text: "Answer" }],
+            },
+          ],
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          status: "ready",
+          stop: mockStop,
+        });
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Branch message" }));
+        await waitFor(() => expect(toastError).toHaveBeenCalledWith(expected));
+        expect(mockBranchChat).toHaveBeenCalledTimes(1);
+        expect(mockBranchChat).toHaveBeenCalledWith({
+          messageId: "assistant-1",
+        });
+        expect(mockRouterPush).not.toHaveBeenCalled();
+        expect(screen.getByTestId("messages-component")).toHaveTextContent(
+          "1 messages",
+        );
+        toastError.mockRestore();
+      },
+    );
+
+    it("still navigates to a successfully created branch", async () => {
+      mockBranchChat.mockResolvedValueOnce("new-branch");
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "assistant-1",
+            role: "assistant",
+            parts: [{ type: "text", text: "Answer" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+      });
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Branch message" }));
+      await waitFor(() =>
+        expect(mockRouterPush).toHaveBeenCalledWith("/c/new-branch"),
+      );
+      expect(mockBranchChat).toHaveBeenCalledTimes(1);
+    });
+
     it("releases a persisted streamed title so later manual renames stay visible", () => {
       const { rerender } = render(
         <ChatTitleHandoffHarness persistedTitle="Original prompt" />,

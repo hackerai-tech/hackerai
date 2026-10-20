@@ -1,3 +1,4 @@
+import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
@@ -142,6 +143,11 @@ export const createTools = (
       writer.write({
         type: "data-cloud-connection-error",
         data: { code: "timeout", workspacePreserved: true },
+      }),
+    onFailure: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "unavailable", workspacePreserved: true },
       }),
     provider: runtimePolicy.cloudSandboxProvider,
     selectionReason: runtimePolicy.cloudSandboxSelectionReason,
@@ -437,6 +443,11 @@ export const createTools = (
   };
 
   return {
+    cloudNetworkPrompt: createCloudNetworkPrompt(
+      userID,
+      () =>
+        isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
+    ),
     tools,
     cleanupBrowserSessions: () =>
       browserSessions?.cleanup() ?? Promise.resolve(),
