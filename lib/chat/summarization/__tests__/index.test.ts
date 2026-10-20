@@ -189,7 +189,14 @@ describe("default compaction policy pipeline", () => {
     mockGenerateText
       .mockRejectedValueOnce(new Error("Provider unavailable"))
       .mockResolvedValueOnce({
-        text: summary,
+        text: JSON.stringify(
+          Object.fromEntries(
+            AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
+              heading.slice(3),
+              "Pending check C; scope fixture.test only.",
+            ]),
+          ),
+        ),
         finishReason: "stop",
         usage: { inputTokens: 100, outputTokens: 20 },
       });
