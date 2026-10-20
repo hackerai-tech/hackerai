@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
-import { Monitor } from "lucide-react";
+import { Monitor, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -11,7 +11,13 @@ import {
 } from "@/lib/utils/sidebar-utils";
 import { isSidebarTerminal } from "@/types/chat";
 
-/** Keep the live browser discoverable without requiring a tool-history click. */
+type ReminderPreference = {
+  chatId: string;
+  availableHidden: boolean;
+  dismissedAttention: string | null;
+};
+
+/** Passive discovery stays dismissed; a new handoff can still request attention. */
 export function BrowserHandoffEntry({
   chatId,
   messages,
@@ -19,6 +25,32 @@ export function BrowserHandoffEntry({
   chatId: string;
   messages: Message[];
 }) {
+  const [preference, setPreference] = useState<ReminderPreference | null>(null);
+  const storageKey = `browser-reminder:v1:${chatId}`;
+  useEffect(() => {
+    const readPreference = () => {
+      let availableHidden = false;
+      let dismissedAttention: string | null = null;
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+        availableHidden = saved?.availableHidden === true;
+        dismissedAttention =
+          typeof saved?.dismissedAttention === "string"
+            ? saved.dismissedAttention
+            : null;
+      } catch {
+        // Storage may be unavailable. Dismissal still works for this mount.
+      }
+      setPreference({ chatId, availableHidden, dismissedAttention });
+    };
+    readPreference();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === storageKey || event.key === null) readPreference();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [chatId, storageKey]);
+
   const { isAuthenticated } = useConvexAuth();
   const { sidebarOpen, openSidebar } = useGlobalState();
   const session = useQuery(
@@ -37,7 +69,35 @@ export function BrowserHandoffEntry({
     [messages],
   );
 
-  if (sidebarOpen || !session || !browserTool) return null;
+  if (sidebarOpen || !session || !browserTool || preference?.chatId !== chatId)
+    return null;
+
+  // Do not use updatedAt for passive discovery: ordinary browser work updates it.
+  // For an explicit handoff it identifies a new request, even in the same session.
+  const attentionKey =
+    session.state === "agent"
+      ? null
+      : `${session.sessionId}:${session.state}:${session.updatedAt}`;
+  if (
+    attentionKey
+      ? preference.dismissedAttention === attentionKey
+      : preference.availableHidden
+  )
+    return null;
+
+  const dismiss = () => {
+    const next = {
+      chatId,
+      availableHidden: true,
+      dismissedAttention: attentionKey,
+    };
+    setPreference(next);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      // Never prevent opening the browser when storage is blocked or full.
+    }
+  };
 
   const status =
     session.state === "waiting"
@@ -68,10 +128,22 @@ export function BrowserHandoffEntry({
         </div>
         <button
           type="button"
-          onClick={() => openSidebar(browserTool)}
+          onClick={() => {
+            dismiss();
+            openSidebar(browserTool);
+          }}
           className="min-h-11 shrink-0 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           Open browser
+        </button>
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Hide browser reminder"
+          title="Hide browser reminders for this chat. New handoff requests will still appear."
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X size={16} aria-hidden />
         </button>
       </div>
     </div>
