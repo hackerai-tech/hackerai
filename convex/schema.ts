@@ -366,6 +366,7 @@ export default defineSchema({
     directory: v.string(),
     state: v.union(
       v.literal("agent"),
+      v.literal("waiting"),
       v.literal("claiming"),
       v.literal("human"),
       v.literal("recovery"),
@@ -373,6 +374,7 @@ export default defineSchema({
       v.literal("closed"),
     ),
     grant: v.optional(v.string()),
+    waiting_for_handoff: v.optional(v.boolean()),
     grant_expires_at: v.optional(v.number()),
     controlled_session_name: v.optional(v.string()),
     input_id: v.optional(v.string()),

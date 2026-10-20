@@ -178,7 +178,7 @@ export async function POST(
 
   if (body.action === "take") {
     if (
-      !["agent", "recovery"].includes(session.state) ||
+      !["agent", "waiting", "recovery"].includes(session.state) ||
       typeof body.browserSessionName !== "string" ||
       body.browserSessionName.length > 80
     )

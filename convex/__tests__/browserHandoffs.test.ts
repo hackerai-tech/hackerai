@@ -112,6 +112,90 @@ describe("browser handoff ownership", () => {
     jest.useRealTimers();
   });
 
+  it("keeps a requested handoff waiting after failed takeover, and clears it only on resume", async () => {
+    const { ctx, rows, register, scope } = fixture();
+    await register();
+    const row = rows.browser_handoffs[0];
+    const request = { ...scope, expectedUpdatedAt: row.updated_at as number };
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, request),
+    ).toBe(true);
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, request),
+    ).toBe(true);
+    expect(row.state).toBe("waiting");
+    const grant = "g".repeat(32);
+    expect(
+      await browser.beginTakeoverForBackend.handler(ctx as never, {
+        ...scope,
+        grant,
+      }),
+    ).toBe(true);
+    await browser.abortTakeoverForBackend.handler(ctx as never, {
+      ...scope,
+      grant,
+      paused: false,
+    });
+    expect(row.state).toBe("waiting");
+    await browser.beginTakeoverForBackend.handler(ctx as never, {
+      ...scope,
+      grant,
+    });
+    await browser.finishTakeoverForBackend.handler(ctx as never, {
+      ...scope,
+      grant,
+      browserSessionName: "default",
+    });
+    await browser.beginResumeForBackend.handler(ctx as never, {
+      ...scope,
+      grant,
+    });
+    await browser.abortResumeForBackend.handler(ctx as never, scope);
+    expect(row.state).toBe("recovery");
+    expect(row.waiting_for_handoff).toBe(true);
+    await browser.beginResumeForBackend.handler(ctx as never, scope);
+    await browser.saveExitNoteForBackend.handler(ctx as never, {
+      ...scope,
+      requestId: "12345678-1234-1234-1234-123456789012",
+      note: "",
+    });
+    await browser.finishResumeForBackend.handler(ctx as never, scope);
+    expect(row.state).toBe("agent");
+    expect(row.waiting_for_handoff).toBeUndefined();
+    expect(rows.messages).toHaveLength(1);
+    expect(rows.messages[0].is_hidden).toBe(true);
+  });
+
+  it("rejects stale, foreign and expired handoff wait requests", async () => {
+    const { ctx, rows, register, scope } = fixture();
+    await register();
+    const row = rows.browser_handoffs[0];
+    const request = {
+      ...scope,
+      expectedUpdatedAt: (row.updated_at as number) - 1,
+    };
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, request),
+    ).toBe(false);
+    request.expectedUpdatedAt = row.updated_at as number;
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, {
+        ...request,
+        userId: "other",
+      }),
+    ).toBe(false);
+    row.state = "human";
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, request),
+    ).toBe(false);
+    row.state = "agent";
+    row.expires_at = Date.now() - 1;
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, request),
+    ).toBe(false);
+    expect(row.state).toBe("agent");
+  });
+
   it("accepts the six-hour run lifetime and rejects deadlines beyond its grace", async () => {
     jest.useFakeTimers();
     const { register } = fixture();

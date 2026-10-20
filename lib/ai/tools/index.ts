@@ -1,5 +1,6 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
+import { createBrowserHandoff } from "./browser-handoff";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -307,6 +308,12 @@ export const createTools = (
     // one-time object so model-specific tool schemas can be rebuilt for
     // provider fallback legs.
     const allTools = {
+      ...(browserSessions && {
+        browser_handoff: createBrowserHandoff(
+          browserSessions,
+          runtimePolicy.signal,
+        ),
+      }),
       run_terminal_cmd: createRunTerminalCmd(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),

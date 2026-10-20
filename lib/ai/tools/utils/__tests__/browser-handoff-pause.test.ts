@@ -1,4 +1,5 @@
 import type { AnySandbox } from "@/types";
+import { createBrowserHandoff } from "../../browser-handoff";
 import {
   BROWSER_SESSION_MAX_LIFETIME_MS,
   BrowserSessions,
@@ -32,11 +33,11 @@ async function owner(agentId = "parent") {
 beforeEach(() => {
   jest.useFakeTimers();
   mockQuery.mockReset();
-  mockMutation.mockClear();
+  mockMutation.mockReset().mockResolvedValue(true);
 });
 afterEach(() => jest.useRealTimers());
 
-it.each(["claiming", "human", "recovery", "resuming"])(
+it.each(["waiting", "claiming", "human", "recovery", "resuming"])(
   "holds Agent progression in %s until explicit resume",
   async (state) => {
     const { sessions } = await owner();
@@ -51,6 +52,79 @@ it.each(["claiming", "human", "recovery", "resuming"])(
     expect(progressed).toHaveBeenCalledWith(true);
   },
 );
+
+it("waits through takeover and resumes within one check without a sandbox sleep", async () => {
+  const { sessions, run } = await owner();
+  let state = "agent";
+  mockQuery.mockImplementation(async () => ({
+    state,
+    runActive: true,
+    updatedAt: 123,
+  }));
+  mockMutation.mockImplementation(async () => {
+    state = "waiting";
+    return true;
+  });
+  const tool = createBrowserHandoff(sessions);
+  const finished = jest.fn();
+  const pending = tool.execute!({}, { toolCallId: "handoff", messages: [] });
+  const result = Promise.resolve(pending).then(finished);
+  for (const next of ["waiting", "claiming", "human", "recovery", "resuming"]) {
+    await jest.advanceTimersByTimeAsync(0);
+    state = next;
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(finished).not.toHaveBeenCalled();
+  }
+  // The resume API commits this only after saving the note and unpausing.
+  state = "agent";
+  await jest.advanceTimersByTimeAsync(1000);
+  await result;
+  expect(finished).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "resumed" }),
+  );
+  expect(run).toHaveBeenCalledTimes(1); // preparation only, no foreground wait
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("Stop interrupts the dedicated wait and never reports a successful handoff", async () => {
+  const { sessions } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "waiting",
+    runActive: true,
+    updatedAt: 1,
+  });
+  const stop = new AbortController();
+  const pending = sessions.waitForHumanHandoff(stop.signal);
+  const rejected = expect(pending).rejects.toThrow("Stopped by user");
+  await jest.advanceTimersByTimeAsync(1000);
+  stop.abort(new Error("Stopped by user"));
+  await rejected;
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("does not overwrite a resume that wins the wait registration race", async () => {
+  const { sessions } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 1,
+  });
+  mockMutation.mockResolvedValue(false);
+  await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
+    "ownership changed",
+  );
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("rejects a dedicated wait without a current browser owner", async () => {
+  const { sessions } = await owner();
+  mockQuery.mockResolvedValue(null);
+  mockMutation.mockClear();
+  await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
+    "Open a browser",
+  );
+  expect(mockMutation).not.toHaveBeenCalled();
+});
 
 it("Stop interrupts a paused Agent and cleanup remains available", async () => {
   const { sessions, run } = await owner();

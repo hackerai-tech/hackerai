@@ -67,6 +67,14 @@ it("releases control without resuming when the sidebar closes", async () => {
   expect(actions.map((body) => body.action)).toEqual(["take", "release"]);
 });
 
+it("allows takeover while the Agent is waiting for the user", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  await mount();
+  expect(screen.getByText("Waiting for you")).toBeInTheDocument();
+  await takeControl();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+});
+
 it("releases a takeover that completes after the sidebar closes", async () => {
   let finish!: (value: Response) => void;
   handleAction = (body) =>

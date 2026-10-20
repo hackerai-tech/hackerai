@@ -170,6 +170,55 @@ export class BrowserSessions {
     };
   }
 
+  /** Park a requested handoff without occupying a sandbox process. */
+  async waitForHumanHandoff(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const scope = this.handoffScope;
+    if (!scope || this.closed)
+      throw new Error("Browser handoff is unavailable for this run.");
+    const sessions = [...this.sessions.values()].filter((s) => s.registered);
+    const states = await withCancellation(
+      Promise.all(
+        sessions.map(async (session) => ({
+          session,
+          state: await getConvexClient().query(
+            api.browserHandoffs.getForBackend,
+            {
+              serviceKey: scope.serviceKey,
+              userId: scope.userId,
+              sessionId: session.sessionId,
+            },
+          ),
+        })),
+      ),
+      signal,
+    );
+    signal?.throwIfAborted();
+    const current = states.find(({ state }) => state?.runActive);
+    if (!current?.state)
+      throw new Error(
+        "Open a browser in this Cloud Agent run before requesting handoff.",
+      );
+    const accepted = await withCancellation(
+      getConvexClient().mutation(api.browserHandoffs.requestWaitForBackend, {
+        serviceKey: scope.serviceKey,
+        userId: scope.userId,
+        sessionId: current.session.sessionId,
+        expectedUpdatedAt: current.state.updatedAt,
+      }),
+      signal,
+    );
+    signal?.throwIfAborted();
+    if (!accepted)
+      throw new Error(
+        "Browser ownership changed. Read the handoff context and inspect the current browser before deciding what to do next.",
+      );
+    // Uses the same cancellation, ownership and recovery gate as every other
+    // tool. Resume only admits work after the private note and browser gate
+    // have been committed; no foreground sandbox timer needs to finish.
+    await this.waitForAgentControl(signal);
+  }
+
   /** Hold the owning Agent at model, tool and normal-completion boundaries. */
   async waitForAgentControl(signal?: AbortSignal): Promise<boolean> {
     let waited = false;

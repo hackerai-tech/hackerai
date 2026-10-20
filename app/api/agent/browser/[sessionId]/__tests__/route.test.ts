@@ -151,6 +151,18 @@ it("restores an originally running Agent after a failed initial takeover", async
   expect(mockState).toBe("agent");
 });
 
+it("admits takeover from the dedicated waiting state", async () => {
+  mockState = "waiting";
+  mockPaused = false;
+  mockFailure = "none";
+  expect((await take()).status).toBe(200);
+  expect(mockPaused).toBe(true);
+  expect(mockMutation.mock.calls.map(([name]) => name)).toEqual([
+    "beginTakeoverForBackend",
+    "finishTakeoverForBackend",
+  ]);
+});
+
 it("keeps recovery when rollback cannot reopen the gate", async () => {
   mockState = "agent";
   mockPaused = false;

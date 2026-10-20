@@ -350,7 +350,9 @@ export function AgentBrowserPreview({
   const canTake =
     !frameStale &&
     !human &&
-    (effectiveState === "agent" || effectiveState === "recovery");
+    (effectiveState === "agent" ||
+      effectiveState === "waiting" ||
+      effectiveState === "recovery");
   const canResume =
     (!!session && !frameStale && (human || effectiveState === "recovery")) ||
     (!session && hasTakenControl) ||
@@ -784,7 +786,9 @@ export function AgentBrowserPreview({
               ? "Paused for handoff"
               : effectiveState === "human"
                 ? "Controlled in another window"
-                : "Live preview";
+                : effectiveState === "waiting"
+                  ? "Waiting for you"
+                  : "Live preview";
 
   const browserContent = (
     <section

@@ -40,13 +40,15 @@ export function BrowserHandoffEntry({
   if (sidebarOpen || !session || !browserTool) return null;
 
   const status =
-    session.state === "claiming"
-      ? "Pausing Agent…"
-      : session.state === "resuming"
-        ? "Returning control to Agent…"
-        : session.state === "human" || session.state === "recovery"
-          ? "Agent paused for browser takeover"
-          : "Agent browser available";
+    session.state === "waiting"
+      ? "Waiting for you"
+      : session.state === "claiming"
+        ? "Pausing Agent…"
+        : session.state === "resuming"
+          ? "Returning control to Agent…"
+          : session.state === "human" || session.state === "recovery"
+            ? "Agent paused for browser takeover"
+            : "Agent browser available";
 
   return (
     <div className="mx-auto mb-2 w-full max-w-[800px] px-4">

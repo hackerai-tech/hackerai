@@ -84,3 +84,10 @@ it("does not duplicate the entry while the Computer panel is open", () => {
   render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
+
+it("distinguishes a requested handoff from an Agent still working", () => {
+  mockSession = { state: "waiting" };
+  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Waiting for you");
+  expect(screen.getByRole("button", { name: "Open browser" })).toBeEnabled();
+});

@@ -11,6 +11,7 @@ import { validateServiceKey } from "./lib/utils";
 
 const state = v.union(
   v.literal("agent"),
+  v.literal("waiting"),
   v.literal("claiming"),
   v.literal("human"),
   v.literal("recovery"),
@@ -40,6 +41,7 @@ const privateSession = v.object({
   grantExpiresAt: v.union(v.number(), v.null()),
   controlledSessionName: v.union(v.string(), v.null()),
   expiresAt: v.number(),
+  updatedAt: v.number(),
 });
 const serviceSessionArgs = {
   serviceKey: v.string(),
@@ -261,7 +263,29 @@ export const getForBackend = query({
       grantExpiresAt: row.grant_expires_at ?? null,
       controlledSessionName: row.controlled_session_name ?? null,
       expiresAt: row.expires_at,
+      updatedAt: row.updated_at,
     };
+  },
+});
+
+/** Park the Agent before takeover without keeping a shell command running. */
+export const requestWaitForBackend = mutation({
+  args: { ...serviceSessionArgs, expectedUpdatedAt: v.number() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await getSession(ctx, args.sessionId, args.userId);
+    if (!row) return false;
+    if (row.state === "waiting") return true;
+    // A takeover or completed resume that won the race must not be overwritten.
+    if (row.state !== "agent" || row.updated_at !== args.expectedUpdatedAt)
+      return false;
+    await ctx.db.patch(row._id, {
+      state: "waiting",
+      waiting_for_handoff: true,
+      updated_at: Date.now(),
+    });
+    return true;
   },
 });
 
@@ -275,7 +299,7 @@ export const beginTakeoverForBackend = mutation({
       !row ||
       args.grant.length < 32 ||
       (row.input_expires_at ?? 0) > Date.now() ||
-      (!["agent", "recovery"].includes(row.state) &&
+      (!["agent", "waiting", "recovery"].includes(row.state) &&
         !(row.state === "resuming" && row.updated_at + 30_000 <= Date.now()) &&
         !(
           ["human", "claiming"].includes(row.state) &&
@@ -329,7 +353,11 @@ export const abortTakeoverForBackend = mutation({
     const row = await getSession(ctx, args.sessionId, args.userId);
     if (row?.state === "claiming" && row.grant === args.grant) {
       await ctx.db.patch(row._id, {
-        state: args.paused ? "recovery" : "agent",
+        state: args.paused
+          ? "recovery"
+          : row.waiting_for_handoff
+            ? "waiting"
+            : "agent",
         grant: undefined,
         grant_expires_at: undefined,
         controlled_session_name: undefined,
@@ -462,7 +490,11 @@ export const finishResumeForBackend = mutation({
     validateServiceKey(args.serviceKey);
     const row = await getSession(ctx, args.sessionId, args.userId);
     if (!row || row.state !== "resuming") return false;
-    await ctx.db.patch(row._id, { state: "agent", updated_at: Date.now() });
+    await ctx.db.patch(row._id, {
+      state: "agent",
+      waiting_for_handoff: undefined,
+      updated_at: Date.now(),
+    });
     return true;
   },
 });
