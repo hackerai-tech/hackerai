@@ -258,7 +258,10 @@ interface DesktopBridgeConfig {
   heartbeatDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
-  onConnectionState?: (state: DesktopBridgeConnectionState) => void;
+  onConnectionState?: (
+    state: DesktopBridgeConnectionState,
+    environmentId?: string,
+  ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
 }
 
@@ -469,7 +472,13 @@ export class DesktopSandboxBridge {
       )
         throw error;
     }
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     this.environmentId = environmentId;
+    // Identity is local; saved tasks must recognize this computer even when
+    // backend registration or relay readiness fails during startup.
+    if (environmentId) {
+      this.config.onConnectionState?.("connecting", environmentId);
+    }
     const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const files = await this.probeFileBridge();

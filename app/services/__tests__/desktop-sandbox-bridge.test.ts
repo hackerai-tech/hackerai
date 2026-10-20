@@ -263,6 +263,28 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("exposes this computer's identity even when backend registration fails", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_environment_id" ? "native-environment" : original(cmd, args);
+    const onConnectionState = jest.fn();
+    const config = buildConfig({
+      onConnectionState,
+      connectDesktop: jest.fn().mockRejectedValue(new Error("offline")),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+
+    await expect(bridge.start()).rejects.toThrow("offline");
+
+    expect(onConnectionState).toHaveBeenCalledWith(
+      "connecting",
+      "native-environment",
+    );
+    expect(onConnectionState).not.toHaveBeenCalledWith("connected");
+    expect(config.heartbeatDesktop).not.toHaveBeenCalled();
+    await bridge.stop();
+  });
+
   it("fails closed when native identity storage is corrupt", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {

@@ -43,7 +43,10 @@ type BridgeConfig = {
       | "connection_inactive"
       | "transport_disconnected",
   ) => void;
-  onConnectionState?: (state: "connecting" | "connected") => void;
+  onConnectionState?: (
+    state: "connecting" | "connected",
+    environmentId?: string,
+  ) => void;
 };
 
 describe("useSandboxPreference", () => {
@@ -231,6 +234,54 @@ describe("useSandboxPreference", () => {
     );
     expect(result.current.desktopEnvironmentId).toBe("this-installation");
     await act(async () => rerender({ authenticated: false }));
+  });
+
+  it("recognizes a saved native computer before startup completes, including in StrictMode", async () => {
+    localStorage.setItem(
+      "sandbox-preference",
+      "desktop-environment:this-installation",
+    );
+    let config!: BridgeConfig;
+    let finishStart!: (value: string) => void;
+    const pending = new Promise<string>((resolve) => {
+      finishStart = resolve;
+    });
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(
+      (value: BridgeConfig) => {
+        config = value;
+        return {
+          start: jest.fn().mockReturnValue(pending),
+          stop: jest.fn().mockResolvedValue(undefined),
+          getConnectionId: jest.fn().mockReturnValue(null),
+          getEnvironmentId: jest.fn().mockReturnValue("this-installation"),
+        };
+      },
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>{children}</StrictMode>
+    );
+    const { result, rerender } = renderHook(
+      ({ authenticated }) => useSandboxPreference(authenticated),
+      { initialProps: { authenticated: true }, wrapper },
+    );
+    try {
+      await waitFor(() => expect(config).toBeDefined());
+      act(() => config.onConnectionState?.("connecting", "this-installation"));
+      expect(result.current.desktopEnvironmentId).toBe("this-installation");
+      expect(result.current.desktopBridgeActive).toBe(false);
+      expect(result.current.desktopBridgeStatus).toBe("connecting");
+      expect(result.current.sandboxPreference).toBe(
+        "desktop-environment:this-installation",
+      );
+    } finally {
+      await act(async () => rerender({ authenticated: false }));
+      act(() => config.onConnectionState?.("connecting", "stale-installation"));
+      expect(result.current.desktopEnvironmentId).toBeUndefined();
+      await act(async () => {
+        finishStart("stale-session");
+        await pending;
+      });
+    }
   });
 
   it("automatically retries a bridge that fails during startup readiness", async () => {
