@@ -43,6 +43,7 @@ const {
   failUnattachedForBackend,
   finishForBackend,
   listForParentMessage,
+  markFinalizingForBackend,
   markResultConsumedForParentBackend,
   markResultInjectedForParentBackend,
   reconcileAttachedRun,
@@ -52,6 +53,57 @@ const {
   sendMessageForBackend,
   setMessageFeedback,
 } = require("../subagents") as typeof import("../subagents");
+
+describe("subagent finalization during browser handoff", () => {
+  it.each(["waiting", "claiming", "human", "recovery", "resuming"])(
+    "keeps the child running when %s wins the finalization race",
+    async (state) => {
+      const child = {
+        _id: "child",
+        subagent_id: "child",
+        user_id: "owner",
+        chat_id: "chat",
+        trigger_run_id: "run",
+        status: "running",
+      };
+      const handoff = {
+        user_id: "owner",
+        run_id: "run",
+        expires_at: Date.now() + 60_000,
+        state,
+      };
+      const patch = jest.fn<any>().mockImplementation(async (_id, value) => {
+        Object.assign(child, value);
+      });
+      const ctx = {
+        db: {
+          patch,
+          query: (table: string) => ({
+            withIndex: () => ({
+              first: async () => (table === "subagent_runs" ? child : null),
+              order: () => ({ first: async () => handoff }),
+            }),
+          }),
+        },
+      } as any;
+      const args = {
+        serviceKey: "key",
+        subagentId: "child",
+        triggerRunId: "run",
+      };
+      await expect(markFinalizingForBackend.handler(ctx, args)).resolves.toBe(
+        "pending_browser_handoff",
+      );
+      expect(child.status).toBe("running");
+      expect(patch).not.toHaveBeenCalled();
+      handoff.state = "agent";
+      await expect(markFinalizingForBackend.handler(ctx, args)).resolves.toBe(
+        "updated",
+      );
+      expect(child.status).toBe("finalizing");
+    },
+  );
+});
 
 const args = {
   serviceKey: "service-key",

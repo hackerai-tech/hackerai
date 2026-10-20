@@ -7,11 +7,13 @@ import {
 
 const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
+const mockHandoffFlag = jest.fn();
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockQuery, mutation: mockMutation }),
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  getPostHogBooleanFlagDecisionForUser: async () => true,
+  getPostHogBooleanFlagDecisionForUser: (...args: unknown[]) =>
+    mockHandoffFlag(...args),
 }));
 
 async function owner(agentId = "parent") {
@@ -34,6 +36,7 @@ beforeEach(() => {
   jest.useFakeTimers();
   mockQuery.mockReset();
   mockMutation.mockReset().mockResolvedValue(true);
+  mockHandoffFlag.mockReset().mockResolvedValue(true);
 });
 afterEach(() => jest.useRealTimers());
 
@@ -123,6 +126,35 @@ it("rejects a dedicated wait without a current browser owner", async () => {
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     "Open a browser",
   );
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
+it("reports unavailable instead of asking to reopen a browser when handoff is disabled", async () => {
+  mockHandoffFlag.mockResolvedValue(false);
+  const { sessions } = await owner();
+  mockMutation.mockClear();
+  await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
+    "Browser handoff is unavailable for this run.",
+  );
+  expect(mockQuery).not.toHaveBeenCalled();
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
+it("Stop interrupts a pending handoff flag lookup without registering a wait", async () => {
+  mockHandoffFlag.mockReturnValue(new Promise(() => {}));
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run",
+    agentId: "parent",
+    serviceKey: "test-key",
+  });
+  const stop = new AbortController();
+  const pending = sessions.waitForHumanHandoff(stop.signal);
+  const rejected = expect(pending).rejects.toThrow("Stopped by user");
+  stop.abort(new Error("Stopped by user"));
+  await rejected;
+  expect(mockQuery).not.toHaveBeenCalled();
   expect(mockMutation).not.toHaveBeenCalled();
 });
 

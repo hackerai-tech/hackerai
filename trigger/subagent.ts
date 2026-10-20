@@ -807,6 +807,13 @@ export const subagentTask = task({
                     "A parent update arrived before completion. Read it, account for it, and then submit the final result again.",
                 };
               }
+              if (finalizing === "pending_browser_handoff") {
+                return {
+                  accepted: false,
+                  error:
+                    "Browser takeover began before completion. Wait for the user to continue, then read the handoff context and take a fresh snapshot before submitting the result again.",
+                };
+              }
               if (finalizing !== "updated") {
                 return {
                   accepted: false,

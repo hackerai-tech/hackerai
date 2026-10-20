@@ -176,6 +176,10 @@ export class BrowserSessions {
     const scope = this.handoffScope;
     if (!scope || this.closed)
       throw new Error("Browser handoff is unavailable for this run.");
+    const enabled = await withCancellation(this.handoffEnabledForRun(), signal);
+    signal?.throwIfAborted();
+    if (!enabled)
+      throw new Error("Browser handoff is unavailable for this run.");
     const sessions = [...this.sessions.values()].filter((s) => s.registered);
     const states = await withCancellation(
       Promise.all(

@@ -506,6 +506,19 @@ it.each(["parent", "child"])(
   },
 );
 
+it("rejects a takeover when subagent finalization wins the race", async () => {
+  const { ctx, rows, scope, register } = fixture();
+  await register("child", "run-child");
+  rows.subagent_runs[0].status = "finalizing";
+  await expect(
+    browser.beginTakeoverForBackend.handler(ctx as never, {
+      ...scope,
+      grant: "g".repeat(32),
+    }),
+  ).resolves.toBe(false);
+  expect(rows.browser_handoffs[0].state).toBe("agent");
+});
+
 it.each([" \n\t", "A.b@C-d! \n日本語 😀", "A".repeat(4000)])(
   "preserves note text and idempotency at input boundaries (%#)",
   async (note) => {
