@@ -149,6 +149,18 @@ export function AgentBrowserPreview({
     ? `/api/agent/browser/${encodeURIComponent(sessionId)}`
     : null;
 
+  // A registered browser can outlive the tool that opened it. Only show it
+  // for browser tools or a handoff that still needs the user's attention.
+  const showPreview =
+    browserRequested ||
+    fullScreen ||
+    hasTakenControl ||
+    session?.state === "waiting" ||
+    session?.state === "claiming" ||
+    session?.state === "human" ||
+    session?.state === "recovery" ||
+    session?.state === "resuming";
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -217,7 +229,8 @@ export function AgentBrowserPreview({
   );
 
   useEffect(() => {
-    if (!endpoint || !activeSessionId || (grant && relayUrl)) return;
+    if (!showPreview || !endpoint || !activeSessionId || (grant && relayUrl))
+      return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -246,7 +259,7 @@ export function AgentBrowserPreview({
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [endpoint, activeSessionId, grant, relayUrl]);
+  }, [showPreview, endpoint, activeSessionId, grant, relayUrl]);
 
   useEffect(() => {
     if (!relayUrl || !grant || !activeSessionId) return;
@@ -764,7 +777,7 @@ export function AgentBrowserPreview({
     }
   };
 
-  if (!session && !browserRequested && !hasTakenControl) return null;
+  if (!showPreview) return null;
 
   const statusLabel = !session
     ? session === undefined

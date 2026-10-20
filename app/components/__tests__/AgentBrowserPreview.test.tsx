@@ -25,7 +25,12 @@ let handleAction: (body: Record<string, unknown>) => Promise<Response>;
 
 async function mount() {
   const view = render(
-    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
   );
   await act(async () => {});
   return view;
@@ -212,12 +217,93 @@ it("explains an ended browser run instead of removing all handoff controls", asy
   expect(screen.getByText(/Ask the Agent to reopen the page/)).toBeVisible();
 });
 
-it("keeps the unavailable browser explanation specific to browser tools", () => {
-  mockSession = null;
-  render(<AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />);
+it.each([null, "agent", "closed"])(
+  "hides browser controls for a terminal command with session state %s",
+  async (state) => {
+    mockSession = state ? { sessionId: "session-a", state } : null;
+    render(
+      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    );
+    await act(async () => {});
+    expect(
+      screen.queryByRole("region", { name: "Agent browser preview" }),
+    ).not.toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["waiting", "claiming", "human", "recovery", "resuming"])(
+  "keeps an active %s handoff accessible from terminal history",
+  async (state) => {
+    mockSession = {
+      sessionId: "session-a",
+      state,
+      grantExpiresAt: Date.now() + 30_000,
+      updatedAt: Date.now(),
+    };
+    render(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection={false}
+      />,
+    );
+    await act(async () => {});
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+  },
+);
+
+it("stops preview polling on terminal selection and restores it for a browser command", async () => {
+  const view = await mount();
+  expect(
+    screen.getByRole("region", { name: "Agent browser preview" }),
+  ).toBeVisible();
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  (global.fetch as jest.Mock).mockClear();
+  await act(async () => {
+    jest.advanceTimersByTime(5000);
+  });
   expect(
     screen.queryByRole("region", { name: "Agent browser preview" }),
   ).not.toBeInTheDocument();
+  expect(global.fetch).not.toHaveBeenCalled();
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
+it("preserves takeover and its exit note when selection changes to a terminal command", async () => {
+  const view = await mount();
+  await takeControl();
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Finished typing." },
+  });
+  mockSession = null;
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  expect(screen.getByRole("textbox")).toHaveValue("Finished typing.");
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
 });
 
 it("takes the current browser directly from earlier tool history", async () => {
@@ -227,6 +313,7 @@ it("takes the current browser directly from earlier tool history", async () => {
       chatId="chat"
       agentId="parent"
       liveSelection={false}
+      browserRequested
       onJumpToLive={jump}
     />,
   );
@@ -295,7 +382,12 @@ it("keeps a new session usable when an older resume fails late", async () => {
   });
   mockSession = { sessionId: "session-b", state: "agent" };
   view.rerender(
-    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
   );
   await act(async () => {});
   expect(
@@ -336,7 +428,12 @@ it("ignores old resume failures before the new session's passive effects run", a
   try {
     mockSession = { sessionId: "session-b", state: "agent" };
     view.rerender(
-      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
     );
     await act(async () => {
       failResume(response({ state: "expired" }, false));
@@ -533,6 +630,7 @@ it("keeps an optional note when the run ends and starts a continuation with the 
       chatId="chat"
       agentId="parent"
       liveSelection
+      browserRequested
       onContinue={onContinue}
     />,
   );
@@ -548,6 +646,7 @@ it("keeps an optional note when the run ends and starts a continuation with the 
       chatId="chat"
       agentId="parent"
       liveSelection
+      browserRequested
       onContinue={onContinue}
     />,
   );
@@ -588,6 +687,7 @@ it("retains a failed continuation and reuses its request id without duplicate se
       chatId="chat"
       agentId="parent"
       liveSelection
+      browserRequested
       onContinue={onContinue}
     />,
   );
@@ -599,6 +699,7 @@ it("retains a failed continuation and reuses its request id without duplicate se
       chatId="chat"
       agentId="parent"
       liveSelection
+      browserRequested
       onContinue={onContinue}
     />,
   );
@@ -638,6 +739,7 @@ it("keeps a new takeover and its draft when an old continuation finishes late", 
     chatId: "chat",
     agentId: "parent",
     liveSelection: true,
+    browserRequested: true,
     onContinue,
   };
   const view = render(<AgentBrowserPreview {...props} />);
