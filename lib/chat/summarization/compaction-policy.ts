@@ -21,6 +21,8 @@ export const MODERATION_COMPACTION_POLICY_VERSION =
   "moderation_glm53_abliteration_recovery_v2";
 export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
 export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
+// Retain the serialized policy label for existing Max readouts; Pro uses the
+// same summarizer contract and is attributed through its own context flag.
 export const MAX_CONTEXT_COMPACTION_POLICY_VERSION = "max_large_v2_context_v1";
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
@@ -30,7 +32,7 @@ type CompactionModel =
 export type CompactionSelection = {
   model: CompactionModel;
   fallbackModel?: CompactionModel;
-  expandedMaxContext?: boolean;
+  expandedAgentContext?: boolean;
   policy:
     | typeof COMPACTION_POLICY_VERSION
     | typeof MODERATION_COMPACTION_POLICY_VERSION
@@ -60,7 +62,7 @@ export class CompactionModelPolicy {
       baselineModel: string;
       /** Existing shouldUncensorResponse result, never the continuation signal. */
       platformAuthorized: boolean;
-      expandedMaxContext?: boolean;
+      expandedAgentContext?: boolean;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
@@ -79,9 +81,10 @@ export class CompactionModelPolicy {
     const configured = isAbliterationConfigured();
     const useAbliteration =
       configured && (flagEnabled !== true || this.context.platformAuthorized);
-    const expandedMaxContext =
-      this.context.mode === "agent" && this.context.expandedMaxContext === true;
-    const abliterationModel = expandedMaxContext
+    const expandedAgentContext =
+      this.context.mode === "agent" &&
+      this.context.expandedAgentContext === true;
+    const abliterationModel = expandedAgentContext
       ? ABLITERATION_LARGE_V2_MODEL_KEY
       : COMPACTION_PRIMARY_MODEL;
     return {
@@ -91,13 +94,13 @@ export class CompactionModelPolicy {
         : flagEnabled === true && configured
           ? abliterationModel
           : undefined,
-      policy: expandedMaxContext
+      policy: expandedAgentContext
         ? MAX_CONTEXT_COMPACTION_POLICY_VERSION
         : flagEnabled === true
           ? MODERATION_COMPACTION_POLICY_VERSION
           : COMPACTION_POLICY_VERSION,
       flagEnabled,
-      ...(expandedMaxContext && { expandedMaxContext: true }),
+      ...(expandedAgentContext && { expandedAgentContext: true }),
     };
   }
 

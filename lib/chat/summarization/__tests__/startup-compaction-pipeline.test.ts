@@ -337,13 +337,13 @@ describe("startup compaction through the real AI SDK", () => {
   );
 
   it.each([
-    { mode: "ask", expandedMaxContext: false, flagEnabled: true },
-    { mode: "agent", expandedMaxContext: false, flagEnabled: true },
-    { mode: "agent", expandedMaxContext: true, flagEnabled: false },
-    { mode: "agent", expandedMaxContext: true, flagEnabled: null },
+    { mode: "ask", expandedAgentContext: false, flagEnabled: true },
+    { mode: "agent", expandedAgentContext: false, flagEnabled: true },
+    { mode: "agent", expandedAgentContext: true, flagEnabled: false },
+    { mode: "agent", expandedAgentContext: true, flagEnabled: null },
   ] as const)(
-    "sends enforced JSON and a reasoning-plus-text budget over the $mode adapter (expanded=$expandedMaxContext, flag=$flagEnabled)",
-    async ({ mode, expandedMaxContext, flagEnabled }) => {
+    "sends enforced JSON and a reasoning-plus-text budget over the $mode adapter (expanded=$expandedAgentContext, flag=$flagEnabled)",
+    async ({ mode, expandedAgentContext, flagEnabled }) => {
       mockFlag.mockResolvedValue(flagEnabled);
       const large = new MockLanguageModelV3({
         doGenerate: async () => {
@@ -408,7 +408,7 @@ describe("startup compaction through the real AI SDK", () => {
           subscription: "pro",
           baselineModel: "agent-model",
           platformAuthorized: false,
-          expandedMaxContext,
+          expandedAgentContext,
           onDiscardedUsage: discarded,
         }),
         providerPromptPressure: {
@@ -427,7 +427,7 @@ describe("startup compaction through the real AI SDK", () => {
       expect(discarded).not.toHaveBeenCalled();
       expect(saveSummary).toHaveBeenCalledTimes(1);
       expect(payloads).toHaveLength(1);
-      expect(large.doGenerateCalls).toHaveLength(expandedMaxContext ? 1 : 0);
+      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
       expect(payloads[0]).toMatchObject({
         max_tokens: 16384,
         reasoning: { enabled: true, effort: "low" },
@@ -458,7 +458,7 @@ describe("startup compaction through the real AI SDK", () => {
       expect(payloads[0].messages.at(-1).content).toContain(
         "Return only a JSON object",
       );
-      if (expandedMaxContext) {
+      if (expandedAgentContext) {
         large.doGenerate = async () => ({
           ...summary(),
           content: [{ type: "reasoning", text: "Synthetic private reasoning" }],
@@ -496,7 +496,7 @@ describe("startup compaction through the real AI SDK", () => {
             subscription: "pro",
             baselineModel: "agent-model",
             platformAuthorized: false,
-            expandedMaxContext: true,
+            expandedAgentContext: true,
             onDiscardedUsage: discarded,
           }),
         });
@@ -640,12 +640,15 @@ describe("startup compaction through the real AI SDK", () => {
     (
       ["reasoning", "malformed", "missing", "blank", "truncated"] as const
     ).flatMap((kind) =>
-      [false, true].map((expandedMaxContext) => ({ kind, expandedMaxContext })),
+      [false, true].map((expandedAgentContext) => ({
+        kind,
+        expandedAgentContext,
+      })),
     ),
   )(
-    "rejects $kind output without saving it or losing usage (expanded=$expandedMaxContext)",
-    async ({ kind, expandedMaxContext }) => {
-      mockFlag.mockResolvedValue(!expandedMaxContext);
+    "rejects $kind output without saving it or losing usage (expanded=$expandedAgentContext)",
+    async ({ kind, expandedAgentContext }) => {
+      mockFlag.mockResolvedValue(!expandedAgentContext);
       const large = new MockLanguageModelV3({
         doGenerate: async () => {
           throw new Error("Synthetic Large v2 failure");
@@ -717,7 +720,7 @@ describe("startup compaction through the real AI SDK", () => {
           subscription: "pro",
           baselineModel: "agent-model",
           platformAuthorized: false,
-          expandedMaxContext,
+          expandedAgentContext,
           onDiscardedUsage: discarded,
         }),
         providerPromptPressure: {
@@ -728,7 +731,7 @@ describe("startup compaction through the real AI SDK", () => {
           summarizationMaxTokensOverride: 128000,
         },
       });
-      expect(result.needsSummarization).toBe(!expandedMaxContext);
+      expect(result.needsSummarization).toBe(!expandedAgentContext);
       expect(discarded).toHaveBeenCalledTimes(1);
       expect(recordEvent).toHaveBeenCalledWith(
         "compaction_model_attempt_finished",
@@ -748,14 +751,14 @@ describe("startup compaction through the real AI SDK", () => {
       expect(JSON.stringify(recordEvent.mock.calls)).not.toMatch(
         /Synthetic private reasoning|Never send to analytics/,
       );
-      expect(saveSummary).toHaveBeenCalledTimes(expandedMaxContext ? 0 : 1);
+      expect(saveSummary).toHaveBeenCalledTimes(expandedAgentContext ? 0 : 1);
       expect(JSON.stringify(messages)).toBe(original);
-      expect(large.doGenerateCalls).toHaveLength(expandedMaxContext ? 1 : 0);
+      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
       expect(glm.doGenerateCalls).toHaveLength(1);
       expect(JSON.stringify(saveSummary.mock.calls)).not.toContain(
         "Synthetic private",
       );
-      if (!expandedMaxContext)
+      if (!expandedAgentContext)
         expect(result.summaryText).toContain("Scope fixture.test.");
     },
   );

@@ -231,9 +231,14 @@ describe("captureToolCalls", () => {
 });
 
 describe("captureAgentRun", () => {
-  it.each(["control", "test"] as const)(
-    "attributes the normal run outcome to context %s",
-    (variant) => {
+  it.each(
+    (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
+      (flag) =>
+        (["control", "test"] as const).map((variant) => ({ flag, variant })),
+    ),
+  )(
+    "attributes the normal run outcome to $flag $variant",
+    ({ flag, variant }) => {
       const capture = jest.fn();
       captureAgentCompletionAnalytics({
         posthog: { capture } as any,
@@ -250,15 +255,24 @@ describe("captureAgentRun", () => {
         configuredModelId: "z-ai/glm-5.3",
         abliteratedProviderSummary: undefined,
         agentModelContextVariant: variant,
+        agentModelContextFlag: flag,
       });
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "hackerai-agent_run",
           properties: expect.objectContaining({
-            "$feature/agent_model_context_v1": variant,
+            [`$feature/${flag}`]: variant,
           }),
         }),
       );
+      const outcome = capture.mock.calls.find(
+        ([event]) => event.event === "hackerai-agent_run",
+      )![0];
+      const other =
+        flag === "agent_pro_context_v1"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      expect(outcome.properties[`$feature/${other}`]).toBeUndefined();
     },
   );
 

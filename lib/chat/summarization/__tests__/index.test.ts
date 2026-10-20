@@ -183,7 +183,7 @@ describe("default compaction policy pipeline", () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
       policy: "max_large_v2_context_v1",
     });
     mockGenerateText
@@ -217,7 +217,7 @@ describe("default compaction policy pipeline", () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
       policy: "max_large_v2_context_v1",
     });
     mockGenerateText.mockRejectedValue(new Error("Provider unavailable"));

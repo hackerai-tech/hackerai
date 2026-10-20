@@ -1,6 +1,7 @@
 import {
   AGENT_MODEL_CONTEXT_FLAG,
   type AgentModelContextVariant,
+  type AgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
 import {
   PAID_DEEPSEEK_1017_KEY,
@@ -1326,6 +1327,7 @@ export function resolveAgentAbortSource({
 
 type AgentCompletionAnalyticsArgs = {
   agentModelContextVariant?: AgentModelContextVariant;
+  agentModelContextFlag?: AgentModelContextFlag;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
@@ -1394,6 +1396,7 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  agentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG,
   agentModelContextVariant,
   cacheHistoryTelemetry,
   usageMeasurement,
@@ -1606,7 +1609,7 @@ export function captureAgentRun({
     }),
     properties: {
       ...(agentModelContextVariant && {
-        [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]: agentModelContextVariant,
+        [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
       }),
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
@@ -1902,6 +1905,7 @@ export function captureAgentCompletionAnalytics(
   }
   captureAgentRun({
     agentModelContextVariant: args.agentModelContextVariant,
+    agentModelContextFlag: args.agentModelContextFlag,
     cacheHistoryTelemetry: args.cacheHistoryTelemetry,
     usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,

@@ -110,12 +110,12 @@ describe("compaction model assignment and telemetry", () => {
       const assignment = await new CompactionModelPolicy({
         ...context,
         mode,
-        expandedMaxContext: true,
+        expandedAgentContext: true,
       }).resolve();
       expect(assignment.model).toBe(
         mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
       );
-      expect(assignment.expandedMaxContext).toBe(
+      expect(assignment.expandedAgentContext).toBe(
         mode === "agent" ? true : undefined,
       );
     },
@@ -125,12 +125,12 @@ describe("compaction model assignment and telemetry", () => {
     expect(
       await new CompactionModelPolicy({
         ...context,
-        expandedMaxContext: true,
+        expandedAgentContext: true,
       }).resolve(),
     ).toMatchObject({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated-large-v2",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
     });
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(

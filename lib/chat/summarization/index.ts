@@ -578,7 +578,7 @@ const generateSummaryTextWithRetry = async ({
       const models = [
         assignment.model,
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        ...(assignment.expandedMaxContext
+        ...(assignment.expandedAgentContext
           ? []
           : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
@@ -591,7 +591,7 @@ const generateSummaryTextWithRetry = async ({
           // Expanded Max recovery needs the same complete-checkpoint safeguards
           // even when the separate moderation compaction experiment is paused.
           const isStructuredGlm =
-            (assignment.expandedMaxContext === true ||
+            (assignment.expandedAgentContext === true ||
               assignment.flagEnabled === true) &&
             modelName === "model-glm-5.3-flash";
           let discardedUsage: SummarizationUsage | undefined;
@@ -619,7 +619,7 @@ const generateSummaryTextWithRetry = async ({
                   ),
               abortSignal,
               modelMessages,
-              assignment.expandedMaxContext
+              assignment.expandedAgentContext
                 ? MAX_CONTEXT_SUMMARY_INPUT_TOKENS
                 : summaryInputMaxTokens,
               {
