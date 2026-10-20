@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import {
   afterEach,
   beforeEach,
@@ -155,6 +155,56 @@ describe("ComputerSidebar reconnect behavior", () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it("pins the expanded command while later tools arrive", () => {
+    const onNavigate = jest.fn();
+    const messages = [
+      {
+        id: "assistant-active",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "tool-active",
+            state: "output-available",
+            input: { command: "npm test" },
+            output: { result: { output: "initial output" } },
+          },
+        ],
+      },
+    ];
+    const view = render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        messages={messages}
+        onNavigate={onNavigate}
+        status="streaming"
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    );
+    view.rerender(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        messages={[...messages, otherToolMessage]}
+        onNavigate={onNavigate}
+        status="streaming"
+      />,
+    );
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByRole("dialog")).getByTestId("terminal-code-block"),
+    ).toHaveTextContent("npm test");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close expanded command" }),
+    );
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
   });
 
   it("expands and restores without closing or remounting the terminal", () => {

@@ -23,6 +23,7 @@ import type { UIMessage } from "ai";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { ExpandedTerminalButton } from "./ExpandedTerminalButton";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
@@ -801,53 +802,63 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch &&
-                  !isNotes &&
-                  !isFinding &&
-                  !isToolError &&
-                  !isSharedFiles && (
-                    <CodeActionButtons
-                      content={
-                        isFile && resolvedFile
-                          ? resolvedFile.content
-                          : isTerminal && resolvedTerminal
-                            ? resolvedTerminal.output
-                              ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                              : `$ ${resolvedTerminal.command}`
-                            : isProxy && resolvedProxy
-                              ? resolvedProxy.output
-                                ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
-                                : `$ ${resolvedProxy.command}`
-                              : ""
-                      }
-                      filename={
-                        isFile
-                          ? sidebarContent.action === "searching"
-                            ? "search-results.txt"
-                            : sidebarContent.path.split("/").pop() || "code.txt"
-                          : "terminal-output.txt"
-                      }
-                      language={
-                        isFile
-                          ? sidebarContent.action === "searching"
-                            ? "text"
-                            : sidebarContent.language ||
-                              getLanguageFromPath(sidebarContent.path)
-                          : "ansi"
-                      }
-                      isWrapped={isWrapped}
-                      onToggleWrap={handleToggleWrap}
-                      variant="sidebar"
-                      // xterm manages its own wrapping; the toggle is a no-op
-                      // for interactive PTY output.
-                      showWrap={
-                        !(
-                          (isTerminal && resolvedTerminal?.rawBytes) ||
-                          (isFile && resolvedFile?.action === "viewing")
-                        )
-                      }
+                <div className="flex items-center">
+                  {isTerminal && resolvedTerminal && (
+                    <ExpandedTerminalButton
+                      key={resolvedTerminal.toolCallId}
+                      terminal={resolvedTerminal}
+                      onExpand={() => setIsFollowingLive(false)}
                     />
                   )}
+                  {!isWebSearch &&
+                    !isNotes &&
+                    !isFinding &&
+                    !isToolError &&
+                    !isSharedFiles && (
+                      <CodeActionButtons
+                        content={
+                          isFile && resolvedFile
+                            ? resolvedFile.content
+                            : isTerminal && resolvedTerminal
+                              ? resolvedTerminal.output
+                                ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                                : `$ ${resolvedTerminal.command}`
+                              : isProxy && resolvedProxy
+                                ? resolvedProxy.output
+                                  ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                                  : `$ ${resolvedProxy.command}`
+                                : ""
+                        }
+                        filename={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "search-results.txt"
+                              : sidebarContent.path.split("/").pop() ||
+                                "code.txt"
+                            : "terminal-output.txt"
+                        }
+                        language={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "text"
+                              : sidebarContent.language ||
+                                getLanguageFromPath(sidebarContent.path)
+                            : "ansi"
+                        }
+                        isWrapped={isWrapped}
+                        onToggleWrap={handleToggleWrap}
+                        variant="sidebar"
+                        // xterm manages its own wrapping; the toggle is a no-op
+                        // for interactive PTY output.
+                        showWrap={
+                          !(
+                            (isTerminal && resolvedTerminal?.rawBytes) ||
+                            (isFile && resolvedFile?.action === "viewing")
+                          )
+                        }
+                      />
+                    )}
+                </div>
               </div>
 
               {/* Content */}
