@@ -1261,6 +1261,67 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("commands.run cancellation", () => {
+    it.each(["stalled", "timeout"])(
+      "resends a %s Stop once without replaying the command",
+      async (failure) => {
+        const sandbox = new CentrifugoSandbox(
+          "user-1",
+          {
+            ...defaultConnection,
+            capabilities: { commands: true, operationChannels: true },
+          },
+          defaultConfig,
+        );
+        const controller = new AbortController();
+        const pending = sandbox.commands.run("sleep 30", {
+          signal: controller.signal,
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[0];
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        const control = mockSubscriptions[1];
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        let rejectLost!: (error: unknown) => void;
+        reply.publish.mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectLost = reject;
+            }),
+        );
+        controller.abort();
+        if (failure === "timeout") rejectLost({ code: 1, message: "timeout" });
+        await jest.advanceTimersByTimeAsync(1500);
+        expect(reply.publish.mock.calls).toEqual([
+          [
+            {
+              type: "command_cancel",
+              commandId: FIXED_UUID,
+              targetConnectionId: "conn-1",
+            },
+          ],
+          [
+            {
+              type: "command_cancel",
+              commandId: FIXED_UUID,
+              targetConnectionId: "conn-1",
+            },
+          ],
+        ]);
+        if (failure === "stalled") rejectLost({ code: 1, message: "timeout" });
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 1 },
+        });
+        await expect(pending).resolves.toMatchObject({ exitCode: 130 });
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
     it("resolves with exitCode 130 only after a positive cancellation acknowledgement", async () => {
       const sandbox = createSandbox();
       const abortController = new AbortController();

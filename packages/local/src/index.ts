@@ -41,6 +41,8 @@ import {
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
 import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
+import { CONNECT_HELP, parseCliOptions } from "./cli-options";
+import { commandDisplayText } from "./command-display";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -473,6 +475,12 @@ export class LocalSandboxClient {
       );
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
+      console.log(
+        chalk.gray(`In HackerAI, select this computer: ${os.hostname()}`),
+      );
+      console.log(
+        chalk.gray("Keep this terminal open. Press Ctrl+C to disconnect."),
+      );
       this.startIdleCheck();
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
@@ -759,7 +767,7 @@ export class LocalSandboxClient {
     // - displayName === "something": show that instead of command
     // - displayName === undefined: show actual command
     const shouldShow = displayName !== "";
-    const displayText = displayName || command;
+    const displayText = displayName || commandDisplayText(command);
     if (shouldShow) {
       console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}${displayText}`));
     }
@@ -996,7 +1004,7 @@ export class LocalSandboxClient {
         });
       });
 
-      proc.on("close", async (code) => {
+      proc.on("close", async (code, signal) => {
         if (timeoutId) clearTimeout(timeoutId);
         this.activeStreamCommands.delete(commandId);
 
@@ -1030,24 +1038,40 @@ export class LocalSandboxClient {
         });
 
         if (shouldShow) {
-          if (exitCode === 0) {
+          if (killed) {
+            console.log(
+              chalk.yellow(
+                `Timed out: ${displayText} (limit ${commandTimeout}ms, exit ${exitCode})`,
+              ),
+            );
+          } else if (
+            signal === "SIGINT" ||
+            signal === "SIGTERM" ||
+            signal === "SIGKILL"
+          ) {
+            console.log(
+              chalk.yellow(
+                `Stopped: ${displayText} (${signal}, ${duration}ms)`,
+              ),
+            );
+          } else if (exitCode === 0) {
             console.log(
               chalk.green(`✓ ${displayText} ${chalk.gray(`(${duration}ms)`)}`),
             );
           } else {
             console.log(
               chalk.red(
-                `✗ ${displayText} ${chalk.gray(`(exit ${exitCode}, ${duration}ms)`)}`,
+                `✗ ${displayText} ${chalk.gray(`(${signal ? `${signal}, ` : ""}exit ${exitCode}, ${duration}ms)`)}`,
               ),
             );
-            if (accumulatedStderr.trim()) {
-              const indented = accumulatedStderr
-                .trim()
-                .split("\n")
-                .map((l) => `  ${l}`)
-                .join("\n");
-              console.log(chalk.red(indented));
-            }
+          }
+          if (exitCode !== 0 && accumulatedStderr.trim()) {
+            const indented = accumulatedStderr
+              .trim()
+              .split("\n")
+              .map((l) => `  ${l}`)
+              .join("\n");
+            console.log(chalk.red(indented));
           }
         }
 
@@ -1102,7 +1126,11 @@ export class LocalSandboxClient {
   private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
     const { sessionId, command, cols, rows, cwd, env } = msg;
 
-    console.log(chalk.cyan(`[PTY] Creating session ${sessionId}: ${command}`));
+    console.log(
+      chalk.cyan(
+        `[PTY] Creating session ${sessionId}: ${commandDisplayText(command)}`,
+      ),
+    );
 
     try {
       const opts: ProcessRunOptions = {};
@@ -1257,20 +1285,10 @@ export class LocalSandboxClient {
   }
 }
 
-// Parse command-line arguments
-const args = process.argv.slice(2);
-const getArg = (flag: string): string | undefined => {
-  const index = args.indexOf(flag);
-  return index >= 0 ? args[index + 1] : undefined;
-};
-
-const hasFlag = (flag: string): boolean => {
-  return args.includes(flag);
-};
-
 export function main(): void {
+  const args = process.argv.slice(2);
   // Show help
-  if (hasFlag("--help") || hasFlag("-h")) {
+  if (args.includes("--help") || args.includes("-h")) {
     console.log(`
 ${chalk.bold("HackerAI Local Sandbox Client")}
 
@@ -1278,7 +1296,7 @@ ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
 
 ${chalk.yellow("Options:")}
-  --token TOKEN       Authentication token from Settings (required)
+  --token TOKEN       Included in the Remote Control connect command (required)
   --name NAME         Optional connection name fallback (default: hostname)
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
@@ -1286,6 +1304,8 @@ ${chalk.yellow("Options:")}
 ${chalk.yellow("Examples:")}
   npx @hackerai/local --token hsb_abc123
   npx @hackerai/local --token hsb_abc123 --name "Work PC"
+
+${CONNECT_HELP}
 
 ${chalk.red("⚠️  Security Warning:")}
   Commands run directly on your OS without any isolation.
@@ -1298,24 +1318,26 @@ ${chalk.cyan("Auto-termination:")}
     process.exit(0);
   }
 
-  const config: Config = {
-    convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
-    token: getArg("--token") || "",
-    name: getArg("--name") || os.hostname(),
-  };
-
-  if (!config.token) {
-    console.error(chalk.red("❌ No authentication token provided"));
+  let client: LocalSandboxClient;
+  try {
+    const options = parseCliOptions(args);
+    client = new LocalSandboxClient({
+      token: options.token,
+      name: options.name ?? os.hostname(),
+      convexUrl: options.convexUrl ?? PRODUCTION_CONVEX_URL,
+    });
+  } catch (error) {
     console.error(
-      chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"),
+      chalk.red(
+        error instanceof Error
+          ? error.message
+          : "Unable to start HackerAI Local.",
+      ),
     );
-    console.error(
-      chalk.yellow("Get your token from HackerAI Settings > Agents"),
-    );
+    console.error(chalk.yellow(CONNECT_HELP));
     process.exit(1);
+    return;
   }
-
-  const client = new LocalSandboxClient(config);
 
   process.on("SIGINT", async () => {
     console.log(chalk.yellow("\n🛑 Shutting down..."));
