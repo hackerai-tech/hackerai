@@ -381,10 +381,14 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   const category = getExceptionCategory(strings);
   const routeKind = getRouteKind(properties.$current_url);
   const deploymentId = getDeploymentIdFromFrameSources(frameSources);
+  const buildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
 
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
+    ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
+      ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }
+      : {}),
     ...(routeKind ? { hackerai_route_kind: routeKind } : {}),
     ...(deploymentId ? { hackerai_exception_deployment_id: deploymentId } : {}),
     ...(typeof document !== "undefined"
