@@ -709,7 +709,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.exitCode).toBe(0);
     expect(result.result.output).toContain("ok");
     expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
-    expect(run).toHaveBeenCalledTimes(1);
+    // Retention can run separately; the approved user command must run only once.
+    expect(
+      run.mock.calls.filter(([command]) =>
+        command.endsWith("&& bash scripts/test.sh"),
+      ),
+    ).toHaveLength(1);
   });
 
   test("does not acquire a sandbox before reviewing commands without inspectable indirection", async () => {
