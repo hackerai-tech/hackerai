@@ -328,7 +328,7 @@ fn read_local_file(path: String) -> Result<LocalFileData, String> {
     read_local_file_data(path, None)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_local_preview_file(path: String) -> Result<LocalFileData, String> {
     read_local_file_data(path, Some(10 * 1024 * 1024))
 }
