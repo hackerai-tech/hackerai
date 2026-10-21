@@ -1,5 +1,11 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
+const mockSpawn = jest.fn();
+
+jest.mock("child_process", () => ({
+  ...jest.requireActual("child_process"),
+  spawn: (...args: unknown[]) => mockSpawn(...args),
+}));
 
 jest.mock("../environment-identity", () => ({
   getEnvironmentId: jest.fn().mockResolvedValue("test-environment"),
@@ -24,6 +30,7 @@ jest.mock("../private-artifact-hardening", () => ({
 }));
 
 import { LocalSandboxClient } from "../index";
+import { EventEmitter } from "events";
 
 const config = {
   convexUrl: "http://127.0.0.1:3210",
@@ -167,6 +174,61 @@ describe("LocalSandboxClient cleanup", () => {
         label,
         undefined,
       );
+    },
+  );
+
+  it.each([
+    ["SIGTERM", true],
+    ["SIGINT", true],
+    ["SIGKILL", true],
+    ["SIGSEGV", false],
+    ["SIGABRT", false],
+  ])(
+    "distinguishes stop from crash for %s without changing the exit response",
+    async (signal, stopped) => {
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      mockSpawn.mockReturnValueOnce(proc);
+      const client = new LocalSandboxClient(config);
+      const publish = jest.fn().mockResolvedValue(undefined);
+      const privateClient = client as unknown as {
+        streamCommand: (
+          id: string,
+          command: string,
+          timeout: number,
+          show: boolean,
+          label: string,
+        ) => Promise<void>;
+        publishToChannel: typeof publish;
+      };
+      privateClient.publishToChannel = publish;
+      const log = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const running = privateClient.streamCommand(
+          "signal-test",
+          "test-command",
+          0,
+          true,
+          "Test command",
+        );
+        proc.emit("close", null, signal);
+        await running;
+        const output = log.mock.calls.flat().join("\n");
+        expect(output).toContain(signal);
+        expect(output).toContain(
+          stopped ? "Stopped: Test command" : "✗ Test command",
+        );
+        if (!stopped) expect(output).not.toContain("Stopped:");
+        expect(publish).toHaveBeenCalledWith({
+          type: "exit",
+          commandId: "signal-test",
+          exitCode: 1,
+        });
+      } finally {
+        log.mockRestore();
+      }
     },
   );
 

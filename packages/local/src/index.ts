@@ -1044,7 +1044,11 @@ export class LocalSandboxClient {
                 `Timed out: ${displayText} (limit ${commandTimeout}ms, exit ${exitCode})`,
               ),
             );
-          } else if (signal) {
+          } else if (
+            signal === "SIGINT" ||
+            signal === "SIGTERM" ||
+            signal === "SIGKILL"
+          ) {
             console.log(
               chalk.yellow(
                 `Stopped: ${displayText} (${signal}, ${duration}ms)`,
@@ -1057,7 +1061,7 @@ export class LocalSandboxClient {
           } else {
             console.log(
               chalk.red(
-                `✗ ${displayText} ${chalk.gray(`(exit ${exitCode}, ${duration}ms)`)}`,
+                `✗ ${displayText} ${chalk.gray(`(${signal ? `${signal}, ` : ""}exit ${exitCode}, ${duration}ms)`)}`,
               ),
             );
           }
