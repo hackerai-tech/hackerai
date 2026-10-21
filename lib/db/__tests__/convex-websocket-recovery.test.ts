@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { BaseConvexClient } from "convex/browser";
 
 const convexRoot = path.dirname(require.resolve("convex/package.json"));
@@ -281,6 +282,76 @@ describe("Convex CommonJS malformed JSON recovery", () => {
         "Connection lost while action was in flight",
       );
       expect(client.localQueryResult("probe:read", {})).toBe(1);
+    },
+  );
+});
+
+describe("Convex native ESM malformed JSON recovery", () => {
+  // A separate Node process imports the installed ESM without Jest's CJS loader
+  // or module mocks. Both frame types share the same native recovery probe.
+  const probe = `
+    import assert from "node:assert/strict";
+    import { pathToFileURL } from "node:url";
+    const { WebSocketManager } = await import(pathToFileURL(process.argv[1]).href);
+    const [stage, frame] = process.argv.slice(2);
+    Math.random = () => 0.5;
+    const sockets = [], warnings = [], opens = [];
+    let reconnected;
+    const replacement = new Promise(resolve => { reconnected = resolve; });
+    class Socket {
+      constructor() {
+        sockets.push(this);
+        if (sockets.length === 2) reconnected();
+      }
+      send() {}
+      close() { this.onclose?.({ code: 1000, reason: "" }); }
+    }
+    const manager = new WebSocketManager(
+      "wss://synthetic.invalid",
+      {
+        onOpen: value => opens.push(value),
+        onResume() {},
+        onMessage() { throw new Error("Unexpected application callback"); }
+      },
+      Socket,
+      { log() {}, logVerbose() {}, warn: value => warnings.push(value), error() {} },
+      () => {}, false
+    );
+    try {
+      sockets[0].onopen();
+      sockets[0].onmessage({ data: frame });
+      assert.equal(manager.socketState(), "disconnected");
+      assert.deepEqual(warnings, [
+        "Malformed server JSON (" + stage + "); reconnecting"
+      ]);
+      await replacement;
+      sockets[1].onopen();
+      sockets[1].onmessage({ data: JSON.stringify({ type: "Ping" }) });
+      assert.equal(manager.socketState(), "ready");
+      assert.equal(opens.at(-1).lastCloseReason, "MalformedServerJson");
+      assert.equal(sockets.length, 2);
+      console.log(JSON.stringify({ recovered: true, connections: sockets.length }));
+    } finally {
+      await manager.terminate();
+    }
+  `;
+
+  it.each(["message", "assembled_transition"])(
+    "reconnects the actual ESM manager after malformed %s",
+    (stage) => {
+      const output = execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          probe,
+          path.join(convexRoot, "dist/esm/browser/sync/web_socket_manager.js"),
+          stage,
+          stage === "message" ? malformed : chunk(malformed),
+        ],
+        { encoding: "utf8", env: { NODE_ENV: "test" }, timeout: 5_000 },
+      );
+      expect(JSON.parse(output)).toEqual({ recovered: true, connections: 2 });
     },
   );
 });
