@@ -254,6 +254,35 @@ describe("operation channels", () => {
     expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { type: "exit", commandId: "cmd", exitCode: 1 },
+    { type: "command_cancel_result", commandId: "cmd", canceled: true },
+  ])(
+    "retries a timed-out $type once on the same operation",
+    async (message) => {
+      await router.dispatch(request("cmd"), jest.fn());
+      subs[0].publish.mockClear();
+      subs[0].publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+      const legacyPublish = jest.fn();
+      await expect(
+        router.publish(message, legacyPublish),
+      ).resolves.toBeUndefined();
+      expect(subs[0].publish.mock.calls).toEqual([[message], [message]]);
+      expect(legacyPublish).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not replay output on timeout and bounds terminal response retries", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].publish.mockClear();
+    subs[0].publish.mockRejectedValue({ code: 1, message: "timeout" });
+    const output = { type: "stdout", commandId: "cmd", data: "once" };
+    const exit = { type: "exit", commandId: "cmd", exitCode: 0 };
+    await expect(router.publish(output)).rejects.toThrow("timeout");
+    await expect(router.publish(exit)).rejects.toThrow("timeout");
+    expect(subs[0].publish.mock.calls).toEqual([[output], [exit], [exit]]);
+  });
+
   it("discards queued output after shutdown", async () => {
     await router.dispatch(request("cmd"), jest.fn());
     subs[0].publish.mockClear();

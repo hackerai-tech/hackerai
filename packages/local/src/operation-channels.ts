@@ -1,4 +1,7 @@
-import { CentrifugoPublishQueue } from "./centrifugo-transport";
+import {
+  CentrifugoPublishQueue,
+  isCentrifugoPublishTimeout,
+} from "./centrifugo-transport";
 
 type Message = Record<string, unknown>;
 type Operation = { kind: "command" | "file" | "pty"; id: string };
@@ -171,7 +174,20 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         // arriving after close: discard them, never fall back to a shared
         // channel. Actual subscription.publish failures still propagate.
         if (this.stopped || this.routes.get(key) !== route) return;
-        await subscription.publish(fragment);
+        try {
+          await subscription.publish(fragment);
+        } catch (error) {
+          const type = (fragment as Message).type;
+          // These responses are idempotent by commandId. Never replay output
+          // chunks, fragments, or execution requests after uncertain delivery.
+          if (
+            !isCentrifugoPublishTimeout(error) ||
+            (type !== "exit" && type !== "command_cancel_result")
+          )
+            throw error;
+          if (this.stopped || this.routes.get(key) !== route) return;
+          await subscription.publish(fragment);
+        }
       }),
       timer: setTimeout(() => this.close(key), this.deadline(message, op)),
     };
