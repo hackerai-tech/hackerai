@@ -171,7 +171,7 @@ describe("default compaction policy pipeline", () => {
       expect(mockGenerateText.mock.calls[0][0]).toMatchObject({
         model: { modelId: "model-abliterated" },
         maxRetries: 0,
-        timeout: 60000,
+        timeout: 120000,
         maxOutputTokens: 8192,
         providerOptions: { abliteration: { reasoningEffort: "low" } },
       });

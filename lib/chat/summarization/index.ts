@@ -640,9 +640,13 @@ const generateSummaryTextWithRetry = async ({
                 : summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                // Allow longer checkpoints to finish, but start recovery before
-                // a stalled GLM request consumes the former 90s deadline.
-                timeout: isStructuredRecovery ? 75_000 : 60_000,
+                // Abliteration must finish the full checkpoint before returning.
+                // Give it two minutes while retaining bounded recovery and cancellation.
+                timeout: isAbliterationModel(modelName)
+                  ? 120_000
+                  : isStructuredRecovery
+                    ? 75_000
+                    : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
                 maxOutputTokens: isStructuredRecovery ? 16384 : 8192,
                 structuredSummary: isStructuredRecovery,
