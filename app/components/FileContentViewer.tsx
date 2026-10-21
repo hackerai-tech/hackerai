@@ -6,6 +6,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { isPdfFile, isTextViewableFile } from "@/lib/utils/file-utils";
 import { LocalDesktopFile } from "@/types/file";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
+import { readLocalPreviewFile } from "../hooks/useTauri";
 
 const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -29,6 +30,8 @@ interface FileContentViewerProps {
    * in-memory File (and its content) is no longer available.
    */
   fileId?: string;
+  /** Transient native path. Never sent to storage or a preview service. */
+  localPath?: string;
 }
 
 export const FileContentViewer = ({
@@ -37,6 +40,7 @@ export const FileContentViewer = ({
   file,
   fileName,
   fileId,
+  localPath,
 }: FileContentViewerProps) => {
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
@@ -73,13 +77,17 @@ export const FileContentViewer = ({
       setContent("");
 
       const pdf = isPdfFile(file);
+      const docx =
+        !!localPath &&
+        file.type ===
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
       // Previewability is based on name/media type, so it works for both real
       // browser Files and the metadata-only descriptor restored from a draft.
-      // Without an in-memory File or an S3 file id there is nothing to read.
+      // Native attachments use their transient path instead of cloud storage.
       if (
-        (!pdf && !isTextViewableFile(file)) ||
-        (!isBrowserFile(file) && !fileId)
+        (!pdf && !docx && !isTextViewableFile(file)) ||
+        (!isBrowserFile(file) && !fileId && !localPath)
       ) {
         if (!cancelled) {
           setError("Preview isn't available for this file type.");
@@ -89,15 +97,22 @@ export const FileContentViewer = ({
       }
 
       try {
+        const readableFile = localPath
+          ? await readLocalPreviewFile(localPath)
+          : isBrowserFile(file)
+            ? file
+            : null;
+        if (cancelled) return;
         if (pdf) {
           // Render via the browser's native PDF viewer. In-memory files use a
           // blob URL; restored-from-draft files use a short-lived signed URL.
           let url: string;
-          if (isBrowserFile(file)) {
-            if (!(await hasPdfMagicBytes(file))) {
+          if (readableFile) {
+            if (!(await hasPdfMagicBytes(readableFile))) {
               throw new Error("Invalid PDF signature");
             }
-            createdBlobUrl = URL.createObjectURL(file);
+            if (cancelled) return;
+            createdBlobUrl = URL.createObjectURL(readableFile);
             url = createdBlobUrl;
           } else {
             const signedUrl = await resolveFileUrl(fileId!);
@@ -116,8 +131,17 @@ export const FileContentViewer = ({
 
         let text: string;
 
-        if (isBrowserFile(file)) {
-          text = await file.text();
+        if (docx) {
+          // DOCX is a ZIP container, never render it as HTML or raw ZIP bytes.
+          if (!readableFile || readableFile.size > 10 * 1024 * 1024) {
+            throw new Error("Document is too large or unavailable");
+          }
+          const { extractDocxPreview } =
+            await import("@/lib/utils/docx-preview");
+          text = await extractDocxPreview(await readableFile.arrayBuffer());
+        } else if (readableFile) {
+          text = await readableFile.slice(0, 1024 * 1024).text();
+          if (!cancelled && readableFile.size > 1024 * 1024) setTruncated(true);
         } else {
           // Restored-from-draft attachment: fetch content from storage using a
           // short-lived signed URL keyed by the file id.
@@ -139,8 +163,18 @@ export const FileContentViewer = ({
         } else {
           setContent(text);
         }
-      } catch {
-        if (!cancelled) setError("Failed to read file content.");
+      } catch (cause) {
+        if (!cancelled)
+          setError(
+            String(cause).includes("preview limit")
+              ? "This file is too large to preview (10 MB maximum)."
+              : /read_local_preview_file/i.test(String(cause)) &&
+                  /not found|not allowed/i.test(String(cause))
+                ? "Update HackerAI Desktop to preview local files."
+                : localPath
+                  ? "Couldn't preview this file. Check that it still exists and is a valid document, then reopen it."
+                  : "Failed to read file content.",
+          );
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -152,7 +186,7 @@ export const FileContentViewer = ({
       cancelled = true;
       if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
     };
-  }, [isOpen, file, fileId, resolveFileUrl]);
+  }, [isOpen, file, fileId, localPath, resolveFileUrl]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -288,7 +322,7 @@ export const FileContentViewer = ({
               <pre className="max-w-full whitespace-pre-wrap">{content}</pre>
               {truncated && (
                 <p className="mt-4 text-xs italic text-muted-foreground">
-                  Preview truncated — download the file to view its full
+                  Preview truncated. Open the original file to view its full
                   contents.
                 </p>
               )}

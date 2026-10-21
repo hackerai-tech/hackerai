@@ -67,6 +67,7 @@ export const FileUploadPreview = ({
     file: File | LocalDesktopFile;
     name: string;
     fileId?: string;
+    localPath?: string;
   } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
@@ -311,8 +312,9 @@ export const FileUploadPreview = ({
     file: File | LocalDesktopFile,
     fileName: string,
     fileId?: string,
+    localPath?: string,
   ) => {
-    setSelectedFile({ file, name: fileName, fileId });
+    setSelectedFile({ file, name: fileName, fileId, localPath });
   };
 
   return (
@@ -529,6 +531,7 @@ export const FileUploadPreview = ({
                               filePreview.file,
                               filePreview.file.name,
                               uploadedFile?.fileId,
+                              uploadedFile?.localPath,
                             )
                           }
                           className="w-80 p-2 text-left transition-colors hover:bg-accent"
@@ -718,6 +721,7 @@ export const FileUploadPreview = ({
           file={selectedFile.file}
           fileName={selectedFile.name}
           fileId={selectedFile.fileId}
+          localPath={selectedFile.localPath}
         />
       )}
     </>
