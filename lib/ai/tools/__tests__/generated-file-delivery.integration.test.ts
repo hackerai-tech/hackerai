@@ -30,6 +30,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
+import { phLogger } from "@/lib/posthog/server";
 import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
 import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
 import { saveSandboxGeneratedFile } from "@/convex/fileActions";
@@ -166,6 +167,7 @@ describe("generated artifact delivery over HTTP", () => {
     useSymlink = false,
     disconnectStream = false,
     nativeMetadata = false,
+    nativeMissing = false,
   ) {
     const source = join(
       directory,
@@ -194,11 +196,10 @@ describe("generated artifact delivery over HTTP", () => {
         },
       },
       files: {
-        stat: async (path: string) => ({
-          kind: "file",
-          path,
-          sizeBytes: (await stat(path)).size,
-        }),
+        stat: async (path: string) =>
+          nativeMissing
+            ? { kind: "missing", path }
+            : { kind: "file", path, sizeBytes: (await stat(path)).size },
         uploadToUrl: async (path: string, url: string) => {
           const response = await transfer(url, "PUT", await readFile(path));
           if (response.status !== 200) throw new Error("Upload failed");
@@ -278,6 +279,39 @@ describe("generated artifact delivery over HTTP", () => {
       userId: "test-user",
     });
     expect((await transfer(url!)).body.toString("utf8")).toBe(contents);
+  });
+
+  it("records the terminal bridge metadata reason after reconnect without uploading", async () => {
+    const { source, context, result } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+      true,
+    );
+    expect(context.sandboxManager.recoverLocalConnection).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(result.files).toEqual([]);
+    expect(result.deliveryReceipts).toEqual([]);
+    expect(result.failedFiles).toHaveLength(1);
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(storage.generateS3UploadUrl).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        delivered_file_count: 0,
+        failed_file_count: 1,
+        failure_phase_counts: { file_metadata: 1 },
+        metadata_failure_diagnostic_version: 1,
+        metadata_failure_reason_counts: { native_file_missing: 1 },
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain(source);
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain(contents);
   });
 
   it.each([false, true])(

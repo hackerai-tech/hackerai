@@ -41,6 +41,9 @@ export type UploadedFileInfo = {
 export type GeneratedFileUploadPhase =
   "file_metadata" | "upload_url" | "transfer" | "file_registration";
 
+export type NativeStatFailureReason =
+  "stat_failed" | "file_missing" | "not_regular_file" | "invalid_file_size";
+
 /**
  * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
  * file. Presigned S3 URLs are intentionally not persisted in tool output
@@ -147,16 +150,15 @@ function formatFileSizeFailure(
 async function getSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
+  onNativeStatFailure?: (
+    reason: NativeStatFailureReason,
+  ) => void | Promise<void>,
 ): Promise<number> {
   if (isCentrifugoSandbox(sandbox) && sandbox.supportsNativeFileRelay?.()) {
     // Desktop already provides shell-independent metadata. A POSIX stat or
     // cmd.exe fallback can fail even when the native bridge can read the file.
     // Preserve native errors instead of bypassing them through another adapter.
-    let failureReason:
-      | "stat_failed"
-      | "file_missing"
-      | "not_regular_file"
-      | "invalid_file_size" = "stat_failed";
+    let failureReason: NativeStatFailureReason = "stat_failed";
     try {
       const metadata = await sandbox.files.stat(fullPath);
       if (metadata.kind === "missing") {
@@ -177,6 +179,15 @@ async function getSandboxFileSize(
       }
       return metadata.sizeBytes;
     } catch (error) {
+      if (onNativeStatFailure) {
+        try {
+          void Promise.resolve(onNativeStatFailure(failureReason)).catch(
+            () => {},
+          );
+        } catch {
+          // Optional observers must preserve the original native failure.
+        }
+      }
       try {
         logger.warn("sandbox_generated_file_native_stat_failed", {
           event: "sandbox_generated_file_native_stat_failed",
@@ -483,6 +494,9 @@ export async function uploadSandboxFileToConvex(args: {
   name?: string;
   storageRegion?: S3StorageRegion;
   onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
+  onNativeStatFailure?: (
+    reason: NativeStatFailureReason,
+  ) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
   const recordPhase = (phase: GeneratedFileUploadPhase) => {
     try {
@@ -512,7 +526,11 @@ export async function uploadSandboxFileToConvex(args: {
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
   const name = args.name || getFileNameFromPath(fullPath);
   recordPhase("file_metadata");
-  const fileSize = await getSandboxFileSize(sandbox, fullPath);
+  const fileSize = await getSandboxFileSize(
+    sandbox,
+    fullPath,
+    args.onNativeStatFailure,
+  );
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
       event: "sandbox_generated_file_too_large",

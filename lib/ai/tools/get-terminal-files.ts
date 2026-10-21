@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import {
   uploadSandboxFileToConvex,
   type GeneratedFileUploadPhase,
+  type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
@@ -47,13 +48,46 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | null = "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      type MetadataFailureReason =
+        `native_${NativeStatFailureReason}` | "unclassified";
+      let currentMetadataFailureReason: MetadataFailureReason = "unclassified";
+      const nativeMetadataFailureCounts: Partial<
+        Record<Exclude<MetadataFailureReason, "unclassified">, number>
+      > = {};
+      const observeNativeStatFailure = (reason: NativeStatFailureReason) => {
+        // Keep even malformed adapter/test values out of analytics.
+        switch (reason) {
+          case "stat_failed":
+          case "file_missing":
+          case "not_regular_file":
+          case "invalid_file_size":
+            currentMetadataFailureReason = `native_${reason}`;
+            break;
+          default:
+            currentMetadataFailureReason = "unclassified";
+        }
+      };
       const countFailure = (phase: FailurePhase, count = 1) => {
         if (count > 0) {
           failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + count;
         }
       };
+      const countMetadataFailure = (
+        phase: FailurePhase,
+        reason: MetadataFailureReason,
+      ) => {
+        if (phase === "file_metadata" && reason !== "unclassified") {
+          nativeMetadataFailureCounts[reason] =
+            (nativeMetadataFailureCounts[reason] ?? 0) + 1;
+        }
+      };
       const recordOutcome = (delivered: number, failed: number) => {
         try {
+          const knownMetadataFailures = Object.values(
+            nativeMetadataFailureCounts,
+          ).reduce((total, count) => total + count, 0);
+          const unclassifiedMetadataFailures =
+            (failurePhaseCounts.file_metadata ?? 0) - knownMetadataFailures;
           phLogger.event("agent_file_delivery_completed", {
             userId: context.userID,
             chat_id: context.chatId,
@@ -65,6 +99,13 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             failed_file_count: failed,
             file_delivery_diagnostic_version: 1,
             failure_phase_counts: failurePhaseCounts,
+            metadata_failure_diagnostic_version: 1,
+            metadata_failure_reason_counts: {
+              ...nativeMetadataFailureCounts,
+              ...(unclassifiedMetadataFailures > 0 && {
+                unclassified: unclassifiedMetadataFailures,
+              }),
+            },
             relay_recovery_attempted: relayRecoveryAttempted,
             relay_recovery_succeeded: relayRecoverySucceeded,
             sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
@@ -95,6 +136,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         currentPhase = "unknown";
 
         const uploadWithRelayRecovery = async (filePath: string) => {
+          currentMetadataFailureReason = "unclassified";
           try {
             return await uploadSandboxFileToConvex({
               sandbox,
@@ -104,6 +146,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onPhase: (phase) => {
                 currentPhase = phase;
               },
+              onNativeStatFailure: observeNativeStatFailure,
             });
           } catch (error) {
             if (
@@ -131,6 +174,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             relayRecoverySucceeded = true;
             // Relay presence rejected the first command before publication.
             // The manager only selects a live successor on the same machine.
+            currentMetadataFailureReason = "unclassified";
             return uploadSandboxFileToConvex({
               sandbox,
               userId: context.userID,
@@ -139,6 +183,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onPhase: (phase) => {
                 currentPhase = phase;
               },
+              onNativeStatFailure: observeNativeStatFailure,
             });
           }
         };
@@ -182,6 +227,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           let fileProcessed = false;
           let lastError: string | null = null;
           let lastFailurePhase: FailurePhase = "unknown";
+          let lastMetadataFailureReason: MetadataFailureReason = "unclassified";
 
           for (const filePath of pathsToTry) {
             // Check if this specific file is being written to by a background process
@@ -267,6 +313,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
               lastFailurePhase = currentPhase;
+              lastMetadataFailureReason = currentMetadataFailureReason;
               // Continue to try next path
             }
           }
@@ -276,6 +323,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             // Count the terminal outcome once per requested file, after all
             // candidate paths/recovery. Successful alternate paths add no failure.
             countFailure(lastFailurePhase);
+            countMetadataFailure(lastFailurePhase, lastMetadataFailureReason);
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,
