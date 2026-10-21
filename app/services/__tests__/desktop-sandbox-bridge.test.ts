@@ -726,6 +726,114 @@ describe("terminal connection state", () => {
   );
 });
 
+describe("heartbeat backpressure", () => {
+  it.each(["success", "transient failure"])(
+    "does not queue heartbeats while pending and resumes after %s",
+    async (outcome) => {
+      jest.useFakeTimers();
+      let resolve!: (value: { success: boolean }) => void;
+      let reject!: (reason: unknown) => void;
+      const pending = new Promise<{ success: boolean }>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      const config = buildConfig();
+      config.heartbeatDesktop.mockReturnValueOnce(pending);
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(1);
+        if (outcome === "success") resolve({ success: true });
+        else reject(new Error("Network request failed"));
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(2);
+        expect(bridge.getConnectionId()).toBe("conn-123");
+      } finally {
+        resolve({ success: true });
+        await bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("stops after a pending heartbeat rejects authentication without draining a backlog", async () => {
+    jest.useFakeTimers();
+    let reject!: (reason: unknown) => void;
+    const pending = new Promise<{ success: boolean }>((_resolve, rej) => {
+      reject = rej;
+    });
+    const onTerminated = jest.fn();
+    const config = buildConfig({ onTerminated });
+    config.heartbeatDesktop.mockReturnValueOnce(pending);
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      await bridge.start();
+      await jest.advanceTimersByTimeAsync(10 * 60_000);
+      expect(config.heartbeatDesktop).toHaveBeenCalledTimes(1);
+      reject({ data: { code: "UNAUTHORIZED" } });
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+      expect(bridge.getConnectionId()).toBeNull();
+      expect(config.heartbeatDesktop).toHaveBeenCalledTimes(1);
+    } finally {
+      reject({ data: { code: "UNAUTHORIZED" } });
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["success", "authentication failure"])(
+    "ignores stale %s without unblocking the replacement heartbeat",
+    async (outcome) => {
+      jest.useFakeTimers();
+      let resolveOld!: (value: { success: boolean }) => void;
+      let rejectOld!: (reason: unknown) => void;
+      let resolveNew!: (value: { success: boolean }) => void;
+      const oldPending = new Promise<{ success: boolean }>((res, rej) => {
+        resolveOld = res;
+        rejectOld = rej;
+      });
+      const newPending = new Promise<{ success: boolean }>((res) => {
+        resolveNew = res;
+      });
+      const onTerminated = jest.fn();
+      const config = buildConfig({ onTerminated });
+      config.heartbeatDesktop
+        .mockReturnValueOnce(oldPending)
+        .mockReturnValueOnce(newPending);
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        await bridge.stop();
+        config.connectDesktop.mockResolvedValueOnce({
+          connectionId: "conn-new",
+          centrifugoToken: createTestJwt("user-456"),
+          centrifugoWsUrl: "ws://localhost:8000/connection/websocket",
+        });
+        await bridge.start();
+        if (outcome === "success") resolveOld({ success: true });
+        else rejectOld({ data: { code: "UNAUTHORIZED" } });
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(2);
+        expect(onTerminated).not.toHaveBeenCalled();
+        expect(bridge.getConnectionId()).toBe("conn-new");
+        resolveNew({ success: true });
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(config.heartbeatDesktop).toHaveBeenLastCalledWith({
+          connectionId: "conn-new",
+        });
+        expect(config.heartbeatDesktop).toHaveBeenCalledTimes(3);
+      } finally {
+        resolveOld({ success: true });
+        resolveNew({ success: true });
+        await bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
+});
+
 // ── targetConnectionId filtering ──────────────────────────────────────
 
 describe("targetConnectionId filtering", () => {

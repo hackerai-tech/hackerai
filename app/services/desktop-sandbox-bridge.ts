@@ -283,6 +283,7 @@ export class DesktopSandboxBridge {
   private nativeFileIpcAvailable: boolean | null = null;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private heartbeatInFlightGeneration: number | null = null;
   private consecutiveHeartbeatFailures = 0;
   private relayUnavailableAt: number | null = null;
   private successfulRelayConnections = 0;
@@ -330,11 +331,24 @@ export class DesktopSandboxBridge {
 
   private async sendHeartbeat(): Promise<void> {
     const connectionId = this.connectionId;
-    if (this.isStoppingOrStopped || !connectionId) return;
+    const generation = this.startupGeneration;
+    if (
+      this.isStoppingOrStopped ||
+      !connectionId ||
+      this.heartbeatInFlightGeneration === generation
+    )
+      return;
 
+    // Convex queues unresolved mutations across disconnects. Keep the timer from
+    // building a heartbeat backlog while the current request is still pending.
+    this.heartbeatInFlightGeneration = generation;
     try {
       const result = await this.config.heartbeatDesktop({ connectionId });
-      if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
         return;
       if (!result.success) {
         // The legacy heartbeat response has no reason. Resolve it through the
@@ -342,7 +356,11 @@ export class DesktopSandboxBridge {
         const state = await this.config.refreshCentrifugoTokenDesktop({
           connectionId,
         });
-        if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+        if (
+          this.isStoppingOrStopped ||
+          this.connectionId !== connectionId ||
+          this.startupGeneration !== generation
+        )
           return;
         this.logRelayState("disconnected", {
           reason: "heartbeat_connection_inactive",
@@ -360,7 +378,12 @@ export class DesktopSandboxBridge {
         this.consecutiveHeartbeatFailures = 0;
       }
     } catch (error) {
-      if (this.isStoppingOrStopped) return;
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
+        return;
       if (isUnauthenticatedError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
@@ -380,6 +403,10 @@ export class DesktopSandboxBridge {
           error:
             error instanceof Error ? error.message : String(error ?? "unknown"),
         });
+      }
+    } finally {
+      if (this.heartbeatInFlightGeneration === generation) {
+        this.heartbeatInFlightGeneration = null;
       }
     }
   }
