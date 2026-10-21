@@ -449,6 +449,7 @@ export async function runSummarizationStep(options: {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   providerInputTokens?: number;
+  preparedInputTokens?: number;
   chatSystemPrompt: string;
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
@@ -479,6 +480,7 @@ export async function runSummarizationStep(options: {
     ensureSandbox: options.ensureSandbox,
     systemPromptTokens: options.systemPromptTokens,
     providerInputTokens: options.providerInputTokens ?? 0,
+    preparedInputTokens: options.preparedInputTokens,
     chatSystemPrompt: options.chatSystemPrompt,
     tools: options.tools,
     providerOptions: options.providerOptions,

@@ -392,6 +392,8 @@ export interface CheckAndSummarizeOptions {
   ensureSandbox?: EnsureSandbox;
   systemPromptTokens?: number;
   providerInputTokens?: number;
+  /** Prepared model request estimate, including its system prompt. */
+  preparedInputTokens?: number;
   chatSystemPrompt?: string;
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
@@ -463,6 +465,7 @@ const logContextCompactionStarted = ({
   totalEstimatedTokens,
   systemPromptTokens,
   providerInputTokens,
+  preparedInputTokens,
   maxTokens,
   summarizationThreshold,
   providerPromptPressure,
@@ -479,6 +482,7 @@ const logContextCompactionStarted = ({
   totalEstimatedTokens: number;
   systemPromptTokens: number;
   providerInputTokens: number;
+  preparedInputTokens: number;
   maxTokens: number;
   summarizationThreshold: number;
   providerPromptPressure?: ProviderPromptPressure | null;
@@ -508,6 +512,7 @@ const logContextCompactionStarted = ({
       total_estimated_tokens: totalEstimatedTokens,
       system_prompt_tokens: systemPromptTokens,
       provider_input_tokens: providerInputTokens,
+      prepared_input_tokens: preparedInputTokens,
       max_tokens: maxTokens,
       threshold_tokens: summarizationThreshold,
       ...fileTokenSummary,
@@ -1250,6 +1255,7 @@ export const checkAndSummarizeIfNeeded = async ({
   ensureSandbox,
   systemPromptTokens = 0,
   providerInputTokens = 0,
+  preparedInputTokens = 0,
   chatSystemPrompt = "",
   tools,
   providerOptions,
@@ -1290,8 +1296,12 @@ export const checkAndSummarizeIfNeeded = async ({
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   const totalEstimatedTokens =
     countMessagesTokens(uiMessages, fileTokens) + systemPromptTokens;
+  // Restored or provider-prepared history can exceed the smaller UI estimate.
+  // Use the same estimate as the final guard without changing the hard limit.
+  const preparedInputPressure = preparedInputTokens > summarizationThreshold;
   if (
     !providerPromptPressure &&
+    !preparedInputPressure &&
     !isAboveTokenThreshold(
       uiMessages,
       subscription,
@@ -1323,7 +1333,7 @@ export const checkAndSummarizeIfNeeded = async ({
 
   if (
     tailSelection.headMessages.length === 0 &&
-    providerPromptPressure &&
+    (providerPromptPressure || preparedInputPressure) &&
     !tailSelection.retainedTail?.projected_part_count
   ) {
     tailSelection = {
@@ -1363,6 +1373,7 @@ export const checkAndSummarizeIfNeeded = async ({
     totalEstimatedTokens,
     systemPromptTokens,
     providerInputTokens,
+    preparedInputTokens,
     maxTokens,
     summarizationThreshold,
     providerPromptPressure,
