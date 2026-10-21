@@ -83,10 +83,12 @@ describe("get_terminal_files", () => {
     const privateMessage = "private-target-and-signed-upload-url";
     mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
       if (args.fullPath === "/home/user/recovered.txt") {
+        args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
         throw new Error(privateMessage);
       }
       if (args.fullPath.endsWith("missing.txt")) {
+        args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
         throw new Error(privateMessage);
       }
@@ -104,6 +106,9 @@ describe("get_terminal_files", () => {
       };
     });
     const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
     const result = await runTool(createGetTerminalFiles(context), {
       files: ["recovered.txt", "missing.txt", "/failed-upload.txt"],
     });
@@ -119,9 +124,48 @@ describe("get_terminal_files", () => {
       failed_file_count: 2,
       file_delivery_diagnostic_version: 1,
       failure_phase_counts: { file_metadata: 1, transfer: 1 },
+      metadata_failure_diagnostic_version: 1,
+      metadata_failure_reason_counts: { native_file_missing: 1 },
     });
     expect(JSON.stringify(fields)).not.toMatch(
       /private-target|signed-upload|missing\.txt|failed-upload\.txt|recovered\.txt/,
+    );
+  });
+
+  it("counts only the final metadata reason and bounds invalid observer values", async () => {
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
+    mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+      args.onPhase?.("file_metadata");
+      const reason =
+        args.fullPath === "/home/user/report.txt"
+          ? "file_missing"
+          : args.fullPath === "report.txt"
+            ? "stat_failed"
+            : "PRIVATE signed-url/path";
+      (args.onNativeStatFailure as ((value: string) => void) | undefined)?.(
+        reason,
+      );
+      throw new Error("PRIVATE file error");
+    });
+    await runTool(createGetTerminalFiles(context), {
+      files: ["report.txt", "/other.txt"],
+    });
+    const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
+    expect(fields).toMatchObject({
+      failed_file_count: 2,
+      failure_phase_counts: { file_metadata: 2 },
+      metadata_failure_diagnostic_version: 1,
+      metadata_failure_reason_counts: {
+        native_stat_failed: 1,
+        unclassified: 1,
+      },
+    });
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(fields)).not.toMatch(
+      /PRIVATE|report|other|signed-url|path/,
     );
   });
 
@@ -692,9 +736,53 @@ describe("get_terminal_files", () => {
         relay_recovery_attempted: true,
         relay_recovery_succeeded: true,
         delivered_file_count: 1,
+        metadata_failure_reason_counts: {},
       }),
     );
   });
+  it("does not carry a native metadata reason across a relay recovery attempt", async () => {
+    const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
+    const replacement = {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "new",
+    };
+    const base = makeContext();
+    const recoverLocalConnection = jest.fn(async () => ({
+      sandbox: replacement,
+    }));
+    const context = makeContext({
+      sandboxManager: {
+        ...base.sandboxManager,
+        getSandbox: jest
+          .fn()
+          .mockResolvedValueOnce({ sandbox: stale })
+          .mockResolvedValueOnce({ sandbox: replacement }),
+        recoverLocalConnection,
+      },
+    });
+    mockUploadSandboxFileToConvex
+      .mockImplementationOnce(async (args) => {
+        args.onPhase?.("file_metadata");
+        args.onNativeStatFailure?.("stat_failed");
+        throw new LocalCommandRelayUnsubscribedError("old");
+      })
+      .mockImplementationOnce(async (args) => {
+        args.onPhase?.("file_metadata");
+        throw new Error("PRIVATE unclassified metadata failure");
+      });
+    await runTool(createGetTerminalFiles(context), { files: ["/report.txt"] });
+    expect(recoverLocalConnection).toHaveBeenCalledTimes(1);
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(2);
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        failed_file_count: 1,
+        failure_phase_counts: { file_metadata: 1 },
+        metadata_failure_reason_counts: { unclassified: 1 },
+      }),
+    );
+  });
+
   it("does not retry local files on a cloud sandbox after relay recovery", async () => {
     const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
     const cloud = { id: "cloud" };
