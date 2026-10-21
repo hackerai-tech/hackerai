@@ -222,9 +222,14 @@ export function CloudNetworkSettings() {
           A network update is in progress.
         </p>
       )}
-      {(error || (hasChanges && validationError)) && (
+      {error && (
         <p role="alert" className="text-sm text-destructive">
-          {error || validationError}
+          {error}
+        </p>
+      )}
+      {hasChanges && validationError && (
+        <p role="alert" className="text-sm text-destructive">
+          {validationError}
         </p>
       )}
       {(showSave || showReload) && (

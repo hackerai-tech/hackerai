@@ -160,6 +160,23 @@ it("stops refreshing an abandoned update and offers a manual retry", async () =>
   );
   expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Reload settings" })).toBeEnabled();
+  fireEvent.change(screen.getByLabelText("Allowed destinations"), {
+    target: { value: "bad host" },
+  });
+  expect(
+    screen.getAllByRole("alert").map((alert) => alert.textContent),
+  ).toEqual([
+    expect.stringContaining("taking longer than expected"),
+    expect.stringContaining("Use a valid hostname"),
+  ]);
+  expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Allowed destinations"), {
+    target: { value: "api.example.test" },
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "taking longer than expected",
+  );
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   const completedReads = fetchMock.mock.calls.length;
   await act(() => jest.advanceTimersByTimeAsync(6_000));
   expect(fetchMock).toHaveBeenCalledTimes(completedReads);
