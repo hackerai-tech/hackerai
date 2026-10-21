@@ -33,6 +33,36 @@ describe("compaction model assignment and telemetry", () => {
     mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
   });
+  it("records safe provider rejection facts without response content", async () => {
+    const policy = new CompactionModelPolicy(context);
+    const attempt = policy.start(await policy.resolve(), "run_scoped");
+    attempt.attempt(
+      "model-abliterated-large-v2",
+      "error",
+      1907,
+      undefined,
+      "provider_error",
+      {
+        statusCode: 400,
+        responseBody: JSON.stringify({
+          error: {
+            code: "too_many_tool_calls",
+            message: "private customer content",
+          },
+        }),
+      },
+    );
+    const properties = mockEvent.mock.calls.find(
+      ([name]) => name === "compaction_model_attempt_finished",
+    )![1];
+    expect(properties).toMatchObject({
+      provider_status_code: 400,
+      provider_error_code: "too_many_tool_calls",
+    });
+    expect(JSON.stringify(properties)).not.toContain(
+      "private customer content",
+    );
+  });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses Abliteration for %s and emits policy telemetry only at compaction",
     async (subscription) => {
