@@ -582,15 +582,19 @@ const generateSummaryTextWithRetry = async ({
     abortSignal?.throwIfAborted();
     if (assignment && compactionPolicy) {
       const telemetry = compactionPolicy.start(assignment, persistence);
+      const deepSeekFirst =
+        assignment.expandedMaxContext && isAbliterationModel(assignment.model);
       const models = [
         assignment.model,
+        // Expanded recovery tries the exact 1M-context DeepSeek route before
+        // GLM, retaining the 484K projection and independent summary fallbacks.
+        ...(deepSeekFirst ? [DEEPSEEK_1017_MODEL_KEY] : []),
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        // The normal chain includes routes with independent context policies.
-        // Use one exact 1M-context route for expanded recovery, without reducing
-        // the 484K summary projection or inheriting answering-model fallbacks.
-        ...(assignment.expandedMaxContext
-          ? [DEEPSEEK_1017_MODEL_KEY]
-          : STARTUP_COMPACTION_FALLBACK_MODELS),
+        ...(deepSeekFirst
+          ? []
+          : assignment.expandedMaxContext
+            ? [DEEPSEEK_1017_MODEL_KEY]
+            : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
       let servedModel: string | undefined;
       try {
@@ -636,9 +640,13 @@ const generateSummaryTextWithRetry = async ({
                 : summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                // Allow longer checkpoints to finish, but start recovery before
-                // a stalled GLM request consumes the former 90s deadline.
-                timeout: isStructuredRecovery ? 75_000 : 60_000,
+                // Abliteration must finish the full checkpoint before returning.
+                // Give it two minutes while retaining bounded recovery and cancellation.
+                timeout: isAbliterationModel(modelName)
+                  ? 120_000
+                  : isStructuredRecovery
+                    ? 75_000
+                    : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
                 maxOutputTokens: isStructuredRecovery ? 16384 : 8192,
                 structuredSummary: isStructuredRecovery,
@@ -689,6 +697,9 @@ const generateSummaryTextWithRetry = async ({
               index === models.length - 1 ||
               !(
                 isAbliterationModel(modelName) ||
+                // Expanded DeepSeek recovery may also reject the provider
+                // request outright. Give the assigned GLM one final attempt.
+                (deepSeekFirst && modelName === DEEPSEEK_1017_MODEL_KEY) ||
                 // A cheaper primary can reject a request with a non-retryable
                 // provider error (for example HTTP 400). Still try the assigned
                 // Abliteration fallback once; never retry caller cancellation.

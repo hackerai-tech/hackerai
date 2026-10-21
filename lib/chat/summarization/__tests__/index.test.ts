@@ -171,7 +171,7 @@ describe("default compaction policy pipeline", () => {
       expect(mockGenerateText.mock.calls[0][0]).toMatchObject({
         model: { modelId: "model-abliterated" },
         maxRetries: 0,
-        timeout: 60000,
+        timeout: 120000,
         maxOutputTokens: 8192,
         providerOptions: { abliteration: { reasoningEffort: "low" } },
       });
@@ -203,7 +203,10 @@ describe("default compaction policy pipeline", () => {
     expect((await compact()).needsSummarization).toBe(true);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    ).toEqual([
+      "model-abliterated-large-v2",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ]);
     expect(mockGenerateText.mock.calls[0][0].providerOptions).toEqual({
       abliteration: { reasoningEffort: "low" },
     });
@@ -228,60 +231,66 @@ describe("default compaction policy pipeline", () => {
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
     ).toEqual([
       "model-abliterated-large-v2",
-      "model-glm-5.3-flash",
       "model-deepseek-v4.1-flash-1017-pro",
+      "model-glm-5.3-flash",
     ]);
     expect(mockGenerateText.mock.calls[2][0].messages).toEqual(
       mockGenerateText.mock.calls[1][0].messages,
     );
   });
-  it("recovers a Large v2 rejection and GLM timeout through an intact DeepSeek checkpoint", async () => {
-    resolve.mockResolvedValue({
-      model: "model-abliterated-large-v2",
-      fallbackModel: "model-glm-5.3-flash",
-      expandedMaxContext: true,
-      policy: "max_large_v2_context_v1",
-    });
-    mockGenerateText
-      .mockRejectedValueOnce(
-        Object.assign(new Error("provider rejected"), { statusCode: 400 }),
-      )
-      .mockRejectedValueOnce(new DOMException("deadline", "TimeoutError"))
-      .mockResolvedValueOnce({
-        text: JSON.stringify(
-          Object.fromEntries(
-            AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
-              heading.slice(3),
-              "Completed A. Resume existing session synthetic_42; do not repeat A.",
-            ]),
-          ),
-        ),
-        finishReason: "stop",
-        usage: { inputTokens: 100, outputTokens: 20 },
+  it.each([
+    ["timeout", new DOMException("deadline", "TimeoutError")],
+    [
+      "HTTP 400",
+      Object.assign(new Error("provider rejected"), { statusCode: 400 }),
+    ],
+  ])(
+    "recovers a Large v2 rejection and DeepSeek %s through an intact GLM checkpoint",
+    async (_reason, deepSeekError) => {
+      resolve.mockResolvedValue({
+        model: "model-abliterated-large-v2",
+        fallbackModel: "model-glm-5.3-flash",
+        expandedMaxContext: true,
+        policy: "max_large_v2_context_v1",
       });
-    const result = await compact();
-    expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toContain("synthetic_42");
-    const recovery = mockGenerateText.mock.calls[2][0];
-    expect(recovery.model.modelId).toBe("model-deepseek-v4.1-flash-1017-pro");
-    expect(recovery.messages).toEqual(
-      mockGenerateText.mock.calls[1][0].messages,
-    );
-    expect(recovery.providerOptions.openrouter.provider).not.toHaveProperty(
-      "order",
-    );
-    expect(recovery.providerOptions.openrouter).not.toHaveProperty("models");
-    expect(recovery).toMatchObject({
-      maxRetries: 0,
-      timeout: 75000,
-      maxOutputTokens: 16384,
-    });
-    expect(finish).toHaveBeenCalledWith(
-      "completed",
-      "model-deepseek-v4.1-flash-1017-pro",
-    );
-  });
-  it("does not start expanded recovery after cancellation during GLM fallback", async () => {
+      mockGenerateText
+        .mockRejectedValueOnce(
+          Object.assign(new Error("provider rejected"), { statusCode: 400 }),
+        )
+        .mockRejectedValueOnce(deepSeekError)
+        .mockResolvedValueOnce({
+          text: JSON.stringify(
+            Object.fromEntries(
+              AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
+                heading.slice(3),
+                "Completed A. Resume existing session synthetic_42; do not repeat A.",
+              ]),
+            ),
+          ),
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 20 },
+        });
+      const result = await compact();
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summaryText).toContain("synthetic_42");
+      const recovery = mockGenerateText.mock.calls[2][0];
+      expect(recovery.model.modelId).toBe("model-glm-5.3-flash");
+      expect(recovery.messages).toEqual(
+        mockGenerateText.mock.calls[1][0].messages,
+      );
+      expect(
+        mockGenerateText.mock.calls[1][0].providerOptions.openrouter.provider,
+      ).not.toHaveProperty("order");
+      expect(recovery.providerOptions.openrouter).not.toHaveProperty("models");
+      expect(recovery).toMatchObject({
+        maxRetries: 0,
+        timeout: 75000,
+        maxOutputTokens: 16384,
+      });
+      expect(finish).toHaveBeenCalledWith("completed", "model-glm-5.3-flash");
+    },
+  );
+  it("does not start GLM after cancellation during DeepSeek fallback", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
