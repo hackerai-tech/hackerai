@@ -280,6 +280,7 @@
     "patchedDependencies": {
       "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",
       "brace-expansion@5.0.12": "patches/brace-expansion@5.0.12.patch",
+      "convex@1.46.0": "patches/convex@1.46.0.patch",
       "resumable-stream@2.2.13": "patches/resumable-stream@2.2.13.patch"
     }
   }
