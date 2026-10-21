@@ -92,6 +92,35 @@ export function CloudNetworkSettings() {
   const showReload =
     operation === "reload" ||
     Boolean(error && (!saved || saved.status === "applying"));
+  let policy: NetworkPolicy | null = null;
+  let validationError = "";
+  try {
+    policy = normalizeNetworkPolicy({
+      mode,
+      allow:
+        mode === "restricted"
+          ? allow
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [],
+    });
+  } catch (e) {
+    validationError =
+      e instanceof Error ? e.message : "Use valid allowed destinations.";
+  }
+  const hasChanges = Boolean(
+    saved &&
+    (!policy ||
+      policy.mode !== saved.policy.mode ||
+      policy.allow.join("\n") !== saved.policy.allow.join("\n")),
+  );
+  const canRetry =
+    saved?.status === "failed" ||
+    (saved?.status === "applying" && Boolean(error));
+  const showSave = Boolean(
+    saved && (hasChanges || canRetry || operation === "save"),
+  );
   async function reload() {
     setOperation("reload");
     setError("");
@@ -106,22 +135,11 @@ export function CloudNetworkSettings() {
     }
   }
   async function save() {
-    if (!saved) return;
+    if (!saved || !policy || busy || updating || (!hasChanges && !canRetry))
+      return;
     setOperation("save");
     setError("");
-    let submitted = false;
     try {
-      const policy = normalizeNetworkPolicy({
-        mode,
-        allow:
-          mode === "restricted"
-            ? allow
-                .split("\n")
-                .map((s) => s.trim())
-                .filter(Boolean)
-            : [],
-      });
-      submitted = true;
       const response = await fetch("/api/sandbox/network", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -139,8 +157,8 @@ export function CloudNetworkSettings() {
       toast.success("Network settings updated.");
     } catch (e) {
       // Even a lost response may have persisted a new revision. Read it before
-      // retrying, while keeping local validation errors editable.
-      if (submitted) setSaved(null);
+      // retrying.
+      setSaved(null);
       setError(
         e instanceof Error ? e.message : "Could not apply network settings.",
       );
@@ -195,8 +213,8 @@ export function CloudNetworkSettings() {
       {saved?.status === "failed" && (
         <p role="status" className="text-sm text-amber-600 dark:text-amber-400">
           The last update was not fully verified. Some workspaces may already
-          use these rules. Retry Save. If an update is still in progress, wait
-          up to two minutes.
+          use these rules. Retry the update. If an update is still in progress,
+          wait up to two minutes.
         </p>
       )}
       {updating && (
@@ -204,21 +222,29 @@ export function CloudNetworkSettings() {
           A network update is in progress.
         </p>
       )}
-      {error && (
+      {(error || (hasChanges && validationError)) && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {error || validationError}
         </p>
       )}
-      <div className="flex gap-2">
-        <Button onClick={save} disabled={busy || !saved || updating}>
-          {operation === "save" ? "Saving…" : "Save"}
-        </Button>
-        {showReload && (
-          <Button variant="outline" onClick={reload} disabled={busy}>
-            {operation === "reload" ? "Reloading…" : "Reload settings"}
-          </Button>
-        )}
-      </div>
+      {(showSave || showReload) && (
+        <div className="flex gap-2">
+          {showSave && (
+            <Button onClick={save} disabled={busy || updating || !policy}>
+              {operation === "save"
+                ? "Saving…"
+                : hasChanges
+                  ? "Save changes"
+                  : "Retry"}
+            </Button>
+          )}
+          {showReload && (
+            <Button variant="outline" onClick={reload} disabled={busy}>
+              {operation === "reload" ? "Reloading…" : "Reload settings"}
+            </Button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
