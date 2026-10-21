@@ -83,6 +83,9 @@ patchedDependencies:
   brace-expansion@5.0.12:
     hash: c21475a6dddf7d6e51aea14c31c14bb4cd80eeafb6f8ea8b669cb8985d98429e
     path: patches/brace-expansion@5.0.12.patch
+  convex@1.46.0:
+    hash: c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361
+    path: patches/convex@1.46.0.patch
   resumable-stream@2.2.13:
     hash: e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b
     path: patches/resumable-stream@2.2.13.patch
@@ -108,10 +111,10 @@ importers:
         version: 3.1146.0
       '@convex-dev/aggregate':
         specifier: ^0.2.2
-        version: 0.2.2(convex@1.46.0(react@19.3.0))
+        version: 0.2.2(convex@1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0))
       '@convex-dev/workos':
         specifier: ^0.0.3
-        version: 0.0.3(convex@1.46.0(react@19.3.0))(react@19.3.0)
+        version: 0.0.3(convex@1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0))(react@19.3.0)
       '@dnd-kit/core':
         specifier: 6.3.1
         version: 6.3.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -123,7 +126,7 @@ importers:
         version: 0.0.20
       '@langchain/community':
         specifier: ^1.1.29
-        version: 1.1.29(5f475a2eb42f028b44eafa9e9046935a)
+        version: 1.1.29(9b31e2242570d8525ea712ec234ea688)
       '@legendapp/list':
         specifier: 3.6.0
         version: 3.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -246,7 +249,7 @@ importers:
         version: 2.1.1
       convex:
         specifier: 1.46.0
-        version: 1.46.0(react@19.3.0)
+        version: 1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0)
       date-fns:
         specifier: 4.4.0
         version: 4.4.0
@@ -8950,14 +8953,14 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 2.16.0
 
-  '@convex-dev/aggregate@0.2.2(convex@1.46.0(react@19.3.0))':
+  '@convex-dev/aggregate@0.2.2(convex@1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0))':
     dependencies:
-      convex: 1.46.0(react@19.3.0)
+      convex: 1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0)
 
-  '@convex-dev/workos@0.0.3(convex@1.46.0(react@19.3.0))(react@19.3.0)':
+  '@convex-dev/workos@0.0.3(convex@1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@workos-inc/authkit-react': 0.16.1(react@19.3.0)
-      convex: 1.46.0(react@19.3.0)
+      convex: 1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0)
       react: 19.3.0
 
   '@cspotcode/source-map-support@0.8.1':
@@ -9811,7 +9814,7 @@ snapshots:
       - openai
       - ws
 
-  '@langchain/community@1.1.29(5f475a2eb42f028b44eafa9e9046935a)':
+  '@langchain/community@1.1.29(9b31e2242570d8525ea712ec234ea688)':
     dependencies:
       '@browserbasehq/stagehand': 1.14.0(@playwright/test@1.63.0)(deepmerge@4.3.1)(dotenv@17.4.2)(openai@6.49.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.6.5))(zod@4.6.5)
       '@ibm-cloud/watsonx-ai': 1.6.12
@@ -9838,7 +9841,7 @@ snapshots:
       '@smithy/util-utf8': 4.2.2
       '@upstash/ratelimit': 2.2.0(@upstash/redis@1.39.0)
       '@upstash/redis': 1.39.0
-      convex: 1.46.0(react@19.3.0)
+      convex: 1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0)
       d3-dsv: 3.0.1
       fast-xml-parser: 5.7.1
       google-auth-library: 10.5.0
@@ -12494,7 +12497,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  convex@1.46.0(react@19.3.0):
+  convex@1.46.0(patch_hash=c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361)(react@19.3.0):
     dependencies:
       esbuild: 0.27.0
       prettier: 3.9.6
