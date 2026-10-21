@@ -136,6 +136,40 @@ describe("LocalSandboxClient cleanup", () => {
     );
   });
 
+  it.each([
+    { displayName: undefined, shown: true, label: "echo test" },
+    { displayName: "Custom label", shown: true, label: "Custom label" },
+    { displayName: "", shown: false, label: "echo test" },
+  ])(
+    "preserves execution and display overrides: $displayName",
+    async ({ displayName, shown, label }) => {
+      const client = new LocalSandboxClient(config);
+      const streamCommand = jest.fn().mockResolvedValue(undefined);
+      const privateClient = client as unknown as {
+        handleCommand: (message: Record<string, unknown>) => Promise<void>;
+        streamCommand: typeof streamCommand;
+      };
+      privateClient.streamCommand = streamCommand;
+      const command =
+        'export PATH="$HOME/go/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/local/go/bin:$PATH" && echo test';
+      await privateClient.handleCommand({
+        type: "command",
+        commandId: "display-test",
+        command,
+        displayName,
+        targetConnectionId: "connection-1",
+      });
+      expect(streamCommand).toHaveBeenCalledWith(
+        "display-test",
+        command,
+        undefined,
+        shown,
+        label,
+        undefined,
+      );
+    },
+  );
+
   it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest

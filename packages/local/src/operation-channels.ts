@@ -166,8 +166,11 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     const route: Route<S> = {
       subscription,
       queue: new CentrifugoPublishQueue(async (fragment) => {
-        if (this.stopped || this.routes.get(key) !== route)
-          throw new Error("Relay operation is closed");
+        // An exit can close this route while a cancellation ACK is queued
+        // behind it. Treat queued late replies like publish() treats replies
+        // arriving after close: discard them, never fall back to a shared
+        // channel. Actual subscription.publish failures still propagate.
+        if (this.stopped || this.routes.get(key) !== route) return;
         await subscription.publish(fragment);
       }),
       timer: setTimeout(() => this.close(key), this.deadline(message, op)),

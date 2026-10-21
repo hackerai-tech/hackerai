@@ -216,6 +216,57 @@ describe("operation channels", () => {
     });
   });
 
+  it("discards a cancel acknowledgement queued behind exit without broadcasting it", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].publish.mockClear();
+    const legacyPublish = jest.fn();
+    const output = { type: "stdout", commandId: "cmd", data: "final output" };
+    const exit = { type: "exit", commandId: "cmd", exitCode: 1 };
+    const results = await Promise.allSettled([
+      router.publish(output, legacyPublish),
+      router.publish(exit, legacyPublish),
+      router.publish(
+        { type: "command_cancel_result", commandId: "cmd", canceled: true },
+        legacyPublish,
+      ),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    expect(subs[0].publish.mock.calls.map(([message]) => message)).toEqual([
+      output,
+      exit,
+    ]);
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    expect(legacyPublish).not.toHaveBeenCalled();
+  });
+
+  it("still reports real publish failures and allows a later response", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].publish.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(
+      router.publish({ type: "exit", commandId: "cmd", exitCode: 1 }),
+    ).rejects.toThrow("connection lost");
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    await router.publish({ type: "exit", commandId: "cmd", exitCode: 1 });
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards queued output after shutdown", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].publish.mockClear();
+    const pending = router.publish({
+      type: "stdout",
+      commandId: "cmd",
+      data: "late",
+    });
+    router.stop();
+    await expect(pending).resolves.toBeUndefined();
+    expect(subs[0].publish).not.toHaveBeenCalled();
+  });
+
   it("does not publish unknown or previous-connection output through the legacy callback", async () => {
     const legacyPublish = jest.fn().mockResolvedValue(undefined);
     await router.publish(
