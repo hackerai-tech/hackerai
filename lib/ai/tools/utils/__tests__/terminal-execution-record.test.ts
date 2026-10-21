@@ -296,6 +296,41 @@ describe("terminal execution records", () => {
     expect(saved?.output.endsWith("FINAL_EVIDENCE")).toBe(true);
   });
 
+  it("periodically restores a quiet record removed by retention", async () => {
+    jest.useFakeTimers();
+    const { sandbox, data } = sandboxFixture();
+    const store = createTerminalRecordStore(sandbox, "u", "quiet-record");
+    const handle = createCommandSessionHandle({ kill: async () => true });
+    const manager = new PtySessionManager();
+    const session = await manager.create("quiet-record", {
+      createHandle: async () => handle,
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      sandboxIdentity: "e2b",
+      originalCommand: "bounded test",
+      executionRecord: {
+        ...store,
+        checkpointOnStart: false,
+        pruneOnStart: false,
+        sandboxInstance: "e2b:sandbox-one",
+        artifactPaths: [],
+      },
+    });
+    try {
+      await manager.checkpoint(session);
+      data.delete(store.pathFor(session.sessionId));
+      await jest.advanceTimersByTimeAsync(60_000);
+      await manager.checkpoint(session);
+      expect(await store.read(session.sessionId)).toMatchObject({
+        status: "running",
+        updatedAt: Date.now(),
+      });
+    } finally {
+      await manager.closeAll("quiet-record");
+    }
+  });
+
   it("distinguishes cancellation from completion while retaining partial evidence", async () => {
     const { sandbox } = sandboxFixture();
     const store = createTerminalRecordStore(sandbox, "u", "c");

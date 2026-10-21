@@ -121,6 +121,7 @@ interface InternalSession extends PtySession {
   recordWriting: boolean;
   recordDirty: boolean;
   persistedRecordFingerprint?: string;
+  persistedRecordAt?: number;
   recordTimer: ReturnType<typeof setTimeout> | null;
   exitReason: string | null;
 }
@@ -376,7 +377,13 @@ export class PtySessionManager {
           const fingerprint = createHash("sha256")
             .update(JSON.stringify(record))
             .digest("hex");
-          if (fingerprint === internal.persistedRecordFingerprint) continue;
+          // Retention can remove an older running record while other commands
+          // finish. Refresh quiet sessions at most once a minute when polled.
+          if (
+            fingerprint === internal.persistedRecordFingerprint &&
+            Date.now() - (internal.persistedRecordAt ?? 0) < 60_000
+          )
+            continue;
           record.updatedAt = Date.now();
           const path = await internal.executionRecord!.save(record);
           session.recordPersistenceFailed = !path;
@@ -384,6 +391,7 @@ export class PtySessionManager {
             session.recordPath = path;
             // Only acknowledge successful writes; unchanged failed snapshots retry.
             internal.persistedRecordFingerprint = fingerprint;
+            internal.persistedRecordAt = record.updatedAt;
           }
         }
       })()
