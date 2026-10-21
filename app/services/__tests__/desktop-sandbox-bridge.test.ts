@@ -263,6 +263,28 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("exposes this computer's identity even when backend registration fails", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_environment_id" ? "native-environment" : original(cmd, args);
+    const onConnectionState = jest.fn();
+    const config = buildConfig({
+      onConnectionState,
+      connectDesktop: jest.fn().mockRejectedValue(new Error("offline")),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+
+    await expect(bridge.start()).rejects.toThrow("offline");
+
+    expect(onConnectionState).toHaveBeenCalledWith(
+      "connecting",
+      "native-environment",
+    );
+    expect(onConnectionState).not.toHaveBeenCalledWith("connected");
+    expect(config.heartbeatDesktop).not.toHaveBeenCalled();
+    await bridge.stop();
+  });
+
   it("fails closed when native identity storage is corrupt", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
@@ -2164,6 +2186,58 @@ describe("pty_data publish ordering", () => {
 });
 
 describe("desktop lifecycle recovery", () => {
+  it("restarts a stuck relay after 30 seconds even if only the socket reconnects", async () => {
+    jest.useFakeTimers();
+    const onTerminated = jest.fn();
+    const bridge = new DesktopSandboxBridge(buildConfig({ onTerminated }));
+    try {
+      await bridge.start();
+      getSubscriptionHandler("subscribing")({
+        code: 1,
+        reason: "transport closed",
+      });
+      await jest.advanceTimersByTimeAsync(20_000);
+      getClientHandler("connected")({ transport: "websocket" });
+      getClientHandler("connecting")({ code: 3, reason: "subscribe timeout" });
+      await jest.advanceTimersByTimeAsync(9_999);
+      expect(onTerminated).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(onTerminated).toHaveBeenCalledTimes(1);
+      expect(onTerminated).toHaveBeenCalledWith("transport_disconnected");
+      expect(bridge.getConnectionId()).toBeNull();
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["recovered", "stopped"])(
+    "cancels stuck-relay recovery when %s",
+    async (outcome) => {
+      jest.useFakeTimers();
+      const onTerminated = jest.fn();
+      const bridge = new DesktopSandboxBridge(buildConfig({ onTerminated }));
+      try {
+        await bridge.start();
+        getClientHandler("connecting")({ code: 1, reason: "transport closed" });
+        await jest.advanceTimersByTimeAsync(20_000);
+        if (outcome === "recovered") {
+          getSubscriptionHandler("subscribed")({
+            recovered: true,
+            wasRecovering: true,
+          });
+        } else {
+          await bridge.stop();
+        }
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(onTerminated).not.toHaveBeenCalled();
+      } finally {
+        await bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it("finishes local shutdown while the remote disconnect stays offline", async () => {
     let resolveDisconnect!: (value: { success: boolean }) => void;
     const pending = new Promise<{ success: boolean }>((resolve) => {

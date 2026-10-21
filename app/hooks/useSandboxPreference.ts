@@ -34,7 +34,12 @@ let activeBridge: DesktopSandboxBridge | null = null;
 let bridgeStartPromise: Promise<DesktopSandboxBridge | null> | null = null;
 let bridgeGeneration = 0;
 let bridgeStateListener:
-  ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
+  | ((
+      active: boolean,
+      status: DesktopBridgeStatus,
+      environmentId?: string,
+    ) => void)
+  | null = null;
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
 const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
 const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
@@ -176,8 +181,10 @@ export function useSandboxPreference(
     const updateBridgeState = (
       active: boolean,
       status: DesktopBridgeStatus,
+      environmentId?: string,
     ) => {
       if (cancelled) return;
+      if (environmentId) setDesktopEnvironmentId(environmentId);
       setDesktopBridgeActive(active);
       setDesktopBridgeStatus(status);
     };
@@ -296,13 +303,20 @@ export function useSandboxPreference(
                     refreshTokenRef.current(args),
                   disconnectDesktop: (args) => disconnectRef.current(args),
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
-                  onConnectionState: (state) => {
+                  onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
                       bridgeRecoveryExhausted = false;
                       scheduleStableRecoveryReset(generation);
+                    } else if (bridgeStableResetTimer) {
+                      clearTimeout(bridgeStableResetTimer);
+                      bridgeStableResetTimer = null;
                     }
-                    bridgeStateListener?.(state === "connected", state);
+                    bridgeStateListener?.(
+                      state === "connected",
+                      state,
+                      environmentId,
+                    );
                   },
                   onTerminated: (reason) => {
                     if (generation !== bridgeGeneration) return;
