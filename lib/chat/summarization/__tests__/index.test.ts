@@ -203,7 +203,10 @@ describe("default compaction policy pipeline", () => {
     expect((await compact()).needsSummarization).toBe(true);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    ).toEqual([
+      "model-abliterated-large-v2",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ]);
     expect(mockGenerateText.mock.calls[0][0].providerOptions).toEqual({
       abliteration: { reasoningEffort: "low" },
     });
@@ -228,14 +231,14 @@ describe("default compaction policy pipeline", () => {
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
     ).toEqual([
       "model-abliterated-large-v2",
-      "model-glm-5.3-flash",
       "model-deepseek-v4.1-flash-1017-pro",
+      "model-glm-5.3-flash",
     ]);
     expect(mockGenerateText.mock.calls[2][0].messages).toEqual(
       mockGenerateText.mock.calls[1][0].messages,
     );
   });
-  it("recovers a Large v2 rejection and GLM timeout through an intact DeepSeek checkpoint", async () => {
+  it("recovers a Large v2 rejection and DeepSeek timeout through an intact GLM checkpoint", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
@@ -263,25 +266,22 @@ describe("default compaction policy pipeline", () => {
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toContain("synthetic_42");
     const recovery = mockGenerateText.mock.calls[2][0];
-    expect(recovery.model.modelId).toBe("model-deepseek-v4.1-flash-1017-pro");
+    expect(recovery.model.modelId).toBe("model-glm-5.3-flash");
     expect(recovery.messages).toEqual(
       mockGenerateText.mock.calls[1][0].messages,
     );
-    expect(recovery.providerOptions.openrouter.provider).not.toHaveProperty(
-      "order",
-    );
+    expect(
+      mockGenerateText.mock.calls[1][0].providerOptions.openrouter.provider,
+    ).not.toHaveProperty("order");
     expect(recovery.providerOptions.openrouter).not.toHaveProperty("models");
     expect(recovery).toMatchObject({
       maxRetries: 0,
       timeout: 75000,
       maxOutputTokens: 16384,
     });
-    expect(finish).toHaveBeenCalledWith(
-      "completed",
-      "model-deepseek-v4.1-flash-1017-pro",
-    );
+    expect(finish).toHaveBeenCalledWith("completed", "model-glm-5.3-flash");
   });
-  it("does not start expanded recovery after cancellation during GLM fallback", async () => {
+  it("does not start GLM after cancellation during DeepSeek fallback", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",

@@ -582,15 +582,19 @@ const generateSummaryTextWithRetry = async ({
     abortSignal?.throwIfAborted();
     if (assignment && compactionPolicy) {
       const telemetry = compactionPolicy.start(assignment, persistence);
+      const deepSeekFirst =
+        assignment.expandedMaxContext && isAbliterationModel(assignment.model);
       const models = [
         assignment.model,
+        // Expanded recovery tries the exact 1M-context DeepSeek route before
+        // GLM, retaining the 484K projection and independent summary fallbacks.
+        ...(deepSeekFirst ? [DEEPSEEK_1017_MODEL_KEY] : []),
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        // The normal chain includes routes with independent context policies.
-        // Use one exact 1M-context route for expanded recovery, without reducing
-        // the 484K summary projection or inheriting answering-model fallbacks.
-        ...(assignment.expandedMaxContext
-          ? [DEEPSEEK_1017_MODEL_KEY]
-          : STARTUP_COMPACTION_FALLBACK_MODELS),
+        ...(deepSeekFirst
+          ? []
+          : assignment.expandedMaxContext
+            ? [DEEPSEEK_1017_MODEL_KEY]
+            : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
       let servedModel: string | undefined;
       try {

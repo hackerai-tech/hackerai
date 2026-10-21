@@ -149,7 +149,7 @@ describe("startup compaction through the real AI SDK", () => {
       "model-deepseek-v4.1-flash-1017-pro",
       new MockLanguageModelV3({
         doGenerate: async () => {
-          throw new Error("Synthetic final recovery unavailable");
+          throw new DOMException("Synthetic DeepSeek timeout", "TimeoutError");
         },
       }),
     );
@@ -361,6 +361,12 @@ describe("startup compaction through the real AI SDK", () => {
         },
       });
       models.set("model-abliterated-large-v2", large);
+      const recoveryKey = expandedMaxContext
+        ? "model-deepseek-v4.1-flash-1017-pro"
+        : "model-glm-5.3-flash";
+      const recoverySlug = expandedMaxContext
+        ? "deepseek/deepseek-v4.1-flash-1017"
+        : "z-ai/glm-5.3-flash";
       const EdgeResponse =
         require("next/dist/compiled/@edge-runtime/primitives/fetch").Response;
       const payloads: Record<string, any>[] = [];
@@ -372,7 +378,7 @@ describe("startup compaction through the real AI SDK", () => {
             JSON.stringify({
               id: "gen-structured-fixture",
               created: 0,
-              model: "z-ai/glm-5.3-flash",
+              model: recoverySlug,
               provider: "Fixture",
               choices: [
                 {
@@ -398,8 +404,8 @@ describe("startup compaction through the real AI SDK", () => {
             { headers: { "content-type": "application/json" } },
           );
         },
-      }).chat("z-ai/glm-5.3-flash");
-      models.set("model-glm-5.3-flash", model);
+      }).chat(recoverySlug);
+      models.set(recoveryKey, model);
       const discarded = jest.fn();
       const result = await checkAndSummarizeIfNeeded({
         uiMessages: messages,
@@ -437,12 +443,15 @@ describe("startup compaction through the real AI SDK", () => {
       expect(payloads).toHaveLength(1);
       expect(large.doGenerateCalls).toHaveLength(expandedMaxContext ? 1 : 0);
       expect(payloads[0]).toMatchObject({
+        model: recoverySlug,
         max_tokens: 16384,
         reasoning: { enabled: true, effort: "low" },
         provider: {
           require_parameters: true,
-          order: ["baseten"],
-          ignore: ["modal"],
+          ...(!expandedMaxContext && {
+            order: ["baseten"],
+            ignore: ["modal"],
+          }),
           sort: "latency",
           data_collection: "deny",
         },
@@ -460,6 +469,17 @@ describe("startup compaction through the real AI SDK", () => {
           },
         },
       });
+      if (expandedMaxContext) {
+        expect(payloads[0].provider).not.toHaveProperty("order");
+        expect(payloads[0]).not.toHaveProperty("models");
+        expect(recordEvent).toHaveBeenCalledWith(
+          "compaction_model_finished",
+          expect.objectContaining({
+            served_model: recoveryKey,
+            attempt_count: 2,
+          }),
+        );
+      }
       expect(
         payloads[0].response_format.json_schema.schema.required,
       ).toHaveLength(mode === "agent" ? 10 : 7);
