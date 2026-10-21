@@ -668,6 +668,7 @@ describe("terminal connection state", () => {
       "sandbox_connection_terminated",
       expect.objectContaining({
         native_auth_diagnostic_version: 1,
+        heartbeat_backpressure_version: 1,
         convex_function: "localSandbox:refreshCentrifugoTokenDesktop",
         convex_request_id: "0123456789abcdef",
       }),
@@ -712,6 +713,7 @@ describe("terminal connection state", () => {
           );
         expect(authCapture?.[1]).toMatchObject({
           native_auth_diagnostic_version: 1,
+          heartbeat_backpressure_version: 1,
           convex_function: "localSandbox:heartbeatDesktop",
         });
         expect(authCapture?.[1]?.convex_request_id).toBe(expectedId);

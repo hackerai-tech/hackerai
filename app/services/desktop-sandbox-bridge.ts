@@ -209,6 +209,9 @@ function nativeAuthDiagnostics(
 ): Record<string, string | number> {
   const diagnostics: Record<string, string | number> = {
     native_auth_diagnostic_version: 1,
+    // Distinguish this pending-heartbeat guard from older loaded bridges.
+    // This identifies the heartbeat policy, not the native binary or build.
+    heartbeat_backpressure_version: 1,
     convex_function: convexFunction,
   };
   try {
