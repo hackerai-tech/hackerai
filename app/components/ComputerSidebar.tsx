@@ -342,6 +342,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [isWrapped, setIsWrapped] = useState(true);
+  const [browserPreviewVisible, setBrowserPreviewVisible] = useState(false);
   const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
 
@@ -727,6 +728,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
             {sidebarOpen && browserChatId && (
               <AgentBrowserPreview
+                onVisibilityChange={setBrowserPreviewVisible}
                 onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
@@ -803,7 +805,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
                 {/* Action buttons - far right */}
                 <div className="flex items-center">
-                  {isTerminal && resolvedTerminal && (
+                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
                     <ExpandedTerminalButton
                       key={resolvedTerminal.toolCallId}
                       terminal={resolvedTerminal}

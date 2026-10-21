@@ -53,6 +53,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    browserHandoffs: { getForUser: "getForUser" },
     subagents: {
       getOwned: "getOwned",
       getMessagesOwned: "getMessagesOwned",
@@ -157,6 +158,64 @@ describe("ComputerSidebar reconnect behavior", () => {
     jest.useRealTimers();
   });
 
+  it("shows command expansion only alongside a browser section", () => {
+    const props = {
+      sidebarOpen: true,
+      closeSidebar: mockCloseSidebar,
+      browserChatId: "chat",
+    };
+    const view = render(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+    view.rerender(
+      <ComputerSidebarBase
+        {...props}
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    ).toBeVisible();
+    view.rerender(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.queryByRole("region", { name: "Agent browser preview" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+    mockUseQuery.mockReturnValue({ state: "waiting" });
+    view.rerender(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    ).toBeVisible();
+    view.rerender(
+      <ComputerSidebarBase
+        {...props}
+        browserChatId={undefined}
+        sidebarContent={activeSidebarContent}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("pins the expanded command while later tools arrive", () => {
     const onNavigate = jest.fn();
     const messages = [
@@ -168,7 +227,7 @@ describe("ComputerSidebar reconnect behavior", () => {
             type: "tool-run_terminal_cmd",
             toolCallId: "tool-active",
             state: "output-available",
-            input: { command: "npm test" },
+            input: { command: "agent-browser snapshot -i" },
             output: { result: { output: "initial output" } },
           },
         ],
@@ -177,7 +236,11 @@ describe("ComputerSidebar reconnect behavior", () => {
     const view = render(
       <ComputerSidebarBase
         sidebarOpen
-        sidebarContent={activeSidebarContent}
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+        browserChatId="chat"
         closeSidebar={mockCloseSidebar}
         messages={messages}
         onNavigate={onNavigate}
@@ -190,7 +253,11 @@ describe("ComputerSidebar reconnect behavior", () => {
     view.rerender(
       <ComputerSidebarBase
         sidebarOpen
-        sidebarContent={activeSidebarContent}
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+        browserChatId="chat"
         closeSidebar={mockCloseSidebar}
         messages={[...messages, otherToolMessage]}
         onNavigate={onNavigate}
@@ -200,7 +267,7 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     expect(
       within(screen.getByRole("dialog")).getByTestId("terminal-code-block"),
-    ).toHaveTextContent("npm test");
+    ).toHaveTextContent("agent-browser snapshot -i");
     fireEvent.click(
       screen.getByRole("button", { name: "Close expanded command" }),
     );

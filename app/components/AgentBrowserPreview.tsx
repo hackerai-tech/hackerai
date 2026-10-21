@@ -49,11 +49,13 @@ export function AgentBrowserPreview({
   runActive = false,
   onJumpToLive,
   onContinue,
+  onVisibilityChange,
 }: {
   chatId: string;
   agentId: string;
   liveSelection: boolean;
   browserRequested?: boolean;
+  onVisibilityChange?: (visible: boolean) => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
   onContinue?: (message: { id: string; text: string }) => Promise<void>;
@@ -160,6 +162,11 @@ export function AgentBrowserPreview({
     session?.state === "human" ||
     session?.state === "recovery" ||
     session?.state === "resuming";
+
+  useLayoutEffect(() => {
+    onVisibilityChange?.(showPreview);
+    return () => onVisibilityChange?.(false);
+  }, [showPreview, onVisibilityChange]);
 
   useEffect(() => {
     mountedRef.current = true;
