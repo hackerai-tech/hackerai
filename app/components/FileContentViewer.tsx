@@ -168,8 +168,8 @@ export const FileContentViewer = ({
           setError(
             String(cause).includes("preview limit")
               ? "This file is too large to preview (10 MB maximum)."
-              : String(cause).includes("read_local_preview_file") &&
-                  String(cause).includes("not found")
+              : /read_local_preview_file/i.test(String(cause)) &&
+                  /not found|not allowed/i.test(String(cause))
                 ? "Update HackerAI Desktop to preview local files."
                 : localPath
                   ? "Couldn't preview this file. Check that it still exists and is a valid document, then reopen it."

@@ -93,6 +93,26 @@ describe("FileContentViewer", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview-pdf");
   });
 
+  it.each([
+    "Command read_local_preview_file not found",
+    "Command read_local_preview_file not allowed by ACL",
+    "READ_LOCAL_PREVIEW_FILE Not Allowed",
+  ])(
+    "requests a Desktop update for an unsupported preview command: %s",
+    async (error) => {
+      jest.mocked(readLocalPreviewFile).mockRejectedValueOnce(new Error(error));
+      renderViewer(
+        { name: "notes.txt", type: "text/plain", size: 10, lastModified: 0 },
+        "/local/notes.txt",
+      );
+      expect(
+        await screen.findByText(
+          "Update HackerAI Desktop to preview local files.",
+        ),
+      ).toBeVisible();
+    },
+  );
+
   it("reports a missing local file without falling back to a cloud URL", async () => {
     jest
       .mocked(readLocalPreviewFile)
