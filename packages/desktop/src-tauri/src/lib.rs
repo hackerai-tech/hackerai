@@ -325,10 +325,36 @@ fn remove_generated_text_attachment(
 
 #[tauri::command]
 fn read_local_file(path: String) -> Result<LocalFileData, String> {
+    read_local_file_data(path, None)
+}
+
+#[tauri::command]
+fn read_local_preview_file(path: String) -> Result<LocalFileData, String> {
+    read_local_file_data(path, Some(10 * 1024 * 1024))
+}
+
+fn read_local_file_data(path: String, max_bytes: Option<u64>) -> Result<LocalFileData, String> {
     use base64::Engine;
+    use std::io::Read;
 
     let metadata = get_local_file_metadata(path.clone())?;
-    let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
+    let bytes = if let Some(limit) = max_bytes {
+        let limit = limit.min(10 * 1024 * 1024);
+        if metadata.size > limit {
+            return Err("File exceeds preview limit".into());
+        }
+        let file = fs::File::open(&path).map_err(|_| "File is no longer available")?;
+        let mut bytes = Vec::new();
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not read file")?;
+        if bytes.len() as u64 > limit {
+            return Err("File exceeds preview limit".into());
+        }
+        bytes
+    } else {
+        fs::read(&path).map_err(|e| format!("Read error: {}", e))?
+    };
 
     Ok(LocalFileData {
         path: metadata.path,
@@ -338,6 +364,38 @@ fn read_local_file(path: String) -> Result<LocalFileData, String> {
         last_modified: metadata.last_modified,
         base64: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
+}
+
+#[cfg(test)]
+mod local_preview_tests {
+    use super::*;
+
+    #[test]
+    fn preview_reads_bytes_and_rejects_oversized_or_missing_files() {
+        let path = std::env::temp_dir().join(format!(
+            "hackerai-preview-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"local preview").unwrap();
+        let name = path.to_string_lossy().into_owned();
+        let result = read_local_preview_file(name.clone()).unwrap();
+        assert_eq!(result.base64, "bG9jYWwgcHJldmlldw==");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(10 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            matches!(read_local_preview_file(name.clone()), Err(e) if e == "File exceeds preview limit")
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(read_local_preview_file(name).is_err());
+    }
 }
 
 // ── Command Execution Server ──────────────────────────────────────────
@@ -2142,6 +2200,7 @@ pub fn run() {
             read_generated_text_attachment,
             remove_generated_text_attachment,
             read_local_file,
+            read_local_preview_file,
             execute_command,
             execute_stream_command,
             cancel_stream_command,

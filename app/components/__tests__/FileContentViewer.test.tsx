@@ -1,6 +1,10 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { FileUrlCacheProvider } from "@/app/contexts/FileUrlCacheContext";
 import { FileContentViewer } from "../FileContentViewer";
+import { readLocalPreviewFile } from "@/app/hooks/useTauri";
+import type { LocalDesktopFile } from "@/types/file";
+
+jest.mock("@/app/hooks/useTauri", () => ({ readLocalPreviewFile: jest.fn() }));
 
 describe("FileContentViewer", () => {
   let createObjectURL: jest.Mock;
@@ -37,7 +41,7 @@ describe("FileContentViewer", () => {
     });
   });
 
-  function renderViewer(file: File) {
+  function renderViewer(file: File | LocalDesktopFile, localPath?: string) {
     return render(
       <FileUrlCacheProvider
         getCachedUrl={() => null}
@@ -48,10 +52,58 @@ describe("FileContentViewer", () => {
           onClose={() => undefined}
           file={file}
           fileName={file.name}
+          localPath={localPath}
         />
       </FileUrlCacheProvider>,
     );
   }
+
+  it("reads a metadata-only Desktop attachment locally and escapes its text", async () => {
+    const file = makeFile(
+      "Local café <script>alert(1)</script>",
+      "notes.txt",
+      "text/plain",
+    );
+    jest.mocked(readLocalPreviewFile).mockResolvedValueOnce(file);
+    const { container } = renderViewer(
+      { name: file.name, type: file.type, size: file.size, lastModified: 0 },
+      "/local/notes.txt",
+    );
+    expect(
+      await screen.findByText("Local café <script>alert(1)</script>"),
+    ).toBeVisible();
+    expect(readLocalPreviewFile).toHaveBeenCalledWith("/local/notes.txt");
+    expect(container.querySelector("script")).toBeNull();
+  });
+
+  it("loads a local PDF and releases its blob when the preview closes", async () => {
+    const file = makeFile("%PDF-1.7\n", "local.pdf", "application/pdf");
+    jest.mocked(readLocalPreviewFile).mockResolvedValueOnce(file);
+    const { container, unmount } = renderViewer(
+      { name: file.name, type: file.type, size: file.size, lastModified: 0 },
+      "/local/local.pdf",
+    );
+    await waitFor(() =>
+      expect(container.querySelector("iframe")).toHaveAttribute(
+        "src",
+        "blob:preview-pdf",
+      ),
+    );
+    unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview-pdf");
+  });
+
+  it("reports a missing local file without falling back to a cloud URL", async () => {
+    jest
+      .mocked(readLocalPreviewFile)
+      .mockRejectedValueOnce(new Error("not found"));
+    renderViewer(
+      { name: "missing.txt", type: "text/plain", size: 10, lastModified: 0 },
+      "/local/missing.txt",
+    );
+    expect(await screen.findByText(/Check that it still exists/)).toBeVisible();
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
 
   it("renders valid in-memory PDFs in the native PDF iframe", async () => {
     const file = makeFile("%PDF-1.7\n1 0 obj\n", "safe.pdf", "application/pdf");
