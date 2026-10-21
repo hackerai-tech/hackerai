@@ -2122,6 +2122,10 @@ export async function createAgentStream(
                 ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
+              preparedInputTokens:
+                ctx.mode === "agent" && ctx.agentModelContextEnabled
+                  ? lastPreparedInputEstimate
+                  : undefined,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(

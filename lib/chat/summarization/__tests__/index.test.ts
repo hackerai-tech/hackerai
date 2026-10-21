@@ -1298,6 +1298,61 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizedMessages).toBe(fourMessages);
   });
 
+  it.each(["retained-tail", "summarizable-head"])(
+    "compacts oversized prepared history despite smaller UI usage with %s",
+    async (projection) => {
+      const messages =
+        projection === "retained-tail"
+          ? fourMessages
+          : Array.from({ length: 4 }, (_, index) =>
+              createMessageWithTokens(
+                `prepared-${index}`,
+                index % 2 ? "assistant" : "user",
+                10_000,
+              ),
+            );
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join("\n(none)\n"),
+      });
+
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: messages,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: "prepared-pressure",
+        providerInputTokens: 1_000,
+        preparedInputTokens: 110_000,
+        maxTokensOverride: 100_000,
+      });
+
+      expect(result.summarizationAttempted).toBe(true);
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summarizedMessages).not.toBe(messages);
+      expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("preserves history when prepared-input pressure cannot be compacted", async () => {
+    mockGenerateText.mockRejectedValue(new Error("Summary unavailable"));
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "prepared-pressure-failure",
+      preparedInputTokens: 110_000,
+      maxTokensOverride: 100_000,
+    });
+    expect(result.summarizationAttempted).toBe(true);
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summarizedMessages).toBe(fourMessages);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+  });
+
   it("should summarize below-token prompts when provider pressure is high", async () => {
     mockGenerateText.mockResolvedValue({
       finishReason: "stop",
