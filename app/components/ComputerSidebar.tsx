@@ -67,6 +67,7 @@ import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
+import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -733,9 +734,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 chatId={browserChatId}
                 agentId={browserAgentId}
                 liveSelection={isAtLive && isFollowingLive}
-                browserRequested={/\bagent-browser\b/.test(
-                  resolvedTerminal?.command ?? "",
-                )}
+                browserRequested={
+                  !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
+                }
                 runActive={status === "streaming" || status === "submitted"}
                 onJumpToLive={handleJumpToLive}
               />

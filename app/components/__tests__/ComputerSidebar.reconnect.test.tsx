@@ -216,6 +216,36 @@ describe("ComputerSidebar reconnect behavior", () => {
     ).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["echo agent-browser open", false],
+    ["agent-browser-next open", false],
+    ['printf "; agent-browser open"', false],
+    ["AGENT-BROWSER open https://example.org", false],
+    ["agent-browser open https://example.org", true],
+    ["MODE=TEST npx agent-browser@latest snapshot -i", true],
+    ['printf "READY!"; agent-browser snapshot -i', true],
+  ])(
+    "matches browser invocation rather than mentions: %s",
+    (command, expected) => {
+      render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          sidebarContent={{ ...activeSidebarContent, command }}
+        />,
+      );
+      expect(
+        screen.queryByRole("region", { name: "Agent browser preview" }) !==
+          null,
+      ).toBe(expected);
+      expect(
+        screen.queryByRole("button", { name: "Expand command and output" }) !==
+          null,
+      ).toBe(expected);
+    },
+  );
+
   it("pins the expanded command while later tools arrive", () => {
     const onNavigate = jest.fn();
     const messages = [
