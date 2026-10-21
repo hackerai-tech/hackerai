@@ -1,4 +1,5 @@
 import "server-only";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 
 import { getCompactionResponseFormat } from "./structured-summary";
 
@@ -267,6 +268,7 @@ const buildContextCompactionProviderOptions = (
 const buildStartupCompactionProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
   structuredMode?: ChatMode,
+  preferGlmProvider = true,
 ): Record<string, Record<string, unknown>> => ({
   openrouter: {
     ...buildContextCompactionProviderOptions(providerOptions).openrouter,
@@ -276,9 +278,9 @@ const buildStartupCompactionProviderOptions = (
       : {}),
     provider: {
       sort: structuredMode ? "latency" : "throughput",
-      ...(structuredMode
+      ...(structuredMode ? { require_parameters: true } : {}),
+      ...(structuredMode && preferGlmProvider
         ? {
-            require_parameters: true,
             // Modal can stop with reasoning but no final checkpoint. Prefer the
             // validated route, retaining other providers and model fallback.
             order: ["baseten"],
@@ -578,8 +580,11 @@ const generateSummaryTextWithRetry = async ({
       const models = [
         assignment.model,
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
+        // The normal chain includes routes with independent context policies.
+        // Use one exact 1M-context route for expanded recovery, without reducing
+        // the 484K summary projection or inheriting answering-model fallbacks.
         ...(assignment.expandedMaxContext
-          ? []
+          ? [DEEPSEEK_1017_MODEL_KEY]
           : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
       let servedModel: string | undefined;
@@ -590,10 +595,11 @@ const generateSummaryTextWithRetry = async ({
           const attemptStartedAt = Date.now();
           // Expanded Max recovery needs the same complete-checkpoint safeguards
           // even when the separate moderation compaction experiment is paused.
-          const isStructuredGlm =
-            (assignment.expandedMaxContext === true ||
-              assignment.flagEnabled === true) &&
-            modelName === "model-glm-5.3-flash";
+          const isStructuredRecovery =
+            (assignment.expandedMaxContext === true &&
+              !isAbliterationModel(modelName)) ||
+            (assignment.flagEnabled === true &&
+              modelName === "model-glm-5.3-flash");
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
             variant: assignment.policy,
@@ -615,7 +621,8 @@ const generateSummaryTextWithRetry = async ({
                   }
                 : buildStartupCompactionProviderOptions(
                     providerOptions,
-                    isStructuredGlm ? mode : undefined,
+                    isStructuredRecovery ? mode : undefined,
+                    modelName === "model-glm-5.3-flash",
                   ),
               abortSignal,
               modelMessages,
@@ -626,10 +633,10 @@ const generateSummaryTextWithRetry = async ({
                 maxRetries: 0,
                 // Allow longer checkpoints to finish, but start recovery before
                 // a stalled GLM request consumes the former 90s deadline.
-                timeout: isStructuredGlm ? 75_000 : 60_000,
+                timeout: isStructuredRecovery ? 75_000 : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
-                maxOutputTokens: isStructuredGlm ? 16384 : 8192,
-                structuredSummary: isStructuredGlm,
+                maxOutputTokens: isStructuredRecovery ? 16384 : 8192,
+                structuredSummary: isStructuredRecovery,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
                 onDiscardedUsage: (usage) => {
@@ -984,6 +991,8 @@ export const compactModelMessagesInRun = async ({
         CONTEXT_COMPACTION_MODEL_NAME,
       model_message_count: modelMessages.length,
       provider_input_tokens: providerInputTokens,
+      estimated_input_tokens:
+        estimateSummaryInputTokens(modelMessages) + systemPromptTokens,
       max_tokens: maxTokens,
       threshold_tokens: summarizationThreshold,
       system_prompt_tokens: systemPromptTokens,

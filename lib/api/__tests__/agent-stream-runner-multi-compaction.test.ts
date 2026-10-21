@@ -1108,6 +1108,39 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
   });
 
+  it("continues intact after failed proactive compaction when the prepared request still fits", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    const text = " ordinary".repeat(185_000);
+    const original = [uiMessage("within-budget", text)];
+    const state = initAgentStreamState(original, {
+      usedTokens: 100,
+      maxTokens: 200_000,
+    });
+    state.lastStepInputTokens = 100;
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        trackedProvider: {
+          languageModel: () => ({ modelId: "abliterated-model" }),
+        },
+        systemPromptTokens: 100,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      steps: [{}],
+      stepNumber: 3,
+      messages: [{ role: "user", content: text }],
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(prepared.messages)).toContain(text);
+    expect(state.finalMessages).toEqual(original);
+  });
+
   it.each(["startup", "startup-error", "rolling", "rolling-error"])(
     "stops oversized %s requests when compaction fails without dropping saved history",
     async (phase) => {

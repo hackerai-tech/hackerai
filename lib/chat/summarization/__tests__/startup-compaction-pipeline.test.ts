@@ -145,6 +145,14 @@ describe("startup compaction through the real AI SDK", () => {
     models.set("model-glm-5.3-flash", primary);
     models.set("model-deepseek-v4-flash-vision-pro", fallback);
     models.set("model-glm-5.3", finalFallback);
+    models.set(
+      "model-deepseek-v4.1-flash-1017-pro",
+      new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw new Error("Synthetic final recovery unavailable");
+        },
+      }),
+    );
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
 

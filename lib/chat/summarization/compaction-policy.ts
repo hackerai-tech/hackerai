@@ -38,6 +38,47 @@ export type CompactionSelection = {
   flagEnabled: boolean | null;
 };
 
+/** Capture provider classifications without storing response bodies or user content. */
+function compactionProviderFailure(
+  error: unknown,
+  depth = 0,
+): {
+  provider_status_code?: number;
+  provider_error_code?: string;
+} {
+  if (depth > 4 || typeof error !== "object" || error === null) return {};
+  const record = error as Record<string, unknown>;
+  const status = record.statusCode;
+  let code: unknown;
+  if (
+    typeof record.responseBody === "string" &&
+    record.responseBody.length < 32_768
+  ) {
+    try {
+      code = JSON.parse(record.responseBody)?.error?.code;
+    } catch {
+      /* Not JSON. */
+    }
+  }
+  const knownCodes = [
+    "too_many_tool_calls",
+    "context_length_exceeded",
+    "rate_limit_exceeded",
+  ];
+  return {
+    ...compactionProviderFailure(record.cause, depth + 1),
+    ...(typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? { provider_status_code: status }
+      : {}),
+    ...(typeof code === "string" && knownCodes.includes(code)
+      ? { provider_error_code: code }
+      : {}),
+  };
+}
+
 // Missing sections catch plain refusal prose; headings cannot prove fidelity.
 export function hasStructuredCompactionSummary(text: string, mode: ChatMode) {
   const sections = getCompactionSections(mode);
@@ -149,6 +190,7 @@ export class CompactionModelPolicy {
           served_model: model,
           outcome,
           failure_reason: failureReason ?? null,
+          ...compactionProviderFailure(error),
           duration_ms: durationMs,
           input_tokens: usage?.inputTokens ?? null,
           output_tokens: usage?.outputTokens ?? null,

@@ -213,18 +213,140 @@ describe("default compaction policy pipeline", () => {
       expect(tokens).toBeLessThan(490_000);
     }
   });
-  it("does not shrink Max source through an unverified fallback when both large summarizers fail", async () => {
+  it("keeps expanded input through the bounded large-context recovery chain", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
       expandedMaxContext: true,
       policy: "max_large_v2_context_v1",
     });
-    mockGenerateText.mockRejectedValue(new Error("Provider unavailable"));
+    mockGenerateText.mockRejectedValue(
+      Object.assign(new Error("Provider unavailable"), { statusCode: 503 }),
+    );
     expect((await compact()).needsSummarization).toBe(false);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    ).toEqual([
+      "model-abliterated-large-v2",
+      "model-glm-5.3-flash",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ]);
+    expect(mockGenerateText.mock.calls[2][0].messages).toEqual(
+      mockGenerateText.mock.calls[1][0].messages,
+    );
+  });
+  it("recovers a Large v2 rejection and GLM timeout through an intact DeepSeek checkpoint", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    mockGenerateText
+      .mockRejectedValueOnce(
+        Object.assign(new Error("provider rejected"), { statusCode: 400 }),
+      )
+      .mockRejectedValueOnce(new DOMException("deadline", "TimeoutError"))
+      .mockResolvedValueOnce({
+        text: JSON.stringify(
+          Object.fromEntries(
+            AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
+              heading.slice(3),
+              "Completed A. Resume existing session synthetic_42; do not repeat A.",
+            ]),
+          ),
+        ),
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 20 },
+      });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(true);
+    expect(result.summaryText).toContain("synthetic_42");
+    const recovery = mockGenerateText.mock.calls[2][0];
+    expect(recovery.model.modelId).toBe("model-deepseek-v4.1-flash-1017-pro");
+    expect(recovery.messages).toEqual(
+      mockGenerateText.mock.calls[1][0].messages,
+    );
+    expect(recovery.providerOptions.openrouter.provider).not.toHaveProperty(
+      "order",
+    );
+    expect(recovery.providerOptions.openrouter).not.toHaveProperty("models");
+    expect(recovery).toMatchObject({
+      maxRetries: 0,
+      timeout: 75000,
+      maxOutputTokens: 16384,
+    });
+    expect(finish).toHaveBeenCalledWith(
+      "completed",
+      "model-deepseek-v4.1-flash-1017-pro",
+    );
+  });
+  it("does not start expanded recovery after cancellation during GLM fallback", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedMaxContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    const controller = new AbortController();
+    mockGenerateText
+      .mockRejectedValueOnce(new Error("primary rejected"))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        throw new DOMException("canceled", "AbortError");
+      });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledWith("aborted", undefined);
+  });
+  it("repairs oversized Abliteration summary batches without dropping or executing tool history", async () => {
+    const calls = Array.from({ length: 369 }, (_, i) => ({
+      type: "tool-call" as const,
+      toolCallId: `c${i}`,
+      toolName: "fixture",
+      input: { i },
+    }));
+    const results = calls.map((c) => ({
+      type: "tool-result" as const,
+      toolCallId: c.toolCallId,
+      toolName: c.toolName,
+      output: { type: "text" as const, value: `completed ${c.toolCallId}` },
+    }));
+    const messages: ModelMessage[] = [
+      { role: "user", content: "Continue pending work" },
+      { role: "assistant", content: calls },
+      { role: "tool", content: results },
+    ];
+    const original = JSON.parse(JSON.stringify(messages));
+    mockGenerateText.mockResolvedValueOnce({
+      text: summary,
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 20 },
+    });
+    await generateSummaryText(
+      [],
+      { modelId: "abliterated-model-large-v2" } as unknown as LanguageModel,
+      "agent",
+      "",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      messages,
+      484000,
+    );
+    const sent = mockGenerateText.mock.calls[0][0].messages as ModelMessage[];
+    const assistantBatches = sent.filter((m) => m.role === "assistant");
+    expect(
+      assistantBatches.map((m) =>
+        Array.isArray(m.content) ? m.content.length : 0,
+      ),
+    ).toEqual([128, 128, 113]);
+    expect(
+      sent.filter((m) => m.role === "tool").flatMap((m) => m.content),
+    ).toEqual(results);
+    expect(assistantBatches.flatMap((m) => m.content)).toEqual(calls);
+    expect(messages).toEqual(original);
   });
   it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
     mockGenerateText
