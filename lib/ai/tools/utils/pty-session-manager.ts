@@ -14,6 +14,7 @@
  * from an OS PID.
  */
 
+import { createHash } from "node:crypto";
 import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import type { AgentApprovalSandboxIdentity } from "@/types";
@@ -119,6 +120,7 @@ interface InternalSession extends PtySession {
   recordQueue: Promise<void>;
   recordWriting: boolean;
   recordDirty: boolean;
+  persistedRecordFingerprint?: string;
   recordTimer: ReturnType<typeof setTimeout> | null;
   exitReason: string | null;
 }
@@ -347,7 +349,7 @@ export class PtySessionManager {
                     ? "completed"
                     : "failed"
                   : "running";
-          const path = await internal.executionRecord!.save({
+          const record: TerminalExecutionRecord = {
             version: 1,
             session: session.sessionId,
             sandboxInstance: internal.executionRecord!.sandboxInstance,
@@ -358,7 +360,8 @@ export class PtySessionManager {
             exitCode: exit?.exitCode ?? null,
             exitReason: internal.exitReason ?? (exit ? "process_exit" : null),
             createdAt: session.createdAt,
-            updatedAt: Date.now(),
+            // Ignore observation time when deciding whether a poll changed evidence.
+            updatedAt: 0,
             output: new TextDecoder().decode(this.snapshot(session)),
             outputTruncated: session.bufferTruncated,
             artifactPaths: [
@@ -369,9 +372,19 @@ export class PtySessionManager {
             ]
               .filter((path) => path.length <= 4096)
               .slice(0, 32),
-          });
+          };
+          const fingerprint = createHash("sha256")
+            .update(JSON.stringify(record))
+            .digest("hex");
+          if (fingerprint === internal.persistedRecordFingerprint) continue;
+          record.updatedAt = Date.now();
+          const path = await internal.executionRecord!.save(record);
           session.recordPersistenceFailed = !path;
-          if (path) session.recordPath = path;
+          if (path) {
+            session.recordPath = path;
+            // Only acknowledge successful writes; unchanged failed snapshots retry.
+            internal.persistedRecordFingerprint = fingerprint;
+          }
         }
       })()
         .catch(() => {
