@@ -219,6 +219,7 @@ export async function terminateCloudSandboxesForUser(
     phase: "claim" | "provider_cleanup" | "finalize",
     outcome: "started" | "success" | "error",
     providerCleanupSucceeded?: boolean,
+    claimFailureReason?: CloudWorkspaceUnavailableError["cleanupClaimFailureReason"],
   ) => {
     // Diagnostics must not affect ownership, deletion or finalization. Never
     // include the persisted fence, sandbox identifiers or provider errors.
@@ -231,6 +232,9 @@ export async function terminateCloudSandboxesForUser(
       duration_ms: Math.max(0, Date.now() - startedAt),
       ...(providerCleanupSucceeded !== undefined
         ? { provider_cleanup_succeeded: providerCleanupSucceeded }
+        : {}),
+      ...(claimFailureReason !== undefined
+        ? { claim_failure_reason: claimFailureReason }
         : {}),
     };
     try {
@@ -249,7 +253,12 @@ export async function terminateCloudSandboxesForUser(
   try {
     cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
   } catch (error) {
-    recordCleanup("claim", "error");
+    recordCleanup(
+      "claim",
+      "error",
+      undefined,
+      CloudWorkspaceUnavailableError.getCleanupClaimFailureReason(error),
+    );
     throw error;
   }
   recordCleanup("claim", "success");
