@@ -697,6 +697,9 @@ const generateSummaryTextWithRetry = async ({
               index === models.length - 1 ||
               !(
                 isAbliterationModel(modelName) ||
+                // Expanded DeepSeek recovery may also reject the provider
+                // request outright. Give the assigned GLM one final attempt.
+                (deepSeekFirst && modelName === DEEPSEEK_1017_MODEL_KEY) ||
                 // A cheaper primary can reject a request with a non-retryable
                 // provider error (for example HTTP 400). Still try the assigned
                 // Abliteration fallback once; never retry caller cancellation.
