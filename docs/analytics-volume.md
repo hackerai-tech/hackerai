@@ -4,6 +4,20 @@ Keep payment, usage-cost, request outcome and actual experiment exposure events
 unsampled. Apply reductions at the producer so the events never reach ingestion.
 Deleting reports or historical data does not replace stopping unnecessary capture.
 
+`x_referral_visit` records an actual browser arrival with a `t.co`, `x.com`, or
+`twitter.com` referrer, including their subdomains. It requires the existing
+analytics consent decision and excludes recognizable crawlers/link previews.
+Anonymous arrivals initialize the same PostHog identity later used by `identify`,
+but allow only this event through `before_send`; pageviews, replay, surveys and
+exception capture stay disabled. Preserve the anonymous identity across navigation,
+and reset it on logout from an identified account or consent withdrawal.
+Capture is best effort; a stable identity/day UUID bounds repeats and browser
+storage avoids sending them. Count distinct persons over the entire reporting
+window, not summed daily uniques or event counts. The event allowlist removes
+SDK-added URLs, query strings and person properties. It does not require tagged
+links or replace the original first-touch attribution. Direct/search visits have
+no X evidence and are not inferred to be X traffic.
+
 ## Customer-visible performance
 
 `chat_visible_response_performance` records one best-effort summary per new
