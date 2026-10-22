@@ -89,6 +89,21 @@ function captureWithPostHogClient(
   options?: PostHogCaptureOptions,
 ) {
   try {
+    const buildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    if (
+      (event === "sandbox_connection_terminated" ||
+        event === "desktop_bridge_relay_state_changed") &&
+      properties.native_auth_diagnostic_version === 1 &&
+      buildCommit &&
+      /^[a-f0-9]{40}$/i.test(buildCommit)
+    ) {
+      // The auth policy marker does not identify the loaded frontend bundle.
+      // This build-time commit describes that bundle, not the native binary.
+      properties = {
+        ...properties,
+        hackerai_frontend_build_commit: buildCommit.toLowerCase(),
+      };
+    }
     if (options) {
       posthog.capture(event, properties, options);
     } else {
