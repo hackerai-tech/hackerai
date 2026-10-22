@@ -73,7 +73,10 @@ import {
   getAgentAutoReviewInspectionKind,
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
-import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  isLocalCommandRelayUnsubscribedError,
+  isLocalCommandDispatchError,
+} from "./utils/local-sandbox-errors";
 import {
   createTerminalRecordStore,
   terminalSandboxInstance,
@@ -1192,15 +1195,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             );
 
             const retryOptions = {
-              // A relay error cannot prove a local command did not execute.
-              // Only the typed pre-publication presence failure may be retried
-              // by executeWithLocalRelayRecovery on a verified successor.
-              maxRetries: isCentrifugoSandbox(sandboxInstance) ? 1 : 6,
+              // Retry local commands only with explicit pre-publication evidence.
+              // Unclassified failures remain ambiguous and must never replay.
+              maxRetries: 6,
               baseDelayMs: 500,
               jitterMs: 50,
               signal: abortSignal,
               isPermanentError: (error: unknown) =>
-                resolved || isPermanentError(error),
+                resolved ||
+                (isCentrifugoSandbox(sandboxInstance) &&
+                  (!isLocalCommandDispatchError(error) ||
+                    error.dispatched ||
+                    !error.retryable)) ||
+                isPermanentError(error),
               // Retry logs are too noisy - they're expected behavior
               logger: () => {},
             };
@@ -1420,6 +1427,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     });
                   } else if (
                     commandDispatchAttempted &&
+                    (!isLocalCommandDispatchError(error) || error.dispatched) &&
                     isCentrifugoSandbox(sandboxInstance) &&
                     !isLocalCommandRelayUnsubscribedError(error)
                   ) {

@@ -914,6 +914,39 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toMatchObject({ exitCode: 0 });
     });
 
+    it.each(["transient setup", "permanent setup", "ambiguous publish"])(
+      "reports dispatch evidence for %s",
+      async (kind) => {
+        const { promise } = startCommand(createSandbox(), "echo once", {
+          timeoutMs: 5000,
+        });
+        const outcome = promise.catch((error) => error);
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        if (kind === "ambiguous publish") {
+          sub.publish.mockRejectedValueOnce(
+            new Error("publish acknowledgement lost"),
+          );
+          sub.emit("subscribed");
+        } else if (kind === "transient setup") {
+          mockClients[0].emit("error", {
+            type: "transport",
+            error: { code: 2, message: "unavailable" },
+          });
+        } else {
+          sub.emit("unsubscribed", { code: 103, reason: "permission denied" });
+        }
+        await jest.advanceTimersByTimeAsync(0);
+        await expect(outcome).resolves.toMatchObject({
+          dispatched: kind === "ambiguous publish",
+          retryable: kind === "transient setup",
+        });
+        expect(sub.publish).toHaveBeenCalledTimes(
+          kind === "ambiguous publish" ? 1 : 0,
+        );
+      },
+    );
+
     it.each([
       { type: "transport", error: { code: 2, message: "transport closed" } },
       { type: "connect", error: { code: 1, message: "timeout" } },

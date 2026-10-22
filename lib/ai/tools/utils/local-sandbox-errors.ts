@@ -1,6 +1,32 @@
 export const LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE =
   "LOCAL_COMMAND_RELAY_UNSUBSCRIBED" as const;
 
+/** Transport evidence used to retry only commands that never reached publication. */
+export class LocalCommandDispatchError extends Error {
+  readonly code = "LOCAL_COMMAND_DISPATCH_ERROR";
+
+  constructor(
+    cause: unknown,
+    readonly dispatched: boolean,
+    readonly retryable: boolean = false,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "LocalCommandDispatchError";
+  }
+}
+
+export const isLocalCommandDispatchError = (
+  error: unknown,
+): error is LocalCommandDispatchError =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  error.code === "LOCAL_COMMAND_DISPATCH_ERROR" &&
+  "dispatched" in error &&
+  typeof error.dispatched === "boolean" &&
+  "retryable" in error &&
+  typeof error.retryable === "boolean";
+
 /** Signals that relay presence rejected a command before it was published. */
 export class LocalCommandRelayUnsubscribedError extends Error {
   readonly code = LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE;

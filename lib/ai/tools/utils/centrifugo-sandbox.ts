@@ -34,7 +34,11 @@ import {
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
-import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalCommandDispatchError,
+  isLocalCommandRelayUnsubscribedError,
+} from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
@@ -660,8 +664,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       pid?: number;
     }> => {
       if (opts?.stdin !== undefined && !this.supportsCommandStdin()) {
-        throw new Error(
-          "Command stdin requires an updated HackerAI local client",
+        throw new LocalCommandDispatchError(
+          new Error("Command stdin requires an updated HackerAI local client"),
+          false,
         );
       }
       const commandId = crypto.randomUUID();
@@ -681,7 +686,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
-      const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+      const token = await generateCentrifugoToken(
+        this.userId,
+        tokenExpSeconds,
+      ).catch((error: unknown) => {
+        throw new LocalCommandDispatchError(error, false);
+      });
 
       // Create a centrifuge client for this command
       const client = new Centrifuge(this.config.wsUrl, {
@@ -689,7 +699,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       });
       this.activeClients.push(client);
 
-      const result = await new Promise<CommandResult>((resolve, reject) => {
+      const result = await new Promise<CommandResult>((resolve, fail) => {
+        let commandPublicationStarted = false;
+        const reject = (error: unknown, retryable = false) =>
+          fail(
+            isLocalCommandRelayUnsubscribedError(error)
+              ? error
+              : new LocalCommandDispatchError(
+                  error,
+                  commandPublicationStarted,
+                  retryable && !commandPublicationStarted,
+                ),
+          );
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -890,6 +911,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 `Command timeout after ${maxWaitTime}ms [${phases}]` +
                   ` connectionId=${this.connectionInfo.connectionId}`,
               ),
+              true,
             );
           }
         }, maxWaitTime);
@@ -1058,6 +1080,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               new Error(
                 `Centrifugo subscription error: ${ctx.error?.message ?? "unknown"}`,
               ),
+              ctx.type === "subscribe" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true)),
             );
           }
         });
@@ -1154,6 +1179,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               targetConnectionId: this.connectionInfo.connectionId,
             };
 
+            commandPublicationStarted = true;
             commandPublishInFlight = true;
 
             (async () => {
@@ -1262,6 +1288,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
                   : `Centrifugo client error: ${msg}`,
               ),
+              isConnectionLimit ||
+                ctx.type === "transport" ||
+                (ctx.type === "connect" &&
+                  (ctx.error.code < 100 ||
+                    ("temporary" in ctx.error &&
+                      ctx.error.temporary === true))),
             );
           }
         });

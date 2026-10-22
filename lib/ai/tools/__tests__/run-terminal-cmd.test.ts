@@ -67,7 +67,10 @@ import {
   PtySessionManager,
   MAX_CONCURRENT_PTYS_PER_CHAT,
 } from "../utils/pty-session-manager";
-import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalCommandDispatchError,
+} from "../utils/local-sandbox-errors";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -2019,6 +2022,62 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     ptySessionManager.forget("chat-1", result.result.session!);
   });
+
+  test.each(
+    [false, true].flatMap((background) =>
+      ["transient setup", "permanent setup", "ambiguous publish"].map(
+        (kind) => ({ background, kind }),
+      ),
+    ),
+  )(
+    "retries only proven transient pre-publication failures: %j",
+    async ({ background, kind }) => {
+      const retryable = kind === "transient setup";
+      const dispatched = kind === "ambiguous publish";
+      const run = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new LocalCommandDispatchError(new Error(kind), dispatched, retryable),
+        )
+        .mockResolvedValue({
+          stdout: "recovered",
+          stderr: "",
+          exitCode: 0,
+          pid: 4321,
+        });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          commands: { run },
+        },
+      });
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "bounded command",
+        brief: "test dispatch evidence",
+        is_background: background,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { exitCode?: number | null; error?: string; output: string };
+      };
+      expect(run).toHaveBeenCalledTimes(retryable ? 2 : 1);
+      if (retryable) {
+        expect(result.result.error).toBeUndefined();
+        if (background) expect(result.result.output).toContain("PID: 4321");
+        else {
+          expect(result.result.output).toContain("recovered");
+          expect(result.result.exitCode).toBe(0);
+        }
+      } else if (dispatched) {
+        expect(result.result.exitCode).toBeNull();
+        expect(result.result.error).toContain("outcome is unknown");
+      } else {
+        expect(result.result.exitCode).toBe(1);
+        expect(result.result.error).not.toContain("outcome is unknown");
+      }
+    },
+  );
 
   test.each([false, true])(
     "does not replay an uncertain local execution (background=%s)",
