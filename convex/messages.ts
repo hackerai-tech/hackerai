@@ -30,6 +30,7 @@ import {
   sharedMessageValidator,
 } from "./lib/sharedChatSnapshot";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { invalidateModelHistory } from "./modelHistory";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -598,13 +599,36 @@ export const saveMessage = mutation({
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     triggerRunId: v.optional(v.string()),
+    expectedActiveTriggerRunId: v.optional(v.string()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.literal("stale_run")),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    // Recovery may only write while this exact crashed run still owns the chat.
+    // This check shares the message transaction, so a concurrent new run wins.
+    if (args.expectedActiveTriggerRunId !== undefined) {
+      if (
+        args.triggerRunId !== args.expectedActiveTriggerRunId ||
+        args.role !== "assistant"
+      )
+        throw new Error("Invalid Agent recovery correlation");
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+      if (
+        !chat ||
+        chat.user_id !== args.userId ||
+        chat.active_trigger_run_id !== args.expectedActiveTriggerRunId ||
+        chat.canceled_at !== undefined ||
+        chat.deletion_started_at !== undefined ||
+        (await isUserDeletionFenced(ctx.db, args.userId))
+      )
+        return "stale_run" as const;
+    }
     let failureStage = "start";
     let chatForInsert: Doc<"chats"> | null = null;
 
@@ -735,6 +759,29 @@ export const saveMessage = mutation({
               }
             }
           }
+        }
+
+        // The retained server stream is authoritative over an earlier browser
+        // snapshot of this same interrupted run. Never replace a final answer.
+        if (
+          args.expectedActiveTriggerRunId &&
+          existingMessage.role === "assistant" &&
+          existingMessage.trigger_run_id === args.expectedActiveTriggerRunId &&
+          existingMessage.finish_reason === "trigger_crashed_client_saved"
+        ) {
+          const base = {
+            ...existingMessage,
+            ...patch,
+            parts: partsForSave,
+            content: undefined,
+          };
+          if (getMessageDocumentSize(base) > MESSAGE_DOCUMENT_TARGET_BYTES)
+            throw new Error("Recovered Agent message is too large to save");
+          patch.parts = partsForSave;
+          patch.content = fitSearchContentToDocument(
+            base,
+            extractTextFromParts(partsForSave),
+          ).content;
         }
 
         // Update usage if provided and not already set (e.g., on abort)

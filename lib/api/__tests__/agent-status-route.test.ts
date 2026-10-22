@@ -11,7 +11,12 @@ const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
 const mockSetActiveTriggerRun = jest.fn();
 const mockRunsRetrieve = jest.fn();
+const mockRecover = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
+
+jest.mock("@/lib/api/agent-crash-recovery", () => ({
+  recoverCrashedAgentRun: (...args: unknown[]) => mockRecover(...args),
+}));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -68,8 +73,119 @@ const requestFor = (chatId: string, runId: string) =>
 describe("agent status route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRecover.mockResolvedValue("recovered" as never);
+    mockSetActiveTriggerRun.mockResolvedValue("updated" as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
+
+  it("does not confuse a missing retained stream with a missing run", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    const { ApiError } = await import("@trigger.dev/sdk");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    const error = Object.assign(
+      new ApiError(
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+      ),
+      { status: 404 },
+    );
+    mockRecover.mockRejectedValueOnce(error as never);
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("awaits crash recovery before detaching and leaves mapping intact on failure", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    let done!: (value: never) => void;
+    mockRecover.mockReturnValueOnce(
+      new Promise((resolve) => {
+        done = resolve;
+      }),
+    );
+    const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    for (let i = 0; i < 10 && mockRecover.mock.calls.length === 0; i++)
+      await Promise.resolve();
+    expect(mockRecover).toHaveBeenCalledTimes(1);
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    done("recovered" as never);
+    await pending;
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRunId: "run-1", recoveredCrash: true }),
+    );
+    mockSetActiveTriggerRun.mockClear();
+    mockRecover.mockRejectedValueOnce(
+      new Error("fixture recovery unavailable") as never,
+    );
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["newer run", "cancellation fence"])(
+    "reports a stale crash detach as detached after a %s wins",
+    async (race) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      const chat = {
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+      };
+      mockGetChatById
+        .mockResolvedValueOnce(chat as never)
+        .mockResolvedValueOnce(
+          (race === "newer run"
+            ? { ...chat, active_trigger_run_id: "run-2" }
+            : chat) as never,
+        );
+      mockRunsRetrieve.mockResolvedValue({
+        status: "CRASHED",
+        metadata: { chatId: "chat-1", userId: "user-1" },
+      } as never);
+      if (race === "cancellation fence")
+        mockSetActiveTriggerRun.mockResolvedValueOnce("stale" as never);
+
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+
+      await expect(response.json()).resolves.toEqual({
+        status: "DETACHED",
+        terminal: true,
+      });
+      expect(mockRecover).toHaveBeenCalledTimes(1);
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(
+        race === "newer run" ? 0 : 1,
+      );
+    },
+  );
 
   it("reports a nonterminal run without touching persisted lifecycle state", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");

@@ -143,6 +143,100 @@ describe("saveMessage — is_hidden handling", () => {
     });
   }
 
+  it.each(["run-new", undefined])(
+    "rejects a crash save when active run is %s",
+    async (activeRun) => {
+      setupExistingMessage(null, {
+        _id: "chat-doc",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        active_trigger_run_id: activeRun,
+      });
+      const { saveMessage } = await import("../messages");
+      expect(
+        await saveMessage.handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "message",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "assistant",
+          parts: [{ type: "text", text: "stale" }],
+          triggerRunId: "run-old",
+          expectedActiveTriggerRunId: "run-old",
+        }),
+      ).toBe("stale_run");
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["trigger_crashed_client_saved", "stop"])(
+    "refreshes only the same run's recoverable snapshot, existing reason %s",
+    async (finishReason) => {
+      const message = makeMessage({
+        role: "assistant",
+        finish_reason: finishReason,
+        trigger_run_id: "run-old",
+      });
+      setupExistingMessage(message, {
+        _id: "chat-doc",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        active_trigger_run_id: "run-old",
+      });
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: message.id,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [{ type: "text", text: "full retained progress" }],
+        triggerRunId: "run-old",
+        expectedActiveTriggerRunId: "run-old",
+      });
+      if (finishReason === "stop")
+        expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      else
+        expect(mockCtx.db.patch).toHaveBeenCalledWith(
+          message._id,
+          expect.objectContaining({
+            parts: [{ type: "text", text: "full retained progress" }],
+          }),
+        );
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { canceled_at: 1 },
+    { deletion_started_at: 1 },
+    { user_id: "different" },
+  ])("does not recover into an unwritable chat %j", async (fields) => {
+    setupExistingMessage(null, {
+      _id: "chat-doc",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      active_trigger_run_id: "run-old",
+      ...fields,
+    });
+    const { saveMessage } = await import("../messages");
+    expect(
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "message",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [],
+        triggerRunId: "run-old",
+        expectedActiveTriggerRunId: "run-old",
+      }),
+    ).toBe("stale_run");
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
   it("should store is_hidden: true on insert", async () => {
     setupExistingMessage(null);
 

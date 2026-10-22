@@ -4,8 +4,13 @@ const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
 const mockSetActiveTriggerRun = jest.fn();
 const mockRunsRetrieve = jest.fn();
+const mockRecover = jest.fn();
 const mockCreatePublicToken = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
+
+jest.mock("@/lib/api/agent-crash-recovery", () => ({
+  recoverCrashedAgentRun: (...args: unknown[]) => mockRecover(...args),
+}));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -69,7 +74,47 @@ const requestFor = (chatId: string) =>
 describe("agent resume route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRecover.mockResolvedValue("recovered" as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
+  });
+
+  it("awaits crash recovery before detaching and leaves mapping intact on failure", async () => {
+    const { createAgentResumeGet } = await import("../agent-resume-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    let done!: (value: never) => void;
+    mockRecover.mockReturnValueOnce(
+      new Promise((resolve) => {
+        done = resolve;
+      }),
+    );
+    const pending = createAgentResumeGet({ endpoint: "/api/agent" })(
+      requestFor("chat-1"),
+    );
+    for (let i = 0; i < 10 && mockRecover.mock.calls.length === 0; i++)
+      await Promise.resolve();
+    expect(mockRecover).toHaveBeenCalledTimes(1);
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    done("recovered" as never);
+    await pending;
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRunId: "run-1", recoveredCrash: true }),
+    );
+    mockSetActiveTriggerRun.mockClear();
+    mockRecover.mockRejectedValueOnce(
+      new Error("fixture recovery unavailable") as never,
+    );
+    await expect(
+      createAgentResumeGet({ endpoint: "/api/agent" })(requestFor("chat-1")),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
   });
 
   it("closes and clears an orphaned approval session when no run remains", async () => {
