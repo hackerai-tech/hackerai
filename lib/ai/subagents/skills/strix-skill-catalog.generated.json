@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "fde37a149fc942dd107666441a1989f187d30c3b",
+  "sourceCommit": "0f81f40765f0329006a9a7d2eb97513f56743a9b",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -667,11 +667,11 @@
       "category": "vulnerabilities",
       "filename": "xss",
       "name": "xss",
-      "description": "XSS testing covering reflected, stored, and DOM-based vectors with CSP bypass techniques",
-      "contentBytes": 7786,
+      "description": "XSS and HTML injection testing covering reflected, stored, DOM-based, and normalization-dependent vectors",
+      "contentBytes": 9461,
       "internal": false,
       "sourcePath": "vulnerabilities/xss.md",
-      "sourceSha256": "3eba51fd17b527eccaad21a9f1a07aa638ffd61d85f573c49360229e068bcc97"
+      "sourceSha256": "109a167107153d6d0c24c187948a4a05a6408785866f952f5ec070d19c3b68a8"
     },
     {
       "id": "vulnerabilities/xxe",
