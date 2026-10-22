@@ -433,6 +433,9 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         media_type: mediaType,
         error: errorToLog(error),
       });
+      // The Windows adapter already selected its available HTTP client. The
+      // fallback below requires a POSIX shell and cannot recover that failure.
+      if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) throw error;
     }
   }
 

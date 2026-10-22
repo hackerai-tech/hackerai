@@ -479,6 +479,41 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
+  test.each([true, false])(
+    "preserves a Windows native upload failure without a POSIX fallback (fallback would succeed: %s)",
+    async (fallbackWouldSucceed) => {
+      const nativeError = new Error("Native upload connection closed");
+      const sandbox = {
+        ...makeSandbox(1234, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      sandbox.files = {
+        ...sandbox.files,
+        stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+      } as typeof sandbox.files;
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(nativeError);
+      sandbox.commands.run.mockResolvedValue({
+        stdout: "",
+        stderr: fallbackWouldSucceed ? "" : "curl is not recognized",
+        exitCode: fallbackWouldSucceed ? 0 : 1,
+      });
+      const onPhase = jest.fn();
+
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\project\\report.txt",
+          onPhase,
+        }),
+      ).rejects.toBe(nativeError);
+      expect(onPhase).toHaveBeenLastCalledWith("transfer");
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
   test("falls back to command upload when native Centrifugo upload fails", async () => {
     const sandbox = makeSandbox(1234);
     sandbox.files.uploadToUrl.mockRejectedValueOnce(new Error("exit status 1"));
