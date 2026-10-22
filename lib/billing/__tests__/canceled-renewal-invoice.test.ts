@@ -2,6 +2,7 @@ import { describe, expect, it, jest } from "@jest/globals";
 import type Stripe from "stripe";
 import {
   hasRecentCanceledRenewalAtRisk,
+  recoverCanceledRenewalsForCheckout,
   voidUnpaidCanceledRenewalInvoice,
 } from "../canceled-renewal-invoice";
 
@@ -82,6 +83,7 @@ function stripeMock(currentInvoice: Stripe.Invoice) {
       },
       subscriptions: {
         list: jest.fn().mockResolvedValue({ data: [subscription] } as never),
+        retrieve: jest.fn().mockResolvedValue(automaticSubscription as never),
       },
       invoicePayments: { list: listInvoicePayments },
       paymentIntents: { retrieve: retrieveIntent },
@@ -98,6 +100,213 @@ function stripeMock(currentInvoice: Stripe.Invoice) {
 }
 
 describe("canceled renewal invoice", () => {
+  it("retires a default authentication attempt after automatic cancellation", async () => {
+    const {
+      stripe,
+      voidInvoice,
+      retrieveInvoice,
+      listInvoicePayments,
+      retrieveIntent,
+    } = stripeMock(invoice({ currency: "usd" }));
+    listInvoicePayments
+      .mockResolvedValueOnce({
+        has_more: false,
+        data: [
+          {
+            invoice: "in_old",
+            is_default: true,
+            status: "open",
+            payment: { type: "payment_intent", payment_intent: "pi_old" },
+          },
+        ],
+      } as never)
+      .mockResolvedValueOnce({
+        has_more: false,
+        data: [
+          {
+            invoice: "in_old",
+            status: "canceled",
+            payment: { type: "payment_intent", payment_intent: "pi_old" },
+          },
+        ],
+      } as never);
+    retrieveIntent
+      .mockResolvedValueOnce({
+        id: "pi_old",
+        status: "requires_action",
+        customer: "cus_123",
+        currency: "usd",
+        amount_received: 0,
+        amount_capturable: 0,
+      } as never)
+      .mockResolvedValueOnce({ id: "pi_old", status: "canceled" } as never);
+    retrieveInvoice
+      .mockResolvedValueOnce(invoice({ currency: "usd" }) as never)
+      .mockResolvedValueOnce(
+        invoice({
+          status: "void",
+          status_transitions: { voided_at: endedAt + 1 },
+        }) as never,
+      );
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+    ).resolves.toBe("voided");
+    expect(voidInvoice).toHaveBeenCalledWith("in_old");
+  });
+
+  it.each([
+    { is_default: false },
+    { invoice: "in_other" },
+    { customer: "cus_other" },
+    { amount_received: 1000 },
+    { amount_capturable: 1000 },
+    { currency: "eur" },
+  ])(
+    "does not retire an external, mismatched or funded authentication attempt: %j",
+    async (override) => {
+      const { stripe, voidInvoice, listInvoicePayments, retrieveIntent } =
+        stripeMock(invoice({ currency: "usd" }));
+      listInvoicePayments.mockResolvedValue({
+        has_more: false,
+        data: [
+          {
+            invoice: "in_old",
+            is_default: true,
+            status: "open",
+            ...override,
+            payment: { type: "payment_intent", payment_intent: "pi_old" },
+          },
+        ],
+      } as never);
+      retrieveIntent.mockResolvedValue({
+        id: "pi_old",
+        status: "requires_action",
+        customer: "cus_123",
+        currency: "usd",
+        amount_received: 0,
+        amount_capturable: 0,
+        ...override,
+      } as never);
+      await expect(
+        voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+      ).resolves.toBe("not_applicable");
+      expect(voidInvoice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed if Stripe did not cancel authentication after voiding", async () => {
+    const { stripe, retrieveInvoice, listInvoicePayments, retrieveIntent } =
+      stripeMock(invoice({ currency: "usd" }));
+    listInvoicePayments
+      .mockResolvedValueOnce({
+        has_more: false,
+        data: [
+          {
+            invoice: "in_old",
+            is_default: true,
+            status: "open",
+            payment: { type: "payment_intent", payment_intent: "pi_old" },
+          },
+        ],
+      } as never)
+      .mockResolvedValueOnce({ has_more: false, data: [] } as never);
+    retrieveIntent.mockResolvedValue({
+      id: "pi_old",
+      status: "requires_action",
+      customer: "cus_123",
+      currency: "usd",
+      amount_received: 0,
+      amount_capturable: 0,
+    } as never);
+    retrieveInvoice
+      .mockResolvedValueOnce(invoice({ currency: "usd" }) as never)
+      .mockResolvedValueOnce(
+        invoice({
+          status: "void",
+          status_transitions: { voided_at: endedAt + 1 },
+        }) as never,
+      );
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+    ).rejects.toThrow("authentication is unverified");
+  });
+
+  it("recovers an existing canceled renewal and rechecks the checkout guard", async () => {
+    const { stripe, retrieveInvoice, voidInvoice } = stripeMock(invoice());
+    jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+      data: [automaticSubscription],
+      has_more: false,
+    } as never);
+    retrieveInvoice
+      .mockResolvedValueOnce(invoice() as never)
+      .mockResolvedValue(invoice({ status: "void" }) as never);
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(true);
+    expect(voidInvoice).toHaveBeenCalledWith("in_old");
+    // Repeated clicks only recheck the terminal state, never collect or void again.
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(true);
+    expect(voidInvoice).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps checkout blocked if payment wins the recovery race", async () => {
+    const { stripe, retrieveInvoice, voidInvoice } = stripeMock(invoice());
+    jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+      data: [automaticSubscription],
+      has_more: false,
+    } as never);
+    voidInvoice.mockRejectedValue(new Error("already paid") as never);
+    retrieveInvoice.mockResolvedValueOnce(invoice() as never).mockResolvedValue(
+      invoice({
+        status: "paid",
+        status_transitions: { paid_at: endedAt + 60 },
+      }) as never,
+    );
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(false);
+  });
+
+  it.each(["active", "past_due", "unpaid", "incomplete", "paused"])(
+    "does not recover canceled invoices alongside a %s subscription",
+    async (status) => {
+      const { stripe, voidInvoice } = stripeMock(invoice());
+      jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+        data: [
+          automaticSubscription,
+          { ...automaticSubscription, id: "sub_current", status },
+        ],
+        has_more: false,
+      } as never);
+      await expect(
+        recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+      ).resolves.toBe(false);
+      expect(voidInvoice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses partial discovery and mismatched customer history before writing", async () => {
+    const { stripe, voidInvoice } = stripeMock(invoice());
+    jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+      data: [automaticSubscription],
+      has_more: true,
+    } as never);
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(false);
+    expect(voidInvoice).not.toHaveBeenCalled();
+    jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+      data: [{ ...automaticSubscription, customer: "cus_other" }],
+      has_more: false,
+    } as never);
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(false);
+    expect(voidInvoice).not.toHaveBeenCalled();
+  });
+
   const requestedSubscription = {
     ...automaticSubscription,
     cancellation_details: { reason: "cancellation_requested" },

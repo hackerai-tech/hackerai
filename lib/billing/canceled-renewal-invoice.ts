@@ -102,8 +102,11 @@ export async function voidUnpaidCanceledRenewalInvoice(
     return "not_applicable";
   }
 
-  // An unpaid invoice may already have an asynchronous payment in progress.
-  // Leave it for reconciliation rather than racing collection or authentication.
+  // Processing/settled payments still need reconciliation. For automatic
+  // cancellations, Stripe can retire its default authentication attempt by
+  // voiding the invoice. Never cancel that PaymentIntent directly: it is owned
+  // by Billing, and an attached external payment may outlive the invoice.
+  const authenticationIntents: string[] = [];
   const payments = await stripe.invoicePayments.list({
     invoice: invoice.id,
     limit: 100,
@@ -120,6 +123,20 @@ export async function voidUnpaidCanceledRenewalInvoice(
     const intentId = stripeObjectId(payment.payment.payment_intent);
     if (!intentId) return "not_applicable";
     const intent = await stripe.paymentIntents.retrieve(intentId);
+    if (automaticCancellation && intent.status === "requires_action") {
+      if (
+        !payment.is_default ||
+        stripeObjectId(payment.invoice) !== invoice.id ||
+        stripeObjectId(intent.customer) !== stripeObjectId(invoice.customer) ||
+        intent.currency !== invoice.currency ||
+        intent.amount_received !== 0 ||
+        intent.amount_capturable !== 0
+      ) {
+        return "not_applicable";
+      }
+      authenticationIntents.push(intentId);
+      continue;
+    }
     if (!["requires_payment_method", "canceled"].includes(intent.status)) {
       return "not_applicable";
     }
@@ -137,7 +154,100 @@ export async function voidUnpaidCanceledRenewalInvoice(
     if (current?.status === "paid") return "paid";
     if (current?.status !== "void") throw error;
   }
+  if (authenticationIntents.length > 0) {
+    const current = await getCanceledRenewalInvoice(stripe, subscription);
+    if (
+      current?.status !== "void" ||
+      !current.status_transitions.voided_at ||
+      current.amount_paid !== 0
+    ) {
+      throw new Error(
+        `Canceled renewal ${invoice.id} retirement is unverified`,
+      );
+    }
+    const remaining = await stripe.invoicePayments.list({
+      invoice: invoice.id,
+      limit: 100,
+    });
+    if (
+      remaining.has_more ||
+      remaining.data.some((p) => p.status !== "canceled")
+    ) {
+      throw new Error(`Canceled renewal ${invoice.id} still has a payment`);
+    }
+    for (const intentId of authenticationIntents) {
+      const intent = await stripe.paymentIntents.retrieve(intentId);
+      if (intent.status !== "canceled") {
+        throw new Error(
+          `Canceled renewal ${invoice.id} authentication is unverified`,
+        );
+      }
+    }
+  }
   return "voided";
+}
+
+/** Explicit recovery for old cancellations whose deletion webhook already ran.
+ * No access, invoice payment, refund, or new subscription is created here.
+ */
+export async function recoverCanceledRenewalsForCheckout(
+  stripe: Stripe,
+  customerId: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  const history: Stripe.Subscription[] = [];
+  let startingAfter: string | undefined;
+  // Discover the complete history before writing anything. A current or
+  // incomplete subscription must use its own recovery journey instead.
+  for (let page = 0; page < 10; page += 1) {
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customerId,
+      status: "all",
+      limit: 100,
+      ...(startingAfter && { starting_after: startingAfter }),
+    });
+    history.push(...subscriptions.data);
+    if (!subscriptions.has_more) break;
+    startingAfter = subscriptions.data.at(-1)?.id;
+    if (!startingAfter || page === 9) return false;
+  }
+  if (
+    history.some(
+      (s) =>
+        stripeObjectId(s.customer) !== customerId ||
+        !["canceled", "incomplete_expired"].includes(s.status),
+    )
+  )
+    return false;
+
+  for (const snapshot of history) {
+    if (
+      snapshot.status !== "canceled" ||
+      snapshot.cancellation_details?.reason !== "payment_failed" ||
+      !snapshot.ended_at ||
+      snapshot.ended_at > nowSeconds ||
+      nowSeconds - snapshot.ended_at > RECENT_CANCELLATION_SECONDS
+    )
+      continue;
+    const subscription = await stripe.subscriptions.retrieve(snapshot.id);
+    if (
+      stripeObjectId(subscription.customer) !== customerId ||
+      subscription.status !== "canceled" ||
+      subscription.cancellation_details?.reason !== "payment_failed" ||
+      subscription.ended_at !== snapshot.ended_at
+    )
+      return false;
+    await voidUnpaidCanceledRenewalInvoice(stripe, subscription, {
+      requireIndividualPlan: true,
+    });
+  }
+  // Re-read final invoice/refund state. In particular, a payment winning the
+  // void race must keep checkout blocked until its financial resolution settles.
+  return !(await hasRecentCanceledRenewalAtRisk(
+    stripe,
+    customerId,
+    nowSeconds,
+  ));
 }
 
 async function hasFullyRefundedInvoicePayment(
