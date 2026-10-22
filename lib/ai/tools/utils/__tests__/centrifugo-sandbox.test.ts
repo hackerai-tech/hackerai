@@ -207,6 +207,52 @@ describe("CentrifugoSandbox", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it.each(["readiness", "presence", "publish", "acknowledgement"])(
+    "tracks isolated command publication across %s failure",
+    async (stage) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const outcome = sandbox.commands
+        .run("echo once", { timeoutMs: 5000 })
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const control = new MockSubscription();
+      if (stage === "readiness")
+        control.ready.mockRejectedValueOnce(new Error("control not ready"));
+      if (stage === "presence")
+        control.presence.mockResolvedValueOnce({ clients: {} });
+      if (stage === "publish")
+        control.publish.mockRejectedValueOnce(
+          new Error("publish acknowledgement lost"),
+        );
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      mockSubscriptions[0].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(
+        stage === "acknowledgement" ? 5001 : 0,
+      );
+      if (stage === "presence")
+        await expect(outcome).resolves.toBeInstanceOf(
+          LocalCommandRelayUnsubscribedError,
+        );
+      else
+        await expect(outcome).resolves.toMatchObject({
+          dispatched: stage !== "readiness",
+          retryable: false,
+        });
+      expect(control.publish).toHaveBeenCalledTimes(
+        stage === "readiness" || stage === "presence" ? 0 : 1,
+      );
+      expect(control.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it("uses an isolated file reply channel and never republishes a write after reconnect", async () => {
     const sandbox = new CentrifugoSandbox(
       "user-1",

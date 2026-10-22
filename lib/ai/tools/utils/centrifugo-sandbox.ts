@@ -1184,7 +1184,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               targetConnectionId: this.connectionInfo.connectionId,
             };
 
-            commandPublicationStarted = true;
+            if (!isolated) commandPublicationStarted = true;
             commandPublishInFlight = true;
 
             (async () => {
@@ -1196,6 +1196,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   commandMessage as unknown as Record<string, unknown>,
                   () => !settled,
                   subscription!,
+                  () => {
+                    commandPublicationStarted = true;
+                  },
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
@@ -1227,6 +1230,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 if (!settled) {
                   settled = true;
                   cleanup();
+                  if (
+                    !commandPublicationStarted &&
+                    isLocalCommandRelayUnsubscribedError(err)
+                  ) {
+                    reject(err);
+                    return;
+                  }
                   reject(
                     new Error(
                       `Failed to publish command: ${
