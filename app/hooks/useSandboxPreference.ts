@@ -9,6 +9,7 @@ import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
+import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -362,12 +363,20 @@ export function useSandboxPreference(
         setDesktopBridgeStatus("connected");
       } catch (error) {
         if (cancelled) return;
-        if (bridgeRecoveryTimer) {
-          setDesktopBridgeActive(false);
-          setDesktopBridgeStatus("connecting");
-          return;
+        if (isUnauthenticatedConvexError(error)) {
+          // Registration can reject before the bridge has a connection to
+          // terminate. Match the heartbeat/token path: wait for an explicit
+          // retry or a fresh sign-in instead of retrying the same auth failure.
+          bridgeRecoveryExhausted = false;
+          clearBridgeRecovery(true);
+        } else {
+          if (bridgeRecoveryTimer) {
+            setDesktopBridgeActive(false);
+            setDesktopBridgeStatus("connecting");
+            return;
+          }
+          if (scheduleBridgeRecovery("startup_failed", startGeneration)) return;
         }
-        if (scheduleBridgeRecovery("startup_failed", startGeneration)) return;
         console.error("[DesktopSandboxBridge] Failed to start:", error);
         setDesktopBridgeActive(false);
         setDesktopBridgeStatus("failed");
