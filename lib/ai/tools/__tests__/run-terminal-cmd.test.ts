@@ -1989,6 +1989,40 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ptySessionManager.forget("chat-1", result.result.session!);
   });
 
+  test.each([false, true])(
+    "does not replay an uncertain local execution (background=%s)",
+    async (background) => {
+      const run = jest
+        .fn()
+        .mockImplementationOnce(async (_command, opts) => {
+          opts?.onStdout?.("already started\n");
+          throw new Error("Centrifugo client error: transport closed");
+        })
+        .mockResolvedValue({ stdout: "replayed", stderr: "", exitCode: 0 });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          commands: { run },
+        },
+      });
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "bounded command",
+        brief: "test recovery",
+        is_background: background,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { output: string; error?: string; exitCode?: number | null };
+      };
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.error).toContain("Do not rerun");
+      if (!background)
+        expect(result.result.output).toContain("already started");
+    },
+  );
+
   test("does not retry a foreground command after its tool timeout resolves", async () => {
     let rejectFirstAttempt!: (error: Error) => void;
     const firstAttempt = new Promise<never>((_resolve, reject) => {

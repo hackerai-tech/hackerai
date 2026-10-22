@@ -1191,7 +1191,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             );
 
             const retryOptions = {
-              maxRetries: 6,
+              // A relay error cannot prove a local command did not execute.
+              // Only the typed pre-publication presence failure may be retried
+              // by executeWithLocalRelayRecovery on a verified successor.
+              maxRetries: isCentrifugoSandbox(sandboxInstance) ? 1 : 6,
               baseDelayMs: 500,
               jitterMs: 50,
               signal: abortSignal,
@@ -1411,6 +1414,21 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
                         error: error.message,
+                      },
+                    });
+                  } else if (
+                    isCentrifugoSandbox(sandboxInstance) &&
+                    !isLocalCommandRelayUnsubscribedError(error)
+                  ) {
+                    const output =
+                      handler?.getResult(processId ?? undefined).output || "";
+                    resolve({
+                      result: {
+                        status: "failed",
+                        processStarted: output ? true : undefined,
+                        exitCode: null,
+                        output,
+                        error: `Local command outcome is unknown: ${resolveToolErrorMessage(error)}. Do not rerun this command automatically; it may already have executed.`,
                       },
                     });
                   } else {
