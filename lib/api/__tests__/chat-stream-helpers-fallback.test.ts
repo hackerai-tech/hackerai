@@ -9,6 +9,7 @@
 import {
   buildProviderOptions,
   getContentFilterRetryModel,
+  getFallbackSlugs,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
@@ -82,7 +83,7 @@ const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
 const GLM_FLASH_SLUG = "z-ai/glm-5.3-flash";
-const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
+const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash-1017";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -404,6 +405,14 @@ describe("buildProviderOptions fallback chain", () => {
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
+  });
+
+  it("excludes the 1017 snapshot after its canonical ID returned content-filter", () => {
+    expect(
+      getFallbackSlugs("ask-model-free-glm", "ask", {
+        excludedModelSlugs: ["deepseek/deepseek-v4.1-flash-20261017"],
+      }),
+    ).toEqual([DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG]);
   });
 
   it("falls back from the Grok-backed auto agent route through GLM 5.3 then Kimi K3", () => {

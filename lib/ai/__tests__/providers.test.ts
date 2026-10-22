@@ -125,7 +125,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (myProvider.languageModel("ask-model-free-glm") as { modelId: string })
         .modelId,
@@ -136,7 +136,7 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(isDeepSeekModel("ask-model-free-deepseek-v41")).toBe(true);
     expect(supportsMultimodalToolResults("ask-model-free-deepseek-v41")).toBe(
       true,
@@ -147,7 +147,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -157,7 +157,9 @@ describe("provider registry", () => {
     ).toBe("minimax/minimax-m3");
     expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
     expect(GLM_5_3_FLASH_SLUG).toBe("z-ai/glm-5.3-flash");
-    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe("deepseek/deepseek-v4.1-flash");
+    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe(
+      "deepseek/deepseek-v4.1-flash-1017",
+    );
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
@@ -206,7 +208,7 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (
         myProvider.languageModel("model-deepseek-v4-pro-0813") as {
@@ -281,7 +283,7 @@ describe("provider registry", () => {
   it("resolves Agent Pro to V4.1 Flash with native image support", () => {
     const key = resolveAgentTierToProviderKey("hackerai-pro");
     expect(myProvider.languageModel(key).modelId).toBe(
-      "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4.1-flash-1017",
     );
     expect(supportsMultimodalToolResults(key)).toBe(true);
     expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
@@ -303,11 +305,11 @@ describe("provider registry", () => {
     ).toBe("z-ai/glm-5.3-flash");
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
   });
 
   it.each([
@@ -1368,6 +1370,9 @@ describe("supportsMultimodalToolResults", () => {
     ).toBe(true);
     expect(supportsMultimodalToolResults(GLM_5_3_FLASH_SLUG)).toBe(true);
     expect(supportsMultimodalToolResults(DEEPSEEK_V4_FLASH_VISION_SLUG)).toBe(
+      true,
+    );
+    expect(supportsMultimodalToolResults("deepseek/deepseek-v4.1-flash")).toBe(
       true,
     );
     expect(

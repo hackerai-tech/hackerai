@@ -170,7 +170,7 @@ describe.each([
         JSON.stringify({
           id: "gen-synthetic",
           created: 1,
-          model: "deepseek/deepseek-v4.1-flash",
+          model: "deepseek/deepseek-v4.1-flash-1017",
           choices: [
             {
               index: 0,
@@ -188,7 +188,7 @@ describe.each([
       ),
     );
     const continuation = await generateText({
-      model: openRouter("deepseek/deepseek-v4.1-flash"),
+      model: openRouter("deepseek/deepseek-v4.1-flash-1017"),
       prompt: "Synthetic continuation request",
     });
     tracker.accumulateStep(continuation.usage, continuation.response.modelId);

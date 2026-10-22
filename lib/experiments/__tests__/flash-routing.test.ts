@@ -176,7 +176,7 @@ describe("Flash routing experiments", () => {
       requestId: "request-1",
     });
     expect(capture).not.toHaveBeenCalled();
-    record("deepseek/deepseek-v4.1-flash");
+    record("deepseek/deepseek-v4.1-flash-1017");
     expect(capture).not.toHaveBeenCalled();
     record("z-ai/glm-5.3-flash");
     record("z-ai/glm-5.3-flash");

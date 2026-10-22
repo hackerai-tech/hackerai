@@ -802,7 +802,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     async (fits) => {
       const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
       const warmModel = {
-        modelId: "deepseek/deepseek-v4.1-flash",
+        modelId: "deepseek/deepseek-v4.1-flash-1017",
       } as LanguageModel;
       const onUsed = jest.fn();
       const messages: ModelMessage[] = [
@@ -857,7 +857,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       const controller = new AbortController();
       const onDiscardedUsage = jest.fn();
       const warmModel = {
-        modelId: "deepseek/deepseek-v4.1-flash",
+        modelId: "deepseek/deepseek-v4.1-flash-1017",
       } as LanguageModel;
       mockGenerateText
         .mockImplementationOnce(async () => {
@@ -910,7 +910,7 @@ describe("checkAndSummarizeIfNeeded", () => {
             expect.objectContaining({
               inputTokens: 100,
               outputTokens: 10,
-              model: "deepseek/deepseek-v4.1-flash",
+              model: "deepseek/deepseek-v4.1-flash-1017",
             }),
           );
         } else expect(onDiscardedUsage).not.toHaveBeenCalled();

@@ -6,7 +6,7 @@ describe("paid daily free allowance rescue model", () => {
   it("uses the existing V4.1 Flash route for paid Agent rescue", () => {
     const model = getPaidDailyFreeAllowanceModel("agent");
     expect(myProvider.languageModel(model).modelId).toBe(
-      "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4.1-flash-1017",
     );
     expect(supportsMultimodalToolResults(model)).toBe(true);
     expect(
