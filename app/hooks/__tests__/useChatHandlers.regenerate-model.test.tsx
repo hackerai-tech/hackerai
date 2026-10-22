@@ -709,6 +709,74 @@ describe("failed local attachment admission", () => {
     );
   });
 
+  it("admits only one retry through lookup and streaming, then releases the guard", async () => {
+    mockRegenerate.mockClear();
+    let resolveCheck!: (value: boolean) => void;
+    let finishRun!: () => void;
+    const check = jest.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    mockRegenerate.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRun = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "single-retry",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: check,
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    let first!: Promise<void>;
+    await act(async () => {
+      first = result.current.handleRetry();
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCheck(false);
+    });
+    expect(mockRegenerate).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishRun();
+      await first;
+    });
+    // A lookup failure must release the guard too, so the user can try again.
+    check.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    check.mockImplementationOnce(async () => true);
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(3);
+    expect(mockRegenerate).toHaveBeenCalledTimes(2);
+    expect(mockRegenerate).toHaveBeenLastCalledWith({
+      body: expect.objectContaining({ regenerate: true }),
+    });
+  });
+
   it("keeps regeneration semantics once the same user turn is persisted", async () => {
     mockRegenerate.mockClear();
     const { result } = renderHook(() =>
