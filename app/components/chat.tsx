@@ -1272,8 +1272,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort }) => {
-      performanceTracker.setOutcome(isAbort ? "aborted" : "completed");
+    onFinish: ({ isAbort, isError }) => {
+      performanceTracker.setOutcome(
+        isError ? "error" : isAbort ? "aborted" : "completed",
+      );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1288,6 +1290,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         finalizeNewChatRoute({
           chatId,
           isAbort,
+          isError,
           isExistingChat: isExistingChatRef.current,
         })
       ) {
