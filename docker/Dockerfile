@@ -34,6 +34,7 @@ RUN apt-get update && \
     git \
     ca-certificates \
     gnupg2 \
+    xz-utils \
     unzip \
     jq \
     tree \
@@ -138,6 +139,47 @@ RUN apt-get update && \
     # Web application security scanner
     zaproxy \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Kali can lag emergency trust-store/runtime releases. Verify the official
+# Debian, Node.js and Go release checksums before installing these fixed builds.
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 \
+      https://deb.debian.org/debian/pool/main/c/ca-certificates/ca-certificates_20260816+nmu1_all.deb \
+      -o /tmp/ca-certificates.deb; \
+    echo '14a35850411e3a26ac4802638ccafe437dae4c79a1d10b3a264d1a404a286305 */tmp/ca-certificates.deb' | sha256sum -c -; \
+    dpkg -i /tmp/ca-certificates.deb; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20260816+nmu1; \
+    update-ca-certificates --fresh; \
+    rm /tmp/ca-certificates.deb
+
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) node_arch=x64; node_sha=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6; go_arch=amd64; go_sha=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;; \
+      arm64) node_arch=arm64; node_sha=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e; go_arch=arm64; go_sha=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;; \
+      *) echo 'Unsupported sandbox architecture' >&2; exit 1 ;; \
+    esac; \
+    curl --fail --silent --show-error --location --retry 3 \
+      "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz; \
+    echo "${node_sha} */tmp/node.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
+    curl --fail --silent --show-error --location --retry 3 \
+      "https://go.dev/dl/go1.27.3.linux-${go_arch}.tar.gz" -o /tmp/go.tar.gz; \
+    echo "${go_sha} */tmp/go.tar.gz" | sha256sum -c -; \
+    rm -rf /usr/local/go; \
+    tar -xzf /tmp/go.tar.gz -C /usr/local; \
+    ln -sf /usr/local/bin/node /usr/bin/node; \
+    ln -sf /usr/local/bin/node /usr/bin/nodejs; \
+    for go_bin in /usr/bin/go /usr/lib/go-*/bin/go; do \
+      if [ -e "$go_bin" ]; then ln -sf /usr/local/go/bin/go "$go_bin"; fi; \
+    done; \
+    test "$(node --version)" = v24.22.1; \
+    test "$(go env GOVERSION)" = go1.27.3; \
+    rm /tmp/node.tar.xz /tmp/go.tar.gz
+
+# Keep dpkg-owned Python packages intact while replacing pip's vendored CA
+# bundle and the separate bundle used by requests/httpx.
+RUN python3 -m pip install --break-system-packages --no-cache-dir \
+    --ignore-installed 'pip==26.2.2' 'certifi==2026.10.19'
 
 # ============================================================================
 # WhatWeb Ruby Library Symlink Fix
@@ -389,6 +431,11 @@ RUN set -eux; \
 # ============================================================================
 # Final Cleanup & Permissions
 # ============================================================================
+COPY verify_trust.py /usr/local/lib/hackerai/verify_trust.py
+# E2B dereferences certificate symlinks into its boot seed. Remove materialized
+# copies of the distrusted roots, refresh the store and seed, then test TLS.
+RUN python3 /usr/local/lib/hackerai/verify_trust.py --refresh-system-trust
+
 RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/* && \
     chown -R user:user /home/user
