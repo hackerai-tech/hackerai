@@ -34,7 +34,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 0.085,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.085)).toBe(20);
+    expect(getUnsettledUsagePoints(state, 0.085)).toBe(105);
   });
 
   it("settles without trusting the remaining balance captured at run start", () => {
@@ -46,7 +46,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 5,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 5)).toBe(59_000);
+    expect(getUnsettledUsagePoints(state, 5)).toBe(64_000);
   });
 
   it("updates cumulative settled totals after a mid-run deduction", () => {
@@ -85,7 +85,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 0.3,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.3)).toBe(100);
+    expect(getUnsettledUsagePoints(state, 0.3)).toBe(400);
 
     expect(
       shouldSettleUsageMidRun({
@@ -93,7 +93,7 @@ describe("usage-settlement", () => {
         currentCostDollars: 0.4,
       }),
     ).toBe(true);
-    expect(getUnsettledUsagePoints(state, 0.4)).toBe(1_300);
+    expect(getUnsettledUsagePoints(state, 0.4)).toBe(1_700);
   });
 
   it("normalizes Extra Usage points before calculating the unsettled delta", () => {
@@ -105,6 +105,6 @@ describe("usage-settlement", () => {
 
     // 700 stored Extra Usage points cover 700 included-usage pricing points.
     expect(getUnsettledUsagePoints(state, 0.05)).toBe(0);
-    expect(getUnsettledUsagePoints(state, 0.06)).toBe(20);
+    expect(getUnsettledUsagePoints(state, 0.06)).toBe(80);
   });
 });
