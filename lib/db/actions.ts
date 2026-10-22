@@ -1008,6 +1008,7 @@ export async function saveMessage({
   generationTimeMs,
   finishReason,
   triggerRunId,
+  expectedActiveTriggerRunId,
   usage,
   updateOnly,
   isHidden,
@@ -1030,6 +1031,7 @@ export async function saveMessage({
   generationTimeMs?: number;
   finishReason?: string;
   triggerRunId?: string;
+  expectedActiveTriggerRunId?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
@@ -1139,6 +1141,7 @@ export async function saveMessage({
       generationTimeMs,
       finishReason,
       triggerRunId,
+      expectedActiveTriggerRunId,
       usage: usageForSave,
       updateOnly,
       isHidden,
@@ -1837,6 +1840,7 @@ export async function setActiveTriggerRun({
   expectedRunId,
   expectedApprovalSessionId,
   clearApprovalPending,
+  recoveredCrash,
 }: {
   chatId: string;
   triggerRunId: string | null;
@@ -1844,6 +1848,7 @@ export async function setActiveTriggerRun({
   expectedRunId?: string;
   expectedApprovalSessionId?: string;
   clearApprovalPending?: boolean;
+  recoveredCrash?: boolean;
 }) {
   try {
     return await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
@@ -1856,6 +1861,7 @@ export async function setActiveTriggerRun({
         ? { expectedApprovalSessionId }
         : {}),
       ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
+      ...(recoveredCrash !== undefined ? { recoveredCrash } : {}),
     });
   } catch (error) {
     throw databaseError("chats.setActiveTriggerRun", error, {

@@ -1715,6 +1715,7 @@ export const setActiveTriggerRun = mutation({
     expectedRunId: v.optional(v.string()),
     expectedApprovalSessionId: v.optional(v.string()),
     clearApprovalPending: v.optional(v.boolean()),
+    recoveredCrash: v.optional(v.boolean()),
   },
   returns: v.union(
     v.literal("updated"),
@@ -1750,6 +1751,11 @@ export const setActiveTriggerRun = mutation({
     ) {
       return "stale" as const;
     }
+    if (
+      args.recoveredCrash &&
+      (args.triggerRunId !== null || !args.expectedRunId)
+    )
+      throw new Error("Crash recovery requires a conditional detach");
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
     const finishedActiveRun =
@@ -1757,6 +1763,11 @@ export const setActiveTriggerRun = mutation({
 
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(args.recoveredCrash &&
+      !chat.finish_reason &&
+      chat.canceled_at === undefined
+        ? { finish_reason: "trigger_crashed_client_saved" }
+        : {}),
       ...(finishedActiveRun ? { last_run_finished_at: Date.now() } : {}),
       ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
       ...(args.approvalSessionId !== undefined

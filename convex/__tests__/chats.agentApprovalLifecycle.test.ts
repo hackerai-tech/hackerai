@@ -92,6 +92,54 @@ describe("Agent approval lifecycle guards", () => {
     jest.clearAllMocks();
   });
 
+  it.each([undefined, "stop"])(
+    "conditionally detaches recovered crashes without replacing finish reason %s",
+    async (finishReason) => {
+      const { ctx, patch } = makeCtx({
+        _id: "chat-doc",
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-old",
+        finish_reason: finishReason,
+      });
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+          recoveredCrash: true,
+        }),
+      ).toBe("updated");
+      const fields = patch.mock.calls[0][1];
+      if (finishReason) expect(fields).not.toHaveProperty("finish_reason");
+      else
+        expect(fields).toHaveProperty(
+          "finish_reason",
+          "trigger_crashed_client_saved",
+        );
+    },
+  );
+
+  it("does not label or detach a newer run during crash recovery", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-new",
+    });
+    expect(
+      await setActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-old",
+        recoveredCrash: true,
+      }),
+    ).toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("serializes parent and child approval prompts", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc-1",
