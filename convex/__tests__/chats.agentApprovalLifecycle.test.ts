@@ -121,6 +121,44 @@ describe("Agent approval lifecycle guards", () => {
     },
   );
 
+  it.each([
+    { fields: { canceled_at: 1 }, fenced: false },
+    { fields: { deletion_started_at: 1 }, fenced: false },
+    { fields: {}, fenced: true },
+  ])(
+    "leaves a fenced crash association for its owning cancellation/deletion flow: %j",
+    async ({ fields, fenced }) => {
+      const { ctx, patch } = makeCtx(
+        {
+          _id: "chat-doc",
+          id: "chat-1",
+          user_id: "user-1",
+          active_trigger_run_id: "run-old",
+          ...fields,
+        },
+        fenced,
+      );
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+          recoveredCrash: true,
+        }),
+      ).toBe("stale");
+      expect(patch).not.toHaveBeenCalled();
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+        }),
+      ).toBe("updated");
+    },
+  );
+
   it("does not label or detach a newer run during crash recovery", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc",

@@ -1758,6 +1758,13 @@ export const setActiveTriggerRun = mutation({
       (args.triggerRunId !== null || !args.expectedRunId)
     )
       throw new Error("Crash recovery requires a conditional detach");
+    if (
+      args.recoveredCrash &&
+      (chat.canceled_at !== undefined ||
+        chat.deletion_started_at !== undefined ||
+        (await isUserDeletionFenced(ctx.db, chat.user_id)))
+    )
+      return "stale" as const;
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
     const finishedActiveRun =
