@@ -1017,7 +1017,7 @@ export const createAgentTriggerPost =
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
-        context: { ...diagnosticContext, stage },
+        context: { ...diagnosticContext, stage, initialPersistenceStep },
       });
     } finally {
       clearInterval(slowRequestInterval);

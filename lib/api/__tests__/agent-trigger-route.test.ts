@@ -345,6 +345,67 @@ describe("web request correlation at Agent dispatch", () => {
     },
   );
 
+  it.each([
+    ["/api/agent", "save_chat"],
+    ["/api/agent", "reset_stream"],
+    ["/api/agent-long", "save_user_message"],
+  ] as const)(
+    "attributes a failed %s initial persistence operation to %s without starting a run",
+    async (endpoint, step) => {
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+          async ({ onPersistenceStep }: any) => {
+            onPersistenceStep(step);
+            throw new TypeError("value is not iterable");
+          },
+        );
+        const response = await start(endpoint, "full_access", requestId);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toMatchObject({
+          message: "Something went wrong. Please try again later.",
+          cause: "Failed to start agent run",
+        });
+        expect(log).toHaveBeenCalledTimes(1);
+        const diagnostic = JSON.parse(log.mock.calls[0][0] as string);
+        expect(diagnostic).toMatchObject({
+          event: "agent_route_failed",
+          stage: "persist_user_message",
+          initial_persistence_step: step,
+          error_name: "TypeError",
+          error_message: "value is not iterable",
+        });
+        expect(JSON.stringify(diagnostic)).not.toContain(
+          "private-prompt-canary",
+        );
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it("does not attribute a later startup failure to completed persistence", async () => {
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+        async ({ onPersistenceStep }: any) => {
+          onPersistenceStep("save_user_message");
+        },
+      );
+      mockTriggerTask.mockRejectedValueOnce(new Error("queue unavailable"));
+      expect((await start("/api/agent", "full_access", requestId)).status).toBe(
+        500,
+      );
+      const diagnostic = JSON.parse(log.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("tasks.trigger");
+      expect(diagnostic).not.toHaveProperty("initial_persistence_step");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("does not attach the completed persistence step to a later startup stage", async () => {
     jest.useFakeTimers();
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
