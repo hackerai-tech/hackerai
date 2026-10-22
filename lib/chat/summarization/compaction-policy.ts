@@ -11,7 +11,7 @@ import {
 } from "@/lib/posthog/server";
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { InvalidCompactionSummaryError } from "./startup-compaction";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
@@ -21,9 +21,9 @@ export const MODERATION_COMPACTION_POLICY_VERSION =
   "moderation_glm53_abliteration_recovery_v2";
 export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
 export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
-// Retain the serialized policy label for existing Max readouts; Pro uses the
-// same summarizer contract and is attributed through its own context flag.
+// Keep per-model policy labels so compaction monitoring cannot mix cohorts.
 export const MAX_CONTEXT_COMPACTION_POLICY_VERSION = "max_large_v2_context_v1";
+export const PRO_CONTEXT_COMPACTION_POLICY_VERSION = "pro_large_v2_context_v1";
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
   | typeof COMPACTION_PRIMARY_MODEL
@@ -36,9 +36,51 @@ export type CompactionSelection = {
   policy:
     | typeof COMPACTION_POLICY_VERSION
     | typeof MODERATION_COMPACTION_POLICY_VERSION
-    | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION;
+    | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION
+    | typeof PRO_CONTEXT_COMPACTION_POLICY_VERSION;
   flagEnabled: boolean | null;
 };
+
+/** Capture provider classifications without storing response bodies or user content. */
+function compactionProviderFailure(
+  error: unknown,
+  depth = 0,
+): {
+  provider_status_code?: number;
+  provider_error_code?: string;
+} {
+  if (depth > 4 || typeof error !== "object" || error === null) return {};
+  const record = error as Record<string, unknown>;
+  const status = record.statusCode;
+  let code: unknown;
+  if (
+    typeof record.responseBody === "string" &&
+    record.responseBody.length < 32_768
+  ) {
+    try {
+      code = JSON.parse(record.responseBody)?.error?.code;
+    } catch {
+      /* Not JSON. */
+    }
+  }
+  const knownCodes = [
+    "too_many_tool_calls",
+    "context_length_exceeded",
+    "rate_limit_exceeded",
+  ];
+  return {
+    ...compactionProviderFailure(record.cause, depth + 1),
+    ...(typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? { provider_status_code: status }
+      : {}),
+    ...(typeof code === "string" && knownCodes.includes(code)
+      ? { provider_error_code: code }
+      : {}),
+  };
+}
 
 // Missing sections catch plain refusal prose; headings cannot prove fidelity.
 export function hasStructuredCompactionSummary(text: string, mode: ChatMode) {
@@ -60,6 +102,7 @@ export class CompactionModelPolicy {
       mode: ChatMode;
       subscription: SubscriptionTier;
       baselineModel: string;
+      selectedModel?: SelectedModel;
       /** Existing shouldUncensorResponse result, never the continuation signal. */
       platformAuthorized: boolean;
       expandedAgentContext?: boolean;
@@ -95,7 +138,9 @@ export class CompactionModelPolicy {
           ? abliterationModel
           : undefined,
       policy: expandedAgentContext
-        ? MAX_CONTEXT_COMPACTION_POLICY_VERSION
+        ? this.context.selectedModel === "hackerai-pro"
+          ? PRO_CONTEXT_COMPACTION_POLICY_VERSION
+          : MAX_CONTEXT_COMPACTION_POLICY_VERSION
         : flagEnabled === true
           ? MODERATION_COMPACTION_POLICY_VERSION
           : COMPACTION_POLICY_VERSION,
@@ -152,6 +197,7 @@ export class CompactionModelPolicy {
           served_model: model,
           outcome,
           failure_reason: failureReason ?? null,
+          ...compactionProviderFailure(error),
           duration_ms: durationMs,
           input_tokens: usage?.inputTokens ?? null,
           output_tokens: usage?.outputTokens ?? null,

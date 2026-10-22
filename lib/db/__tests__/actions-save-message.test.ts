@@ -1366,6 +1366,97 @@ describe("getMessagesByChatId", () => {
     }
   });
 
+  it.each([false, true])(
+    "merges an unpersisted retry without replaying saved client history (local files: %s)",
+    async (localFiles) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const oldUser = {
+        id: "old-user",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "stored prompt" }],
+      };
+      const oldAssistant = {
+        id: "old-assistant",
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: "stored answer" }],
+      };
+      const newUser = {
+        id: "pending-user",
+        role: "user" as const,
+        parts: [
+          { type: "text" as const, text: "new request" },
+          ...(localFiles
+            ? [
+                {
+                  type: "file" as const,
+                  mediaType: "text/plain",
+                  url: "",
+                  storage: "local-desktop",
+                  localAttachmentId: "fixture",
+                  localPath: "/fixtures/notes.txt",
+                },
+              ]
+            : []),
+        ],
+      };
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [oldAssistant, oldUser],
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        mode: "ask",
+        regenerate: false,
+        newMessages: [
+          { ...oldUser, parts: [{ type: "text", text: "stale client copy" }] },
+          oldAssistant,
+          newUser,
+          newUser,
+        ],
+        useClientMessagesForRegenerate: true,
+      });
+      expect(result.truncatedMessages).toEqual([
+        oldUser,
+        oldAssistant,
+        newUser,
+      ]);
+    },
+  );
+
+  it("does not append client history older than the fetched page", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const message = (id: string) => ({
+      id,
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: id }],
+    });
+    const older = message("older-client-row");
+    const stored = message("latest-stored-row");
+    const pending = message("pending-row");
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [stored],
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      mode: "ask",
+      regenerate: false,
+      newMessages: [older, stored, pending],
+    });
+    expect(result.truncatedMessages).toEqual([stored, pending]);
+  });
+
   it("retries transient chat history page fetches before falling back", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const existingMessage = {
@@ -1997,6 +2088,21 @@ describe("initial chat persistence diagnostics", () => {
     },
   );
 
+  it("persists the selected environment with the first task write", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await handleInitialChatAndUserMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      messages,
+      chat: null,
+      sandboxType: "desktop",
+    });
+    expect(mockMutation.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ sandboxType: "desktop" }),
+    );
+  });
+
   it("persists the chat and message in order even if diagnostic reporting throws", async () => {
     const { handleInitialChatAndUserMessage, mockMutation } =
       await loadSaveMessageWithMocks();
@@ -2086,5 +2192,40 @@ describe("regenerated chat initialization", () => {
     mockMutation.mockRejectedValue(new Error("Unavailable"));
     await expect(handleInitialChatAndUserMessage(args)).rejects.toThrow();
     expect(mockMutation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("saveMessage cancellation", () => {
+  it("aborts a retry wait before a second mutation is sent", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    mockMutation.mockRejectedValue(new TypeError("fetch failed") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const pending = saveMessage({
+        chatId: "chat",
+        userId: "owner",
+        message: {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "progress" }],
+        },
+        signal: controller.signal,
+      });
+      const rejected = expect(pending).rejects.toBeDefined();
+      for (let i = 0; i < 20 && warn.mock.calls.length === 0; i++)
+        await Promise.resolve();
+      expect(warn).toHaveBeenCalled();
+      controller.abort(new Error("fixture deadline"));
+      await rejected;
+      await jest.runOnlyPendingTimersAsync();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      jest.useRealTimers();
+    }
   });
 });

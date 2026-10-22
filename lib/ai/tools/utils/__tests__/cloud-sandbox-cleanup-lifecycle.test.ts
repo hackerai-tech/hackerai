@@ -1,7 +1,10 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { phLogger } from "@/lib/posthog/server";
 import { terminateCloudSandboxesForUser } from "../cloud-sandbox";
-import { claimCloudWorkspaceCleanup } from "../cloud-workspace-guard";
+import {
+  claimCloudWorkspaceCleanup,
+  CloudWorkspaceUnavailableError,
+} from "../cloud-workspace-guard";
 
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { list: jest.fn(), kill: jest.fn() },
@@ -15,6 +18,10 @@ jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 const claim = jest.mocked(claimCloudWorkspaceCleanup);
 const list = jest.mocked(Sandbox.list);
 const finish = jest.fn<Promise<void>, [boolean]>();
+const mockRedis = { get: jest.fn(), eval: jest.fn() };
+jest.mock("@/lib/rate-limit/redis", () => ({
+  createRedisClient: () => mockRedis,
+}));
 const records = () =>
   jest
     .mocked(phLogger.event)
@@ -25,6 +32,8 @@ describe("cloud cleanup lifecycle diagnostics", () => {
   const originalEnv = process.env;
   beforeEach(() => {
     jest.resetAllMocks();
+    mockRedis.get.mockResolvedValue(null);
+    mockRedis.eval.mockResolvedValue(1);
     process.env = { ...originalEnv, E2B_API_KEY: "test-key" };
     delete process.env.E2B_EU_API_KEY;
     delete process.env.E2B_EU_DOMAIN;
@@ -98,7 +107,9 @@ describe("cloud cleanup lifecycle diagnostics", () => {
   });
 
   it("reports claim rejection without deleting resources or finalizing another owner's fence", async () => {
-    const rejection = new Error("private-claim-details");
+    const rejection = Object.assign(new Error("private-claim-details"), {
+      cleanupClaimFailureReason: "private-claim-reason",
+    });
     claim.mockRejectedValue(rejection);
     await expect(terminateCloudSandboxesForUser("user-test")).rejects.toBe(
       rejection,
@@ -110,7 +121,78 @@ describe("cloud cleanup lifecycle diagnostics", () => {
       ["claim", "error"],
     ]);
     expect(JSON.stringify(records())).not.toContain(rejection.message);
+    expect(records()[1]).toHaveProperty("claim_failure_reason", "unknown");
   });
+
+  it("does not let an invalid diagnostic getter replace the cleanup rejection", async () => {
+    const rejection = Object.create(CloudWorkspaceUnavailableError.prototype);
+    claim.mockRejectedValue(rejection);
+    await expect(terminateCloudSandboxesForUser("user-test")).rejects.toBe(
+      rejection,
+    );
+    expect(records()[1]).toHaveProperty("claim_failure_reason", "unknown");
+    expect(list).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it.each(["recovery_pending", "claim_conflict", "store_error"])(
+    "carries real guard %s into existing claim-error telemetry without cleanup",
+    async (reason) => {
+      claim.mockImplementation(
+        jest.requireActual<typeof import("../cloud-workspace-guard")>(
+          "../cloud-workspace-guard",
+        ).claimCloudWorkspaceCleanup,
+      );
+      if (reason === "recovery_pending")
+        mockRedis.get.mockResolvedValue({
+          version: 1,
+          phase: "e2b",
+          token: "private-owner",
+          sourceId: "private-source",
+          destinationId: "private-destination",
+          region: "us-east-1",
+          recoveryPending: { secret: "private-recovery" },
+        });
+      if (reason === "claim_conflict") mockRedis.eval.mockResolvedValue(0);
+      if (reason === "store_error")
+        mockRedis.eval.mockRejectedValue(new Error("private-store-error"));
+      await expect(
+        terminateCloudSandboxesForUser("user-test", { permanent: true }),
+      ).rejects.toMatchObject({ name: "CloudWorkspaceUnavailableError" });
+      expect(list).not.toHaveBeenCalled();
+      expect(finish).not.toHaveBeenCalled();
+      expect(records().map(({ phase, outcome }) => [phase, outcome])).toEqual([
+        ["claim", "started"],
+        ["claim", "error"],
+      ]);
+      const errorEvent = records()[1];
+      expect(errorEvent.claim_failure_reason).toBe(reason);
+      expect(Object.keys(errorEvent).sort()).toEqual(
+        [
+          "userId",
+          "cleanup_id",
+          "permanent",
+          "phase",
+          "outcome",
+          "duration_ms",
+          "claim_failure_reason",
+        ].sort(),
+      );
+      const captured = JSON.stringify([
+        records(),
+        jest.mocked(console.info).mock.calls,
+      ]);
+      for (const secret of [
+        "private-owner",
+        "private-source",
+        "private-destination",
+        "private-recovery",
+        "private-store-error",
+        "test-key",
+      ])
+        expect(captured).not.toContain(secret);
+    },
+  );
 
   it("keeps a provider failure visible after successful fence finalization", async () => {
     const failure = new Error("private-provider-details");

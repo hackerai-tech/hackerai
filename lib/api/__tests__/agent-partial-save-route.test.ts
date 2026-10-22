@@ -294,6 +294,8 @@ describe("createAgentPartialSavePost", () => {
       stage: "history_access",
       outcome: "pending",
       elapsed_ms: 10_000,
+      warning_threshold_ms: 10_000,
+      timer_lateness_ms: 0,
       request_id: diagnosticRequestId,
       user_id: diagnosticUser,
       run_correlation_verified: false,
@@ -309,6 +311,8 @@ describe("createAgentPartialSavePost", () => {
       stage: "chat_lookup",
       outcome: "pending",
       elapsed_ms: 20_000,
+      warning_threshold_ms: 20_000,
+      timer_lateness_ms: 0,
       requested_chat_id: diagnosticBody.chatId,
       run_correlation_verified: false,
       message_save_completed: false,
@@ -320,6 +324,50 @@ describe("createAgentPartialSavePost", () => {
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("PRIVATE_");
     lookup.resolve(chat({ user_id: diagnosticUser }));
     expect((await pending).status).toBe(200);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("identifies both thresholds when warning callbacks are delayed", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    jest.useFakeTimers();
+    const startedAt = Date.now();
+    const save = deferred();
+    mockGetUserID.mockResolvedValue(diagnosticUser as never);
+    mockGetChatById.mockResolvedValue(
+      chat({ user_id: diagnosticUser }) as never,
+    );
+    mockSaveMessage.mockReturnValue(save.promise as never);
+    const pending = createAgentPartialSavePost()(request(diagnosticBody));
+    await jest.advanceTimersByTimeAsync(0);
+    const clock = jest.spyOn(Date, "now").mockReturnValue(startedAt + 20_314);
+    try {
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      const warnings = warnSpy.mock.calls.map(([value]) =>
+        JSON.parse(String(value)),
+      );
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          stage: "save_message",
+          elapsed_ms: 20_314,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 10_314,
+        }),
+        expect.objectContaining({
+          stage: "save_message",
+          elapsed_ms: 20_314,
+          warning_threshold_ms: 20_000,
+          timer_lateness_ms: 314,
+        }),
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("PRIVATE_");
+    } finally {
+      clock.mockRestore();
+      save.resolve();
+      expect((await pending).status).toBe(200);
+    }
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
   });
 

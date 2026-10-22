@@ -128,6 +128,10 @@ import {
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
+import {
   saveMessage,
   updateChat,
   updateChatTitle,
@@ -603,6 +607,7 @@ type AgentLongErrorSummary = {
   actualSandbox?: string;
   uploadFailureKind?: string;
   uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
+  uploadFailureAcquisitionStage?: CloudAcquisitionStage;
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -806,6 +811,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_reason",
       ),
+      uploadFailureAcquisitionStage:
+        uploadFailurePhase === "acquisition"
+          ? parseCloudAcquisitionStage(
+              errorMetadata?.upload_failure_acquisition_stage,
+            )
+          : undefined,
       uploadFailureCause: getStringMetadata(
         errorMetadata,
         "upload_failure_cause",
@@ -1052,6 +1063,11 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
   if (summary.uploadFailurePhase)
     metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
+  if (summary.uploadFailureAcquisitionStage)
+    metadata.set(
+      "uploadFailureAcquisitionStage",
+      summary.uploadFailureAcquisitionStage,
+    );
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)

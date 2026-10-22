@@ -254,6 +254,22 @@ export async function readLocalFile(
   }
 }
 
+/** Preview reads stay on-device and are bounded again by the native command. */
+export async function readLocalPreviewFile(path: string): Promise<File> {
+  if (!detectTauri()) throw new Error("Local previews require Desktop");
+  const { invoke } = await import("@tauri-apps/api/core");
+  const data = await invoke<LocalFileData>("read_local_preview_file", {
+    path,
+  });
+  const bytes = Uint8Array.from(atob(data.base64), (char) =>
+    char.charCodeAt(0),
+  );
+  return new File([bytes], data.name, {
+    type: data.mediaType,
+    lastModified: data.lastModified,
+  });
+}
+
 export async function writeGeneratedTextAttachment(
   attachmentId: string,
   fileName: string,

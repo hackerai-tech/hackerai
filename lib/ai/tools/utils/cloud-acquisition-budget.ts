@@ -15,6 +15,11 @@ const ACQUISITION_STAGES = [
   "workspace_verification",
 ] as const;
 export type CloudAcquisitionStage = (typeof ACQUISITION_STAGES)[number];
+export const parseCloudAcquisitionStage = (
+  value: unknown,
+): CloudAcquisitionStage | undefined =>
+  ACQUISITION_STAGES.find((stage) => stage === value);
+
 export type ReportCloudAcquisitionStage = (
   stage: CloudAcquisitionStage,
 ) => void;

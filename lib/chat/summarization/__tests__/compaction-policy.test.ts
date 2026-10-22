@@ -33,6 +33,36 @@ describe("compaction model assignment and telemetry", () => {
     mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
   });
+  it("records safe provider rejection facts without response content", async () => {
+    const policy = new CompactionModelPolicy(context);
+    const attempt = policy.start(await policy.resolve(), "run_scoped");
+    attempt.attempt(
+      "model-abliterated-large-v2",
+      "error",
+      1907,
+      undefined,
+      "provider_error",
+      {
+        statusCode: 400,
+        responseBody: JSON.stringify({
+          error: {
+            code: "too_many_tool_calls",
+            message: "private customer content",
+          },
+        }),
+      },
+    );
+    const properties = mockEvent.mock.calls.find(
+      ([name]) => name === "compaction_model_attempt_finished",
+    )![1];
+    expect(properties).toMatchObject({
+      provider_status_code: 400,
+      provider_error_code: "too_many_tool_calls",
+    });
+    expect(JSON.stringify(properties)).not.toContain(
+      "private customer content",
+    );
+  });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses Abliteration for %s and emits policy telemetry only at compaction",
     async (subscription) => {
@@ -95,6 +125,30 @@ describe("compaction model assignment and telemetry", () => {
       expect(serializedEvents).not.toContain("experiment_key");
       expect(serializedEvents).not.toContain("experiment_variant");
       expect(serializedEvents).not.toContain("error_message");
+    },
+  );
+  it.each([
+    ["hackerai-max", "max_large_v2_context_v1"],
+    ["hackerai-pro", "pro_large_v2_context_v1"],
+  ] as const)(
+    "keeps %s summary outcomes in their own cohort",
+    async (selectedModel, expectedPolicy) => {
+      const policy = new CompactionModelPolicy({
+        ...context,
+        selectedModel,
+        expandedAgentContext: true,
+      });
+      const assignment = await policy.resolve();
+      expect(assignment.model).toBe("model-abliterated-large-v2");
+      const telemetry = policy.start(assignment, "run_scoped");
+      telemetry.finish("completed", "model-abliterated-large-v2");
+      expect(mockEvent).toHaveBeenCalledWith(
+        "compaction_model_finished",
+        expect.objectContaining({
+          compaction_policy: expectedPolicy,
+          outcome: "completed",
+        }),
+      );
     },
   );
   it("starts with GLM when Abliteration credentials are missing", async () => {

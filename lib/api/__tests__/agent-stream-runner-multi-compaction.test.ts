@@ -1066,6 +1066,87 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it("compacts an oversized restored prefix before the first provider step when UI usage is small", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockHistoryFlag.mockResolvedValue(true);
+    const model = "deepseek/deepseek-v4.1-flash";
+    const source: ModelMessage[] = [
+      { role: "user", content: "Original request" },
+    ];
+    const retained = " a".repeat(210_000);
+    const identity = historyDigest({
+      version: 1,
+      model,
+      mode: "agent",
+      subscription: "pro",
+      authorization: false,
+      notesEnabled: false,
+      system: "system",
+      tools: [],
+    });
+    mockLoadHistory.mockResolvedValue({
+      revision: 2,
+      payload: JSON.stringify({
+        version: 1,
+        identity,
+        source: sourceMessageDigests(source),
+        system: "system",
+        messages: [...source, { role: "user", content: retained }],
+      }),
+    });
+    mockRunSummarizationStep.mockImplementation(async (options) =>
+      options.preparedInputTokens > 200_000
+        ? {
+            summarizationAttempted: true,
+            needsSummarization: true,
+            summarizedMessages: [
+              uiMessage(
+                "checkpoint",
+                "<context_summary>Verified checkpoint</context_summary>",
+              ),
+            ],
+            summarizationUsage: {},
+          }
+        : { summarizationAttempted: false, needsSummarization: false },
+    );
+    const state = initAgentStreamState(
+      [uiMessage("old", "Original request"), uiMessage("new", "Next question")],
+      { usedTokens: 100, maxTokens: 200_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-deepseek-v4-flash-0731",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        trackedProvider: { languageModel: () => ({ modelId: model }) },
+        usageTracker: {},
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+        },
+      }) as any,
+      state,
+    )) as any;
+    expect(JSON.stringify(stream.messages).includes(retained)).toBe(true);
+
+    const prepared = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: stream.messages,
+    });
+
+    expect(mockRunSummarizationStep).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.stringify(
+        mockRunSummarizationStep.mock.calls[0][0].modelMessages,
+      ).includes(retained),
+    ).toBe(true);
+    expect(JSON.stringify(prepared.messages)).toContain("Verified checkpoint");
+    expect(JSON.stringify(prepared.messages).includes(retained)).toBe(false);
+    expect(prepared.system).toBe("system");
+    expect(state.ctxUsage.maxTokens).toBe(200_000);
+  });
+
   it.each(["hackerai-max", "hackerai-pro"] as const)(
     "compacts a new oversized tool result after small input for %s",
     async (selection) => {
@@ -1136,6 +1217,39 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
     },
   );
+
+  it("continues intact after failed proactive compaction when the prepared request still fits", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    const text = " ordinary".repeat(185_000);
+    const original = [uiMessage("within-budget", text)];
+    const state = initAgentStreamState(original, {
+      usedTokens: 100,
+      maxTokens: 200_000,
+    });
+    state.lastStepInputTokens = 100;
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        trackedProvider: {
+          languageModel: () => ({ modelId: "abliterated-model" }),
+        },
+        systemPromptTokens: 100,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      steps: [{}],
+      stepNumber: 3,
+      messages: [{ role: "user", content: text }],
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(prepared.messages)).toContain(text);
+    expect(state.finalMessages).toEqual(original);
+  });
 
   it.each(["startup", "startup-error", "rolling", "rolling-error"])(
     "stops oversized %s requests when compaction fails without dropping saved history",

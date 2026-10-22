@@ -9,6 +9,7 @@ import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
+import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -34,7 +35,12 @@ let activeBridge: DesktopSandboxBridge | null = null;
 let bridgeStartPromise: Promise<DesktopSandboxBridge | null> | null = null;
 let bridgeGeneration = 0;
 let bridgeStateListener:
-  ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
+  | ((
+      active: boolean,
+      status: DesktopBridgeStatus,
+      environmentId?: string,
+    ) => void)
+  | null = null;
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
 const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
 const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
@@ -176,8 +182,10 @@ export function useSandboxPreference(
     const updateBridgeState = (
       active: boolean,
       status: DesktopBridgeStatus,
+      environmentId?: string,
     ) => {
       if (cancelled) return;
+      if (environmentId) setDesktopEnvironmentId(environmentId);
       setDesktopBridgeActive(active);
       setDesktopBridgeStatus(status);
     };
@@ -296,13 +304,20 @@ export function useSandboxPreference(
                     refreshTokenRef.current(args),
                   disconnectDesktop: (args) => disconnectRef.current(args),
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
-                  onConnectionState: (state) => {
+                  onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
                       bridgeRecoveryExhausted = false;
                       scheduleStableRecoveryReset(generation);
+                    } else if (bridgeStableResetTimer) {
+                      clearTimeout(bridgeStableResetTimer);
+                      bridgeStableResetTimer = null;
                     }
-                    bridgeStateListener?.(state === "connected", state);
+                    bridgeStateListener?.(
+                      state === "connected",
+                      state,
+                      environmentId,
+                    );
                   },
                   onTerminated: (reason) => {
                     if (generation !== bridgeGeneration) return;
@@ -348,12 +363,20 @@ export function useSandboxPreference(
         setDesktopBridgeStatus("connected");
       } catch (error) {
         if (cancelled) return;
-        if (bridgeRecoveryTimer) {
-          setDesktopBridgeActive(false);
-          setDesktopBridgeStatus("connecting");
-          return;
+        if (isUnauthenticatedConvexError(error)) {
+          // Registration can reject before the bridge has a connection to
+          // terminate. Match the heartbeat/token path: wait for an explicit
+          // retry or a fresh sign-in instead of retrying the same auth failure.
+          bridgeRecoveryExhausted = false;
+          clearBridgeRecovery(true);
+        } else {
+          if (bridgeRecoveryTimer) {
+            setDesktopBridgeActive(false);
+            setDesktopBridgeStatus("connecting");
+            return;
+          }
+          if (scheduleBridgeRecovery("startup_failed", startGeneration)) return;
         }
-        if (scheduleBridgeRecovery("startup_failed", startGeneration)) return;
         console.error("[DesktopSandboxBridge] Failed to start:", error);
         setDesktopBridgeActive(false);
         setDesktopBridgeStatus("failed");

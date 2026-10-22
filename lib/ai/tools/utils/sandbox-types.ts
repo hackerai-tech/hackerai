@@ -7,7 +7,8 @@ import path from "node:path";
 /** Keep native Desktop artifacts inside its selected project file boundary. */
 export function getSandboxArtifactDirectory(
   sandbox: AnySandbox,
-  artifact: "agent-transcripts" | "terminal_full_output",
+  artifact:
+    "agent-transcripts" | "terminal_full_output" | "terminal_execution_records",
 ): string {
   if (isCentrifugoSandbox(sandbox)) {
     const project = sandbox.getWorkingDirectory?.();

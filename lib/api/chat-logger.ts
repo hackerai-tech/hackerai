@@ -8,6 +8,7 @@ import {
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
   freeAgentBudgetProperties,
   type FreeAgentBudgetAssignment,
@@ -304,6 +305,12 @@ const compactChatErrorMetadata = (
     const value = metadata[key];
     if (value !== undefined) compact[key] = value;
   }
+  const acquisitionStage =
+    metadata.upload_failure_phase === "acquisition"
+      ? parseCloudAcquisitionStage(metadata.upload_failure_acquisition_stage)
+      : undefined;
+  if (acquisitionStage)
+    compact.upload_failure_acquisition_stage = acquisitionStage;
 
   return Object.keys(compact).length > 0 ? compact : undefined;
 };

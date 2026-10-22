@@ -1463,6 +1463,17 @@ export async function createAgentStream(
       ctx.agentModelContextEnabled &&
       lastPreparedInputEstimate > activeContextBudget
     ) {
+      console.warn(
+        JSON.stringify({
+          event: "agent_context_budget_exceeded",
+          chat_id: ctx.chatId,
+          model: effectiveModelName,
+          estimated_input_tokens: lastPreparedInputEstimate,
+          previous_provider_input_tokens: state.lastStepInputTokens,
+          max_tokens: activeContextBudget,
+          compaction_attempt_count: compactionAttemptCount,
+        }),
+      );
       throw new AgentContextBudgetError(
         "Conversation could not be compacted to fit the selected model. Please retry.",
       );
@@ -1826,6 +1837,7 @@ export async function createAgentStream(
       mode: ctx.mode,
       subscription: ctx.subscription,
       baselineModel: modelName,
+      selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
       expandedAgentContext: expandedContextEnabled,
       onDiscardedUsage: (usage) =>
@@ -2112,6 +2124,10 @@ export async function createAgentStream(
                 ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
+              preparedInputTokens:
+                ctx.mode === "agent" && ctx.agentModelContextEnabled
+                  ? lastPreparedInputEstimate
+                  : undefined,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(

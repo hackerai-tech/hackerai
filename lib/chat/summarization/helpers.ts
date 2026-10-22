@@ -1,3 +1,5 @@
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { splitProviderToolCallBatches } from "@/lib/chat/provider-tool-call-batches";
 import {
   getStructuredCompactionPrompt,
   renderStructuredCompaction,
@@ -857,11 +859,18 @@ export const generateSummaryText = async (
     : compactModelMessagesForSummarization(
         sourceModelMessages as ModelMessage[],
       );
-  const summaryModelMessages = generationOptions?.preservePrefix
+  const boundedModelMessages = generationOptions?.preservePrefix
     ? compactedModelMessages
     : boundModelMessagesForSummarization(compactedModelMessages, {
         maxInputTokens: summaryInputMaxTokens,
       });
+  // Stored assistant turns can contain more calls than Abliteration accepts.
+  // Repair only the outgoing projection, preserving every paired call/result.
+  const summaryModelMessages = isAbliterationModel(
+    getLanguageModelIdentifier(languageModel),
+  )
+    ? splitProviderToolCallBatches(boundedModelMessages).messages
+    : boundedModelMessages;
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
   if (sourceModelMessages.length > 0 && summaryModelMessages.length === 0) {

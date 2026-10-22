@@ -2,6 +2,7 @@ import { OperationChannelRouter } from "@/packages/local/src/operation-channels"
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   sandboxConnectionChannel,
   type SandboxMessage,
@@ -78,7 +79,10 @@ const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
+const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
+const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -188,16 +192,6 @@ function isTargetedIncomingMessage(
   );
 }
 
-// "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
-// identity is missing/expired, not a connection lifecycle event), so the
-// catch path needs to recognize it as a terminate-the-loop signal too.
-function isUnauthenticatedError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== "object") return false;
-  return (data as { code?: string }).code === "UNAUTHORIZED";
-}
-
 // Join an existing auth-stop event to its backend failure without copying error
 // text. SDK formats may change; missing/malformed markers simply omit the ID.
 function nativeAuthDiagnostics(
@@ -208,6 +202,9 @@ function nativeAuthDiagnostics(
 ): Record<string, string | number> {
   const diagnostics: Record<string, string | number> = {
     native_auth_diagnostic_version: 1,
+    // Distinguish this pending-heartbeat guard from older loaded bridges.
+    // This identifies the heartbeat policy, not the native binary or build.
+    heartbeat_backpressure_version: 1,
     convex_function: convexFunction,
   };
   try {
@@ -257,7 +254,10 @@ interface DesktopBridgeConfig {
   heartbeatDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
-  onConnectionState?: (state: DesktopBridgeConnectionState) => void;
+  onConnectionState?: (
+    state: DesktopBridgeConnectionState,
+    environmentId?: string,
+  ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
 }
 
@@ -279,9 +279,12 @@ export class DesktopSandboxBridge {
   private nativeFileIpcAvailable: boolean | null = null;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private heartbeatInFlightGeneration: number | null = null;
   private consecutiveHeartbeatFailures = 0;
   private relayUnavailableAt: number | null = null;
   private successfulRelayConnections = 0;
+  private relayStarted = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly relayTelemetry = new DesktopRelayTelemetry(
     captureAuthenticatedEvent,
   );
@@ -324,11 +327,24 @@ export class DesktopSandboxBridge {
 
   private async sendHeartbeat(): Promise<void> {
     const connectionId = this.connectionId;
-    if (this.isStoppingOrStopped || !connectionId) return;
+    const generation = this.startupGeneration;
+    if (
+      this.isStoppingOrStopped ||
+      !connectionId ||
+      this.heartbeatInFlightGeneration === generation
+    )
+      return;
 
+    // Convex queues unresolved mutations across disconnects. Keep the timer from
+    // building a heartbeat backlog while the current request is still pending.
+    this.heartbeatInFlightGeneration = generation;
     try {
       const result = await this.config.heartbeatDesktop({ connectionId });
-      if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
         return;
       if (!result.success) {
         // The legacy heartbeat response has no reason. Resolve it through the
@@ -336,7 +352,11 @@ export class DesktopSandboxBridge {
         const state = await this.config.refreshCentrifugoTokenDesktop({
           connectionId,
         });
-        if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+        if (
+          this.isStoppingOrStopped ||
+          this.connectionId !== connectionId ||
+          this.startupGeneration !== generation
+        )
           return;
         this.logRelayState("disconnected", {
           reason: "heartbeat_connection_inactive",
@@ -354,8 +374,13 @@ export class DesktopSandboxBridge {
         this.consecutiveHeartbeatFailures = 0;
       }
     } catch (error) {
-      if (this.isStoppingOrStopped) return;
-      if (isUnauthenticatedError(error)) {
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
+        return;
+      if (isUnauthenticatedConvexError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
           ...nativeAuthDiagnostics(error, "localSandbox:heartbeatDesktop"),
@@ -375,6 +400,10 @@ export class DesktopSandboxBridge {
             error instanceof Error ? error.message : String(error ?? "unknown"),
         });
       }
+    } finally {
+      if (this.heartbeatInFlightGeneration === generation) {
+        this.heartbeatInFlightGeneration = null;
+      }
     }
   }
 
@@ -393,10 +422,31 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private watchRelayReconnect(): void {
+    if (!this.relayStarted || this.reconnectTimer || this.isStoppingOrStopped)
+      return;
+    // Centrifuge pins its first working transport. A fresh bridge lets its
+    // WebSocket/HTTP fallback negotiation run again after a persistent outage.
+    // Only a ready subscription clears this deadline, not a socket handshake.
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.isStoppingOrStopped) return;
+      this.logRelayState("error", { errorType: "reconnect_readiness" });
+      this.terminateClient("transport_disconnected");
+    }, DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS);
+  }
+
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayStarted = false;
+    this.clearReconnectTimer();
     this.relayTelemetry.flush();
     const client = this.client;
     const subscription = this.subscription;
@@ -445,7 +495,13 @@ export class DesktopSandboxBridge {
       )
         throw error;
     }
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     this.environmentId = environmentId;
+    // Identity is local; saved tasks must recognize this computer even when
+    // backend registration or relay readiness fails during startup.
+    if (environmentId) {
+      this.config.onConnectionState?.("connecting", environmentId);
+    }
     const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const files = await this.probeFileBridge();
@@ -493,7 +549,7 @@ export class DesktopSandboxBridge {
             connectionId: this.connectionId,
           });
         } catch (error) {
-          if (isUnauthenticatedError(error)) {
+          if (isUnauthenticatedConvexError(error)) {
             const eventProps = {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
@@ -562,6 +618,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         code: ctx.code,
@@ -603,6 +660,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         source: "subscription",
@@ -612,6 +670,7 @@ export class DesktopSandboxBridge {
     });
     subscription.on("subscribed", (ctx) => {
       if (this.isStoppingOrStopped) return;
+      this.clearReconnectTimer();
       this.config.onConnectionState?.("connected");
       this.logRelayState("connected", {
         source: "subscription",
@@ -770,6 +829,7 @@ export class DesktopSandboxBridge {
     if (wasStopped() || this.connectionId !== connectionId) {
       throw new Error("Desktop bridge stopped before relay became ready");
     }
+    this.relayStarted = true;
     this.config.onConnectionState?.("connected");
     this.startHeartbeat();
 
@@ -859,6 +919,12 @@ export class DesktopSandboxBridge {
 
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
+    const commandConnectionId = this.connectionId;
+    const commandRouter = this.operationRouter;
+    const canPublish = () =>
+      !this.isStoppingOrStopped &&
+      this.connectionId === commandConnectionId &&
+      this.operationRouter === commandRouter;
     const telemetryContext: DesktopStreamTelemetryContext = {
       chatId: command.chatId,
       triggerRunId: command.triggerRunId,
@@ -886,6 +952,33 @@ export class DesktopSandboxBridge {
         DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS;
       let nextSequence = 0;
       let streamPublishTail: Promise<void> = Promise.resolve();
+      const pendingChunks = new Map<
+        number,
+        { chunk: StreamChunk; bytes: number }
+      >();
+      let pendingBytes = 0;
+      let deliveryBlocked = false;
+      let bufferLimitExceeded = false;
+      const retainChunk = (sequence: number, chunk: StreamChunk) => {
+        if (bufferLimitExceeded) return;
+        const bytes = new TextEncoder().encode(
+          chunk.data ?? chunk.message ?? "",
+        ).byteLength;
+        if (
+          pendingChunks.size >= DESKTOP_STREAM_PENDING_MAX_CHUNKS ||
+          pendingBytes + bytes > DESKTOP_STREAM_PENDING_MAX_BYTES
+        ) {
+          bufferLimitExceeded = true;
+          return;
+        }
+        pendingChunks.set(sequence, { chunk, bytes });
+        pendingBytes += bytes;
+      };
+      const acknowledgeChunk = (sequence: number) => {
+        const pending = pendingChunks.get(sequence);
+        if (pending) pendingBytes -= pending.bytes;
+        pendingChunks.delete(sequence);
+      };
 
       channel.onmessage = (chunk) => {
         if (!shouldForwardStreamChunk(chunk)) return;
@@ -896,6 +989,13 @@ export class DesktopSandboxBridge {
           recoveryState.terminalChunkObserved = chunk.type;
         }
         const operation = streamPublishTail.then(async () => {
+          if (!canPublish()) return;
+          if (deliveryBlocked) {
+            // Bound recovery history, without limiting healthy output streams.
+            // Never send a later sequence or exit after losing retained data.
+            retainChunk(sequence, chunk);
+            return;
+          }
           try {
             await this.forwardChunkWithRetry(
               commandId,
@@ -904,7 +1004,9 @@ export class DesktopSandboxBridge {
               recoveryState,
               recoveryDeadlineAt,
               telemetryContext,
+              canPublish,
             );
+            if (canPublish()) acknowledgeChunk(sequence);
           } catch (error) {
             // Tauri does not await Channel callbacks. Exhausted known
             // transients are already reported above, so keep them from
@@ -912,6 +1014,8 @@ export class DesktopSandboxBridge {
             // Unknown failures are logged before reaching this catch and
             // remain rejected for callers that directly await this operation.
             if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            deliveryBlocked = true;
+            retainChunk(sequence, chunk);
           }
         });
         streamPublishTail = operation.catch(() => undefined);
@@ -927,6 +1031,44 @@ export class DesktopSandboxBridge {
         onEvent: channel,
       });
       await streamPublishTail;
+
+      // A connection can return after the short per-chunk retry budget. Keep
+      // the original sequence numbers and retry delivery once at settlement,
+      // before allowing later output/exit to create a gap on the worker. This
+      // never executes the command again and stays on the original connection.
+      if (deliveryBlocked && !bufferLimitExceeded) {
+        for (const [sequence, { chunk }] of pendingChunks) {
+          if (!canPublish() || Date.now() >= recoveryDeadlineAt) break;
+          try {
+            await this.forwardChunkWithRetry(
+              commandId,
+              chunk,
+              sequence,
+              recoveryState,
+              recoveryDeadlineAt,
+              telemetryContext,
+              canPublish,
+            );
+            if (canPublish()) acknowledgeChunk(sequence);
+          } catch (error) {
+            if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            break;
+          }
+        }
+      }
+      if (recoveryState.exhaustionReported || bufferLimitExceeded) {
+        recoveryState.exhaustedChunks =
+          recoveryState.observedChunks - recoveryState.publishedChunks;
+      }
+      if (bufferLimitExceeded) {
+        captureAuthenticatedEvent("desktop_stream_buffer_limit_exceeded", {
+          connectionId: commandConnectionId,
+          commandId,
+          ...telemetryContext,
+          pendingChunks: pendingChunks.size,
+          pendingBytes,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
@@ -1462,6 +1604,7 @@ export class DesktopSandboxBridge {
     recoveryState: DesktopStreamPublishRecoveryState,
     recoveryDeadlineAt: number,
     telemetryContext: DesktopStreamTelemetryContext,
+    canPublish: () => boolean,
   ): Promise<void> {
     let firstFailureAt: number | null = null;
     let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
@@ -1471,10 +1614,11 @@ export class DesktopSandboxBridge {
       attempt <= DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS;
       attempt++
     ) {
-      if (this.isStoppingOrStopped) return;
+      if (!canPublish()) return;
 
       try {
         await this.forwardChunk(commandId, chunk, sequence);
+        if (!canPublish()) return;
         recoveryState.publishedChunks += 1;
         if (chunk.type === "exit" || chunk.type === "error") {
           recoveryState.terminalChunkPublished = true;
@@ -1521,6 +1665,7 @@ export class DesktopSandboxBridge {
         }
         return;
       } catch (error) {
+        if (!canPublish()) return;
         const reason = classifyDesktopStreamPublishFailure(error);
         if (!reason) throw error;
 
@@ -1568,7 +1713,7 @@ export class DesktopSandboxBridge {
           Date.now() < recoveryDeadlineAt
         ) {
           await this.waitForRelayReady(attempt, recoveryDeadlineAt);
-          if (this.isStoppingOrStopped) return;
+          if (!canPublish()) return;
           if (Date.now() < recoveryDeadlineAt) continue;
         }
 
@@ -1871,6 +2016,8 @@ export class DesktopSandboxBridge {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayStarted = false;
+    this.clearReconnectTimer();
     this.relayTelemetry.flush();
     this.publishQueue = null;
     this.operationRouter?.stop();

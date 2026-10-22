@@ -81,6 +81,16 @@ function errorMessage(error: unknown): string {
   }
 }
 
+/** Centrifuge's client-side RPC deadline expired; delivery is uncertain. */
+export function isCentrifugoPublishTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === 1
+  );
+}
+
 export function isCentrifugoTransportFragment(
   value: unknown,
 ): value is CentrifugoTransportFragment {

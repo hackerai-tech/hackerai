@@ -2158,6 +2158,38 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it.each([
+    ["acquisition", "connect", "connect"],
+    ["acquisition", "PRIVATE_STAGE_CANARY", undefined],
+    ["transfer", "connect", undefined],
+  ])(
+    "bounds cloud stage in compact diagnostics %p/%p",
+    (phase, stage, expected) => {
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        createChatLogger({
+          chatId: "chat-opaque",
+          endpoint: "/api/agent",
+        }).emitChatError(
+          new ChatSDKError("bad_request:sandbox", "Upload failed", {
+            upload_failure_kind: "url",
+            upload_failure_phase: phase,
+            upload_failure_acquisition_stage: stage,
+          }),
+        );
+        const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+        expect(wideEvent.error.metadata.upload_failure_acquisition_stage).toBe(
+          expected,
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "PRIVATE_STAGE_CANARY",
+        );
+      } finally {
+        logSpy.mockRestore();
+      }
+    },
+  );
+
   it("marks transient sandbox upload failures retriable", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 

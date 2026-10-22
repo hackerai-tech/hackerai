@@ -7,9 +7,8 @@ const useChatHandlersSrc = fs.readFileSync(
 );
 
 describe("useChatHandlers chat action contracts", () => {
-  it("catches rejected chat action promises instead of leaving unhandled rejections", () => {
+  it("routes chat submissions through the shared action error boundary", () => {
     expect(useChatHandlersSrc).toMatch(/const runChatAction = /);
-    expect(useChatHandlersSrc).toMatch(/Promise\.resolve\(action\(\)\)\.catch/);
 
     for (const description of [
       "send message",

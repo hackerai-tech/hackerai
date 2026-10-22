@@ -73,14 +73,12 @@ export interface SandboxFallbackInfo {
 }
 
 /**
- * Hybrid sandbox manager that automatically switches between
- * local Centrifugo sandbox and E2B cloud sandbox based on user preference
- * and connection availability.
+ * Hybrid sandbox manager that acquires the selected local or cloud sandbox.
  *
  * Supports:
  * - Multiple local connections per user
  * - Chat-level sandbox preference
- * - Automatic fallback to E2B when local unavailable
+ * - Reconnect-required errors when the selected computer is unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
 // Match DefaultSandboxManager: stop retries in this Agent run after the
@@ -587,13 +585,6 @@ export class HybridSandboxManager implements SandboxManager {
     ].join(":");
   }
 
-  private recordFallbackInfo(info: SandboxFallbackInfo): void {
-    if (this.reportedFallbackKeys.has(this.getFallbackKey(info))) {
-      return;
-    }
-    this.pendingFallbackInfo = info;
-  }
-
   getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
       return {
@@ -624,7 +615,7 @@ export class HybridSandboxManager implements SandboxManager {
       return true;
     }
 
-    const connection = await this.getPreferredOrFallbackConnection();
+    const connection = await this.getPreferredConnection();
     if (!connection) {
       return this.subscription !== "free";
     }
@@ -731,7 +722,7 @@ export class HybridSandboxManager implements SandboxManager {
         user_id: this.userID,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (isEnvironmentPreference(this.sandboxPreference)) {
+      if (this.sandboxPreference !== "e2b") {
         throw new ChatSDKError(
           "bad_request:sandbox",
           "Could not check the selected computer's connection. Try again shortly.",
@@ -787,61 +778,22 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
-    if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new ChatSDKError(
-        "offline:sandbox",
-        "The selected computer is disconnected. Reconnect that computer to continue this task.",
-      );
-    }
-
-    // If preferred connection not available, check if any connection is available
-    if (connections.length > 0) {
-      const firstAvailable = connections[0];
-      await this.useCentrifugoConnection(firstAvailable);
-
-      this.recordFallbackInfo({
-        occurred: true,
-        reason: "connection_unavailable",
-        requestedPreference: this.sandboxPreference,
-        actualSandbox: firstAvailable.connectionId,
-        actualSandboxName: firstAvailable.name,
-      });
-
-      return { sandbox: this.sandbox! };
-    }
-
-    // Free users cannot fall back to E2B — must use local sandbox
-    if (this.subscription === "free") {
-      throw new Error(
-        "Local sandbox disconnected. Reconnect your desktop app or upgrade to Pro for cloud sandbox.",
-      );
-    }
-
-    // Fall back to E2B if no local connections available (paid users only)
-    this.recordFallbackInfo({
-      occurred: true,
-      reason: "no_local_connections",
-      requestedPreference: this.sandboxPreference,
-      actualSandbox: "e2b",
-      actualSandboxName: "Cloud",
-    });
-
-    return this.getCloudSandbox();
+    // Legacy session IDs and the Desktop alias select a computer just as
+    // persistent environment IDs do. Fail before acquiring a different host
+    // so all offline selections reach the reconnect-required recovery path.
+    throw new ChatSDKError(
+      "offline:sandbox",
+      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    );
   }
 
-  private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
-    const connections = await this.listConnections();
-    const preferredConnection = resolveEnvironmentConnection(
-      connections,
-      this.sandboxPreference,
-      this.currentConnectionId,
-    );
+  private async getPreferredConnection(): Promise<ConnectionInfo | null> {
     return (
-      preferredConnection ??
-      (isEnvironmentPreference(this.sandboxPreference)
-        ? null
-        : connections[0]) ??
-      null
+      resolveEnvironmentConnection(
+        await this.listConnections(),
+        this.sandboxPreference,
+        this.currentConnectionId,
+      ) ?? null
     );
   }
 
@@ -1015,37 +967,10 @@ export class HybridSandboxManager implements SandboxManager {
       return this.buildSandboxContext(preferredConnection);
     }
 
-    if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new ChatSDKError(
-        "offline:sandbox",
-        "The selected computer is disconnected. Reconnect that computer to continue this task.",
-      );
-    }
-
-    if (connections.length > 0) {
-      const firstAvailable = connections[0];
-      this.currentConnectionName = firstAvailable.name;
-      this.recordFallbackInfo({
-        occurred: true,
-        reason: "connection_unavailable",
-        requestedPreference: this.sandboxPreference,
-        actualSandbox: firstAvailable.connectionId,
-        actualSandboxName: firstAvailable.name,
-      });
-      return this.buildSandboxContext(firstAvailable);
-    }
-
-    if (this.subscription !== "free") {
-      this.recordFallbackInfo({
-        occurred: true,
-        reason: "no_local_connections",
-        requestedPreference: this.sandboxPreference,
-        actualSandbox: "e2b",
-        actualSandboxName: "Cloud",
-      });
-    }
-
-    return null;
+    throw new ChatSDKError(
+      "offline:sandbox",
+      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    );
   }
 
   private buildSandboxContext(connection: ConnectionInfo): string | null {

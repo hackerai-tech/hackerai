@@ -26,6 +26,7 @@ import {
   recordRelayReceivedBytes,
 } from "@/lib/centrifugo/traffic";
 import {
+  isCentrifugoPublishTimeout,
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
@@ -72,6 +73,7 @@ const SETUP_COMMAND_TIMEOUT_MS = 30000;
 const SETUP_COMMAND_MAX_ATTEMPTS = 2;
 const SETUP_COMMAND_RETRY_DELAY_MS = 500;
 const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
+const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
@@ -693,6 +695,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
         let cancelAckTimeoutId: NodeJS.Timeout | undefined;
+        let cancelRetryTimeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
         let commandPublishInFlight = false;
@@ -736,6 +739,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
           }
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (subscription) {
             try {
               subscription.unsubscribe();
@@ -771,6 +776,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         };
 
         const failCancellation = (message: string) => {
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (cancelAckTimeoutId) {
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
@@ -807,19 +814,35 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
           }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
-          subscription
-            .publish({
-              type: "command_cancel",
-              commandId,
-              targetConnectionId: this.connectionInfo.connectionId,
-            })
-            .catch(() => {
-              if (cancelAttemptPromise === attempt) {
-                failCancellation(
-                  "Failed to publish local command cancellation.",
-                );
-              }
-            });
+          let retried = false;
+          const sendCancel = (retry: boolean) => {
+            subscription!
+              .publish({
+                type: "command_cancel",
+                commandId,
+                targetConnectionId: this.connectionInfo.connectionId,
+              })
+              .catch((error: unknown) => {
+                if (cancelAttemptPromise === attempt && (retry || !retried)) {
+                  // A missing RPC ACK does not prove the control was rejected.
+                  // Leave the bounded resend/acknowledgement deadline in charge.
+                  if (isCentrifugoPublishTimeout(error)) return;
+                  failCancellation(
+                    "Failed to publish local command cancellation.",
+                  );
+                }
+              });
+          };
+          // Stop is idempotent for this exact command/connection. Resend once
+          // if no terminal response arrives, even if the first RPC is stalled.
+          // Never replay the command or extend the acknowledgement deadline.
+          cancelRetryTimeoutId = setTimeout(() => {
+            cancelRetryTimeoutId = undefined;
+            if (settled || cancelAttemptPromise !== attempt) return;
+            retried = true;
+            sendCancel(true);
+          }, COMMAND_CANCEL_RETRY_MS);
+          sendCancel(false);
         };
 
         const requestCancellation = (

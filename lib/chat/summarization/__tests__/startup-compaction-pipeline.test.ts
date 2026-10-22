@@ -145,6 +145,14 @@ describe("startup compaction through the real AI SDK", () => {
     models.set("model-glm-5.3-flash", primary);
     models.set("model-deepseek-v4-flash-vision-pro", fallback);
     models.set("model-glm-5.3", finalFallback);
+    models.set(
+      "model-deepseek-v4.1-flash-1017-pro",
+      new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw new DOMException("Synthetic DeepSeek timeout", "TimeoutError");
+        },
+      }),
+    );
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
 
@@ -353,6 +361,12 @@ describe("startup compaction through the real AI SDK", () => {
         },
       });
       models.set("model-abliterated-large-v2", large);
+      const recoveryKey = expandedAgentContext
+        ? "model-deepseek-v4.1-flash-1017-pro"
+        : "model-glm-5.3-flash";
+      const recoverySlug = expandedAgentContext
+        ? "deepseek/deepseek-v4.1-flash-1017"
+        : "z-ai/glm-5.3-flash";
       const EdgeResponse =
         require("next/dist/compiled/@edge-runtime/primitives/fetch").Response;
       const payloads: Record<string, any>[] = [];
@@ -364,7 +378,7 @@ describe("startup compaction through the real AI SDK", () => {
             JSON.stringify({
               id: "gen-structured-fixture",
               created: 0,
-              model: "z-ai/glm-5.3-flash",
+              model: recoverySlug,
               provider: "Fixture",
               choices: [
                 {
@@ -390,8 +404,8 @@ describe("startup compaction through the real AI SDK", () => {
             { headers: { "content-type": "application/json" } },
           );
         },
-      }).chat("z-ai/glm-5.3-flash");
-      models.set("model-glm-5.3-flash", model);
+      }).chat(recoverySlug);
+      models.set(recoveryKey, model);
       const discarded = jest.fn();
       const result = await checkAndSummarizeIfNeeded({
         uiMessages: messages,
@@ -429,12 +443,15 @@ describe("startup compaction through the real AI SDK", () => {
       expect(payloads).toHaveLength(1);
       expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
       expect(payloads[0]).toMatchObject({
+        model: recoverySlug,
         max_tokens: 16384,
         reasoning: { enabled: true, effort: "low" },
         provider: {
           require_parameters: true,
-          order: ["baseten"],
-          ignore: ["modal"],
+          ...(!expandedAgentContext && {
+            order: ["baseten"],
+            ignore: ["modal"],
+          }),
           sort: "latency",
           data_collection: "deny",
         },
@@ -452,6 +469,17 @@ describe("startup compaction through the real AI SDK", () => {
           },
         },
       });
+      if (expandedAgentContext) {
+        expect(payloads[0].provider).not.toHaveProperty("order");
+        expect(payloads[0]).not.toHaveProperty("models");
+        expect(recordEvent).toHaveBeenCalledWith(
+          "compaction_model_finished",
+          expect.objectContaining({
+            served_model: recoveryKey,
+            attempt_count: 2,
+          }),
+        );
+      }
       expect(
         payloads[0].response_format.json_schema.schema.required,
       ).toHaveLength(mode === "agent" ? 10 : 7);
@@ -523,9 +551,26 @@ describe("startup compaction through the real AI SDK", () => {
     },
   );
 
-  it.each([74_000, 76_000])(
-    "preserves a long GLM checkpoint but starts recovery at 75 seconds (%i ms)",
-    async (completionMs) => {
+  it.each([
+    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 74_000 },
+    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 76_000 },
+    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 90_000 },
+    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 121_000 },
+    {
+      modelKey: "model-abliterated-large-v2",
+      deadline: 120_000,
+      completionMs: 119_000,
+    },
+    {
+      modelKey: "model-abliterated-large-v2",
+      deadline: 120_000,
+      completionMs: 121_000,
+    },
+  ])(
+    "lets $modelKey finish within $deadline ms and recovers beyond it (completion=$completionMs)",
+    async ({ modelKey, deadline, completionMs }) => {
+      const isGlm = modelKey === "model-glm-5.3-flash";
+      const expandedAgentContext = modelKey === "model-abliterated-large-v2";
       jest.useFakeTimers();
       // Node's native AbortSignal.timeout bypasses Jest's clock. Preserve its
       // contract while allowing the real SDK's deadline to advance virtually.
@@ -541,31 +586,29 @@ describe("startup compaction through the real AI SDK", () => {
           return controller.signal;
         });
       try {
-        mockFlag.mockResolvedValue(true);
+        mockFlag.mockResolvedValue(isGlm);
         const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
           "\nScope fixture.test only; PID 73142 still running.\n",
         );
-        const valid = () => ({
+        const valid = (structured: boolean) => ({
           ...summary(),
-          content: [{ type: "text" as const, text: checkpoint }],
+          content: [
+            {
+              type: "text" as const,
+              text: structured
+                ? jsonCheckpoint(
+                    "agent",
+                    "Scope fixture.test only; PID 73142 still running.",
+                  )
+                : checkpoint,
+            },
+          ],
         });
-        const glm = new MockLanguageModelV3({
+        const timedModel = new MockLanguageModelV3({
           doGenerate: ({ abortSignal }) =>
             new Promise((resolve, reject) => {
               const timer = setTimeout(
-                () =>
-                  resolve({
-                    ...summary(),
-                    content: [
-                      {
-                        type: "text",
-                        text: jsonCheckpoint(
-                          "agent",
-                          "Scope fixture.test only; PID 73142 still running.",
-                        ),
-                      },
-                    ],
-                  }),
+                () => resolve(valid(isGlm)),
                 completionMs,
               );
               abortSignal?.addEventListener(
@@ -579,10 +622,17 @@ describe("startup compaction through the real AI SDK", () => {
             }),
         });
         const recovery = new MockLanguageModelV3({
-          doGenerate: async () => valid(),
+          doGenerate: async () => valid(expandedAgentContext),
         });
-        models.set("model-glm-5.3-flash", glm);
-        models.set("model-abliterated", recovery);
+        models.set(modelKey, timedModel);
+        models.set(
+          isGlm
+            ? "model-abliterated"
+            : expandedAgentContext
+              ? "model-deepseek-v4.1-flash-1017-pro"
+              : "model-glm-5.3-flash",
+          recovery,
+        );
         const pending = checkAndSummarizeIfNeeded({
           uiMessages: messages,
           subscription: "pro",
@@ -598,6 +648,7 @@ describe("startup compaction through the real AI SDK", () => {
             subscription: "pro",
             baselineModel: "agent-model",
             platformAuthorized: false,
+            expandedAgentContext,
             onDiscardedUsage: jest.fn(),
           }),
           providerPromptPressure: {
@@ -611,21 +662,17 @@ describe("startup compaction through the real AI SDK", () => {
         await jest.advanceTimersByTimeAsync(completionMs);
         expect((await pending).summaryText).toContain("73142 still running");
         expect(saveSummary).toHaveBeenCalledTimes(1);
-        expect(glm.doGenerateCalls[0].providerOptions).toMatchObject({
-          openrouter: {
-            provider: { sort: "latency", data_collection: "deny" },
-          },
-        });
+        expect(timedModel.doGenerateCalls).toHaveLength(1);
         expect(recovery.doGenerateCalls).toHaveLength(
-          completionMs > 75_000 ? 1 : 0,
+          completionMs > deadline ? 1 : 0,
         );
-        if (completionMs > 75_000) {
+        if (completionMs > deadline) {
           expect(recordEvent).toHaveBeenCalledWith(
             "compaction_model_attempt_finished",
             expect.objectContaining({
               failure_reason: "timeout",
-              served_model: "model-glm-5.3-flash",
-              duration_ms: 75_000,
+              served_model: modelKey,
+              duration_ms: deadline,
             }),
           );
         }
