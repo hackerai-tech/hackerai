@@ -63,14 +63,14 @@ const clearTerminalAgentRun = async ({
     chat.user_id !== userId ||
     chat.active_trigger_run_id !== runId
   ) {
-    return;
+    return "stale" as const;
   }
 
   await closeAgentApprovalSession(
     chat.active_agent_approval_session_id,
     "agent-run-terminal",
   );
-  await setActiveTriggerRun({
+  return await setActiveTriggerRun({
     chatId,
     triggerRunId: null,
     approvalSessionId: null,
@@ -178,12 +178,14 @@ export const createAgentStatusPost =
             return NextResponse.json({ status: "DETACHED", terminal: true });
         }
         stage = "clear_terminal_trigger_run";
-        await clearTerminalAgentRun({
+        const detachOutcome = await clearTerminalAgentRun({
           chatId,
           userId,
           runId,
           recoveredCrash: run.status === "CRASHED",
         });
+        if (run.status === "CRASHED" && detachOutcome === "stale")
+          return NextResponse.json({ status: "DETACHED", terminal: true });
       }
 
       return NextResponse.json({ status: run.status, terminal });
