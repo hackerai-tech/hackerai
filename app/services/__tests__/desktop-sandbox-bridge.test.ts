@@ -1905,16 +1905,18 @@ describe("forwardChunk", () => {
     },
   );
 
-  it("preserves sequence continuity after a chunk exhausts its retries", async () => {
+  it("recovers exhausted output in order before publishing the command exit", async () => {
     jest.useFakeTimers();
     let finishCommand!: () => void;
     const commandFinished = new Promise<void>((resolve) => {
       finishCommand = resolve;
     });
+    let executions = 0;
     mockInvokeHandler = async (cmd: string) => {
       if (cmd === "desktop_file_request")
         return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
+        executions += 1;
         await commandFinished;
       }
       return undefined;
@@ -1927,12 +1929,12 @@ describe("forwardChunk", () => {
       .mockResolvedValue(undefined);
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const bridge = new DesktopSandboxBridge(buildConfig());
 
     try {
-      const bridge = new DesktopSandboxBridge(buildConfig());
       await bridge.start();
-      const handler = getPublicationHandler();
-      handler({
+      getPublicationHandler()({
         data: {
           type: "command",
           commandId: "cmd-sequence-after-exhaustion",
@@ -1941,35 +1943,280 @@ describe("forwardChunk", () => {
         },
       });
       await jest.advanceTimersByTimeAsync(0);
-
       const firstChunk = capturedChannel!.onmessage!({
         type: "stdout",
-        data: "dropped",
+        data: "retained",
       }) as unknown as Promise<void>;
-      const secondChunk = capturedChannel!.onmessage!({
-        type: "stdout",
-        data: "delivered",
-      }) as unknown as Promise<void>;
+      await jest.advanceTimersByTimeAsync(750);
+      await expect(firstChunk).resolves.toBeUndefined();
+      await capturedChannel!.onmessage!({ type: "stderr", data: "later" });
+      await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
 
-      await jest.advanceTimersByTimeAsync(250);
-      await jest.advanceTimersByTimeAsync(500);
-      await Promise.all([
-        expect(firstChunk).resolves.toBeUndefined(),
-        expect(secondChunk).resolves.toBeUndefined(),
+      // Later output must not create a sequence gap while the first chunk is missing.
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(3);
+      finishCommand();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(
+        mockSubscription.publish.mock.calls
+          .slice(3)
+          .map(([message]) => message),
+      ).toEqual([
+        {
+          type: "stdout",
+          commandId: "cmd-sequence-after-exhaustion",
+          data: "retained",
+          sequence: 0,
+        },
+        {
+          type: "stderr",
+          commandId: "cmd-sequence-after-exhaustion",
+          data: "later",
+          sequence: 1,
+        },
+        {
+          type: "exit",
+          commandId: "cmd-sequence-after-exhaustion",
+          exitCode: 0,
+          sequence: 2,
+        },
       ]);
-
-      expect(mockSubscription.publish).toHaveBeenNthCalledWith(4, {
-        type: "stdout",
-        commandId: "cmd-sequence-after-exhaustion",
-        data: "delivered",
-        sequence: 1,
-      });
+      expect(executions).toBe(1);
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_stream_command_settled",
+        expect.objectContaining({
+          outcome: "recovered",
+          observedChunks: 3,
+          publishedChunks: 3,
+          exhaustedChunks: 0,
+          terminalChunkPublished: true,
+          sequenceComplete: true,
+        }),
+      );
     } finally {
       finishCommand();
+      await bridge.stop();
       mockSubscription.publish.mockResolvedValue(undefined);
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+      infoSpy.mockRestore();
       jest.useRealTimers();
+    }
+  });
+
+  it("recovers retained output on its isolated operation channel", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    let executions = 0;
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
+      if (cmd === "execute_stream_command") {
+        executions += 1;
+        await done;
+      }
+      return undefined;
+    };
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    const spies = ["warn", "error", "info"].map((method) =>
+      jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+    );
+    try {
+      await bridge.start();
+      const reply = {
+        ...mockSubscription,
+        on: jest.fn(),
+        publish: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn(),
+        removeAllListeners: jest.fn(),
+      };
+      mockClient.newSubscription.mockReturnValueOnce(reply);
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "cmd-isolated-recovery",
+          command: "test",
+          targetConnectionId: "conn-123",
+          operationChannel: true,
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const error = { code: 1, message: "timeout" };
+      reply.publish
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error);
+      capturedChannel!.onmessage!({ type: "stdout", data: "retained" });
+      await jest.advanceTimersByTimeAsync(750);
+      await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+      finishCommand();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(
+        reply.publish.mock.calls.slice(4).map(([message]) => message),
+      ).toEqual([
+        {
+          type: "stdout",
+          commandId: "cmd-isolated-recovery",
+          data: "retained",
+          sequence: 0,
+        },
+        {
+          type: "exit",
+          commandId: "cmd-isolated-recovery",
+          exitCode: 0,
+          sequence: 1,
+        },
+      ]);
+      expect(executions).toBe(1);
+      expect(mockSubscription.publish).not.toHaveBeenCalled();
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      finishCommand();
+      await bridge.stop();
+      spies.forEach((spy) => spy.mockRestore());
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["unavailable", "expired", "stopped", "byte limit", "chunk limit"])(
+    "keeps incomplete delivery truthful when recovery is %s",
+    async (failure) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const done = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      let executions = 0;
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
+        if (cmd === "execute_stream_command") {
+          executions += 1;
+          await done;
+        }
+        return undefined;
+      };
+      const error = { code: 1, message: "timeout" };
+      mockSubscription.publish
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValue(undefined);
+      const spies = ["warn", "error", "info"].map((method) =>
+        jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+      );
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      try {
+        await bridge.start();
+        getPublicationHandler()({
+          data: {
+            type: "command",
+            commandId: "cmd-bounded",
+            command: "test",
+            timeout: 1_000,
+            targetConnectionId: "conn-123",
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        capturedChannel!.onmessage!({ type: "stdout", data: "retained" });
+        await jest.advanceTimersByTimeAsync(750);
+        if (failure === "byte limit")
+          await capturedChannel!.onmessage!({
+            type: "stdout",
+            data: "😀".repeat(66_000),
+          });
+        if (failure === "chunk limit") {
+          for (let i = 0; i < 256; i++)
+            await capturedChannel!.onmessage!({ type: "stdout", data: "x" });
+        }
+        await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+        if (failure === "unavailable")
+          mockSubscription.publish.mockRejectedValue(error);
+        if (failure === "expired") await jest.advanceTimersByTimeAsync(4_000);
+        if (failure === "stopped") await bridge.stop();
+        finishCommand();
+        await jest.advanceTimersByTimeAsync(750);
+        expect(executions).toBe(1);
+        expect(
+          mockSubscription.publish.mock.calls.some(
+            ([message]) => message.type === "exit",
+          ),
+        ).toBe(false);
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_stream_command_settled",
+          expect.objectContaining({
+            outcome: "incomplete",
+            terminalChunkPublished: false,
+            sequenceComplete: false,
+          }),
+        );
+        if (failure.endsWith("limit")) {
+          expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+            "desktop_stream_buffer_limit_exceeded",
+            expect.objectContaining({
+              pendingBytes: expect.any(Number),
+              pendingChunks: expect.any(Number),
+            }),
+          );
+        }
+      } finally {
+        finishCommand();
+        await bridge.stop();
+        mockSubscription.publish.mockResolvedValue(undefined);
+        spies.forEach((spy) => spy.mockRestore());
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("does not apply the recovery buffer limit to healthy large output", async () => {
+    let finishCommand!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
+      if (cmd === "execute_stream_command") await done;
+      return undefined;
+    };
+    mockSubscription.publish.mockResolvedValue(undefined);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    try {
+      await bridge.start();
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "cmd-healthy-large",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let i = 0; i < 300; i++)
+        await capturedChannel!.onmessage!({
+          type: "stdout",
+          data: "x".repeat(1024),
+        });
+      await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+      finishCommand();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(301);
+      expect(mockSubscription.publish).toHaveBeenLastCalledWith({
+        type: "exit",
+        commandId: "cmd-healthy-large",
+        sequence: 300,
+        exitCode: 0,
+      });
+      expect(captureAuthenticatedEvent).not.toHaveBeenCalledWith(
+        "desktop_stream_buffer_limit_exceeded",
+        expect.anything(),
+      );
+    } finally {
+      finishCommand();
+      await bridge.stop();
     }
   });
 
