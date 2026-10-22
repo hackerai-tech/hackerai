@@ -264,6 +264,7 @@ export const createAgentPartialSavePost =
     };
     const slowRequestTimers = [10_000, 20_000].map((delayMs) =>
       setTimeout(() => {
+        const elapsedMs = Date.now() - startedAt;
         console.warn(
           JSON.stringify({
             level: "warn",
@@ -271,7 +272,9 @@ export const createAgentPartialSavePost =
             service: "chat-handler",
             route: "/api/agent/partial-save",
             timestamp: new Date().toISOString(),
-            elapsed_ms: Date.now() - startedAt,
+            elapsed_ms: elapsedMs,
+            warning_threshold_ms: delayMs,
+            timer_lateness_ms: Math.max(0, elapsedMs - delayMs),
             outcome: "pending",
             ...getDiagnosticContext(),
           }),

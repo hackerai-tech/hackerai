@@ -97,6 +97,7 @@ export const createAgentStatusPost =
     // stage beforehand, with a fixed two-warning budget for the whole request.
     const slowRequestTimers = [10_000, 20_000].map((delay) =>
       setTimeout(() => {
+        const elapsedMs = Date.now() - requestStartedAt;
         console.warn(
           JSON.stringify({
             timestamp: new Date().toISOString(),
@@ -110,7 +111,9 @@ export const createAgentStatusPost =
             chat_id: ownedRun?.chatId,
             trigger_run_id: ownedRun?.runId,
             stage,
-            elapsed_ms: Date.now() - requestStartedAt,
+            elapsed_ms: elapsedMs,
+            warning_threshold_ms: delay,
+            timer_lateness_ms: Math.max(0, elapsedMs - delay),
           }),
         );
       }, delay),

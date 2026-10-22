@@ -377,6 +377,8 @@ describe("agent status timeout diagnostics", () => {
         event: "agent_status_slow_request",
         stage,
         elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
+        timer_lateness_ms: 0,
       });
       if (
         stage === "retrieve_trigger_run" ||
@@ -402,6 +404,53 @@ describe("agent status timeout diagnostics", () => {
       );
     },
   );
+
+  it("identifies both thresholds when warning callbacks are delayed", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    const startedAt = Date.now();
+    let finish!: (value: any) => void;
+    mockGetChatById.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    const clock = jest.spyOn(Date, "now").mockReturnValue(startedAt + 20_245);
+    try {
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(console.warn).toHaveBeenCalledTimes(2);
+      const warnings = jest
+        .mocked(console.warn)
+        .mock.calls.map(([value]) => JSON.parse(String(value)));
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          stage: "get_chat",
+          elapsed_ms: 20_245,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 10_245,
+        }),
+        expect.objectContaining({
+          stage: "get_chat",
+          elapsed_ms: 20_245,
+          warning_threshold_ms: 20_000,
+          timer_lateness_ms: 245,
+        }),
+      ]);
+    } finally {
+      clock.mockRestore();
+      finish({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+      });
+      expect((await pending).status).toBe(200);
+    }
+    expect(mockGetChatById).toHaveBeenCalledTimes(2);
+    expect(jest.getTimerCount()).toBe(0);
+  });
 
   it("cancels the second warning when a slow request completes", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");
