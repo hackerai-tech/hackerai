@@ -28,6 +28,7 @@ export class AcknowledgedCommandOutput {
   private resolve!: () => void;
   private reject!: (error: Error) => void;
   readonly delivered: Promise<void>;
+  canceled = false;
 
   constructor(
     private commandId: string,
@@ -119,6 +120,11 @@ export class AcknowledgedCommandOutput {
     this.acknowledge(sequence);
     for (const entry of this.pending.values()) entry.sentAt = -Infinity;
     void this.pump();
+  }
+
+  cancel(): void {
+    this.canceled = true;
+    this.stop(new Error("Command output delivery canceled."));
   }
 
   stop(

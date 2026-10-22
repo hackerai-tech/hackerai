@@ -26,6 +26,9 @@ A native exit does not close the operation channel. The terminal frame stays
 available until acknowledged or the original execution-plus-delivery deadline
 expires. Stop still uses the existing idempotent cancellation protocol. Auth
 termination, session replacement and explicit bridge stop end delivery ownership.
+Confirmed cancellation discards the output window immediately; the lightweight
+route stays available until its existing TTL so a lost cancellation response can
+still be answered on retry.
 
 ## Bounds and failure semantics
 

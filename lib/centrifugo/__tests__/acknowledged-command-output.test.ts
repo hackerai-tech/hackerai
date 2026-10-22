@@ -106,3 +106,22 @@ describe("acknowledged command output", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 });
+
+it("discards retained output after confirmed cancellation without claiming full delivery", async () => {
+  jest.useFakeTimers();
+  const publish = jest.fn().mockResolvedValue(undefined);
+  const sender = new AcknowledgedCommandOutput(
+    "cancel",
+    Date.now() + 30_000,
+    publish,
+    () => true,
+  );
+  sender.append({ type: "stdout", data: "partial" });
+  sender.cancel();
+  await expect(sender.delivered).rejects.toThrow("canceled");
+  expect(sender.canceled).toBe(true);
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(publish).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+  jest.useRealTimers();
+});

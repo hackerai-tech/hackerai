@@ -1007,6 +1007,7 @@ export class DesktopSandboxBridge {
       // Native completion and result delivery have separate lifetimes.
       await stream.delivered;
     } catch (error) {
+      if (stream.canceled) return;
       console.warn("[desktop-bridge] acknowledged output incomplete", {
         commandId: command.commandId,
       });
@@ -1028,7 +1029,9 @@ export class DesktopSandboxBridge {
       this.acknowledgedOutputs.delete(command.commandId);
       this.commandDeliveryDeadlines.delete(command.commandId);
       this.activeCommands.delete(command.commandId);
-      router.closeCommand(command.commandId);
+      // Retain only the lightweight route after cancellation: a lost cancel
+      // response must still be answerable on retry. Its existing TTL closes it.
+      if (!stream.canceled) router.closeCommand(command.commandId);
     }
   }
 
@@ -1750,6 +1753,7 @@ export class DesktopSandboxBridge {
       commandId: command.commandId,
       canceled,
     });
+    if (canceled) this.acknowledgedOutputs.get(command.commandId)?.cancel();
   }
 
   private async forwardChunk(
