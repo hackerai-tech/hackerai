@@ -31,6 +31,8 @@ const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
+const mockSandboxContext = jest.fn<any>();
+const mockSandboxClose = jest.fn<any>();
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
@@ -78,7 +80,10 @@ jest.mock("@/lib/api/agent-approval-session", () => ({
 }));
 
 jest.mock("@/lib/ai/tools/utils/hybrid-sandbox-manager", () => ({
-  HybridSandboxManager: class HybridSandboxManager {},
+  HybridSandboxManager: class HybridSandboxManager {
+    getSandboxContextForPrompt = mockSandboxContext;
+    consumeFallbackInfo = () => null;
+  },
 }));
 
 jest.mock("@/lib/ai/tools/utils/sandbox-fallback", () => ({
@@ -310,6 +315,136 @@ describe("web request correlation at Agent dispatch", () => {
       );
     },
   );
+  it.each(
+    dispatchPaths.flatMap(([endpoint, mode]) =>
+      [
+        "sandbox_context",
+        "acquire_sandbox",
+        "upload_files",
+        "close_sandbox",
+      ].map((step) => ({ endpoint, mode, step })),
+    ),
+  )(
+    "attributes blocked Desktop preparation $step on $endpoint/$mode",
+    async ({ endpoint, mode, step }) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const files = require("@/lib/utils/sandbox-file-utils");
+      const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+      let finish!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const sandbox = { close: mockSandboxClose };
+      const messages = [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "private-attachment-canary" }],
+        },
+      ];
+      files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+      files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+        messages,
+        sandboxFiles: [{ localSourcePath: "/private/file-canary" }],
+      });
+      files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+      mockSandboxContext.mockImplementation(async () => {
+        if (step === "sandbox_context") await blocked;
+      });
+      fallback.getSandboxWithFallbackGuard.mockImplementation(async () => {
+        if (step === "acquire_sandbox") await blocked;
+        return { sandbox };
+      });
+      files.uploadSandboxFiles.mockImplementation(
+        async (_files: unknown, getSandbox: () => Promise<unknown>) => {
+          await getSandbox();
+          if (step === "upload_files") await blocked;
+          return { failedCount: 0, pathRewrites: [] };
+        },
+      );
+      mockSandboxClose.mockImplementation(async () => {
+        if (step === "close_sandbox") await blocked;
+      });
+      try {
+        const response = start(endpoint, mode, requestId, {
+          sandboxPreference: "desktop",
+        });
+        await jest.advanceTimersByTimeAsync(10_000);
+        const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+        expect(diagnostic).toMatchObject({
+          event: "agent_start_slow_request",
+          stage: "prepare_desktop_attachments",
+          desktop_attachment_step: step,
+        });
+        expect(JSON.stringify(diagnostic)).not.toMatch(
+          /private-attachment-canary|file-canary|private-prompt-canary/,
+        );
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+        expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+        finish();
+        expect((await response).status).toBe(200);
+        expect(mockSandboxClose).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        finish();
+        files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+        warn.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("omits completed Desktop preparation from a later persistence warning", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const files = require("@/lib/utils/sandbox-file-utils");
+    const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+    const messages = [{ id: "message-1", role: "user", parts: [] }];
+    files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+    files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+      messages,
+      sandboxFiles: [{}],
+    });
+    files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+    mockSandboxContext.mockResolvedValue(undefined);
+    mockSandboxClose.mockResolvedValue(undefined);
+    fallback.getSandboxWithFallbackGuard.mockResolvedValue({
+      sandbox: { close: mockSandboxClose },
+    });
+    files.uploadSandboxFiles.mockImplementation(
+      async (_files: unknown, getSandbox: () => Promise<unknown>) => {
+        await getSandbox();
+        return { failedCount: 0, pathRewrites: [] };
+      },
+    );
+    let finish!: () => void;
+    mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      const response = start("/api/agent", "full_access", requestId, {
+        sandboxPreference: "desktop",
+      });
+      await jest.advanceTimersByTimeAsync(10_000);
+      const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("persist_user_message");
+      expect(diagnostic).not.toHaveProperty("desktop_attachment_step");
+      finish();
+      expect((await response).status).toBe(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      finish?.();
+      files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it.each(["save_chat", "reset_stream", "save_user_message"])(
     "attributes a blocked initial persistence operation to %s without admitting the run early",
     async (step) => {
