@@ -1247,8 +1247,8 @@ export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-// Preserve the internal vision route keys while upgrading the provider model.
-export const DEEPSEEK_V4_FLASH_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
+// Preserve persisted route keys while pinning every Flash route to this snapshot.
+export const DEEPSEEK_V4_FLASH_VISION_SLUG = DEEPSEEK_1017_SLUG;
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // MiniMax is deliberately isolated to the final text-summary recovery. Normal
 // image turns route the original pixels through GLM Flash and then DeepSeek
@@ -1460,7 +1460,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-deepseek-v4-flash-vision-pro" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||
-    normalized === DEEPSEEK_V4_FLASH_VISION_SLUG ||
+    normalized === "deepseek/deepseek-v4.1-flash" ||
     normalized === "deepseek/deepseek-v4.1-flash-20260910" ||
     isKimiModel(normalized) ||
     isGrokModel(normalized) ||

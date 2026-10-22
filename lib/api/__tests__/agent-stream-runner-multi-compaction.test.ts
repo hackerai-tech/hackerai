@@ -1069,7 +1069,7 @@ describe("createAgentStream repeated compaction", () => {
   it("compacts an oversized restored prefix before the first provider step when UI usage is small", async () => {
     mockGetProviderPromptPressure.mockReturnValue(null);
     mockHistoryFlag.mockResolvedValue(true);
-    const model = "deepseek/deepseek-v4.1-flash";
+    const model = "deepseek/deepseek-v4.1-flash-1017";
     const source: ModelMessage[] = [
       { role: "user", content: "Original request" },
     ];
@@ -1501,7 +1501,7 @@ describe("createAgentStream repeated compaction", () => {
   it.each(["agent", "ask"] as const)(
     "passes the %s pressure policy across model changes",
     async (mode) => {
-      let modelId = "deepseek/deepseek-v4.1-flash";
+      let modelId = "deepseek/deepseek-v4.1-flash-1017";
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
         usedTokens: 1_000,
         maxTokens: 200_000,
@@ -2077,7 +2077,7 @@ describe("createAgentStream repeated compaction", () => {
         sampleCacheHistoryStart,
       )!;
       mockHistoryFlag.mockResolvedValue(decision as any);
-      const modelId = "deepseek/deepseek-v4.1-flash";
+      const modelId = "deepseek/deepseek-v4.1-flash-1017";
       const state = initAgentStreamState(
         [uiMessage("initial", "private prompt")],
         { usedTokens: 1, maxTokens: 128_000 },
@@ -2132,7 +2132,9 @@ describe("createAgentStream repeated compaction", () => {
       "model",
       createTestStreamContext({
         trackedProvider: {
-          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+          languageModel: () => ({
+            modelId: "deepseek/deepseek-v4.1-flash-1017",
+          }),
         },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
@@ -2140,7 +2142,7 @@ describe("createAgentStream repeated compaction", () => {
       state,
     )) as any;
     stream.experimental_onStepStart({
-      model: { modelId: "deepseek/deepseek-v4.1-flash" },
+      model: { modelId: "deepseek/deepseek-v4.1-flash-1017" },
     });
     expect(state.cacheHistoryTelemetry).toMatchObject({
       assignment: "treatment",
@@ -2170,7 +2172,9 @@ describe("createAgentStream repeated compaction", () => {
         createTestStreamContext({
           mode,
           trackedProvider: {
-            languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+            languageModel: () => ({
+              modelId: "deepseek/deepseek-v4.1-flash-1017",
+            }),
           },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
@@ -2203,7 +2207,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it("restores private model history and the frozen prompt on the next turn", async () => {
     mockHistoryFlag.mockResolvedValue(true);
-    const model = "deepseek/deepseek-v4.1-flash";
+    const model = "deepseek/deepseek-v4.1-flash-1017";
     const source: ModelMessage[] = [
       { role: "user", content: "Original request" },
     ];
@@ -2262,7 +2266,9 @@ describe("createAgentStream repeated compaction", () => {
       "model-deepseek-v4-flash-0731",
       createTestStreamContext({
         trackedProvider: {
-          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+          languageModel: () => ({
+            modelId: "deepseek/deepseek-v4.1-flash-1017",
+          }),
         },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
@@ -2291,7 +2297,7 @@ describe("createAgentStream repeated compaction", () => {
             finishSave = () => resolve("saved");
           }),
         );
-      const model = "deepseek/deepseek-v4.1-flash";
+      const model = "deepseek/deepseek-v4.1-flash-1017";
       const controller = new AbortController();
       const state = initAgentStreamState(
         [uiMessage("initial", "Original request")],
@@ -2832,7 +2838,7 @@ describe("createAgentStream repeated compaction", () => {
     },
     {
       name: "different served model",
-      responseModel: "deepseek/deepseek-v4.1-flash",
+      responseModel: "deepseek/deepseek-v4.1-flash-1017",
       text: "answer",
       finishReason: "stop",
       toolCalls: [],

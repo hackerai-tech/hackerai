@@ -33,7 +33,6 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
-  DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
   GLM_5_3_SLUG,
   GROK_4_5_SLUG,
@@ -992,7 +991,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
-  [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
+  // Keep historical responses separate from the active 1017 snapshot above.
+  "deepseek/deepseek-v4.1-flash": "model-deepseek-v4-flash-vision",
   "deepseek/deepseek-v4.1-flash-20260910": "model-deepseek-v4-flash-vision",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
