@@ -116,6 +116,14 @@ describe("operation channels", () => {
       );
       await Promise.resolve();
       await Promise.resolve();
+      const cancel = {
+        type: "command_cancel",
+        commandId: "noisy",
+        targetConnectionId: "conn-1",
+      };
+      if (isolated) subs[0].emit("publication", { data: cancel });
+      else await router.dispatch(cancel, handle);
+      expect(handle).toHaveBeenCalledWith(cancel);
       const rest = Array.from({ length: 256 }, () =>
         router.publish(
           { type: "stdout", commandId: "noisy", data: "queued" },
@@ -156,7 +164,7 @@ describe("operation channels", () => {
         { ...request("noisy"), operationChannel: isolated },
         handle,
       );
-      expect(handle).toHaveBeenCalledTimes(2);
+      expect(handle).toHaveBeenCalledTimes(3);
     },
   );
 

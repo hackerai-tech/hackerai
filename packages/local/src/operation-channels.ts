@@ -354,7 +354,12 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     target.queue?.close(error);
     // Stop producers independently of broker acknowledgement. The callback
     // never waits for the output queue, and subsequent success exits are ignored.
-    this.stopOutput?.(op);
+    try {
+      this.stopOutput?.(op);
+    } catch {
+      // Cleanup failure must not prevent reporting incomplete output.
+      console.error("Relay output overflow cleanup failed");
+    }
     const failure = {
       type:
         op.kind === "pty"
