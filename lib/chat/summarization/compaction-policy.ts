@@ -11,7 +11,7 @@ import {
 } from "@/lib/posthog/server";
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { InvalidCompactionSummaryError } from "./startup-compaction";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
@@ -21,7 +21,9 @@ export const MODERATION_COMPACTION_POLICY_VERSION =
   "moderation_glm53_abliteration_recovery_v2";
 export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
 export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
+// Keep per-model policy labels so compaction monitoring cannot mix cohorts.
 export const MAX_CONTEXT_COMPACTION_POLICY_VERSION = "max_large_v2_context_v1";
+export const PRO_CONTEXT_COMPACTION_POLICY_VERSION = "pro_large_v2_context_v1";
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
   | typeof COMPACTION_PRIMARY_MODEL
@@ -30,11 +32,12 @@ type CompactionModel =
 export type CompactionSelection = {
   model: CompactionModel;
   fallbackModel?: CompactionModel;
-  expandedMaxContext?: boolean;
+  expandedAgentContext?: boolean;
   policy:
     | typeof COMPACTION_POLICY_VERSION
     | typeof MODERATION_COMPACTION_POLICY_VERSION
-    | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION;
+    | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION
+    | typeof PRO_CONTEXT_COMPACTION_POLICY_VERSION;
   flagEnabled: boolean | null;
 };
 
@@ -99,9 +102,10 @@ export class CompactionModelPolicy {
       mode: ChatMode;
       subscription: SubscriptionTier;
       baselineModel: string;
+      selectedModel?: SelectedModel;
       /** Existing shouldUncensorResponse result, never the continuation signal. */
       platformAuthorized: boolean;
-      expandedMaxContext?: boolean;
+      expandedAgentContext?: boolean;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
@@ -120,9 +124,10 @@ export class CompactionModelPolicy {
     const configured = isAbliterationConfigured();
     const useAbliteration =
       configured && (flagEnabled !== true || this.context.platformAuthorized);
-    const expandedMaxContext =
-      this.context.mode === "agent" && this.context.expandedMaxContext === true;
-    const abliterationModel = expandedMaxContext
+    const expandedAgentContext =
+      this.context.mode === "agent" &&
+      this.context.expandedAgentContext === true;
+    const abliterationModel = expandedAgentContext
       ? ABLITERATION_LARGE_V2_MODEL_KEY
       : COMPACTION_PRIMARY_MODEL;
     return {
@@ -132,13 +137,15 @@ export class CompactionModelPolicy {
         : flagEnabled === true && configured
           ? abliterationModel
           : undefined,
-      policy: expandedMaxContext
-        ? MAX_CONTEXT_COMPACTION_POLICY_VERSION
+      policy: expandedAgentContext
+        ? this.context.selectedModel === "hackerai-pro"
+          ? PRO_CONTEXT_COMPACTION_POLICY_VERSION
+          : MAX_CONTEXT_COMPACTION_POLICY_VERSION
         : flagEnabled === true
           ? MODERATION_COMPACTION_POLICY_VERSION
           : COMPACTION_POLICY_VERSION,
       flagEnabled,
-      ...(expandedMaxContext && { expandedMaxContext: true }),
+      ...(expandedAgentContext && { expandedAgentContext: true }),
     };
   }
 

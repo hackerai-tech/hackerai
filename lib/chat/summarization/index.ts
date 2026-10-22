@@ -583,7 +583,8 @@ const generateSummaryTextWithRetry = async ({
     if (assignment && compactionPolicy) {
       const telemetry = compactionPolicy.start(assignment, persistence);
       const deepSeekFirst =
-        assignment.expandedMaxContext && isAbliterationModel(assignment.model);
+        assignment.expandedAgentContext &&
+        isAbliterationModel(assignment.model);
       const models = [
         assignment.model,
         // Expanded recovery tries the exact 1M-context DeepSeek route before
@@ -592,7 +593,7 @@ const generateSummaryTextWithRetry = async ({
         ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
         ...(deepSeekFirst
           ? []
-          : assignment.expandedMaxContext
+          : assignment.expandedAgentContext
             ? [DEEPSEEK_1017_MODEL_KEY]
             : STARTUP_COMPACTION_FALLBACK_MODELS),
       ];
@@ -605,7 +606,7 @@ const generateSummaryTextWithRetry = async ({
           // Expanded Max recovery needs the same complete-checkpoint safeguards
           // even when the separate moderation compaction experiment is paused.
           const isStructuredRecovery =
-            (assignment.expandedMaxContext === true &&
+            (assignment.expandedAgentContext === true &&
               !isAbliterationModel(modelName)) ||
             (assignment.flagEnabled === true &&
               modelName === "model-glm-5.3-flash");
@@ -635,7 +636,7 @@ const generateSummaryTextWithRetry = async ({
                   ),
               abortSignal,
               modelMessages,
-              assignment.expandedMaxContext
+              assignment.expandedAgentContext
                 ? MAX_CONTEXT_SUMMARY_INPUT_TOKENS
                 : summaryInputMaxTokens,
               {

@@ -2,7 +2,10 @@ import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-con
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
+import {
+  getAgentModelContextVariant,
+  getAgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -1946,7 +1949,10 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
       );
-      runReporting.setAgentModelContextVariant(agentModelContextVariant);
+      runReporting.setAgentModelContextVariant(
+        agentModelContextVariant,
+        getAgentModelContextFlag(selectedModelOverride),
+      );
       const agentModelContextEnabled = agentModelContextVariant === "test";
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,

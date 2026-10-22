@@ -8,6 +8,7 @@
 
 import {
   buildProviderOptions,
+  getFallbackSlugs,
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
@@ -16,6 +17,31 @@ import {
   resolveServedModelForCostAccounting,
   shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
+
+import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
+
+it("bounds expanded Pro input for its real transparent fallback chain", () => {
+  const fallbackModelIds = getFallbackSlugs(DEEPSEEK_1017_MODEL_KEY, "agent", {
+    selectedModelOverride: "hackerai-pro",
+  });
+  const budget = getAgentContextBudget({
+    enabled: true,
+    mode: "agent",
+    subscription: "pro",
+    modelId: DEEPSEEK_1017_SLUG,
+    fallbackModelIds,
+  });
+  expect(budget).toBe(496_000);
+  expect(getSummarizationThresholdTokens(budget)).toBe(476_000);
+  expect(
+    getRetryFallbackModel(DEEPSEEK_1017_MODEL_KEY, "agent", "hackerai-pro"),
+  ).toBe("model-glm-5.3-flash");
+});
 
 jest.mock("@/lib/db/actions", () => ({
   getNotes: jest.fn(),

@@ -127,6 +127,30 @@ describe("compaction model assignment and telemetry", () => {
       expect(serializedEvents).not.toContain("error_message");
     },
   );
+  it.each([
+    ["hackerai-max", "max_large_v2_context_v1"],
+    ["hackerai-pro", "pro_large_v2_context_v1"],
+  ] as const)(
+    "keeps %s summary outcomes in their own cohort",
+    async (selectedModel, expectedPolicy) => {
+      const policy = new CompactionModelPolicy({
+        ...context,
+        selectedModel,
+        expandedAgentContext: true,
+      });
+      const assignment = await policy.resolve();
+      expect(assignment.model).toBe("model-abliterated-large-v2");
+      const telemetry = policy.start(assignment, "run_scoped");
+      telemetry.finish("completed", "model-abliterated-large-v2");
+      expect(mockEvent).toHaveBeenCalledWith(
+        "compaction_model_finished",
+        expect.objectContaining({
+          compaction_policy: expectedPolicy,
+          outcome: "completed",
+        }),
+      );
+    },
+  );
   it("starts with GLM when Abliteration credentials are missing", async () => {
     mockConfigured.mockReturnValue(false);
     expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
@@ -140,12 +164,12 @@ describe("compaction model assignment and telemetry", () => {
       const assignment = await new CompactionModelPolicy({
         ...context,
         mode,
-        expandedMaxContext: true,
+        expandedAgentContext: true,
       }).resolve();
       expect(assignment.model).toBe(
         mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
       );
-      expect(assignment.expandedMaxContext).toBe(
+      expect(assignment.expandedAgentContext).toBe(
         mode === "agent" ? true : undefined,
       );
     },
@@ -155,12 +179,12 @@ describe("compaction model assignment and telemetry", () => {
     expect(
       await new CompactionModelPolicy({
         ...context,
-        expandedMaxContext: true,
+        expandedAgentContext: true,
       }).resolve(),
     ).toMatchObject({
       model: "model-glm-5.3-flash",
       fallbackModel: "model-abliterated-large-v2",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
     });
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(

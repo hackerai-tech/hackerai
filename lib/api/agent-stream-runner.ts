@@ -4,7 +4,7 @@ import {
   type ProviderRecoveryContext,
 } from "@/lib/chat/provider-recovery-context";
 import {
-  AGENT_MODEL_CONTEXT_FLAG,
+  getAgentModelContextFlag,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
@@ -1034,10 +1034,11 @@ export async function createAgentStream(
     assistantContentLoopAbortController.signal,
   ]);
   let activeContextBudget = ctx.ctxMaxTokens;
-  const maxContextEnabled =
+  const contextFlag = getAgentModelContextFlag(ctx.selectedModelOverride);
+  const expandedContextEnabled =
     ctx.mode === "agent" &&
     ctx.agentModelContextEnabled &&
-    ctx.selectedModelOverride === "hackerai-max";
+    contextFlag !== undefined;
   let activeModelInputTokens = 0;
   let lastPreparedInputEstimate = 0;
   let lastCompletedResponseMessages: ModelMessage[] = [];
@@ -1291,9 +1292,9 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
-    // Keep the three-step treatment schedule, but do not shrink long Max
+    // Keep the three-step treatment schedule, but do not shrink long Agent
     // history just to fit the base Abliteration model's smaller window.
-    return maxContextEnabled &&
+    return expandedContextEnabled &&
       effectiveModel === ABLITERATION_MODEL_KEY &&
       activeModelInputTokens >
         getSummarizationThresholdTokens(
@@ -1321,7 +1322,7 @@ export async function createAgentStream(
     lastRequestedSlug = languageModel.modelId;
     if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
       activeContextBudget = getAgentContextBudget({
-        enabled: maxContextEnabled,
+        enabled: expandedContextEnabled,
         mode: ctx.mode,
         subscription: ctx.subscription,
         modelId: languageModel.modelId,
@@ -1682,7 +1683,7 @@ export async function createAgentStream(
       : undefined;
   if (recoveredContext) initialSerializedMessages = recoveredContext;
   else state.providerRecoveryContext = undefined;
-  if (maxContextEnabled) {
+  if (expandedContextEnabled) {
     activeModelInputTokens =
       estimateSummaryInputTokens(initialSerializedMessages) +
       ctx.systemPromptTokens;
@@ -1836,8 +1837,9 @@ export async function createAgentStream(
       mode: ctx.mode,
       subscription: ctx.subscription,
       baselineModel: modelName,
+      selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
-      expandedMaxContext: maxContextEnabled,
+      expandedAgentContext: expandedContextEnabled,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -1943,6 +1945,7 @@ export async function createAgentStream(
       if (
         !abortSignal.aborted &&
         !state.agentContextBudgetExposed &&
+        contextFlag !== undefined &&
         ctx.mode === "agent" &&
         (ctx.agentModelContextVariant !== undefined ||
           (ctx.agentModelContextEnabled &&
@@ -1954,11 +1957,10 @@ export async function createAgentStream(
           userId: ctx.userId,
           chat_id: ctx.chatId,
           run_id: ctx.triggerRunId,
-          flag_key: AGENT_MODEL_CONTEXT_FLAG,
+          flag_key: contextFlag,
           ...(ctx.agentModelContextVariant && {
             experiment_variant: ctx.agentModelContextVariant,
-            [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]:
-              ctx.agentModelContextVariant,
+            [`$feature/${contextFlag}`]: ctx.agentModelContextVariant,
           }),
           model: model.modelId,
           context_max_tokens: activeContextBudget,
@@ -2011,7 +2013,7 @@ export async function createAgentStream(
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
-      if (maxContextEnabled) {
+      if (expandedContextEnabled) {
         activeModelInputTokens =
           estimateSummaryInputTokens(rollingModelMessages) +
           ctx.systemPromptTokens +

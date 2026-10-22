@@ -658,9 +658,16 @@ describe("retry served-model telemetry", () => {
 });
 
 describe("createAgentStream repeated compaction", () => {
-  it.each([false, true])(
-    "retains a checkpoint after canonical tool pruning with a covered run tail=%s",
-    async (hasRunTail) => {
+  it.each(
+    [false, true].flatMap((hasRunTail) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        hasRunTail,
+        selection,
+      })),
+    ),
+  )(
+    "retains a checkpoint across provider recovery and canonical pruning for $selection with tail=$hasRunTail",
+    async ({ hasRunTail, selection }) => {
       const convert = jest.mocked(require("ai").convertToModelMessages);
       const previousConvert = convert.getMockImplementation();
       convert.mockImplementation(
@@ -689,6 +696,8 @@ describe("createAgentStream repeated compaction", () => {
           maxTokens: 200_000,
         });
         const context = createTestStreamContext({
+          selectedModelOverride: selection,
+          agentModelContextEnabled: true,
           usageTracker: {},
           summarizationTracker: {
             hasSummarized: true,
@@ -988,20 +997,33 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it.each([
-    { enabled: false, tokens: 190_000 },
-    { enabled: true, tokens: 190_000 },
-    { enabled: true, tokens: 10_000 },
-  ])(
-    "keeps the three-step Max schedule with enabled=$enabled and tokens=$tokens",
-    async ({ enabled, tokens }) => {
+  it.each(
+    [
+      { enabled: false, tokens: 190_000 },
+      { enabled: true, tokens: 190_000 },
+      { enabled: true, tokens: 10_000 },
+    ].flatMap((settings) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        ...settings,
+        selection,
+      })),
+    ),
+  )(
+    "keeps the three-step $selection schedule with enabled=$enabled and tokens=$tokens",
+    async ({ enabled, tokens, selection }) => {
       mockGetProviderPromptPressure.mockReturnValue(null);
       const text = " ordinary".repeat(tokens);
       const state = initAgentStreamState([uiMessage("initial", text)], {
         usedTokens: tokens + 100,
         maxTokens: 200_000,
       });
+      const baseline =
+        selection === "hackerai-pro"
+          ? "model-deepseek-v4.1-flash-1017-pro"
+          : "model-glm-5.3";
       const ids: Record<string, string> = {
+        "model-deepseek-v4.1-flash-1017-pro":
+          "deepseek/deepseek-v4.1-flash-1017",
         "model-abliterated": "abliterated-model",
         "model-abliterated-large-v2": "abliterated-model-large-v2",
         "model-glm-5.3": "z-ai/glm-5.3",
@@ -1010,12 +1032,12 @@ describe("createAgentStream repeated compaction", () => {
         "model-abliterated",
         createTestStreamContext({
           agentModelContextEnabled: enabled,
-          selectedModelOverride: "hackerai-max",
+          selectedModelOverride: selection,
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: ids[name] }),
           },
           abliteratedStepRouting: {
-            baselineModel: "model-glm-5.3",
+            baselineModel: baseline,
             generationStepLimit: 3,
           },
           usageTracker: {},
@@ -1034,7 +1056,7 @@ describe("createAgentStream repeated compaction", () => {
             ? enabled && tokens > 180_000
               ? "abliterated-model-large-v2"
               : "abliterated-model"
-            : "z-ai/glm-5.3",
+            : ids[baseline],
         );
         if (enabled && stepNumber < 3)
           expect(state.ctxUsage.maxTokens).toBe(
@@ -1125,69 +1147,76 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.ctxUsage.maxTokens).toBe(200_000);
   });
 
-  it("compacts a new oversized tool result even when the previous input was small", async () => {
-    mockGetProviderPromptPressure.mockReturnValue(null);
-    mockCompactModelMessagesInRun.mockResolvedValue({
-      summaryMessage: uiMessage(
-        "checkpoint",
-        "<context_summary>Keep verified status</context_summary>",
-      ),
-      summarizationUsage: {},
-    });
-    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-      usedTokens: 100,
-      maxTokens: 200_000,
-    });
-    state.lastStepInputTokens = 100;
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        agentModelContextEnabled: true,
-        selectedModelOverride: "hackerai-max",
-        trackedProvider: { languageModel: () => ({ modelId: "z-ai/glm-5.3" }) },
-        usageTracker: {},
-        summarizationTracker: {
-          hasSummarized: true,
-          summarizationCount: 1,
-          recordSummarization: jest.fn(),
-          recordSummarizationUsage: jest.fn(),
-        },
-      }) as any,
-      state,
-    )) as any;
-    const prepared = await stream.prepareStep({
-      steps: [{}],
-      stepNumber: 1,
-      messages: [
-        { role: "user", content: "Continue" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId: "big",
-              toolName: "file",
-              input: {},
-            },
-          ],
-        },
-        {
-          role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: "big",
-              toolName: "file",
-              output: { type: "text", value: " a".repeat(520_000) },
-            },
-          ],
-        },
-      ],
-    });
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(prepared.messages)).toContain("Keep verified status");
-    expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
-  });
+  it.each(["hackerai-max", "hackerai-pro"] as const)(
+    "compacts a new oversized tool result after small input for %s",
+    async (selection) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      mockCompactModelMessagesInRun.mockResolvedValue({
+        summaryMessage: uiMessage(
+          "checkpoint",
+          "<context_summary>Keep verified status</context_summary>",
+        ),
+        summarizationUsage: {},
+      });
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 100,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 100;
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          selectedModelOverride: selection,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "z-ai/glm-5.3" }),
+          },
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [{}],
+        stepNumber: 1,
+        messages: [
+          { role: "user", content: "Continue" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "big",
+                toolName: "file",
+                input: {},
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "big",
+                toolName: "file",
+                output: { type: "text", value: " a".repeat(520_000) },
+              },
+            ],
+          },
+        ],
+      });
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "Keep verified status",
+      );
+      expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
+    },
+  );
 
   it("continues intact after failed proactive compaction when the prepared request still fits", async () => {
     mockGetProviderPromptPressure.mockReturnValue(null);
@@ -1280,9 +1309,20 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it.each(["control", "test", undefined] as const)(
-    "records actual Max experiment exposure once across retries for %s",
-    async (variant) => {
+  it.each(
+    (["control", "test", undefined] as const).flatMap((variant) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        variant,
+        selection,
+      })),
+    ),
+  )(
+    "records actual $selection experiment exposure once across retries for $variant",
+    async ({ variant, selection }) => {
+      const flag =
+        selection === "hackerai-max"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
       const modelId = "z-ai/glm-5.3";
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
         usedTokens: 1_000,
@@ -1291,7 +1331,7 @@ describe("createAgentStream repeated compaction", () => {
       const ctx = createTestStreamContext({
         agentModelContextEnabled: variant === "test",
         agentModelContextVariant: variant,
-        selectedModelOverride: "hackerai-max",
+        selectedModelOverride: selection,
         trackedProvider: { languageModel: () => ({ modelId }) },
         usageTracker: {},
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
@@ -1319,11 +1359,18 @@ describe("createAgentStream repeated compaction", () => {
         .mocked(phLogger.event)
         .mock.calls.filter(([name]) => name === "agent_model_context_exposed");
       expect(exposures).toHaveLength(variant ? 1 : 0);
-      if (variant)
+      if (variant) {
+        const other =
+          selection === "hackerai-max"
+            ? "agent_pro_context_v1"
+            : "agent_model_context_v1";
+        expect(exposures[0][1][`$feature/${other}`]).toBeUndefined();
         expect(exposures[0][1]).toMatchObject({
           experiment_variant: variant,
-          "$feature/agent_model_context_v1": variant,
+          flag_key: flag,
+          [`$feature/${flag}`]: variant,
         });
+      }
     },
   );
 
