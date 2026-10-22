@@ -64,7 +64,7 @@ interface UseChatHandlersProps {
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
   isExistingChat: boolean;
-  isUserMessagePersisted?: (messageId: string) => boolean;
+  isUserMessagePersisted?: (messageId: string) => boolean | Promise<boolean>;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
@@ -850,6 +850,20 @@ export const useChatHandlers = ({
       }
       return;
     }
+    // Read authoritative state before mutating the transcript. A failed or
+    // unavailable check must not turn a saved request into a new submission.
+    let retryUnpersistedMessage = false;
+    if (lastUserId) {
+      try {
+        retryUnpersistedMessage = isUserMessagePersisted
+          ? !(await isUserMessagePersisted(lastUserId))
+          : !isExistingChat;
+      } catch {
+        toast.error("Could not check the saved request. Please retry.");
+        return;
+      }
+    }
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -874,11 +888,6 @@ export const useChatHandlers = ({
 
     // Admission may fail before the user message is persisted. Retrying that
     // turn must save the same message ID instead of regenerating absent history.
-    const retryUnpersistedMessage =
-      !!lastUserId &&
-      (isUserMessagePersisted
-        ? !isUserMessagePersisted(lastUserId)
-        : !isExistingChat);
     const shouldSendClientMessagesForRegenerate =
       retryUnpersistedMessage ||
       hasRestageableLocalDesktopAttachments(messagesToLastUser);

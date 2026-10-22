@@ -658,7 +658,7 @@ describe("failed local attachment admission", () => {
           regenerate: mockRegenerate,
           setMessages: mockSetMessages,
           isExistingChat,
-          isUserMessagePersisted: () => false,
+          isUserMessagePersisted: async () => false,
           status: "error",
           isSendingNowRef: { current: false },
           hasManuallyStoppedRef: { current: false },
@@ -679,6 +679,36 @@ describe("failed local attachment admission", () => {
     },
   );
 
+  it("does not alter or resubmit the turn when persistence cannot be checked", async () => {
+    mockRegenerate.mockClear();
+    mockSetMessages.mockClear();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "unknown-persistence",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: async () => {
+          throw new Error("offline");
+        },
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(require("sonner").toast.error).toHaveBeenCalledWith(
+      "Could not check the saved request. Please retry.",
+    );
+  });
+
   it("keeps regeneration semantics once the same user turn is persisted", async () => {
     mockRegenerate.mockClear();
     const { result } = renderHook(() =>
@@ -690,7 +720,7 @@ describe("failed local attachment admission", () => {
         regenerate: mockRegenerate,
         setMessages: mockSetMessages,
         isExistingChat: true,
-        isUserMessagePersisted: () => true,
+        isUserMessagePersisted: async () => true,
         status: "error",
         isSendingNowRef: { current: false },
         hasManuallyStoppedRef: { current: false },

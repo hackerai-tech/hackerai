@@ -19,6 +19,7 @@ import {
   usePaginatedQuery,
   useMutation,
   useConvexAuth,
+  useConvex,
 } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
@@ -555,6 +556,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const convex = useConvex();
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
@@ -2256,7 +2258,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setMessages,
     isExistingChat,
     isUserMessagePersisted: (messageId) =>
-      !!paginatedMessageResults?.some((message) => message.id === messageId),
+      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
