@@ -7,9 +7,13 @@ import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
 import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  subscribeAuthenticatedAnalytics,
+} from "@/lib/analytics/client";
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
+import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -41,9 +45,13 @@ let bridgeStateListener:
       environmentId?: string,
     ) => void)
   | null = null;
-const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
+const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [
+  1_000, 3_000, 8_000, 16_000, 30_000, 60_000,
+];
 const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
-const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
+// Brief recoveries during an origin outage must not continually refill the budget.
+const DESKTOP_BRIDGE_STABLE_RESET_MS = 5 * 60_000;
+const DESKTOP_BRIDGE_RESUME_COOLDOWN_MS = 60_000;
 type RecoverableDesktopTerminationReason =
   "connection_not_found" | "connection_inactive" | "transport_disconnected";
 type DesktopBridgeRecoveryReason =
@@ -68,6 +76,9 @@ let bridgeStableResetTimer: ReturnType<typeof setTimeout> | null = null;
 // Only transient failures may be retried on wake/network recovery. Never
 // restart a bridge terminated by an authentication or ownership failure.
 let bridgeRecoveryExhausted = false;
+let bridgeRecoveryPausedOffline = false;
+let bridgeRecoveryResumeAt = 0;
+const bridgeTelemetry = new DesktopRelayTelemetry(captureAuthenticatedEvent);
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
   if (bridgeRecoveryTimer) {
@@ -217,9 +228,16 @@ export function useSandboxPreference(
           reason,
           attempts,
         });
-        clearBridgeRecovery(true);
+        clearBridgeRecovery(false);
         bridgeRecoveryExhausted = true;
+        bridgeRecoveryPausedOffline = false;
+        bridgeRecoveryResumeAt = Date.now() + DESKTOP_BRIDGE_RESUME_COOLDOWN_MS;
         updateBridgeState(false, "failed");
+        return true;
+      }
+      if (navigator.onLine === false) {
+        bridgeRecoveryPausedOffline = true;
+        updateBridgeState(false, "connecting");
         return true;
       }
 
@@ -237,7 +255,7 @@ export function useSandboxPreference(
         attempt,
         delayMs,
       });
-      captureAuthenticatedEvent("desktop_bridge_recovery_scheduled", {
+      bridgeTelemetry.record("desktop_bridge_recovery_scheduled", {
         clientSurface: "desktop_bridge",
         reason,
         attempt,
@@ -256,6 +274,10 @@ export function useSandboxPreference(
 
     if (!isAuthenticated || !isTauriEnvironment()) {
       bridgeRecoveryExhausted = false;
+      bridgeRecoveryPausedOffline = false;
+      bridgeRecoveryResumeAt = 0;
+      // Never carry diagnostics from a signed-out user into another session.
+      bridgeTelemetry.reset();
       syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeGeneration += 1;
@@ -272,6 +294,16 @@ export function useSandboxPreference(
 
     bridgeStateListener = updateBridgeState;
 
+    // React remounts and wake events must not silently replenish retry budgets.
+    if (bridgeRecoveryExhausted) {
+      syncBridgeState(false, "failed");
+      return () => {
+        cancelled = true;
+        if (bridgeStateListener === updateBridgeState)
+          bridgeStateListener = null;
+      };
+    }
+
     // Already running — just sync bridge active state.
     if (activeBridge?.getConnectionId()) {
       syncDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
@@ -282,6 +314,16 @@ export function useSandboxPreference(
         if (bridgeStateListener === updateBridgeState) {
           bridgeStateListener = null;
         }
+      };
+    }
+
+    if (navigator.onLine === false || bridgeRecoveryPausedOffline) {
+      bridgeRecoveryPausedOffline = true;
+      syncBridgeState(false, "connecting");
+      return () => {
+        cancelled = true;
+        if (bridgeStateListener === updateBridgeState)
+          bridgeStateListener = null;
       };
     }
 
@@ -299,6 +341,7 @@ export function useSandboxPreference(
                 if (generation !== bridgeGeneration) return null;
 
                 const bridge = new DesktopSandboxBridgeClass({
+                  relayTelemetry: bridgeTelemetry,
                   connectDesktop: (args) => connectDesktopRef.current(args),
                   refreshCentrifugoTokenDesktop: (args) =>
                     refreshTokenRef.current(args),
@@ -324,6 +367,7 @@ export function useSandboxPreference(
                     if (activeBridge === bridge) activeBridge = null;
                     if (!isRecoverableDesktopTermination(reason)) {
                       bridgeRecoveryExhausted = false;
+                      bridgeRecoveryPausedOffline = false;
                       clearBridgeRecovery(true);
                       bridgeStateListener?.(false, "failed");
                       return;
@@ -368,6 +412,7 @@ export function useSandboxPreference(
           // terminate. Match the heartbeat/token path: wait for an explicit
           // retry or a fresh sign-in instead of retrying the same auth failure.
           bridgeRecoveryExhausted = false;
+          bridgeRecoveryPausedOffline = false;
           clearBridgeRecovery(true);
         } else {
           if (bridgeRecoveryTimer) {
@@ -390,6 +435,7 @@ export function useSandboxPreference(
 
     // Cleanup on beforeunload (page close/refresh)
     const handleBeforeUnload = () => {
+      bridgeTelemetry.flush();
       bridgeGeneration += 1;
       clearBridgeRecovery(true);
       bridgeStartPromise = null;
@@ -414,6 +460,19 @@ export function useSandboxPreference(
     };
   }, [desktopBridgeRetryAttempt, isAuthenticated]);
 
+  useEffect(() => {
+    // Auth/account and consent changes invalidate pending aggregates too.
+    const unsubscribe = subscribeAuthenticatedAnalytics(() =>
+      bridgeTelemetry.reset(),
+    );
+    const flush = () => bridgeTelemetry.flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
+
   // Restoring a task or applying an availability/plan default must not change
   // the user's default for new chats. Only an explicit choice is remembered.
   const setSandboxPreference: SetSandboxPreference = useCallback(
@@ -436,6 +495,8 @@ export function useSandboxPreference(
     if (!isAuthenticated || !isTauriEnvironment()) return;
     bridgeGeneration += 1;
     bridgeRecoveryExhausted = false;
+    bridgeRecoveryPausedOffline = false;
+    bridgeRecoveryResumeAt = 0;
     clearBridgeRecovery(true);
     bridgeStartPromise = null;
     setDesktopBridgeActive(false);
@@ -447,14 +508,22 @@ export function useSandboxPreference(
     if (!isAuthenticated || !isTauriEnvironment()) return;
     const resumeRecovery = (event: Event) => {
       if (
-        !bridgeRecoveryExhausted ||
+        (!bridgeRecoveryExhausted && !bridgeRecoveryPausedOffline) ||
+        navigator.onLine === false ||
+        (bridgeRecoveryExhausted && Date.now() < bridgeRecoveryResumeAt) ||
         (event.type !== "online" && document.visibilityState === "hidden") ||
         activeBridge?.getConnectionId() ||
         bridgeStartPromise ||
         bridgeRecoveryTimer
       )
         return;
-      retryDesktopBridge();
+      if (bridgeRecoveryPausedOffline) {
+        bridgeRecoveryPausedOffline = false;
+        bridgeGeneration += 1;
+        setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
+      } else {
+        retryDesktopBridge();
+      }
     };
     window.addEventListener("online", resumeRecovery);
     window.addEventListener("focus", resumeRecovery);

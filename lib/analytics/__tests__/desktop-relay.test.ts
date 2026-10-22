@@ -119,4 +119,33 @@ describe("desktop relay telemetry", () => {
     expect(capture.mock.calls[0][1].code).toBe(8);
     expect(capture.mock.calls[31][1].code).toBe(39);
   });
+
+  it("flushes idle pending counts on schedule and discards them on an account reset", () => {
+    const capture = jest.fn().mockReturnValue(true);
+    const telemetry = new DesktopRelayTelemetry(capture);
+    const properties = { state: "error", code: 2 };
+    telemetry.record("desktop_bridge_relay_error", properties);
+    telemetry.record("desktop_bridge_relay_error", properties);
+    jest.advanceTimersByTime(5 * 60 * 1000);
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture.mock.calls[1][1]).toMatchObject({
+      telemetry_occurrences: 1,
+      telemetry_summary: true,
+    });
+    telemetry.record("desktop_bridge_relay_error", properties);
+    telemetry.record("desktop_bridge_relay_error", properties);
+    telemetry.reset();
+    capture.mockClear();
+    jest.advanceTimersByTime(5 * 60 * 1000);
+    expect(capture).not.toHaveBeenCalled();
+    telemetry.record("desktop_bridge_relay_error", properties);
+    expect(capture).toHaveBeenLastCalledWith(
+      "desktop_bridge_relay_error",
+      expect.objectContaining({
+        telemetry_occurrences: 1,
+        telemetry_summary: false,
+      }),
+    );
+    telemetry.reset();
+  });
 });

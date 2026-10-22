@@ -225,6 +225,8 @@ function nativeAuthDiagnostics(
 }
 
 interface DesktopBridgeConfig {
+  // The recovery owner keeps one telemetry window across replacement bridges.
+  relayTelemetry?: DesktopRelayTelemetry;
   connectDesktop: (args: {
     environmentId?: string;
     connectionName: string;
@@ -289,11 +291,12 @@ export class DesktopSandboxBridge {
   private successfulRelayConnections = 0;
   private relayStarted = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly relayTelemetry = new DesktopRelayTelemetry(
-    captureAuthenticatedEvent,
-  );
+  private readonly relayTelemetry: DesktopRelayTelemetry;
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
+    this.relayTelemetry =
+      config.relayTelemetry ??
+      new DesktopRelayTelemetry(captureAuthenticatedEvent);
   }
 
   getConnectionId(): string | null {
@@ -465,7 +468,7 @@ export class DesktopSandboxBridge {
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
-    this.relayTelemetry.flush();
+    if (!this.config.relayTelemetry) this.relayTelemetry.flush();
     const client = this.client;
     const subscription = this.subscription;
     this.client = null;
@@ -2137,7 +2140,7 @@ export class DesktopSandboxBridge {
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
-    this.relayTelemetry.flush();
+    if (!this.config.relayTelemetry) this.relayTelemetry.flush();
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;
