@@ -3054,3 +3054,77 @@ describe("desktop lifecycle recovery", () => {
     },
   );
 });
+
+it("keeps native exit available for resume until the worker acknowledges it", async () => {
+  jest.useFakeTimers();
+  const bridge = new DesktopSandboxBridge(buildConfig());
+  await bridge.start();
+  const reply = {
+    ...mockSubscription,
+    on: jest.fn(),
+    publish: jest.fn().mockResolvedValue(undefined),
+    unsubscribe: jest.fn(),
+    removeAllListeners: jest.fn(),
+  };
+  mockClient.newSubscription.mockReturnValueOnce(reply);
+  let executions = 0;
+  const native = mockInvokeHandler;
+  mockInvokeHandler = async (cmd, args) => {
+    if (cmd === "execute_stream_command") {
+      executions++;
+      capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "actual native output",
+      });
+      capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+      return;
+    }
+    return native(cmd, args);
+  };
+  try {
+    const request = {
+      type: "command",
+      commandId: "ack-native",
+      command: "bounded",
+      outputProtocol: "ack-v1",
+      targetConnectionId: "conn-123",
+      operationChannel: true,
+    };
+    getPublicationHandler()({ data: request });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(executions).toBe(1);
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
+    const publication = reply.on.mock.calls.find(
+      ([event]) => event === "publication",
+    )![1];
+    publication({
+      data: {
+        type: "command_output_resume",
+        commandId: "ack-native",
+        sequence: -1,
+        targetConnectionId: "conn-123",
+      },
+    });
+    getPublicationHandler()({ data: request });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(executions).toBe(1);
+    expect(
+      reply.publish.mock.calls.filter(([frame]) => frame.type === "exit")
+        .length,
+    ).toBeGreaterThan(1);
+    publication({
+      data: {
+        type: "command_output_ack",
+        commandId: "ack-native",
+        sequence: 1,
+        targetConnectionId: "conn-123",
+      },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(reply.presence).not.toHaveBeenCalled();
+  } finally {
+    await bridge.stop();
+    jest.useRealTimers();
+  }
+});

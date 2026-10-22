@@ -50,6 +50,8 @@ const START_TYPES = new Set([
 ]);
 const CONTROL_TYPES = new Set([
   "command_cancel",
+  "command_output_ack",
+  "command_output_resume",
   "pty_input",
   "pty_resize",
   "pty_kill",
@@ -83,6 +85,7 @@ type Route<S extends ChannelSubscription> = {
   subscription: S;
   queue: CentrifugoPublishQueue;
   timer: ReturnType<typeof setTimeout>;
+  retainCommandOutput?: boolean;
 };
 
 /** Owns client subscriptions for opted-in operations. Legacy requests stay on the connection channel. */
@@ -214,7 +217,11 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         this.key(target) === key &&
         this.routes.get(key) === route &&
         (op.kind === "command"
-          ? control.type === "command_cancel"
+          ? [
+              "command_cancel",
+              "command_output_ack",
+              "command_output_resume",
+            ].includes(String(control.type))
           : op.kind === "pty" && String(control.type).startsWith("pty_"))
       ) {
         if (started) handle(control);
@@ -248,6 +255,18 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     }
   }
 
+  /** Desktop opts in only after recognizing the requested output protocol. */
+  retainCommandOutput(commandId: string): boolean {
+    const route = this.routes.get(this.key({ kind: "command", id: commandId }));
+    if (!route || this.stopped) return false;
+    route.retainCommandOutput = true;
+    return true;
+  }
+
+  closeCommand(commandId: string): void {
+    this.close(this.key({ kind: "command", id: commandId }));
+  }
+
   /** Broker acceptance alone cannot deliver buffered output to an absent receiver. */
   async hasCommandReceiver(commandId: string): Promise<boolean> {
     const key = this.key({ kind: "command", id: commandId });
@@ -279,7 +298,8 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     const route = this.routes.get(key);
     if (route) {
       await route.queue.publish(message);
-      if (END_TYPES.has(String(message.type))) this.close(key);
+      if (END_TYPES.has(String(message.type)) && !route.retainCommandOutput)
+        this.close(key);
     } else if (this.legacy.has(key)) {
       await publishLegacy(message);
       if (END_TYPES.has(String(message.type))) this.closeLegacy(key);

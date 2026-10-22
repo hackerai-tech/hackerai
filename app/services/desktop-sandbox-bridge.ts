@@ -1,3 +1,4 @@
+import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
@@ -157,7 +158,15 @@ function classifyDesktopStreamPublishFailure(
   return null;
 }
 
+type OutputControl = {
+  type: "command_output_ack" | "command_output_resume";
+  commandId: string;
+  targetConnectionId: string;
+  sequence: number;
+};
+
 type TargetedIncomingMessage =
+  | OutputControl
   | CommandMessage
   | CommandCancelMessage
   | FileRequestMessage
@@ -180,6 +189,8 @@ function isTargetedIncomingMessage(
     typeof targetConnectionId === "string" &&
     (type === "command" ||
       type === "command_cancel" ||
+      type === "command_output_ack" ||
+      type === "command_output_resume" ||
       type === "file_stat" ||
       type === "file_read" ||
       type === "file_write" ||
@@ -460,6 +471,8 @@ export class DesktopSandboxBridge {
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();
@@ -735,6 +748,15 @@ export class DesktopSandboxBridge {
           });
           break;
 
+        case "command_output_ack":
+        case "command_output_resume": {
+          const stream = this.acknowledgedOutputs.get(message.commandId);
+          if (message.type === "command_output_ack")
+            stream?.acknowledge(message.sequence);
+          else stream?.resume(message.sequence);
+          break;
+        }
+
         case "command_cancel":
           this.handleCommandCancel(message as CommandCancelMessage).catch(
             (err) => {
@@ -936,7 +958,87 @@ export class DesktopSandboxBridge {
     return undefined;
   }
 
+  private acknowledgedOutputs = new Map<string, AcknowledgedCommandOutput>();
+
+  private async handleAcknowledgedCommand(
+    command: CommandMessage,
+  ): Promise<void> {
+    const router = this.operationRouter!;
+    const connectionId = this.connectionId;
+    const deadline =
+      Date.now() +
+      (command.timeout ?? 30_000) +
+      DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+    const stream = new AcknowledgedCommandOutput(
+      command.commandId,
+      deadline,
+      (frame) => router.publish(frame as unknown as Record<string, unknown>),
+      () =>
+        !this.isStoppingOrStopped &&
+        this.operationRouter === router &&
+        this.connectionId === connectionId,
+    );
+    this.acknowledgedOutputs.set(command.commandId, stream);
+    this.commandDeliveryDeadlines.set(command.commandId, deadline);
+    this.activeCommands.add(command.commandId);
+    try {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+      const channel = new Channel<StreamChunk>();
+      channel.onmessage = (chunk) => {
+        if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
+      };
+      try {
+        await invoke("execute_stream_command", {
+          commandId: command.commandId,
+          command: command.command,
+          cwd: command.cwd,
+          env: command.env,
+          timeoutMs: command.timeout ?? 30_000,
+          onEvent: channel,
+        });
+      } catch (error) {
+        stream.append({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.activeCommands.delete(command.commandId);
+      }
+      // Native completion and result delivery have separate lifetimes.
+      await stream.delivered;
+    } catch (error) {
+      console.warn("[desktop-bridge] acknowledged output incomplete", {
+        commandId: command.commandId,
+      });
+      // Explicitly fail completeness, never synthesize successful exit or rerun.
+      if (this.operationRouter === router && !this.isStoppingOrStopped) {
+        await router
+          .publish({
+            type: "command_output_unavailable",
+            commandId: command.commandId,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Command output recovery failed",
+          })
+          .catch(() => {});
+      }
+    } finally {
+      stream.stop();
+      this.acknowledgedOutputs.delete(command.commandId);
+      this.commandDeliveryDeadlines.delete(command.commandId);
+      this.activeCommands.delete(command.commandId);
+      router.closeCommand(command.commandId);
+    }
+  }
+
   private async handleCommand(command: CommandMessage): Promise<void> {
+    if (
+      command.outputProtocol === "ack-v1" &&
+      this.operationRouter?.retainCommandOutput(command.commandId)
+    ) {
+      return this.handleAcknowledgedCommand(command);
+    }
     const { commandId } = command;
     const commandConnectionId = this.connectionId;
     const commandRouter = this.operationRouter;
@@ -2156,6 +2258,8 @@ export class DesktopSandboxBridge {
   async stop(): Promise<void> {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();

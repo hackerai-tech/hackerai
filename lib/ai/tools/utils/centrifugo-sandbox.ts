@@ -42,6 +42,7 @@ import {
 } from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
+  "command_output_unavailable",
   "command",
   "command_cancel",
   "command_cancel_result",
@@ -52,6 +53,8 @@ const VALID_MESSAGE_TYPES = new Set([
 ]);
 
 const IGNORED_MESSAGE_TYPES = new Set([
+  "command_output_ack",
+  "command_output_resume",
   "file_stat",
   "file_read",
   "file_write",
@@ -176,6 +179,12 @@ export function parseSandboxMessage(
     return null;
   }
 
+  if (
+    msg.outputProtocol !== undefined &&
+    (msg.outputProtocol !== "ack-v1" || msg.sequence === undefined)
+  )
+    return null;
+
   switch (msg.type) {
     case "exit":
       if (typeof msg.exitCode !== "number") {
@@ -190,6 +199,7 @@ export function parseSandboxMessage(
         return null;
       }
       break;
+    case "command_output_unavailable":
     case "error":
       if (typeof msg.message !== "string") {
         console.warn("Invalid error message: missing message field", msg);
@@ -738,6 +748,31 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let streamInterrupted = false;
         let streamRecoveryIncomplete = false;
         let receivedUnsequencedOutput = false;
+        let acknowledgedOutput = false;
+        let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
+        let terminalReceived = false;
+        const sendOutputCursor = async (
+          type: "command_output_ack" | "command_output_resume",
+        ) => {
+          if (!subscription || settled || !acknowledgedOutput) return;
+          try {
+            await subscription.publish({
+              type,
+              commandId,
+              sequence: lastStreamSequence,
+              targetConnectionId: this.connectionInfo.connectionId,
+            });
+          } catch {
+            /* Sender retains unacknowledged output and retries it. */
+          }
+        };
+        const acknowledgeOutput = () => {
+          if (acknowledgementTimer !== undefined) return;
+          acknowledgementTimer = setTimeout(() => {
+            acknowledgementTimer = undefined;
+            void sendOutputCursor("command_output_ack");
+          }, 25);
+        };
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
@@ -750,6 +785,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tFirstMessage = 0;
 
         const cleanup = () => {
+          clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the
           // cancellation timers. Confirmed cancellation resolves true first.
           resolveCancelAttempt?.(false);
@@ -960,13 +996,44 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
+          if (message.type === "command_output_unavailable") {
+            settled = true;
+            cleanup();
+            reject(new Error(message.message));
+            return;
+          }
           if (message.type === "command" || message.type === "command_cancel") {
             return;
           }
 
+          if (
+            message.type !== "command_cancel_result" &&
+            message.outputProtocol === "ack-v1" &&
+            isolated &&
+            this.connectionInfo.isDesktop
+          )
+            acknowledgedOutput = true;
           const sequence = "sequence" in message ? message.sequence : undefined;
+          if (
+            acknowledgedOutput &&
+            message.type === "error" &&
+            sequence === undefined
+          ) {
+            settled = true;
+            cleanup();
+            reject(new Error(message.message));
+            return;
+          }
+
           if (sequence !== undefined) {
-            if (sequence <= lastStreamSequence) return;
+            if (sequence <= lastStreamSequence) {
+              if (acknowledgedOutput) acknowledgeOutput();
+              return;
+            }
+            if (sequence !== lastStreamSequence + 1 && acknowledgedOutput) {
+              void sendOutputCursor("command_output_resume");
+              return;
+            }
             if (sequence !== lastStreamSequence + 1) {
               settled = true;
               cleanup();
@@ -993,6 +1060,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
             lastStreamSequence = sequence;
           }
+          if (acknowledgedOutput && sequence !== undefined) acknowledgeOutput();
           if (!tFirstMessage) tFirstMessage = Date.now();
 
           if (
@@ -1027,13 +1095,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 resolveCanceled();
                 break;
               }
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr,
-                exitCode: message.exitCode,
-                pid: message.pid,
+              if (terminalReceived) break;
+              terminalReceived = true;
+              void sendOutputCursor("command_output_ack").then(() => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve({
+                  stdout,
+                  stderr,
+                  exitCode: message.exitCode,
+                  pid: message.pid,
+                });
               });
               break;
             case "command_cancel_result":
@@ -1063,14 +1136,19 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   message: message.message,
                 }),
               );
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr: stderr
-                  ? `${stderr}\n${message.message}`
-                  : message.message,
-                exitCode: -1,
+              if (terminalReceived) break;
+              terminalReceived = true;
+              void sendOutputCursor("command_output_ack").then(() => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve({
+                  stdout,
+                  stderr: stderr
+                    ? `${stderr}\n${message.message}`
+                    : message.message,
+                  exitCode: -1,
+                });
               });
               break;
           }
@@ -1132,7 +1210,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the
           // second event arrives before the first presence check completes.
-          if (commandDispatchStarted) return;
+          if (commandDispatchStarted) {
+            void sendOutputCursor("command_output_resume");
+            return;
+          }
           commandDispatchStarted = true;
           tSubscribed = Date.now();
 
@@ -1191,6 +1272,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               chatId: this.chatId,
               triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
+              ...(isolated && this.connectionInfo.isDesktop
+                ? { outputProtocol: "ack-v1" as const }
+                : {}),
             };
 
             if (!isolated) commandPublicationStarted = true;

@@ -1,3 +1,4 @@
+import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
  *
@@ -152,6 +153,108 @@ describe("CentrifugoSandbox", () => {
   afterEach(() => {
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
+  });
+
+  it("preserves an unknown outcome when Desktop exhausts its retained output", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const pending = sandbox.commands.run("one execution");
+    const rejected = expect(pending).rejects.toThrow("buffer exhausted");
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    reply.emit("publication", {
+      data: {
+        type: "command_output_unavailable",
+        commandId: FIXED_UUID,
+        message: "buffer exhausted",
+      },
+    });
+    await rejected;
+    expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers dropped output and ACKs through the real sender without replaying a command", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const stdout = jest.fn();
+    const pending = sandbox.commands.run("one execution", { onStdout: stdout });
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    const control = mockSubscriptions[1];
+    expect(control.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ outputProtocol: "ack-v1" }),
+    );
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    let connected = true;
+    let dropOutput = true;
+    let dropAck = true;
+    const sender = new AcknowledgedCommandOutput(
+      FIXED_UUID,
+      Date.now() + 60_000,
+      async (frame) => {
+        if (!connected) return; // Broker accepts output while receiver is absent.
+        if (frame.sequence === 1 && dropOutput) {
+          dropOutput = false;
+          return;
+        }
+        reply.emit("publication", { data: frame });
+      },
+      () => true,
+    );
+    reply.publish.mockImplementation(async (message) => {
+      if (message.type === "command_output_ack") {
+        if (dropAck) {
+          dropAck = false;
+          return;
+        }
+        sender.acknowledge(message.sequence);
+      } else if (message.type === "command_output_resume")
+        sender.resume(message.sequence);
+    });
+    sender.append({ type: "stdout", data: "start" });
+    await jest.advanceTimersByTimeAsync(50);
+    connected = false;
+    reply.emit("subscribing");
+    sender.append({ type: "stdout", data: "middle" });
+    sender.append({ type: "exit", exitCode: 0 });
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(stdout.mock.calls).toEqual([["start"]]);
+    connected = true;
+    reply.emit("subscribed", { recovered: false });
+    await jest.advanceTimersByTimeAsync(3000);
+    await expect(pending).resolves.toEqual(
+      expect.objectContaining({ stdout: "startmiddle", exitCode: 0 }),
+    );
+    await expect(sender.delivered).resolves.toBeUndefined();
+    expect(stdout.mock.calls).toEqual([["start"], ["middle"]]);
+    expect(control.publish).toHaveBeenCalledTimes(1);
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "command_output_resume" }),
+    );
+    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches an isolated command once, releases control, and cancels on its operation channel", async () => {

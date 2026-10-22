@@ -50,6 +50,38 @@ describe("operation channels", () => {
     jest.useRealTimers();
   });
 
+  it("retains an opted-in terminal reply until acknowledgement and never restarts on resume", async () => {
+    const handle = jest.fn();
+    await router.dispatch(request("ack"), handle);
+    expect(router.retainCommandOutput("ack")).toBe(true);
+    await router.publish({
+      type: "exit",
+      commandId: "ack",
+      sequence: 0,
+      exitCode: 0,
+    });
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    const resume = {
+      type: "command_output_resume",
+      commandId: "ack",
+      sequence: -1,
+      targetConnectionId: "conn-1",
+    };
+    subs[0].emit("publication", { data: { ...resume, commandId: "other" } });
+    subs[0].emit("publication", {
+      data: { ...resume, targetConnectionId: "other" },
+    });
+    expect(handle).toHaveBeenCalledTimes(1);
+    subs[0].emit("publication", { data: resume });
+    expect(handle).toHaveBeenLastCalledWith(resume);
+    await router.dispatch(request("ack"), handle);
+    expect(handle).toHaveBeenCalledTimes(2);
+    router.closeCommand("ack");
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    await router.dispatch(request("ack"), handle);
+    expect(handle).toHaveBeenCalledTimes(2);
+  });
+
   it("isolates simultaneous command, file and PTY output including fragments", async () => {
     const handle = jest.fn();
     await Promise.all([
