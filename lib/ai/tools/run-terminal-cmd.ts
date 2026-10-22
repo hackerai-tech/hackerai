@@ -1423,12 +1423,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     isCentrifugoSandbox(sandboxInstance) &&
                     !isLocalCommandRelayUnsubscribedError(error)
                   ) {
-                    const output =
+                    let output =
                       handler?.getResult(processId ?? undefined).output || "";
+                    const processStarted = output ? true : undefined;
+                    if (handler) {
+                      const saveMsg = await saveTruncatedOutput({
+                        handler,
+                        sandbox: sandboxInstance,
+                        terminalWriter: createTerminalWriter,
+                        scopeId: chatId,
+                        telemetry: buildTerminalOutputPersistenceTelemetry(),
+                      });
+                      if (saveMsg) output = saveMsg + "\n" + output;
+                    }
                     resolve({
                       result: {
                         status: "failed",
-                        processStarted: output ? true : undefined,
+                        processStarted,
                         exitCode: null,
                         output,
                         error: `Local command outcome is unknown: ${resolveToolErrorMessage(error)}. Do not rerun this command automatically; it may already have executed.`,

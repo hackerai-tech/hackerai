@@ -707,6 +707,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
         let lastStreamSequence = -1;
+        let streamInterrupted = false;
+        let streamRecoveryIncomplete = false;
+        let receivedUnsequencedOutput = false;
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
@@ -961,16 +964,31 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           switch (message.type) {
             case "stdout":
+              receivedUnsequencedOutput ||= sequence === undefined;
               stdout += message.data;
               opts?.onStdout?.(message.data);
               break;
             case "stderr":
+              receivedUnsequencedOutput ||= sequence === undefined;
               stderr += message.data;
               opts?.onStderr?.(message.data);
               break;
             case "exit":
               if (cancelRequested) {
                 resolveCanceled();
+                break;
+              }
+              if (
+                streamRecoveryIncomplete &&
+                (sequence === undefined || receivedUnsequencedOutput)
+              ) {
+                settled = true;
+                cleanup();
+                reject(
+                  new Error(
+                    "Local command output completeness is unknown after an unrecovered relay interruption.",
+                  ),
+                );
                 break;
               }
               settled = true;
@@ -1047,8 +1065,19 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         // Wait for subscription to be fully established before publishing command.
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
-        subscription.on("subscribed", () => {
+        subscription.on("subscribing", () => {
+          if (publishedCommand || commandPublishInFlight)
+            streamInterrupted = true;
+        });
+        subscription.on("subscribed", (ctx) => {
           if (settled) return;
+
+          if (commandDispatchStarted && streamInterrupted) {
+            // Legacy clients do not sequence chunks. Unless broker recovery
+            // succeeded, their next exit cannot prove all output was received.
+            streamRecoveryIncomplete ||= ctx?.recovered !== true;
+            streamInterrupted = false;
+          }
 
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the

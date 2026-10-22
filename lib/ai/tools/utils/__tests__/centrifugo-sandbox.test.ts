@@ -975,6 +975,66 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each([
+      { sequenced: false, recovered: false, succeeds: false },
+      { sequenced: false, recovered: true, succeeds: true },
+      { sequenced: true, recovered: false, succeeds: true },
+    ])(
+      "only reports complete output after reconnect %j",
+      async ({ sequenced, recovered, succeeds }) => {
+        const { promise } = startCommand(
+          createSandbox(),
+          "echo start; sleep 30; echo done",
+          { timeoutMs: 5000 },
+        );
+        const outcome = promise.then(
+          (value) => ({ value, error: undefined }),
+          (error) => ({ value: undefined, error }),
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed", { recovered: false });
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: FIXED_UUID,
+            data: "start\n",
+            ...(sequenced ? { sequence: 0 } : {}),
+          },
+        });
+        sub.emit("subscribing", { code: 1, reason: "transport closed" });
+        sub.emit("subscribed", { recovered });
+        sub.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: FIXED_UUID,
+            data: "done\n",
+            ...(sequenced ? { sequence: 1 } : {}),
+          },
+        });
+        sub.emit("publication", {
+          data: {
+            type: "exit",
+            commandId: FIXED_UUID,
+            exitCode: 0,
+            ...(sequenced ? { sequence: 2 } : {}),
+          },
+        });
+        const result = await outcome;
+        if (succeeds)
+          expect(result.value).toMatchObject({
+            stdout: "start\ndone\n",
+            exitCode: 0,
+          });
+        else
+          expect(result.error?.message).toContain(
+            "output completeness is unknown",
+          );
+        expect(sub.publish).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it("records aggregate bytes for a large command without per-operation traffic logs", async () => {
       const sandbox = createSandbox();
       const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
