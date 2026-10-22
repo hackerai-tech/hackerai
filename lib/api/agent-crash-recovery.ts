@@ -46,10 +46,27 @@ export async function recoverCrashedAgentRun({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REPLAY_TIMEOUT_MS);
   try {
-    await assertUserCanAccessChatHistory(userId, {
-      retryNetworkFailure: true,
-      signal: controller.signal,
+    // The existing access gate checks cancellation around its shared read.
+    // Bound our await too, so a stalled read cannot start recovery after expiry.
+    let rejectGate!: (error: Error) => void;
+    const canceledGate = new Promise<never>((_resolve, reject) => {
+      rejectGate = reject;
     });
+    const onGateAbort = () =>
+      rejectGate(new Error("Agent crash recovery timed out"));
+    controller.signal.addEventListener("abort", onGateAbort, { once: true });
+    try {
+      await Promise.race([
+        assertUserCanAccessChatHistory(userId, {
+          retryNetworkFailure: true,
+          signal: controller.signal,
+        }),
+        canceledGate,
+      ]);
+    } finally {
+      controller.signal.removeEventListener("abort", onGateAbort);
+    }
+    assertWithinBudget();
     const retained = await streams.read<unknown>(runId, "ui", {
       signal: controller.signal,
       // A crashed producer cannot append more data. Drain retained history;
@@ -151,11 +168,13 @@ export async function recoverCrashedAgentRun({
         mode: "agent",
         triggerRunId: runId,
         expectedActiveTriggerRunId: runId,
+        signal: controller.signal,
         finishReason: CLIENT_SAVED_FINISH_REASON,
         wasAborted: true,
       });
       if (result === "stale_run") return "stale";
     }
+    assertWithinBudget();
     console.info(
       JSON.stringify({
         event: "agent_crash_progress_recovered",

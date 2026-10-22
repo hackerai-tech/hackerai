@@ -2088,3 +2088,38 @@ describe("regenerated chat initialization", () => {
     expect(mockMutation).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("saveMessage cancellation", () => {
+  it("aborts a retry wait before a second mutation is sent", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    mockMutation.mockRejectedValue(new TypeError("fetch failed") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const pending = saveMessage({
+        chatId: "chat",
+        userId: "owner",
+        message: {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "progress" }],
+        },
+        signal: controller.signal,
+      });
+      const rejected = expect(pending).rejects.toBeDefined();
+      for (let i = 0; i < 20 && warn.mock.calls.length === 0; i++)
+        await Promise.resolve();
+      expect(warn).toHaveBeenCalled();
+      controller.abort(new Error("fixture deadline"));
+      await rejected;
+      await jest.runOnlyPendingTimersAsync();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+});

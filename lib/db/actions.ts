@@ -9,7 +9,9 @@ import {
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
-import { getConvexClient, setConvexUrl } from "./convex-client";
+import { abortableDelay } from "@/lib/utils/abortable-delay";
+import { createServiceConvexClient } from "./service-client";
+import { getConvexClient, getConvexUrl, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import {
@@ -1009,6 +1011,7 @@ export async function saveMessage({
   finishReason,
   triggerRunId,
   expectedActiveTriggerRunId,
+  signal,
   usage,
   updateOnly,
   isHidden,
@@ -1032,6 +1035,7 @@ export async function saveMessage({
   finishReason?: string;
   triggerRunId?: string;
   expectedActiveTriggerRunId?: string;
+  signal?: AbortSignal;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
@@ -1147,13 +1151,17 @@ export async function saveMessage({
       isHidden,
     };
 
+    // A request-scoped client avoids changing the shared singleton's fetch
+    // options while another request or task is persisting its own result.
+    const client = signal
+      ? createServiceConvexClient(getConvexUrl(), { signal })
+      : getConvexClient();
     for (let attemptIndex = 0; ; attemptIndex++) {
+      signal?.throwIfAborted();
       try {
-        return await getConvexClient().mutation(
-          api.messages.saveMessage,
-          mutationArgs,
-        );
+        return await client.mutation(api.messages.saveMessage, mutationArgs);
       } catch (error) {
+        signal?.throwIfAborted();
         const retryReason = getRetryableSaveMessageErrorReason(error);
         const retryDelayMs = SAVE_MESSAGE_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
@@ -1183,7 +1191,8 @@ export async function saveMessage({
             ...persistenceDiagnostics,
           }),
         );
-        await waitForRetryDelay(retryDelayMs);
+        if (signal) await abortableDelay(retryDelayMs, signal);
+        else await waitForRetryDelay(retryDelayMs);
       }
     }
   } catch (error) {

@@ -246,3 +246,43 @@ it("emits a bounded recovery receipt without transcript content", async () => {
     log.mockRestore();
   }
 });
+
+it("propagates the request deadline into a pending save without a success receipt", async () => {
+  jest.useFakeTimers();
+  const log = jest.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    mockRead.mockResolvedValue(stream(text("first", "progress")));
+    mockSave.mockImplementationOnce(
+      ({ signal }) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        ),
+    );
+    const pending = recoverCrashedAgentRun(input);
+    const rejected = expect(pending).rejects.toBeDefined();
+    await jest.advanceTimersByTimeAsync(15000);
+    await rejected;
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalled();
+  } finally {
+    log.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it("fails closed when the access preflight never settles", async () => {
+  jest.useFakeTimers();
+  try {
+    mockHistoryAccess.mockImplementationOnce(() => new Promise(() => {}));
+    const pending = recoverCrashedAgentRun(input);
+    const rejected = expect(pending).rejects.toThrow("timed out");
+    await jest.advanceTimersByTimeAsync(15000);
+    await rejected;
+    expect(mockRead).not.toHaveBeenCalled();
+    expect(mockSave).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
