@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "fde37a149fc942dd107666441a1989f187d30c3b",
+  "sourceCommit": "0f81f40765f0329006a9a7d2eb97513f56743a9b",
   "license": "Apache-2.0",
   "markdownFileCount": 63,
   "selectableSkillCount": 52,
@@ -67,7 +67,7 @@
     "vulnerabilities/ssti.md": "870f1761369956e06cdc4699df02b2e4c163feff85fea88411475df77f5ab9df",
     "vulnerabilities/subdomain_takeover.md": "6699a954592e9686e17b4b1698a1ca5d8ac68a297ae7f9bfeaaa639f6d0ae69b",
     "vulnerabilities/weak_password_detection.md": "eae7da078a05f9f8db6d93d888b8e6d10808f2d8d36c22777fffdce96a3c1fc8",
-    "vulnerabilities/xss.md": "3eba51fd17b527eccaad21a9f1a07aa638ffd61d85f573c49360229e068bcc97",
+    "vulnerabilities/xss.md": "109a167107153d6d0c24c187948a4a05a6408785866f952f5ec070d19c3b68a8",
     "vulnerabilities/xxe.md": "be155d5f7fb4eace05a90ecd2b031371fefefc88d22fa29893614f978e0bc6ae"
   },
   "licenseSha256": "7db9697134251e314bd8d39257fe170c98b3e2ad9b2ed67e97acaf9613e7b9e3"
