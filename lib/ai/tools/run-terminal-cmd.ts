@@ -1430,7 +1430,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       const saveMsg = await saveTruncatedOutput({
                         handler,
                         sandbox: sandboxInstance,
-                        terminalWriter: createTerminalWriter,
+                        terminalWriter: async (message) => {
+                          try {
+                            await createTerminalWriter(message);
+                          } catch {
+                            // The tool result below still carries the save status
+                            // when the live notification stream has closed.
+                          }
+                        },
                         scopeId: chatId,
                         telemetry: buildTerminalOutputPersistenceTelemetry(),
                       });

@@ -2054,49 +2054,67 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     },
   );
 
-  test("saves large received output when a desktop command outcome is unknown", async () => {
-    const fullOutput = "received terminal line\n".repeat(30_000);
-    const write = jest.fn(async (_path: string, _data: string) => undefined);
-    const run = jest.fn(async (command, opts) => {
-      if (!command.includes("large bounded output"))
-        return { stdout: "", stderr: "", exitCode: 0 };
-      opts?.onStdout?.(fullOutput);
-      throw new Error("relay failed after output");
-    });
-    const { context } = makeContext({
-      sandbox: {
-        sandboxKind: "centrifugo" as const,
-        isWindows: () => false,
-        supportsNativeFileRelay: () => true,
-        getWorkingDirectory: () => "/project",
-        commands: { run },
-        files: { write, list: jest.fn(async () => []) },
-      },
-    });
-    const result = (await runTool(createRunTerminalCmd(context), {
-      command: "large bounded output",
-      brief: "retain output",
-      is_background: false,
-      interactive: false,
-      timeout: 5,
-    })) as {
-      result: { output: string; error?: string; exitCode?: number | null };
-    };
-    expect(
-      run.mock.calls.filter(([command]) =>
-        command.includes("large bounded output"),
-      ),
-    ).toHaveLength(1);
-    expect(write).toHaveBeenCalledWith(
-      expect.stringContaining(".txt"),
-      fullOutput,
-    );
-    expect(result.result.output).toContain(
-      write.mock.calls.find(([, data]) => data === fullOutput)![0],
-    );
-    expect(result.result.exitCode).toBeNull();
-    expect(result.result.error).toContain("outcome is unknown");
-  });
+  test.each([false, true])(
+    "saves large unknown-outcome output with a closed notification stream: %s",
+    async (closedStream) => {
+      const fullOutput = "received terminal line\n".repeat(30_000);
+      const write = jest.fn(async (_path: string, _data: string) => undefined);
+      const run = jest.fn(async (command, opts) => {
+        if (!command.includes("large bounded output"))
+          return { stdout: "", stderr: "", exitCode: 0 };
+        opts?.onStdout?.(fullOutput);
+        throw new Error("relay failed after output");
+      });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          supportsNativeFileRelay: () => true,
+          getWorkingDirectory: () => "/project",
+          commands: { run },
+          files: { write, list: jest.fn(async () => []) },
+        },
+      });
+      const originalWriter = context.writer.write.bind(context.writer);
+      const notificationAttempt = jest.fn();
+      context.writer.write = (part) => {
+        if (
+          part.type === "data-terminal" &&
+          String((part.data as { terminal: string }).terminal).includes(
+            "[Full output (",
+          )
+        ) {
+          notificationAttempt();
+          if (closedStream) throw new Error("notification stream closed");
+        }
+        originalWriter(part);
+      };
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "large bounded output",
+        brief: "retain output",
+        is_background: false,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { output: string; error?: string; exitCode?: number | null };
+      };
+      expect(
+        run.mock.calls.filter(([command]) =>
+          command.includes("large bounded output"),
+        ),
+      ).toHaveLength(1);
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining(".txt"),
+        fullOutput,
+      );
+      expect(result.result.output).toContain(
+        write.mock.calls.find(([, data]) => data === fullOutput)![0],
+      );
+      expect(notificationAttempt).toHaveBeenCalled();
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.error).toContain("outcome is unknown");
+    },
+  );
 
   test("does not retry a foreground command after its tool timeout resolves", async () => {
     let rejectFirstAttempt!: (error: Error) => void;
