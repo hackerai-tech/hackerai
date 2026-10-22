@@ -961,9 +961,15 @@ export class DesktopSandboxBridge {
     };
 
     let nativeInvocationSettled = false;
+    let terminalDeliverySettled = false;
     let settlementReported = false;
-    const reportSettlement = () => {
-      if (!recoveryState.failureReported || settlementReported) return;
+    const reportSettlement = (deadlineReached = false) => {
+      if (
+        !recoveryState.failureReported ||
+        settlementReported ||
+        (!terminalDeliverySettled && !deadlineReached)
+      )
+        return;
       settlementReported = true;
       recoveryState.exhaustedChunks =
         recoveryState.observedChunks - recoveryState.publishedChunks;
@@ -1069,10 +1075,11 @@ export class DesktopSandboxBridge {
             recoveryTask = undefined;
             void streamPublishTail.then(() => {
               if (
-                nativeInvocationSettled &&
-                recoveryState.terminalChunkObserved !== null
+                recoveryState.terminalChunkObserved !== null &&
+                !recoveryTask
               ) {
-                reportSettlement();
+                terminalDeliverySettled = true;
+                if (nativeInvocationSettled) reportSettlement();
               }
             });
           });
@@ -1120,11 +1127,11 @@ export class DesktopSandboxBridge {
         streamPublishTail = operation.catch(() => undefined);
         void streamPublishTail.then(() => {
           if (
-            nativeInvocationSettled &&
             (chunk.type === "exit" || chunk.type === "error") &&
             !recoveryTask
           ) {
-            reportSettlement();
+            terminalDeliverySettled = true;
+            if (nativeInvocationSettled) reportSettlement();
           }
         });
         return operation;
@@ -1182,10 +1189,7 @@ export class DesktopSandboxBridge {
       }
     } finally {
       const deadline = this.commandDeliveryDeadlines.get(commandId);
-      if (
-        recoveryState.terminalChunkObserved === null &&
-        deadline !== undefined
-      ) {
+      if (!terminalDeliverySettled && deadline !== undefined) {
         // IPC invocation completion does not wait for Channel delivery. Preserve
         // ownership for callbacks still in transit, but never beyond the window.
         const timer = setTimeout(
@@ -1194,6 +1198,7 @@ export class DesktopSandboxBridge {
             if (this.commandDeliveryDeadlines.get(commandId) === deadline) {
               this.commandDeliveryDeadlines.delete(commandId);
             }
+            reportSettlement(true);
           },
           Math.max(0, deadline - Date.now()),
         );
@@ -1201,7 +1206,7 @@ export class DesktopSandboxBridge {
       } else {
         this.commandDeliveryDeadlines.delete(commandId);
       }
-      reportSettlement();
+      reportSettlement(!canPublish());
       this.activeCommands.delete(commandId);
     }
   }
@@ -1217,7 +1222,8 @@ export class DesktopSandboxBridge {
     const outcome =
       recoveryState.exhaustedChunks > 0
         ? "incomplete"
-        : recoveryState.publishedChunks === recoveryState.observedChunks
+        : recoveryState.publishedChunks === recoveryState.observedChunks &&
+            recoveryState.terminalChunkPublished
           ? "recovered"
           : "interrupted";
     const properties = {

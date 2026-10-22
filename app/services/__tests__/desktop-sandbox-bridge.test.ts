@@ -2113,6 +2113,74 @@ describe("forwardChunk", () => {
     },
   );
 
+  it.each([true, false])(
+    "waits for a late terminal outcome after stdout recovers (terminal arrives: %s)",
+    async (terminalArrives) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const done = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
+        if (cmd === "execute_stream_command") await done;
+        return undefined;
+      };
+      let fail = true;
+      mockSubscription.publish.mockImplementation(async () => {
+        if (fail) throw { code: 1, message: "timeout" };
+      });
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      const spies = ["warn", "error", "info"].map((method) =>
+        jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+      );
+      try {
+        await bridge.start();
+        getPublicationHandler()({
+          data: {
+            type: "command",
+            commandId: "cmd-late-terminal",
+            command: "test",
+            timeout: 30_000,
+            targetConnectionId: "conn-123",
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        capturedChannel!.onmessage!({ type: "stdout", data: "retained" });
+        await jest.advanceTimersByTimeAsync(750);
+        fail = false;
+        await jest.advanceTimersByTimeAsync(2_000);
+        finishCommand();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(captureAuthenticatedEvent).not.toHaveBeenCalledWith(
+          "desktop_stream_command_settled",
+          expect.anything(),
+        );
+        fail = true;
+        if (terminalArrives)
+          capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+        await jest.advanceTimersByTimeAsync(65_000);
+        const settlements = (
+          captureAuthenticatedEvent as jest.Mock
+        ).mock.calls.filter(
+          ([event]) => event === "desktop_stream_command_settled",
+        );
+        expect(settlements).toHaveLength(1);
+        expect(settlements[0][1]).toMatchObject({
+          outcome: terminalArrives ? "incomplete" : "interrupted",
+          terminalChunkPublished: false,
+        });
+      } finally {
+        finishCommand();
+        await bridge.stop();
+        await jest.advanceTimersByTimeAsync(5_000);
+        spies.forEach((spy) => spy.mockRestore());
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it.each(["initial", "settlement"])(
     "does not publish an old command after restart during its %s retry wait",
     async (phase) => {
@@ -2478,6 +2546,7 @@ describe("forwardChunk", () => {
         }),
       );
 
+      await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
       finishCommand();
       await jest.advanceTimersByTimeAsync(0);
       expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
@@ -2487,11 +2556,11 @@ describe("forwardChunk", () => {
           connectionId: "conn-123",
           commandId: "cmd-publish-recovery",
           outcome: "recovered",
-          observedChunks: 1,
-          publishedChunks: 1,
+          observedChunks: 2,
+          publishedChunks: 2,
           exhaustedChunks: 0,
-          terminalChunkObserved: null,
-          terminalChunkPublished: false,
+          terminalChunkObserved: "exit",
+          terminalChunkPublished: true,
           sequenceComplete: true,
           durationMs: 250,
         },
@@ -2510,11 +2579,11 @@ describe("forwardChunk", () => {
         expect.objectContaining({
           level: "info",
           outcome: "recovered",
-          observed_chunks: 1,
-          published_chunks: 1,
+          observed_chunks: 2,
+          published_chunks: 2,
           exhausted_chunks: 0,
-          terminal_chunk_observed: null,
-          terminal_chunk_published: false,
+          terminal_chunk_observed: "exit",
+          terminal_chunk_published: true,
           sequence_complete: true,
           duration_ms: 250,
         }),
