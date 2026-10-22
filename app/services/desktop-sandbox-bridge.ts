@@ -272,6 +272,9 @@ export class DesktopSandboxBridge {
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
   private commandDeliveryDeadlines = new Map<string, number>();
+  private commandDeliveryCleanupTimers = new Set<
+    ReturnType<typeof setTimeout>
+  >();
   private isStoppingOrStopped = true;
   private startupGeneration = 0;
   private config: DesktopBridgeConfig;
@@ -457,6 +460,8 @@ export class DesktopSandboxBridge {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
     this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
@@ -955,6 +960,21 @@ export class DesktopSandboxBridge {
       terminalChunkPublished: false,
     };
 
+    let nativeInvocationSettled = false;
+    let settlementReported = false;
+    const reportSettlement = () => {
+      if (!recoveryState.failureReported || settlementReported) return;
+      settlementReported = true;
+      recoveryState.exhaustedChunks =
+        recoveryState.observedChunks - recoveryState.publishedChunks;
+      this.reportDesktopStreamCommandSettlement(
+        commandId,
+        recoveryState,
+        Date.now() - commandStartedAt,
+        telemetryContext,
+      );
+    };
+
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
@@ -1047,6 +1067,14 @@ export class DesktopSandboxBridge {
           })
           .finally(() => {
             recoveryTask = undefined;
+            void streamPublishTail.then(() => {
+              if (
+                nativeInvocationSettled &&
+                recoveryState.terminalChunkObserved !== null
+              ) {
+                reportSettlement();
+              }
+            });
           });
       };
 
@@ -1090,6 +1118,15 @@ export class DesktopSandboxBridge {
           }
         });
         streamPublishTail = operation.catch(() => undefined);
+        void streamPublishTail.then(() => {
+          if (
+            nativeInvocationSettled &&
+            (chunk.type === "exit" || chunk.type === "error") &&
+            !recoveryTask
+          ) {
+            reportSettlement();
+          }
+        });
         return operation;
       };
 
@@ -1106,6 +1143,7 @@ export class DesktopSandboxBridge {
         // Delivery can outlive the process. A later Stop must still acknowledge
         // that there is no native process left to cancel.
         this.activeCommands.delete(commandId);
+        nativeInvocationSettled = true;
       }
       const settledDelivery = streamPublishTail.then(flushPending);
       streamPublishTail = settledDelivery.catch(() => undefined);
@@ -1143,13 +1181,27 @@ export class DesktopSandboxBridge {
         });
       }
     } finally {
-      this.commandDeliveryDeadlines.delete(commandId);
-      this.reportDesktopStreamCommandSettlement(
-        commandId,
-        recoveryState,
-        Date.now() - commandStartedAt,
-        telemetryContext,
-      );
+      const deadline = this.commandDeliveryDeadlines.get(commandId);
+      if (
+        recoveryState.terminalChunkObserved === null &&
+        deadline !== undefined
+      ) {
+        // IPC invocation completion does not wait for Channel delivery. Preserve
+        // ownership for callbacks still in transit, but never beyond the window.
+        const timer = setTimeout(
+          () => {
+            this.commandDeliveryCleanupTimers.delete(timer);
+            if (this.commandDeliveryDeadlines.get(commandId) === deadline) {
+              this.commandDeliveryDeadlines.delete(commandId);
+            }
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+        this.commandDeliveryCleanupTimers.add(timer);
+      } else {
+        this.commandDeliveryDeadlines.delete(commandId);
+      }
+      reportSettlement();
       this.activeCommands.delete(commandId);
     }
   }
@@ -2074,6 +2126,8 @@ export class DesktopSandboxBridge {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();

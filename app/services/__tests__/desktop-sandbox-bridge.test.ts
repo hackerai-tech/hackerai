@@ -2004,7 +2004,7 @@ describe("forwardChunk", () => {
     }
   });
 
-  it.each(["finished", "running"])(
+  it.each(["finished", "running", "late callbacks"])(
     "recovers output after a prolonged outage while native command is %s",
     async (nativeState) => {
       jest.useFakeTimers();
@@ -2049,10 +2049,14 @@ describe("forwardChunk", () => {
           code: 1,
           reason: "transport closed",
         });
+        if (nativeState === "late callbacks") {
+          finishCommand();
+          await jest.advanceTimersByTimeAsync(0);
+        }
         capturedChannel!.onmessage!({ type: "stdout", data: "before" });
         await jest.advanceTimersByTimeAsync(750);
         capturedChannel!.onmessage!({ type: "stderr", data: "after" });
-        if (nativeState === "finished") {
+        if (nativeState !== "running") {
           capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
           finishCommand();
         }
