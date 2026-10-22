@@ -11,6 +11,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxConnectionChannel,
+  DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type CommandResponseMessage,
   type CommandMessage,
   type FileRequestMessage,
@@ -679,8 +680,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             this.connectionInfo.connectionId,
           );
 
-      // Generate short-lived JWT for this subscription (30s + command timeout)
-      const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
+      // Desktop retains output across relay outages after native execution ends.
+      // Keep the receiver and its token alive for that bounded delivery window;
+      // this does not extend native execution or change CLI command deadlines.
+      const maxWaitTime =
+        timeout +
+        5000 +
+        (this.connectionInfo.isDesktop ? DESKTOP_COMMAND_DELIVERY_GRACE_MS : 0);
+      const tokenExpSeconds = Math.ceil(maxWaitTime / 1000) + 30;
       const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
 
       // Create a centrifuge client for this command
@@ -710,8 +717,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
-
-        const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
         // Timing diagnostics — track which phase we reached before timeout
         const t0 = Date.now();

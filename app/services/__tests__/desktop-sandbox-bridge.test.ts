@@ -1981,6 +1981,7 @@ describe("forwardChunk", () => {
         },
       ]);
       expect(executions).toBe(1);
+      await jest.advanceTimersByTimeAsync(1_000);
       expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
         "desktop_stream_command_settled",
         expect.objectContaining({
@@ -2002,6 +2003,111 @@ describe("forwardChunk", () => {
       jest.useRealTimers();
     }
   });
+
+  it.each(["finished", "running"])(
+    "recovers output after a prolonged outage while native command is %s",
+    async (nativeState) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const done = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      let executions = 0;
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
+        if (cmd === "execute_stream_command") {
+          executions++;
+          await done;
+        }
+        return undefined;
+      };
+      let online = false;
+      const delivered: unknown[] = [];
+      mockSubscription.publish.mockImplementation(async (message) => {
+        if (!online) throw { code: 1, message: "timeout" };
+        delivered.push(message);
+      });
+      const onTerminated = jest.fn();
+      const bridge = new DesktopSandboxBridge(buildConfig({ onTerminated }));
+      const spies = ["warn", "error", "info"].map((method) =>
+        jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+      );
+      try {
+        await bridge.start();
+        getPublicationHandler()({
+          data: {
+            type: "command",
+            commandId: "cmd-long-outage",
+            command: "test",
+            timeout: 30_000,
+            targetConnectionId: "conn-123",
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        getSubscriptionHandler("subscribing")({
+          code: 1,
+          reason: "transport closed",
+        });
+        capturedChannel!.onmessage!({ type: "stdout", data: "before" });
+        await jest.advanceTimersByTimeAsync(750);
+        capturedChannel!.onmessage!({ type: "stderr", data: "after" });
+        if (nativeState === "finished") {
+          capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+          finishCommand();
+        }
+        await jest.advanceTimersByTimeAsync(40_000);
+        expect(onTerminated).not.toHaveBeenCalled();
+        expect(delivered).toEqual([]);
+        online = true;
+        getSubscriptionHandler("subscribed")({
+          recovered: true,
+          wasRecovering: true,
+        });
+        await jest.advanceTimersByTimeAsync(2_000);
+        expect(delivered.slice(0, 2)).toEqual([
+          {
+            type: "stdout",
+            commandId: "cmd-long-outage",
+            data: "before",
+            sequence: 0,
+          },
+          {
+            type: "stderr",
+            commandId: "cmd-long-outage",
+            data: "after",
+            sequence: 1,
+          },
+        ]);
+        if (nativeState === "running") {
+          capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+          finishCommand();
+          await jest.advanceTimersByTimeAsync(0);
+        }
+        expect(delivered).toHaveLength(3);
+        expect(delivered[2]).toEqual({
+          type: "exit",
+          commandId: "cmd-long-outage",
+          exitCode: 0,
+          sequence: 2,
+        });
+        expect(executions).toBe(1);
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_stream_command_settled",
+          expect.objectContaining({
+            sequenceComplete: true,
+            publishedChunks: 3,
+          }),
+        );
+      } finally {
+        finishCommand();
+        await bridge.stop();
+        await jest.advanceTimersByTimeAsync(5_000);
+        spies.forEach((spy) => spy.mockRestore());
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it.each(["initial", "settlement"])(
     "does not publish an old command after restart during its %s retry wait",
@@ -2203,12 +2309,13 @@ describe("forwardChunk", () => {
             await capturedChannel!.onmessage!({ type: "stdout", data: "x" });
         }
         await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
-        if (failure === "unavailable")
+        if (failure === "unavailable" || failure === "expired")
           mockSubscription.publish.mockRejectedValue(error);
-        if (failure === "expired") await jest.advanceTimersByTimeAsync(4_000);
+        if (failure === "expired") await jest.advanceTimersByTimeAsync(40_000);
         if (failure === "stopped") await bridge.stop();
         finishCommand();
-        await jest.advanceTimersByTimeAsync(750);
+        // Recovery now continues through the bounded delivery grace period.
+        await jest.advanceTimersByTimeAsync(40_000);
         expect(executions).toBe(1);
         expect(
           mockSubscription.publish.mock.calls.some(
@@ -2457,7 +2564,7 @@ describe("forwardChunk", () => {
           targetConnectionId: "conn-123",
         },
       });
-      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(27_000);
 
       const chunk = capturedChannel!.onmessage!({
         type: "stdout",
