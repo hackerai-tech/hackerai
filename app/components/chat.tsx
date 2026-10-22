@@ -983,6 +983,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               ) {
                 queuedAdmissionRef.current(request.chatId, queuedMessageId);
               }
+              // Only expose the saved-task route after attachment staging and
+              // user-message persistence have succeeded.
+              if (
+                finalizeNewChatRoute({
+                  chatId: activeChatIdRef.current,
+                  isAbort: false,
+                  isExistingChat: isExistingChatRef.current,
+                })
+              ) {
+                removeDraft("new");
+                setIsExistingChat(true);
+              }
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
                 agentLongRunCorrelationRef.current = {
@@ -2240,6 +2252,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     regenerate,
     setMessages,
     isExistingChat,
+    isUserMessagePersisted: (messageId) =>
+      !!paginatedMessageResults?.some((message) => message.id === messageId),
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,

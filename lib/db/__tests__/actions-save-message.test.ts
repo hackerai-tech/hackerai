@@ -1997,6 +1997,21 @@ describe("initial chat persistence diagnostics", () => {
     },
   );
 
+  it("persists the selected environment with the first task write", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await handleInitialChatAndUserMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      messages,
+      chat: null,
+      sandboxType: "desktop",
+    });
+    expect(mockMutation.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ sandboxType: "desktop" }),
+    );
+  });
+
   it("persists the chat and message in order even if diagnostic reporting throws", async () => {
     const { handleInitialChatAndUserMessage, mockMutation } =
       await loadSaveMessageWithMocks();

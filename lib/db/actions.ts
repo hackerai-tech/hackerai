@@ -942,11 +942,13 @@ export async function saveChat({
   userId,
   title,
   projectId,
+  sandboxType,
 }: {
   id: string;
   userId: string;
   title: string;
   projectId?: string;
+  sandboxType?: string;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -954,6 +956,7 @@ export async function saveChat({
     userId,
     title,
     ...(projectId ? { projectId } : {}),
+    ...(sandboxType ? { sandboxType } : {}),
   };
 
   try {
@@ -1214,6 +1217,7 @@ export async function handleInitialChatAndUserMessage({
   chat,
   isHidden,
   projectId,
+  sandboxType,
   onPersistenceStep,
 }: {
   chatId: string;
@@ -1223,6 +1227,7 @@ export async function handleInitialChatAndUserMessage({
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
   projectId?: string;
+  sandboxType?: string;
   onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
   const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
@@ -1259,6 +1264,7 @@ export async function handleInitialChatAndUserMessage({
       userId,
       title,
       projectId,
+      sandboxType,
     });
   } else {
     // Check if user owns the chat

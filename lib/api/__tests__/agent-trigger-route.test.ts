@@ -185,6 +185,22 @@ describe("web request correlation at Agent dispatch", () => {
       }),
     } as any);
 
+  it.each(["desktop", "desktop-environment:test", "e2b"])(
+    "saves %s at admission before dispatch",
+    async (sandboxPreference) => {
+      const response = await start("/api/agent", "full_access", requestId, {
+        sandboxPreference,
+      });
+      expect(response.status).toBe(200);
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxType: sandboxPreference }),
+      );
+      expect(
+        mockHandleInitialChatAndUserMessage.mock.invocationCallOrder[0],
+      ).toBeLessThan(mockTriggerTask.mock.invocationCallOrder[0]);
+    },
+  );
+
   it.each([
     ["send", {}],
     ["regenerate", { regenerate: true, messages: [] }],

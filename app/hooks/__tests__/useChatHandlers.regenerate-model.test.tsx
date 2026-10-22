@@ -624,3 +624,83 @@ describe("useChatHandlers regenerate model", () => {
     );
   });
 });
+
+describe("failed local attachment admission", () => {
+  const localMessages = [
+    {
+      id: "unsaved-user-turn",
+      role: "user",
+      parts: [
+        { type: "text", text: "Read the attached fixtures" },
+        ...["txt", "pdf", "docx"].map((extension) => ({
+          type: "file",
+          mediaType: "application/octet-stream",
+          url: "",
+          filename: `fixture.${extension}`,
+          storage: "local-desktop",
+          localAttachmentId: `local-${extension}`,
+          localPath: `/fixtures/file.${extension}`,
+        })),
+      ],
+    },
+  ] as ChatMessage[];
+
+  it.each([false, true])(
+    "retries the original unpersisted turn with source paths (existing task: %s)",
+    async (isExistingChat) => {
+      mockRegenerate.mockClear();
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "staging-failure",
+          messages: localMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat,
+          isUserMessagePersisted: () => false,
+          status: "error",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        await result.current.handleRetry();
+      });
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+      expect(mockRegenerate).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          regenerate: false,
+          messages: localMessages,
+          useClientMessagesForRegenerate: true,
+        }),
+      });
+      expect(localMessages[0].id).toBe("unsaved-user-turn");
+    },
+  );
+
+  it("keeps regeneration semantics once the same user turn is persisted", async () => {
+    mockRegenerate.mockClear();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "accepted-task",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: () => true,
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(mockRegenerate).toHaveBeenCalledWith({
+      body: expect.objectContaining({ regenerate: true }),
+    });
+  });
+});

@@ -64,6 +64,7 @@ interface UseChatHandlersProps {
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
   isExistingChat: boolean;
+  isUserMessagePersisted?: (messageId: string) => boolean;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
@@ -108,6 +109,7 @@ export const useChatHandlers = ({
   regenerate,
   setMessages,
   isExistingChat,
+  isUserMessagePersisted,
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
@@ -630,7 +632,9 @@ export const useChatHandlers = ({
       return false;
     }
     if (sendDisabledReasonRef.current) return false;
-    if (!isExistingChat) {
+    // Local staging can fail before a task exists. Keep its optimistic message
+    // and source paths mounted until the server admits the run.
+    if (!isExistingChat && !hasLocalDesktopFiles) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
@@ -868,7 +872,15 @@ export const useChatHandlers = ({
     const messagesToLastUser = getMessagesUpToLastRealUser(messages);
     setMessages(messagesToLastUser);
 
+    // Admission may fail before the user message is persisted. Retrying that
+    // turn must save the same message ID instead of regenerating absent history.
+    const retryUnpersistedMessage =
+      !!lastUserId &&
+      (isUserMessagePersisted
+        ? !isUserMessagePersisted(lastUserId)
+        : !isExistingChat);
     const shouldSendClientMessagesForRegenerate =
+      retryUnpersistedMessage ||
       hasRestageableLocalDesktopAttachments(messagesToLastUser);
     const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
       ? messagesToLastUser
@@ -892,7 +904,7 @@ export const useChatHandlers = ({
           mode: chatModeRef.current,
           messages: persistentRegenerateMessages,
           todos: cleanedTodos,
-          regenerate: true,
+          regenerate: !retryUnpersistedMessage,
           agentRunRequestId,
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           sandboxPreference,
