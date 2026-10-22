@@ -100,6 +100,64 @@ function stripeMock(currentInvoice: Stripe.Invoice) {
 }
 
 describe("canceled renewal invoice", () => {
+  it("keeps retries blocked until an already-void renewal's payment intent is canceled", async () => {
+    const { stripe, voidInvoice, listInvoicePayments, retrieveIntent } =
+      stripeMock(
+        invoice({
+          status: "void",
+          status_transitions: { voided_at: endedAt + 1 },
+        }),
+      );
+    jest.mocked(stripe.subscriptions.list).mockResolvedValue({
+      data: [automaticSubscription],
+      has_more: false,
+    } as never);
+    listInvoicePayments.mockResolvedValue({
+      has_more: false,
+      data: [
+        {
+          invoice: "in_old",
+          status: "canceled",
+          payment: { type: "payment_intent", payment_intent: "pi_old" },
+        },
+      ],
+    } as never);
+    retrieveIntent.mockResolvedValue({
+      id: "pi_old",
+      status: "requires_action",
+    } as never);
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).rejects.toThrow("authentication is unverified");
+    expect(voidInvoice).not.toHaveBeenCalled();
+    retrieveIntent.mockResolvedValue({
+      id: "pi_old",
+      status: "canceled",
+    } as never);
+    await expect(
+      recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(true);
+    expect(voidInvoice).not.toHaveBeenCalled();
+  });
+
+  it("keeps an already-void renewal blocked when invoice payments are incomplete or open", async () => {
+    const { stripe, listInvoicePayments } = stripeMock(
+      invoice({
+        status: "void",
+        status_transitions: { voided_at: endedAt + 1 },
+      }),
+    );
+    for (const paymentList of [
+      { has_more: true, data: [] },
+      { has_more: false, data: [{ status: "open" }] },
+    ]) {
+      listInvoicePayments.mockResolvedValue(paymentList as never);
+      await expect(
+        voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+      ).rejects.toThrow("still has a payment");
+    }
+  });
+
   it("retires a default authentication attempt after automatic cancellation", async () => {
     const {
       stripe,
@@ -237,9 +295,12 @@ describe("canceled renewal invoice", () => {
       data: [automaticSubscription],
       has_more: false,
     } as never);
-    retrieveInvoice
-      .mockResolvedValueOnce(invoice() as never)
-      .mockResolvedValue(invoice({ status: "void" }) as never);
+    retrieveInvoice.mockResolvedValueOnce(invoice() as never).mockResolvedValue(
+      invoice({
+        status: "void",
+        status_transitions: { voided_at: endedAt + 1 },
+      }) as never,
+    );
     await expect(
       recoverCanceledRenewalsForCheckout(stripe, "cus_123", endedAt + 120),
     ).resolves.toBe(true);
@@ -402,13 +463,18 @@ describe("canceled renewal invoice", () => {
       ).resolves.toBe("voided");
       expect(voidInvoice).toHaveBeenCalledWith("in_old");
 
-      retrieveInvoice.mockResolvedValue(invoice({ status: "void" }) as never);
+      retrieveInvoice.mockResolvedValue(
+        invoice({
+          status: "void",
+          status_transitions: { voided_at: endedAt + 1 },
+        }) as never,
+      );
       await expect(
         hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 120),
       ).resolves.toBe(false);
       await expect(
         voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
-      ).resolves.toBe("not_applicable");
+      ).resolves.toBe("voided");
       expect(voidInvoice).toHaveBeenCalledTimes(1);
     },
   );
