@@ -3532,6 +3532,7 @@ describe("POST /api/subscription/webhook", () => {
         status: "void",
         amount_paid: 0,
         amount_remaining: 0,
+        status_transitions: { voided_at: subscription.ended_at },
       } as never);
       expect((await POST(makeWebhookRequest())).status).toBe(200);
       expect(mockVoidInvoice).toHaveBeenCalledTimes(1);
