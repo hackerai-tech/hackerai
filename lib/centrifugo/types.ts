@@ -3,6 +3,8 @@ export const DESKTOP_COMMAND_DELIVERY_GRACE_MS = 30_000;
 
 export interface CommandMessage {
   type: "command";
+  /** Opt-in; old clients ignore this and retain legacy stream behavior. */
+  outputProtocol?: "ack-v1";
   commandId: string;
   command: string;
   /** Optional process stdin. Base64 keeps arbitrary terminal bytes JSON-safe. */
@@ -32,6 +34,7 @@ export interface CommandCancelResultMessage {
 
 export interface StdoutMessage {
   type: "stdout";
+  outputProtocol?: "ack-v1";
   commandId: string;
   data: string;
   sequence?: number;
@@ -39,6 +42,7 @@ export interface StdoutMessage {
 
 export interface StderrMessage {
   type: "stderr";
+  outputProtocol?: "ack-v1";
   commandId: string;
   data: string;
   sequence?: number;
@@ -46,6 +50,7 @@ export interface StderrMessage {
 
 export interface ExitMessage {
   type: "exit";
+  outputProtocol?: "ack-v1";
   commandId: string;
   exitCode: number;
   pid?: number;
@@ -54,6 +59,7 @@ export interface ExitMessage {
 
 export interface ErrorMessage {
   type: "error";
+  outputProtocol?: "ack-v1";
   commandId: string;
   message: string;
   sequence?: number;
@@ -211,8 +217,15 @@ export interface PtyErrorMessage {
   message: string;
 }
 
+export interface CommandOutputUnavailableMessage {
+  type: "command_output_unavailable";
+  commandId: string;
+  message: string;
+}
+
 /** Command-only response subset — used by one-shot command execution. */
 export type CommandResponseMessage =
+  | CommandOutputUnavailableMessage
   | CommandMessage
   | CommandCancelMessage
   | CommandCancelResultMessage

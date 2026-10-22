@@ -6,6 +6,7 @@ import {
 import { CentrifugoMessageReassembler } from "../centrifugo-transport";
 
 class Subscription extends EventEmitter {
+  presence = jest.fn().mockResolvedValue({ clients: {} });
   subscribe = jest.fn();
   unsubscribe = jest.fn();
   ready = jest.fn().mockResolvedValue(undefined);
@@ -48,6 +49,124 @@ describe("operation channels", () => {
     router.stop();
     jest.useRealTimers();
   });
+
+  it("retains an opted-in terminal reply until acknowledgement and never restarts on resume", async () => {
+    const handle = jest.fn();
+    await router.dispatch(request("ack"), handle);
+    expect(router.retainCommandOutput("ack")).toBe(true);
+    await router.publish({
+      type: "exit",
+      commandId: "ack",
+      sequence: 0,
+      exitCode: 0,
+    });
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    const resume = {
+      type: "command_output_resume",
+      commandId: "ack",
+      sequence: -1,
+      targetConnectionId: "conn-1",
+    };
+    subs[0].emit("publication", { data: { ...resume, commandId: "other" } });
+    subs[0].emit("publication", {
+      data: { ...resume, targetConnectionId: "other" },
+    });
+    expect(handle).toHaveBeenCalledTimes(1);
+    subs[0].emit("publication", { data: resume });
+    expect(handle).toHaveBeenLastCalledWith(resume);
+    await router.dispatch(request("ack"), handle);
+    expect(handle).toHaveBeenCalledTimes(2);
+    router.closeCommand("ack");
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    await router.dispatch(request("ack"), handle);
+    expect(handle).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([true, false])(
+    "fails only the overflowing operation, stops its producer and suppresses success (isolated=%s)",
+    async (isolated) => {
+      const stopOutput = jest.fn();
+      router = new OperationChannelRouter(
+        client,
+        "user-1",
+        "conn-1",
+        stopOutput,
+      );
+      const handle = jest.fn();
+      await router.dispatch(
+        { ...request("noisy"), operationChannel: isolated },
+        handle,
+      );
+      await router.dispatch(
+        { ...request("quiet"), operationChannel: isolated },
+        handle,
+      );
+      const legacyPublish = jest.fn().mockResolvedValue(undefined);
+      const publish = isolated ? subs[0].publish : legacyPublish;
+      let release!: () => void;
+      publish.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const first = router.publish(
+        { type: "stdout", commandId: "noisy", data: "first" },
+        legacyPublish,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      const cancel = {
+        type: "command_cancel",
+        commandId: "noisy",
+        targetConnectionId: "conn-1",
+      };
+      if (isolated) subs[0].emit("publication", { data: cancel });
+      else await router.dispatch(cancel, handle);
+      expect(handle).toHaveBeenCalledWith(cancel);
+      const rest = Array.from({ length: 256 }, () =>
+        router.publish(
+          { type: "stdout", commandId: "noisy", data: "queued" },
+          legacyPublish,
+        ),
+      );
+      const results = await Promise.allSettled([first, ...rest]);
+      expect(results.every((result) => result.status === "rejected")).toBe(
+        true,
+      );
+      expect(stopOutput).toHaveBeenCalledTimes(1);
+      expect(stopOutput).toHaveBeenCalledWith({ kind: "command", id: "noisy" });
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          commandId: "noisy",
+          message: expect.stringContaining("incomplete"),
+        }),
+      );
+      release();
+      await router.publish(
+        { type: "exit", commandId: "noisy", exitCode: 0 },
+        legacyPublish,
+      );
+      await router.publish(
+        { type: "exit", commandId: "quiet", exitCode: 0 },
+        legacyPublish,
+      );
+      expect(publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "exit", commandId: "noisy" }),
+      );
+      expect(isolated ? subs[1].publish : legacyPublish).toHaveBeenCalledWith({
+        type: "exit",
+        commandId: "quiet",
+        exitCode: 0,
+      });
+      await router.dispatch(
+        { ...request("noisy"), operationChannel: isolated },
+        handle,
+      );
+      expect(handle).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it("isolates simultaneous command, file and PTY output including fragments", async () => {
     const handle = jest.fn();
@@ -294,6 +413,35 @@ describe("operation channels", () => {
     router.stop();
     await expect(pending).resolves.toBeUndefined();
     expect(subs[0].publish).not.toHaveBeenCalled();
+  });
+
+  it("requires the same user's receiver on the exact command route", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].presence.mockResolvedValue({
+      clients: {
+        desktop: { user: "user-1", connInfo: { connectionId: "conn-1" } },
+        stranger: { user: "other-user" },
+      },
+    });
+    await expect(router.hasCommandReceiver("cmd")).resolves.toBe(false);
+    await expect(router.hasCommandReceiver("other-command")).resolves.toBe(
+      false,
+    );
+    subs[0].presence.mockResolvedValue({
+      clients: { worker: { user: "user-1" } },
+    });
+    await expect(router.hasCommandReceiver("cmd")).resolves.toBe(true);
+    let finish!: (value: unknown) => void;
+    subs[0].presence.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = router.hasCommandReceiver("cmd");
+    router.stop();
+    finish({ clients: { worker: { user: "user-1" } } });
+    await expect(pending).resolves.toBe(false);
   });
 
   it("does not publish unknown or previous-connection output through the legacy callback", async () => {
