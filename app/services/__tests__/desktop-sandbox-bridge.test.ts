@@ -2332,88 +2332,93 @@ describe("forwardChunk", () => {
     }
   });
 
-  it("retains recovered output until the command receiver rejoins", async () => {
-    jest.useFakeTimers();
-    let finishCommand!: () => void;
-    const done = new Promise<void>((resolve) => {
-      finishCommand = resolve;
-    });
-    let executions = 0;
-    mockInvokeHandler = async (cmd) => {
-      if (cmd === "desktop_file_request")
-        return { kind: "not_file", path: "." };
-      if (cmd === "execute_stream_command") {
-        executions += 1;
-        await done;
-      }
-      return undefined;
-    };
-    const bridge = new DesktopSandboxBridge(buildConfig());
-    const spies = ["warn", "error", "info"].map((method) =>
-      jest.spyOn(console, method as "warn").mockImplementation(() => {}),
-    );
-    try {
-      await bridge.start();
-      const reply = {
-        ...mockSubscription,
-        on: jest.fn(),
-        publish: jest.fn().mockResolvedValue(undefined),
-        presence: jest.fn().mockResolvedValue({
-          clients: { desktop: { connInfo: { connectionId: "conn-123" } } },
-        }),
-        unsubscribe: jest.fn(),
-        removeAllListeners: jest.fn(),
+  it.each(["absent", "lookup failure"])(
+    "retains recovered output while receiver presence is %s",
+    async (presenceState) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const done = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      let executions = 0;
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
+        if (cmd === "execute_stream_command") {
+          executions += 1;
+          await done;
+        }
+        return undefined;
       };
-      mockClient.newSubscription.mockReturnValueOnce(reply);
-      getPublicationHandler()({
-        data: {
-          type: "command",
-          commandId: "receiver-late",
-          command: "test",
-          targetConnectionId: "conn-123",
-          operationChannel: true,
-        },
-      });
-      await jest.advanceTimersByTimeAsync(0);
-      capturedChannel!.onmessage!({ type: "stdout", data: "before" });
-      await jest.advanceTimersByTimeAsync(0);
-      getClientHandler("connected")({ transport: "websocket" });
-      capturedChannel!.onmessage!({ type: "stdout", data: "after" });
-      capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
-      finishCommand();
-      await jest.advanceTimersByTimeAsync(5_000);
-      // A successful broker publish would silently drop these while only the
-      // Desktop subscription is present (the relay stores no history).
-      expect(reply.publish.mock.calls.map(([m]) => m.type)).toEqual([
-        "operation_ready",
-        "stdout",
-      ]);
-      expect(reply.unsubscribe).not.toHaveBeenCalled();
-      reply.presence.mockResolvedValue({
-        clients: {
-          desktop: { connInfo: { connectionId: "conn-123" } },
-          worker: { user: "user-456" },
-        },
-      });
-      await jest.advanceTimersByTimeAsync(2_000);
-      expect(reply.publish.mock.calls.map(([m]) => m.type)).toEqual([
-        "operation_ready",
-        "stdout",
-        "stdout",
-        "exit",
-      ]);
-      expect(
-        reply.publish.mock.calls.slice(2).map(([m]) => m.sequence),
-      ).toEqual([1, 2]);
-      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
-      expect(executions).toBe(1);
-    } finally {
-      finishCommand();
-      await bridge.stop();
-      spies.forEach((spy) => spy.mockRestore());
-      jest.useRealTimers();
-    }
-  });
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      const spies = ["warn", "error", "info"].map((method) =>
+        jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+      );
+      try {
+        await bridge.start();
+        const reply = {
+          ...mockSubscription,
+          on: jest.fn(),
+          publish: jest.fn().mockResolvedValue(undefined),
+          presence: jest.fn().mockResolvedValue({
+            clients: { desktop: { connInfo: { connectionId: "conn-123" } } },
+          }),
+          unsubscribe: jest.fn(),
+          removeAllListeners: jest.fn(),
+        };
+        if (presenceState === "lookup failure")
+          reply.presence.mockRejectedValue(new Error("presence unavailable"));
+        mockClient.newSubscription.mockReturnValueOnce(reply);
+        getPublicationHandler()({
+          data: {
+            type: "command",
+            commandId: "receiver-late",
+            command: "test",
+            targetConnectionId: "conn-123",
+            operationChannel: true,
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        capturedChannel!.onmessage!({ type: "stdout", data: "before" });
+        await jest.advanceTimersByTimeAsync(0);
+        getClientHandler("connected")({ transport: "websocket" });
+        capturedChannel!.onmessage!({ type: "stdout", data: "after" });
+        capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+        finishCommand();
+        await jest.advanceTimersByTimeAsync(5_000);
+        // A successful broker publish would silently drop these while only the
+        // Desktop subscription is present (the relay stores no history).
+        expect(reply.publish.mock.calls.map(([m]) => m.type)).toEqual([
+          "operation_ready",
+          "stdout",
+        ]);
+        expect(reply.unsubscribe).not.toHaveBeenCalled();
+        reply.presence.mockResolvedValue({
+          clients: {
+            desktop: { connInfo: { connectionId: "conn-123" } },
+            worker: { user: "user-456" },
+          },
+        });
+        await jest.advanceTimersByTimeAsync(2_000);
+        expect(reply.publish.mock.calls.map(([m]) => m.type)).toEqual([
+          "operation_ready",
+          "stdout",
+          "stdout",
+          "exit",
+        ]);
+        expect(
+          reply.publish.mock.calls.slice(2).map(([m]) => m.sequence),
+        ).toEqual([1, 2]);
+        expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(executions).toBe(1);
+      } finally {
+        finishCommand();
+        await bridge.stop();
+        spies.forEach((spy) => spy.mockRestore());
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it.each(["unavailable", "expired", "stopped", "byte limit", "chunk limit"])(
     "keeps incomplete delivery truthful when recovery is %s",

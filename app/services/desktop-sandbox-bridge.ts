@@ -1743,7 +1743,14 @@ export class DesktopSandboxBridge {
             this.successfulRelayConnections !==
               recoveryState.initialRelayGeneration) &&
           this.operationRouter &&
-          !(await this.operationRouter.hasCommandReceiver(commandId))
+          !(await this.operationRouter
+            .hasCommandReceiver(commandId)
+            .catch((error: unknown) => {
+              if (classifyDesktopStreamPublishFailure(error)) throw error;
+              // An inconclusive lookup is never proof of a receiver. Retain
+              // output and retry within the same bounded delivery window.
+              return false;
+            }))
         ) {
           throw {
             code: errorCodes.timeout,
