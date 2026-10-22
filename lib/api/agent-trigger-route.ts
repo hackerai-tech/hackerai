@@ -707,7 +707,7 @@ export const createAgentTriggerPost =
               uploadResult.failedCount === 1 ? "attachment" : "attachments";
             throw new ChatSDKError(
               "bad_request:api",
-              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Reconnect this computer and retry the message. If the file was moved or deleted, reattach it.`,
             );
           }
           preparedMessages = rewriteSandboxFilePathsInMessages(
@@ -728,6 +728,7 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        sandboxType: sandboxPreference ?? "e2b",
         onPersistenceStep: (step) => {
           initialPersistenceStep = step;
         },

@@ -1,15 +1,17 @@
 type FinalizeNewChatRouteOptions = {
   chatId: string;
   isAbort: boolean;
+  isError?: boolean;
   isExistingChat: boolean;
 };
 
 export const finalizeNewChatRoute = ({
   chatId,
   isAbort,
+  isError = false,
   isExistingChat,
 }: FinalizeNewChatRouteOptions): boolean => {
-  if (isExistingChat) return false;
+  if (isExistingChat || isError) return false;
 
   const chatPathname = `/c/${chatId}`;
   const currentPathname = window.location.pathname;

@@ -23,6 +23,8 @@ const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
 const mockResetAutoContinueCount = jest.fn();
 let mockInput = "";
+let mockUploadedFiles: any[] = [];
+let mockSandboxPreference = "e2b";
 let mockChatMode = "agent";
 let mockQueuedDeliveryStatus: "failed" | undefined;
 
@@ -66,7 +68,7 @@ jest.mock("convex/react", () => ({
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     getInput: () => mockInput,
-    uploadedFiles: [],
+    uploadedFiles: mockUploadedFiles,
     chatMode: mockChatMode,
     clearInput: mockClearInput,
     clearUploadedFiles: mockClearUploadedFiles,
@@ -86,7 +88,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     ],
     removeQueuedMessage: mockRemoveQueuedMessage,
     queueBehavior: "queue",
-    sandboxPreference: "e2b",
+    sandboxPreference: mockSandboxPreference,
     agentPermissionMode: "full_access",
     selectedModel: "hackerai-standard",
     sidebarOpen: false,
@@ -132,6 +134,8 @@ describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInput = "";
+    mockUploadedFiles = [];
+    mockSandboxPreference = "e2b";
     mockChatMode = "agent";
     mockQueuedDeliveryStatus = undefined;
     Object.defineProperty(navigator, "onLine", {
@@ -148,6 +152,48 @@ describe("useChatHandlers steer todo handoff", () => {
           }) as Response,
       ),
     });
+  });
+
+  it("keeps a new local-upload turn mounted on the draft route until admission", async () => {
+    window.history.replaceState({}, "", "/");
+    mockInput = "Read these files";
+    mockSandboxPreference = "desktop";
+    mockUploadedFiles = ["txt", "pdf", "docx"].map((extension) => ({
+      file: new File(["fixture"], `fixture.${extension}`),
+      uploaded: true,
+      storage: "local-desktop",
+      localAttachmentId: extension,
+      localPath: `/fixtures/file.${extension}`,
+    }));
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "not-yet-persisted",
+        messages: [],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: false,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(window.location.pathname).toBe("/");
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: mockInput,
+        files: mockUploadedFiles.map((file) =>
+          expect.objectContaining({ localPath: file.localPath }),
+        ),
+      }),
+      expect.anything(),
+    );
   });
 
   it("retries the latest queued message without native findLast or replacing an uncertain run", async () => {
