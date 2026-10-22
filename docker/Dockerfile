@@ -434,7 +434,7 @@ RUN set -eux; \
 COPY verify_trust.py test_go_trust.py verify_trust_go_test.go /usr/local/lib/hackerai/
 # E2B dereferences certificate symlinks into its boot seed. Remove materialized
 # copies of the distrusted roots, refresh the store and seed, then test TLS.
-RUN python3 /usr/local/lib/hackerai/test_go_trust.py && \
+RUN python3 -B /usr/local/lib/hackerai/test_go_trust.py && \
     python3 /usr/local/lib/hackerai/verify_trust.py --refresh-system-trust && \
     rm /usr/local/lib/hackerai/test_go_trust.py /usr/local/lib/hackerai/verify_trust_go_test.go
 

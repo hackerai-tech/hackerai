@@ -22,7 +22,11 @@ def main():
         shutil.copyfile(Path(__file__).with_name("verify_trust_go_test.go"), tests)
         subprocess.run(
             ["go", "test", "-v", str(source), str(tests)],
-            env={**os.environ, "GOTOOLCHAIN": "local"},
+            env={
+                **os.environ,
+                "GOTOOLCHAIN": "local",
+                "GOCACHE": str(directory / "go-cache"),
+            },
             check=True,
             timeout=120,
         )
