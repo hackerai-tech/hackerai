@@ -914,55 +914,66 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toMatchObject({ exitCode: 0 });
     });
 
-    it("keeps the original command and output through transient relay errors", async () => {
-      const onStdout = jest.fn();
-      const { promise } = startCommand(
-        createSandbox(),
-        "echo start; sleep 30; echo done",
-        {
-          timeoutMs: 5000,
-          onStdout,
+    it.each([
+      { type: "transport", error: { code: 2, message: "transport closed" } },
+      { type: "connect", error: { code: 1, message: "timeout" } },
+      {
+        type: "connect",
+        error: {
+          code: 100,
+          message: "temporarily unavailable",
+          temporary: true,
         },
-      );
-      const outcome = promise.then(
-        (value) => ({ value }),
-        (error) => ({ error }),
-      );
-      await jest.advanceTimersByTimeAsync(0);
-      const sub = mockSubscriptions[0];
-      const client = mockClients[0];
-      sub.emit("subscribed");
-      await jest.advanceTimersByTimeAsync(0);
-      sub.emit("publication", {
-        data: { type: "stdout", commandId: FIXED_UUID, data: "start\n" },
-      });
-      client.emit("error", {
-        type: "transport",
-        error: { code: 2, message: "transport closed" },
-      });
-      expect(client.disconnect).not.toHaveBeenCalled();
-      sub.emit("error", {
-        type: "subscribe",
-        error: { code: 1, message: "timeout" },
-      });
-      await jest.advanceTimersByTimeAsync(1000);
-      expect(client.disconnect).not.toHaveBeenCalled();
-      sub.emit("subscribed");
-      sub.emit("publication", {
-        data: { type: "stdout", commandId: FIXED_UUID, data: "done\n" },
-      });
-      sub.emit("publication", {
-        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
-      });
-      await expect(outcome).resolves.toEqual({
-        value: expect.objectContaining({
-          stdout: "start\ndone\n",
-          exitCode: 0,
-        }),
-      });
-      expect(sub.publish).toHaveBeenCalledTimes(1);
-      expect(onStdout.mock.calls).toEqual([["start\n"], ["done\n"]]);
-    });
+      },
+    ])(
+      "keeps the original command through retryable relay error %j",
+      async (relayError) => {
+        const onStdout = jest.fn();
+        const { promise } = startCommand(
+          createSandbox(),
+          "echo start; sleep 30; echo done",
+          {
+            timeoutMs: 5000,
+            onStdout,
+          },
+        );
+        const outcome = promise.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        const client = mockClients[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: { type: "stdout", commandId: FIXED_UUID, data: "start\n" },
+        });
+        client.emit("error", relayError);
+        expect(client.disconnect).not.toHaveBeenCalled();
+        sub.emit("error", {
+          type: "subscribe",
+          error: { code: 1, message: "timeout" },
+        });
+        await jest.advanceTimersByTimeAsync(1000);
+        expect(client.disconnect).not.toHaveBeenCalled();
+        sub.emit("subscribed");
+        sub.emit("publication", {
+          data: { type: "stdout", commandId: FIXED_UUID, data: "done\n" },
+        });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+        await expect(outcome).resolves.toEqual({
+          value: expect.objectContaining({
+            stdout: "start\ndone\n",
+            exitCode: 0,
+          }),
+        });
+        expect(sub.publish).toHaveBeenCalledTimes(1);
+        expect(onStdout.mock.calls).toEqual([["start\n"], ["done\n"]]);
+      },
+    );
 
     it("records aggregate bytes for a large command without per-operation traffic logs", async () => {
       const sandbox = createSandbox();

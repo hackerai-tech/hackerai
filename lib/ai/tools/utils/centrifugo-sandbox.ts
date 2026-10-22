@@ -1193,7 +1193,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         client.on("error", (ctx) => {
           // A failed reconnect attempt is not a command failure. Centrifuge
           // owns transport retries; never replace an already dispatched command.
-          if (commandDispatchStarted && ctx.type === "transport") return;
+          if (
+            commandDispatchStarted &&
+            (ctx.type === "transport" ||
+              (ctx.type === "connect" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true))))
+          ) {
+            return;
+          }
           if (!settled) {
             settled = true;
             cleanup();

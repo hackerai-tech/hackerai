@@ -1187,6 +1187,37 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
+  test("reports a definite setup failure when local session capacity is exhausted", async () => {
+    const run = jest.fn();
+    const { context, ptySessionManager } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: { run },
+      },
+    });
+    for (let i = 0; i < MAX_CONCURRENT_PTYS_PER_CHAT; i++) {
+      await ptySessionManager.create("chat-1", {
+        createHandle: async () => makeFakeHandle(i + 1),
+        cols: 80,
+        rows: 24,
+        sandboxIdentity: "local",
+        originalCommand: "sh",
+      });
+    }
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "echo never dispatched",
+      brief: "capacity",
+      is_background: false,
+      interactive: false,
+      timeout: 5,
+    })) as { result: { error?: string; exitCode?: number | null } };
+    expect(run).not.toHaveBeenCalled();
+    expect(result.result.error).toContain("MAX_CONCURRENT_PTYS_PER_CHAT");
+    expect(result.result.error).not.toContain("outcome is unknown");
+    expect(result.result.exitCode).toBe(1);
+  });
+
   test.each([false, true])(
     "delivery waits for foreground creation (delivery listed first: %s)",
     async (deliveryFirst) => {

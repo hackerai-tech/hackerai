@@ -831,6 +831,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               pid?: number;
             }> | null = null;
             let resumableTimeoutObserved = false;
+            let commandDispatchAttempted = false;
 
             const forgetUnexposedCommandSession = async () => {
               if (!commandSession || commandSessionExposed) return;
@@ -1212,6 +1213,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
 
+              commandDispatchAttempted = true;
               if (is_background) {
                 return retryWithBackoff(async () => {
                   const result = await sandboxInstance.commands.run(
@@ -1417,6 +1419,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       },
                     });
                   } else if (
+                    commandDispatchAttempted &&
                     isCentrifugoSandbox(sandboxInstance) &&
                     !isLocalCommandRelayUnsubscribedError(error)
                   ) {
