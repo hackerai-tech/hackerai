@@ -229,26 +229,108 @@ export class CentrifugoMessageReassembler {
   }
 }
 
+// Per operation, including the publish waiting for acknowledgement. This allows
+// a maximum-size file reply plus a burst of output without retaining an
+// unlimited number of callbacks when the relay is slow.
+export const RELAY_QUEUE_MAX_BYTES = 4 * 1024 * 1024;
+export const RELAY_QUEUE_MAX_MESSAGES = 256;
+
+export class RelayOutputOverflowError extends Error {
+  constructor() {
+    super(
+      "Relay output buffer limit exceeded; output is incomplete. Do not treat this operation as successful.",
+    );
+    this.name = "RelayOutputOverflowError";
+  }
+}
+
+type PendingPublish = {
+  serialized: string;
+  bytes: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
 export class CentrifugoPublishQueue {
-  private tail: Promise<void> = Promise.resolve();
+  private pending: PendingPublish[] = [];
+  private active: PendingPublish | undefined;
+  private bytes = 0;
+  private closed = false;
+  private closedError: Error | undefined;
 
   constructor(
     private readonly publishFragment: (message: unknown) => Promise<void>,
+    private readonly limits = {
+      bytes: RELAY_QUEUE_MAX_BYTES,
+      messages: RELAY_QUEUE_MAX_MESSAGES,
+    },
   ) {}
 
   publish(message: Record<string, unknown>): Promise<void> {
-    const operation = this.tail.then(async () => {
-      const fragments = fragmentCentrifugoMessage(message);
-      for (const fragment of fragments) {
-        try {
-          await this.publishFragment(fragment);
-        } catch (error) {
-          throw error instanceof Error ? error : new Error(errorMessage(error));
-        }
+    if (this.closed)
+      return this.closedError
+        ? Promise.reject(this.closedError)
+        : Promise.resolve();
+    try {
+      // Snapshot on admission: later mutation cannot evade accounting or change
+      // output which is already queued. Charge UTF-8 JSON, not JS string length.
+      const serialized = JSON.stringify(message);
+      const bytes = encoder.encode(serialized).byteLength;
+      if (
+        this.bytes + bytes > this.limits.bytes ||
+        this.pending.length + Number(Boolean(this.active)) >=
+          this.limits.messages
+      ) {
+        return Promise.reject(new RelayOutputOverflowError());
       }
-    });
+      this.bytes += bytes;
+      const result = new Promise<void>((resolve, reject) => {
+        this.pending.push({ serialized, bytes, resolve, reject });
+      });
+      void Promise.resolve().then(() => this.drain());
+      return result;
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
 
-    this.tail = operation.catch(() => undefined);
-    return operation;
+  /** Settle waiters and release queued output even if an RPC never settles. */
+  close(error?: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closedError = error;
+    const settle = (entry: PendingPublish) =>
+      error ? entry.reject(error) : entry.resolve();
+    if (this.active) settle(this.active);
+    for (const entry of this.pending) settle(entry);
+    this.pending = [];
+    this.bytes = 0;
+  }
+
+  private async drain(): Promise<void> {
+    if (this.active || this.closed) return;
+    const entry = this.pending.shift();
+    if (!entry) return;
+    this.active = entry;
+    try {
+      const fragments = fragmentCentrifugoMessage(JSON.parse(entry.serialized));
+      // The serialized copy is no longer needed while publishing fragments.
+      entry.serialized = "";
+      for (const fragment of fragments) {
+        if (this.closed) break;
+        await this.publishFragment(fragment);
+      }
+      if (!this.closed) entry.resolve();
+    } catch (error) {
+      entry.reject(
+        error instanceof Error ? error : new Error(errorMessage(error)),
+      );
+    } finally {
+      this.active = undefined;
+      if (!this.closed) {
+        this.bytes -= entry.bytes;
+        void Promise.resolve().then(() => this.drain());
+      }
+    }
   }
 }
