@@ -750,6 +750,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tFirstMessage = 0;
 
         const cleanup = () => {
+          // Every terminal path must release Stop callers before clearing the
+          // cancellation timers. Confirmed cancellation resolves true first.
+          resolveCancelAttempt?.(false);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
+
           if (!trafficMetricRecorded) {
             trafficMetricRecorded = true;
             recordRelayReceivedBytes(
@@ -989,6 +995,22 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
           if (!tFirstMessage) tFirstMessage = Date.now();
 
+          if (
+            !cancelRequested &&
+            (message.type === "exit" || message.type === "error") &&
+            streamRecoveryIncomplete &&
+            (sequence === undefined || receivedUnsequencedOutput)
+          ) {
+            settled = true;
+            cleanup();
+            reject(
+              new Error(
+                "Local command output completeness is unknown after an unrecovered relay interruption.",
+              ),
+            );
+            return;
+          }
+
           switch (message.type) {
             case "stdout":
               receivedUnsequencedOutput ||= sequence === undefined;
@@ -1003,19 +1025,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             case "exit":
               if (cancelRequested) {
                 resolveCanceled();
-                break;
-              }
-              if (
-                streamRecoveryIncomplete &&
-                (sequence === undefined || receivedUnsequencedOutput)
-              ) {
-                settled = true;
-                cleanup();
-                reject(
-                  new Error(
-                    "Local command output completeness is unknown after an unrecovered relay interruption.",
-                  ),
-                );
                 break;
               }
               settled = true;

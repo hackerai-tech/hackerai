@@ -72,6 +72,9 @@ interface ChannelSubscription {
   removeAllListeners(): unknown;
   ready(timeout: number): Promise<void>;
   publish(data: unknown): Promise<unknown>;
+  presence(): Promise<{
+    clients: Record<string, { user: string; connInfo?: unknown }>;
+  }>;
   on(event: "publication", handler: (ctx: { data: unknown }) => void): unknown;
   on(event: "error", handler: () => void): unknown;
 }
@@ -243,6 +246,25 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       this.close(key);
       throw error;
     }
+  }
+
+  /** Broker acceptance alone cannot deliver buffered output to an absent receiver. */
+  async hasCommandReceiver(commandId: string): Promise<boolean> {
+    const key = this.key({ kind: "command", id: commandId });
+    const route = this.routes.get(key);
+    // Legacy channels are shared by multiple operations, so their presence
+    // cannot establish whether this command's receiver is subscribed.
+    if (!route) return this.legacy.has(key);
+    const presence = await route.subscription.presence();
+    if (this.stopped || this.routes.get(key) !== route) return false;
+    return Object.values(presence.clients).some((client) => {
+      const info = client.connInfo;
+      const connectionId =
+        info && typeof info === "object" && "connectionId" in info
+          ? info.connectionId
+          : undefined;
+      return client.user === this.userId && connectionId !== this.connectionId;
+    });
   }
 
   /** Publish only for requests accepted by this connection; late/unknown output is discarded. */

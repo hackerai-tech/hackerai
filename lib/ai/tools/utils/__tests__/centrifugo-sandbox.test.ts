@@ -1147,6 +1147,63 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each(["client", "subscription"] as const)(
+      "settles pending cancellation when the %s terminates",
+      async (target) => {
+        let cancel!: () => Promise<boolean>;
+        const { promise } = startCommand(createSandbox(), "sleep 30", {
+          timeoutMs: 5000,
+          onCancelReady: (callback) => {
+            cancel = callback;
+          },
+        });
+        void promise.catch(() => {});
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        const canceled = jest.fn();
+        void cancel().then(canceled);
+        await jest.advanceTimersByTimeAsync(0);
+        if (target === "client")
+          mockClients[0].emit("disconnected", {
+            code: 3501,
+            reason: "unauthorized",
+          });
+        else
+          sub.emit("unsubscribed", { code: 103, reason: "permission denied" });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(canceled).toHaveBeenCalledWith(false);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("marks unsequenced error output incomplete after unrecovered interruption", async () => {
+      const { promise } = startCommand(createSandbox(), "test", {
+        timeoutMs: 5000,
+      });
+      const outcome = promise.catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("publication", {
+        data: { type: "stdout", commandId: FIXED_UUID, data: "partial" },
+      });
+      sub.emit("subscribing", { code: 1, reason: "transport closed" });
+      sub.emit("subscribed", { recovered: false });
+      sub.emit("publication", {
+        data: {
+          type: "error",
+          commandId: FIXED_UUID,
+          message: "native failure",
+        },
+      });
+      await expect(outcome).resolves.toMatchObject({
+        message: expect.stringContaining("output completeness is unknown"),
+      });
+    });
+
     it("records aggregate bytes for a large command without per-operation traffic logs", async () => {
       const sandbox = createSandbox();
       const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});

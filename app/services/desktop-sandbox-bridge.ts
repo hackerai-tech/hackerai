@@ -101,6 +101,7 @@ interface StreamChunk {
 }
 
 interface DesktopStreamPublishRecoveryState {
+  initialRelayGeneration: number;
   failureReported: boolean;
   recoveryReported: boolean;
   exhaustionReported: boolean;
@@ -950,6 +951,7 @@ export class DesktopSandboxBridge {
     this.activeCommands.add(commandId);
     const commandStartedAt = Date.now();
     const recoveryState: DesktopStreamPublishRecoveryState = {
+      initialRelayGeneration: this.successfulRelayConnections,
       failureReported: false,
       recoveryReported: false,
       exhaustionReported: false,
@@ -1733,6 +1735,22 @@ export class DesktopSandboxBridge {
       if (!canPublish()) return;
 
       try {
+        // The Desktop socket can reconnect before the worker. With broker
+        // history disabled, flushing in that gap loses output despite publish
+        // succeeding. Keep recovery bounded by the existing delivery deadline.
+        if (
+          (recoveryState.failureReported ||
+            this.successfulRelayConnections !==
+              recoveryState.initialRelayGeneration) &&
+          this.operationRouter &&
+          !(await this.operationRouter.hasCommandReceiver(commandId))
+        ) {
+          throw {
+            code: errorCodes.timeout,
+            message: "Command receiver has not rejoined",
+          };
+        }
+        if (!canPublish()) return;
         await this.forwardChunk(commandId, chunk, sequence);
         if (!canPublish()) return;
         recoveryState.publishedChunks += 1;

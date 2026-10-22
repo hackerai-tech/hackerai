@@ -6,6 +6,7 @@ import {
 import { CentrifugoMessageReassembler } from "../centrifugo-transport";
 
 class Subscription extends EventEmitter {
+  presence = jest.fn().mockResolvedValue({ clients: {} });
   subscribe = jest.fn();
   unsubscribe = jest.fn();
   ready = jest.fn().mockResolvedValue(undefined);
@@ -294,6 +295,35 @@ describe("operation channels", () => {
     router.stop();
     await expect(pending).resolves.toBeUndefined();
     expect(subs[0].publish).not.toHaveBeenCalled();
+  });
+
+  it("requires the same user's receiver on the exact command route", async () => {
+    await router.dispatch(request("cmd"), jest.fn());
+    subs[0].presence.mockResolvedValue({
+      clients: {
+        desktop: { user: "user-1", connInfo: { connectionId: "conn-1" } },
+        stranger: { user: "other-user" },
+      },
+    });
+    await expect(router.hasCommandReceiver("cmd")).resolves.toBe(false);
+    await expect(router.hasCommandReceiver("other-command")).resolves.toBe(
+      false,
+    );
+    subs[0].presence.mockResolvedValue({
+      clients: { worker: { user: "user-1" } },
+    });
+    await expect(router.hasCommandReceiver("cmd")).resolves.toBe(true);
+    let finish!: (value: unknown) => void;
+    subs[0].presence.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = router.hasCommandReceiver("cmd");
+    router.stop();
+    finish({ clients: { worker: { user: "user-1" } } });
+    await expect(pending).resolves.toBe(false);
   });
 
   it("does not publish unknown or previous-connection output through the legacy callback", async () => {
