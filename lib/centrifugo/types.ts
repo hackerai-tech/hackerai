@@ -1,3 +1,6 @@
+/** Delivery grace after native execution timeout; the worker also allows network overhead. */
+export const DESKTOP_COMMAND_DELIVERY_GRACE_MS = 30_000;
+
 export interface CommandMessage {
   type: "command";
   commandId: string;

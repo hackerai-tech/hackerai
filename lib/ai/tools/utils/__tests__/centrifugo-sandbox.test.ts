@@ -1131,6 +1131,60 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("commands.run timeout", () => {
+    it("accepts retained Desktop output after execution timeout without redispatch", async () => {
+      const sandbox = createDesktopSandbox();
+      const { promise } = startCommand(sandbox, "bounded command", {
+        timeoutMs: 1_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(20_000);
+      sub.emit("publication", {
+        data: {
+          type: "stdout",
+          commandId: FIXED_UUID,
+          data: "retained",
+          sequence: 0,
+        },
+      });
+      sub.emit("publication", {
+        data: {
+          type: "stdout",
+          commandId: FIXED_UUID,
+          data: "retained",
+          sequence: 0,
+        },
+      });
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0, sequence: 1 },
+      });
+      await expect(promise).resolves.toEqual({
+        stdout: "retained",
+        stderr: "",
+        exitCode: 0,
+      });
+      expect(
+        sub.publish.mock.calls.filter(
+          ([message]) => message.type === "command",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("bounds Desktop delivery grace when the relay never recovers", async () => {
+      const sandbox = createDesktopSandbox();
+      const { promise } = startCommand(sandbox, "bounded command", {
+        timeoutMs: 1_000,
+      });
+      const rejection = expect(promise).rejects.toThrow(
+        "Command timeout after 36000ms",
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      mockSubscriptions[0].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(36_001);
+      await rejection;
+    });
+
     it("rejects with timeout error when command exceeds maxWaitTime", async () => {
       const sandbox = createSandbox();
       const timeoutMs = 1000;

@@ -5,6 +5,7 @@ import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   sandboxConnectionChannel,
+  DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type SandboxMessage,
   type CommandCancelMessage,
   type CommandMessage,
@@ -78,7 +79,6 @@ type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
 const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
-const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
 const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
@@ -271,6 +271,10 @@ export class DesktopSandboxBridge {
   private subscription: Subscription | null = null;
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
+  private commandDeliveryDeadlines = new Map<string, number>();
+  private commandDeliveryCleanupTimers = new Set<
+    ReturnType<typeof setTimeout>
+  >();
   private isStoppingOrStopped = true;
   private startupGeneration = 0;
   private config: DesktopBridgeConfig;
@@ -436,6 +440,17 @@ export class DesktopSandboxBridge {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.isStoppingOrStopped) return;
+      // An executing command and its retained output belong to this connection.
+      // Re-registering while the worker still awaits it abandons that output.
+      // Keep the SDK reconnecting until the bounded command delivery window ends.
+      if (
+        [...this.commandDeliveryDeadlines.values()].some(
+          (deadline) => deadline > Date.now(),
+        )
+      ) {
+        this.watchRelayReconnect();
+        return;
+      }
       this.logRelayState("error", { errorType: "reconnect_readiness" });
       this.terminateClient("transport_disconnected");
     }, DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS);
@@ -444,6 +459,9 @@ export class DesktopSandboxBridge {
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
+    this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
@@ -942,6 +960,27 @@ export class DesktopSandboxBridge {
       terminalChunkPublished: false,
     };
 
+    let nativeInvocationSettled = false;
+    let terminalDeliverySettled = false;
+    let settlementReported = false;
+    const reportSettlement = (deadlineReached = false) => {
+      if (
+        !recoveryState.failureReported ||
+        settlementReported ||
+        (!terminalDeliverySettled && !deadlineReached)
+      )
+        return;
+      settlementReported = true;
+      recoveryState.exhaustedChunks =
+        recoveryState.observedChunks - recoveryState.publishedChunks;
+      this.reportDesktopStreamCommandSettlement(
+        commandId,
+        recoveryState,
+        Date.now() - commandStartedAt,
+        telemetryContext,
+      );
+    };
+
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
@@ -949,7 +988,8 @@ export class DesktopSandboxBridge {
       const recoveryDeadlineAt =
         Date.now() +
         (command.timeout ?? 30_000) +
-        DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS;
+        DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+      this.commandDeliveryDeadlines.set(commandId, recoveryDeadlineAt);
       let nextSequence = 0;
       let streamPublishTail: Promise<void> = Promise.resolve();
       const pendingChunks = new Map<
@@ -978,6 +1018,71 @@ export class DesktopSandboxBridge {
         const pending = pendingChunks.get(sequence);
         if (pending) pendingBytes -= pending.bytes;
         pendingChunks.delete(sequence);
+      };
+
+      const flushPending = async () => {
+        if (bufferLimitExceeded) return;
+        for (const [sequence, { chunk }] of pendingChunks) {
+          if (!canPublish() || Date.now() >= recoveryDeadlineAt) return;
+          try {
+            await this.forwardChunkWithRetry(
+              commandId,
+              chunk,
+              sequence,
+              recoveryState,
+              recoveryDeadlineAt,
+              telemetryContext,
+              canPublish,
+            );
+            if (canPublish()) acknowledgeChunk(sequence);
+          } catch (error) {
+            if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            return;
+          }
+        }
+        deliveryBlocked = pendingChunks.size > 0;
+      };
+      let recoveryTask: Promise<void> | undefined;
+      const startRecovery = () => {
+        if (recoveryTask) return;
+        // Native callbacks are not awaited by Tauri. Drain retained output even
+        // while the process is still running, and keep trying after it exits.
+        // Serialize retries with new output; preserve original sequence numbers
+        // so uncertain publish acknowledgments cannot duplicate tool output.
+        recoveryTask = (async () => {
+          while (
+            canPublish() &&
+            deliveryBlocked &&
+            !bufferLimitExceeded &&
+            Date.now() < recoveryDeadlineAt
+          ) {
+            await new Promise((resolve) =>
+              setTimeout(
+                resolve,
+                Math.min(1_000, recoveryDeadlineAt - Date.now()),
+              ),
+            );
+            const retry = streamPublishTail.then(flushPending);
+            streamPublishTail = retry.catch(() => undefined);
+            await retry;
+          }
+        })()
+          .catch(() => {
+            // forwardChunkWithRetry already reports non-transient failures.
+            // Do not produce an unhandled rejection from this background drain.
+          })
+          .finally(() => {
+            recoveryTask = undefined;
+            void streamPublishTail.then(() => {
+              if (
+                recoveryState.terminalChunkObserved !== null &&
+                !recoveryTask
+              ) {
+                terminalDeliverySettled = true;
+                if (nativeInvocationSettled) reportSettlement();
+              }
+            });
+          });
       };
 
       channel.onmessage = (chunk) => {
@@ -1016,46 +1121,41 @@ export class DesktopSandboxBridge {
             if (!classifyDesktopStreamPublishFailure(error)) throw error;
             deliveryBlocked = true;
             retainChunk(sequence, chunk);
+            startRecovery();
           }
         });
         streamPublishTail = operation.catch(() => undefined);
+        void streamPublishTail.then(() => {
+          if (
+            (chunk.type === "exit" || chunk.type === "error") &&
+            !recoveryTask
+          ) {
+            terminalDeliverySettled = true;
+            if (nativeInvocationSettled) reportSettlement();
+          }
+        });
         return operation;
       };
 
-      await invoke("execute_stream_command", {
-        commandId,
-        command: command.command,
-        cwd: command.cwd,
-        env: command.env,
-        timeoutMs: command.timeout ?? 30000,
-        onEvent: channel,
-      });
-      await streamPublishTail;
-
-      // A connection can return after the short per-chunk retry budget. Keep
-      // the original sequence numbers and retry delivery once at settlement,
-      // before allowing later output/exit to create a gap on the worker. This
-      // never executes the command again and stays on the original connection.
-      if (deliveryBlocked && !bufferLimitExceeded) {
-        for (const [sequence, { chunk }] of pendingChunks) {
-          if (!canPublish() || Date.now() >= recoveryDeadlineAt) break;
-          try {
-            await this.forwardChunkWithRetry(
-              commandId,
-              chunk,
-              sequence,
-              recoveryState,
-              recoveryDeadlineAt,
-              telemetryContext,
-              canPublish,
-            );
-            if (canPublish()) acknowledgeChunk(sequence);
-          } catch (error) {
-            if (!classifyDesktopStreamPublishFailure(error)) throw error;
-            break;
-          }
-        }
+      try {
+        await invoke("execute_stream_command", {
+          commandId,
+          command: command.command,
+          cwd: command.cwd,
+          env: command.env,
+          timeoutMs: command.timeout ?? 30000,
+          onEvent: channel,
+        });
+      } finally {
+        // Delivery can outlive the process. A later Stop must still acknowledge
+        // that there is no native process left to cancel.
+        this.activeCommands.delete(commandId);
+        nativeInvocationSettled = true;
       }
+      const settledDelivery = streamPublishTail.then(flushPending);
+      streamPublishTail = settledDelivery.catch(() => undefined);
+      await settledDelivery;
+      await recoveryTask;
       if (recoveryState.exhaustionReported || bufferLimitExceeded) {
         recoveryState.exhaustedChunks =
           recoveryState.observedChunks - recoveryState.publishedChunks;
@@ -1080,18 +1180,33 @@ export class DesktopSandboxBridge {
           message,
         }),
       );
-      await this.publishResult({
-        type: "error",
-        commandId,
-        message,
-      });
+      if (canPublish()) {
+        await this.publishResult({
+          type: "error",
+          commandId,
+          message,
+        });
+      }
     } finally {
-      this.reportDesktopStreamCommandSettlement(
-        commandId,
-        recoveryState,
-        Date.now() - commandStartedAt,
-        telemetryContext,
-      );
+      const deadline = this.commandDeliveryDeadlines.get(commandId);
+      if (!terminalDeliverySettled && deadline !== undefined) {
+        // IPC invocation completion does not wait for Channel delivery. Preserve
+        // ownership for callbacks still in transit, but never beyond the window.
+        const timer = setTimeout(
+          () => {
+            this.commandDeliveryCleanupTimers.delete(timer);
+            if (this.commandDeliveryDeadlines.get(commandId) === deadline) {
+              this.commandDeliveryDeadlines.delete(commandId);
+            }
+            reportSettlement(true);
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+        this.commandDeliveryCleanupTimers.add(timer);
+      } else {
+        this.commandDeliveryDeadlines.delete(commandId);
+      }
+      reportSettlement(!canPublish());
       this.activeCommands.delete(commandId);
     }
   }
@@ -1107,7 +1222,8 @@ export class DesktopSandboxBridge {
     const outcome =
       recoveryState.exhaustedChunks > 0
         ? "incomplete"
-        : recoveryState.publishedChunks === recoveryState.observedChunks
+        : recoveryState.publishedChunks === recoveryState.observedChunks &&
+            recoveryState.terminalChunkPublished
           ? "recovered"
           : "interrupted";
     const properties = {
@@ -2015,6 +2131,9 @@ export class DesktopSandboxBridge {
   async stop(): Promise<void> {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
+    this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
