@@ -300,6 +300,14 @@ describe("AgentLongMemoryTelemetry", () => {
       expect(emit.mock.calls[2]?.[0]).toMatchObject({
         checkpoint_reason: "periodic",
       });
+
+      jest.advanceTimersByTime(110_000);
+      heapUsed += 32 * MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit.mock.calls[3]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+        heap_used_bytes: 164 * MIB,
+      });
       telemetry.dispose();
     } finally {
       jest.useRealTimers();

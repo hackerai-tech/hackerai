@@ -134,12 +134,12 @@ export class AgentLongMemoryTelemetry {
           ? "initial"
           : input.force
             ? "forced"
-            : periodicSample &&
-                now - this.lastEmittedAt >= PERIODIC_CHECKPOINT_INTERVAL_MS
-              ? "periodic"
-              : heapUsed - this.lastEmittedHeapUsed >=
-                  HEAP_GROWTH_CHECKPOINT_BYTES
-                ? "heap_growth"
+            : heapUsed - this.lastEmittedHeapUsed >=
+                HEAP_GROWTH_CHECKPOINT_BYTES
+              ? "heap_growth"
+              : periodicSample &&
+                  now - this.lastEmittedAt >= PERIODIC_CHECKPOINT_INTERVAL_MS
+                ? "periodic"
                 : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
                   ? "interval"
                   : undefined;
