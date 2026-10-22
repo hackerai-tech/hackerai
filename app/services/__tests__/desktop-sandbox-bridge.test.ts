@@ -2003,6 +2003,77 @@ describe("forwardChunk", () => {
     }
   });
 
+  it.each(["initial", "settlement"])(
+    "does not publish an old command after restart during its %s retry wait",
+    async (phase) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const done = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
+        if (cmd === "execute_stream_command") await done;
+        return undefined;
+      };
+      const error = { code: 1, message: "timeout" };
+      mockSubscription.publish.mockRejectedValue(error);
+      const spies = ["warn", "error", "info"].map((method) =>
+        jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+      );
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        getPublicationHandler()({
+          data: {
+            type: "command",
+            commandId: "cmd-old-connection",
+            command: "test",
+            targetConnectionId: "conn-123",
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        capturedChannel!.onmessage!({ type: "stdout", data: "retained" });
+        await jest.advanceTimersByTimeAsync(phase === "settlement" ? 750 : 0);
+        if (phase === "settlement") {
+          await capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+          finishCommand();
+          await jest.advanceTimersByTimeAsync(0);
+        }
+        const attempts = phase === "settlement" ? 4 : 1;
+        expect(mockSubscription.publish).toHaveBeenCalledTimes(attempts);
+        await bridge.stop();
+        config.connectDesktop.mockResolvedValue({
+          connectionId: "new-connection",
+          centrifugoToken: createTestJwt("user-456"),
+          centrifugoWsUrl: "ws://localhost:8000/connection/websocket",
+        });
+        mockSubscription.publish.mockResolvedValue(undefined);
+        await bridge.start();
+        await jest.advanceTimersByTimeAsync(1_000);
+        finishCommand();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(bridge.getConnectionId()).toBe("new-connection");
+        expect(mockSubscription.publish).toHaveBeenCalledTimes(attempts);
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_stream_command_settled",
+          expect.objectContaining({
+            terminalChunkPublished: false,
+            sequenceComplete: false,
+          }),
+        );
+      } finally {
+        finishCommand();
+        await bridge.stop();
+        mockSubscription.publish.mockResolvedValue(undefined);
+        spies.forEach((spy) => spy.mockRestore());
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it("recovers retained output on its isolated operation channel", async () => {
     jest.useFakeTimers();
     let finishCommand!: () => void;
