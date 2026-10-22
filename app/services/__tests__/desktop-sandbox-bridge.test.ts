@@ -3157,3 +3157,90 @@ it.each(["ack", "cancel"])(
     }
   },
 );
+
+it.each(["before readiness", "while publishing"])(
+  "bounds native PTY output %s and kills only that session",
+  async (phase) => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const native = mockInvokeHandler;
+    const kills: string[] = [];
+    let releaseCreate!: () => void;
+    let releasePublish!: () => void;
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const publishGate = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "execute_pty_create") {
+        if (phase === "before readiness") await createGate;
+        return { pid: 123, session_id: "bounded-pty" };
+      }
+      if (cmd === "execute_pty_kill") {
+        kills.push(args!.sessionId as string);
+        return;
+      }
+      return native(cmd, args);
+    };
+    mockSubscription.publish.mockImplementation(
+      async (value: { type: string }) => {
+        if (value.type === "pty_data") await publishGate;
+      },
+    );
+    try {
+      getPublicationHandler()({
+        data: {
+          type: "pty_create",
+          sessionId: "bounded-pty",
+          command: "bash",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await waitFor(() => expect(capturedChannel?.onmessage).toBeDefined());
+      if (phase === "while publishing") {
+        await waitFor(() =>
+          expect(mockSubscription.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ type: "pty_ready" }),
+          ),
+        );
+      }
+      // More than four MiB with an unavailable consumer, including callbacks
+      // that arrive before the native create RPC returns.
+      for (let i = 0; i < 260; i++)
+        capturedChannel!.onmessage!("x".repeat(16 * 1024));
+      await waitFor(() => expect(kills).toContain("bounded-pty"));
+      await waitFor(() =>
+        expect(mockSubscription.publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "pty_error",
+            sessionId: "bounded-pty",
+            message: expect.stringContaining("incomplete"),
+          }),
+        ),
+      );
+      releaseCreate();
+      releasePublish();
+      capturedChannel!.onmessage!(
+        JSON.stringify({ type: "exit", sessionId: "bounded-pty", exitCode: 0 }),
+      );
+      await waitFor(() =>
+        expect(
+          mockSubscription.publish.mock.calls.filter(
+            ([value]) => value.type === "pty_error",
+          ),
+        ).toHaveLength(1),
+      );
+      expect(mockSubscription.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "pty_exit" }),
+      );
+      expect(kills.every((id) => id === "bounded-pty")).toBe(true);
+    } finally {
+      releaseCreate();
+      releasePublish();
+      await bridge.stop();
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+    }
+  },
+);

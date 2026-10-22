@@ -178,3 +178,87 @@ describe("Centrifugo transport fragmentation", () => {
     expect(publish).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("bounded relay publish queue", () => {
+  it.each(["bytes", "messages"])(
+    "rejects a held backlog at its %s budget and recovers capacity",
+    async (budget) => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const message = {
+        type: "stdout",
+        commandId: "a",
+        data: "🙂\u0000".repeat(16),
+      };
+      const size = byteLength(message);
+      const publish = jest
+        .fn()
+        .mockImplementationOnce(() => gate)
+        .mockResolvedValue(undefined);
+      const queue = new CentrifugoPublishQueue(publish, {
+        bytes: budget === "bytes" ? size * 2 : size * 100,
+        messages: budget === "messages" ? 2 : 100,
+      });
+      const first = queue.publish(message);
+      const second = queue.publish(message);
+      let overflow = "pending";
+      const third = queue.publish(message).then(
+        () => {
+          overflow = "accepted";
+        },
+        () => {
+          overflow = "rejected";
+        },
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(overflow).toBe("rejected");
+      expect(publish).toHaveBeenCalledTimes(1);
+      release();
+      await Promise.all([first, second, third]);
+      await expect(
+        queue.publish({ type: "exit", commandId: "a", exitCode: 0 }),
+      ).resolves.toBeUndefined();
+      expect(publish.mock.calls.map(([value]) => value.type)).toEqual([
+        "stdout",
+        "stdout",
+        "exit",
+      ]);
+    },
+  );
+
+  it("snapshots admitted output and releases waiters on close without sending remaining fragments", async () => {
+    let release!: () => void;
+    const publish = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const queue = new CentrifugoPublishQueue(publish);
+    const message = {
+      type: "stdout",
+      commandId: "a",
+      data: "x".repeat(80_000),
+    };
+    const first = queue.publish(message);
+    message.data = "changed";
+    const second = queue.publish({ type: "exit", commandId: "a", exitCode: 0 });
+    const results = Promise.allSettled([first, second]);
+    await Promise.resolve();
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      type: "transport_fragment",
+    });
+    queue.close(new Error("incomplete output"));
+    expect((await results).map((result) => result.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+    release();
+    await Promise.resolve();
+    await expect(queue.publish(message)).rejects.toThrow("incomplete output");
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1,10 +1,11 @@
 import {
   CentrifugoPublishQueue,
   isCentrifugoPublishTimeout,
+  RelayOutputOverflowError,
 } from "./centrifugo-transport";
 
 type Message = Record<string, unknown>;
-type Operation = { kind: "command" | "file" | "pty"; id: string };
+export type Operation = { kind: "command" | "file" | "pty"; id: string };
 
 export function sandboxOperationChannel(
   userId: string,
@@ -86,13 +87,21 @@ type Route<S extends ChannelSubscription> = {
   queue: CentrifugoPublishQueue;
   timer: ReturnType<typeof setTimeout>;
   retainCommandOutput?: boolean;
+  failed?: boolean;
+};
+
+type LegacyRoute = {
+  timer: ReturnType<typeof setTimeout>;
+  queue?: CentrifugoPublishQueue;
+  publish?: (message: Message) => Promise<unknown>;
+  failed?: boolean;
 };
 
 /** Owns client subscriptions for opted-in operations. Legacy requests stay on the connection channel. */
 export class OperationChannelRouter<S extends ChannelSubscription> {
   private routes = new Map<string, Route<S>>();
   private closed = new Set<string>();
-  private legacy = new Map<string, ReturnType<typeof setTimeout>>();
+  private legacy = new Map<string, LegacyRoute>();
   private stopped = false;
 
   constructor(
@@ -102,6 +111,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     },
     private userId: string,
     private connectionId: string,
+    private readonly stopOutput?: (operation: Operation) => void,
   ) {}
 
   private key(op: Operation): string {
@@ -147,10 +157,14 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           !this.routes.has(key) &&
           !this.closed.has(key)
         ) {
-          this.legacy.set(
-            key,
-            setTimeout(() => this.closeLegacy(key), this.deadline(message, op)),
-          );
+          if (this.routes.size + this.legacy.size >= 100)
+            throw new Error("Too many active relay operations");
+          this.legacy.set(key, {
+            timer: setTimeout(
+              () => this.closeLegacy(key),
+              this.deadline(message, op),
+            ),
+          });
         }
       }
       handle(message);
@@ -167,7 +181,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     )
       return;
     const key = this.key(op);
-    if (this.routes.size >= 100)
+    if (this.routes.size + this.legacy.size >= 100)
       throw new Error("Too many active relay operations");
     const subscription = this.client.newSubscription(
       sandboxOperationChannel(this.userId, this.connectionId, op.kind, op.id),
@@ -296,18 +310,83 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     if (!op) return;
     const key = this.key(op);
     const route = this.routes.get(key);
-    if (route) {
-      await route.queue.publish(message);
-      if (END_TYPES.has(String(message.type)) && !route.retainCommandOutput)
-        this.close(key);
-    } else if (this.legacy.has(key)) {
-      await publishLegacy(message);
-      if (END_TYPES.has(String(message.type))) this.closeLegacy(key);
+    const legacy = this.legacy.get(key);
+    if (route?.failed || legacy?.failed) return;
+    try {
+      if (route) {
+        await route.queue.publish(message);
+        if (END_TYPES.has(String(message.type)) && !route.retainCommandOutput)
+          this.close(key);
+      } else if (legacy) {
+        // Legacy operations share a channel, not a backlog: one noisy producer
+        // must not consume another operation's output or cancellation budget.
+        legacy.publish = publishLegacy;
+        legacy.queue ??= new CentrifugoPublishQueue(async (fragment) => {
+          if (this.stopped || this.legacy.get(key) !== legacy || legacy.failed)
+            return;
+          await publishLegacy(fragment as Message);
+        });
+        await legacy.queue.publish(message);
+        if (END_TYPES.has(String(message.type))) this.closeLegacy(key);
+      }
+    } catch (error) {
+      if (error instanceof RelayOutputOverflowError) {
+        this.failOutput(message, publishLegacy);
+      }
+      throw error;
     }
   }
 
+  /** Discard incomplete output and send one terminal failure outside the full queue. */
+  failOutput(
+    message: Message,
+    publishLegacy: (message: Message) => Promise<unknown> = async () => {},
+  ): void {
+    const op = operation(message);
+    if (!op || this.stopped) return;
+    const key = this.key(op);
+    const route = this.routes.get(key);
+    const legacy = this.legacy.get(key);
+    const target = route ?? legacy;
+    if (!target || target.failed) return;
+    target.failed = true;
+    const error = new RelayOutputOverflowError();
+    target.queue?.close(error);
+    // Stop producers independently of broker acknowledgement. The callback
+    // never waits for the output queue, and subsequent success exits are ignored.
+    this.stopOutput?.(op);
+    const failure = {
+      type:
+        op.kind === "pty"
+          ? "pty_error"
+          : op.kind === "file"
+            ? "file_error"
+            : "error",
+      [op.kind === "pty"
+        ? "sessionId"
+        : op.kind === "file"
+          ? "requestId"
+          : "commandId"]: op.id,
+      message: error.message,
+    };
+    const publish = route
+      ? (value: Message) => route.subscription.publish(value)
+      : (legacy?.publish ?? publishLegacy);
+    // An unavailable relay can also lose the failure notice; the receiver's
+    // existing disconnect/deadline handling remains authoritative in that case.
+    void Promise.resolve()
+      .then(() => publish(failure))
+      .catch(() => {})
+      .finally(() => {
+        if (route) this.close(key);
+        else this.closeLegacy(key);
+      });
+  }
+
   private closeLegacy(key: string): void {
-    clearTimeout(this.legacy.get(key));
+    const route = this.legacy.get(key);
+    clearTimeout(route?.timer);
+    route?.queue?.close();
     this.legacy.delete(key);
     this.rememberClosed(key);
   }
@@ -322,6 +401,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
   private close(key: string): void {
     const route = this.routes.get(key);
     if (!route) return;
+    route.queue.close();
     this.routes.delete(key);
     this.rememberClosed(key);
     clearTimeout(route.timer);

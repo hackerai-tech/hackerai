@@ -82,6 +82,84 @@ describe("operation channels", () => {
     expect(handle).toHaveBeenCalledTimes(2);
   });
 
+  it.each([true, false])(
+    "fails only the overflowing operation, stops its producer and suppresses success (isolated=%s)",
+    async (isolated) => {
+      const stopOutput = jest.fn();
+      router = new OperationChannelRouter(
+        client,
+        "user-1",
+        "conn-1",
+        stopOutput,
+      );
+      const handle = jest.fn();
+      await router.dispatch(
+        { ...request("noisy"), operationChannel: isolated },
+        handle,
+      );
+      await router.dispatch(
+        { ...request("quiet"), operationChannel: isolated },
+        handle,
+      );
+      const legacyPublish = jest.fn().mockResolvedValue(undefined);
+      const publish = isolated ? subs[0].publish : legacyPublish;
+      let release!: () => void;
+      publish.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const first = router.publish(
+        { type: "stdout", commandId: "noisy", data: "first" },
+        legacyPublish,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      const rest = Array.from({ length: 256 }, () =>
+        router.publish(
+          { type: "stdout", commandId: "noisy", data: "queued" },
+          legacyPublish,
+        ),
+      );
+      const results = await Promise.allSettled([first, ...rest]);
+      expect(results.every((result) => result.status === "rejected")).toBe(
+        true,
+      );
+      expect(stopOutput).toHaveBeenCalledTimes(1);
+      expect(stopOutput).toHaveBeenCalledWith({ kind: "command", id: "noisy" });
+      expect(publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          commandId: "noisy",
+          message: expect.stringContaining("incomplete"),
+        }),
+      );
+      release();
+      await router.publish(
+        { type: "exit", commandId: "noisy", exitCode: 0 },
+        legacyPublish,
+      );
+      await router.publish(
+        { type: "exit", commandId: "quiet", exitCode: 0 },
+        legacyPublish,
+      );
+      expect(publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "exit", commandId: "noisy" }),
+      );
+      expect(isolated ? subs[1].publish : legacyPublish).toHaveBeenCalledWith({
+        type: "exit",
+        commandId: "quiet",
+        exitCode: 0,
+      });
+      await router.dispatch(
+        { ...request("noisy"), operationChannel: isolated },
+        handle,
+      );
+      expect(handle).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("isolates simultaneous command, file and PTY output including fragments", async () => {
     const handle = jest.fn();
     await Promise.all([
