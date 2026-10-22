@@ -79,6 +79,8 @@ const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
+const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
+const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
@@ -917,6 +919,12 @@ export class DesktopSandboxBridge {
 
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
+    const commandConnectionId = this.connectionId;
+    const commandRouter = this.operationRouter;
+    const canPublish = () =>
+      !this.isStoppingOrStopped &&
+      this.connectionId === commandConnectionId &&
+      this.operationRouter === commandRouter;
     const telemetryContext: DesktopStreamTelemetryContext = {
       chatId: command.chatId,
       triggerRunId: command.triggerRunId,
@@ -944,6 +952,33 @@ export class DesktopSandboxBridge {
         DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS;
       let nextSequence = 0;
       let streamPublishTail: Promise<void> = Promise.resolve();
+      const pendingChunks = new Map<
+        number,
+        { chunk: StreamChunk; bytes: number }
+      >();
+      let pendingBytes = 0;
+      let deliveryBlocked = false;
+      let bufferLimitExceeded = false;
+      const retainChunk = (sequence: number, chunk: StreamChunk) => {
+        if (bufferLimitExceeded) return;
+        const bytes = new TextEncoder().encode(
+          chunk.data ?? chunk.message ?? "",
+        ).byteLength;
+        if (
+          pendingChunks.size >= DESKTOP_STREAM_PENDING_MAX_CHUNKS ||
+          pendingBytes + bytes > DESKTOP_STREAM_PENDING_MAX_BYTES
+        ) {
+          bufferLimitExceeded = true;
+          return;
+        }
+        pendingChunks.set(sequence, { chunk, bytes });
+        pendingBytes += bytes;
+      };
+      const acknowledgeChunk = (sequence: number) => {
+        const pending = pendingChunks.get(sequence);
+        if (pending) pendingBytes -= pending.bytes;
+        pendingChunks.delete(sequence);
+      };
 
       channel.onmessage = (chunk) => {
         if (!shouldForwardStreamChunk(chunk)) return;
@@ -954,6 +989,13 @@ export class DesktopSandboxBridge {
           recoveryState.terminalChunkObserved = chunk.type;
         }
         const operation = streamPublishTail.then(async () => {
+          if (!canPublish()) return;
+          if (deliveryBlocked) {
+            // Bound recovery history, without limiting healthy output streams.
+            // Never send a later sequence or exit after losing retained data.
+            retainChunk(sequence, chunk);
+            return;
+          }
           try {
             await this.forwardChunkWithRetry(
               commandId,
@@ -962,7 +1004,9 @@ export class DesktopSandboxBridge {
               recoveryState,
               recoveryDeadlineAt,
               telemetryContext,
+              canPublish,
             );
+            if (canPublish()) acknowledgeChunk(sequence);
           } catch (error) {
             // Tauri does not await Channel callbacks. Exhausted known
             // transients are already reported above, so keep them from
@@ -970,6 +1014,8 @@ export class DesktopSandboxBridge {
             // Unknown failures are logged before reaching this catch and
             // remain rejected for callers that directly await this operation.
             if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            deliveryBlocked = true;
+            retainChunk(sequence, chunk);
           }
         });
         streamPublishTail = operation.catch(() => undefined);
@@ -985,6 +1031,44 @@ export class DesktopSandboxBridge {
         onEvent: channel,
       });
       await streamPublishTail;
+
+      // A connection can return after the short per-chunk retry budget. Keep
+      // the original sequence numbers and retry delivery once at settlement,
+      // before allowing later output/exit to create a gap on the worker. This
+      // never executes the command again and stays on the original connection.
+      if (deliveryBlocked && !bufferLimitExceeded) {
+        for (const [sequence, { chunk }] of pendingChunks) {
+          if (!canPublish() || Date.now() >= recoveryDeadlineAt) break;
+          try {
+            await this.forwardChunkWithRetry(
+              commandId,
+              chunk,
+              sequence,
+              recoveryState,
+              recoveryDeadlineAt,
+              telemetryContext,
+              canPublish,
+            );
+            if (canPublish()) acknowledgeChunk(sequence);
+          } catch (error) {
+            if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            break;
+          }
+        }
+      }
+      if (recoveryState.exhaustionReported || bufferLimitExceeded) {
+        recoveryState.exhaustedChunks =
+          recoveryState.observedChunks - recoveryState.publishedChunks;
+      }
+      if (bufferLimitExceeded) {
+        captureAuthenticatedEvent("desktop_stream_buffer_limit_exceeded", {
+          connectionId: commandConnectionId,
+          commandId,
+          ...telemetryContext,
+          pendingChunks: pendingChunks.size,
+          pendingBytes,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
@@ -1520,6 +1604,7 @@ export class DesktopSandboxBridge {
     recoveryState: DesktopStreamPublishRecoveryState,
     recoveryDeadlineAt: number,
     telemetryContext: DesktopStreamTelemetryContext,
+    canPublish: () => boolean,
   ): Promise<void> {
     let firstFailureAt: number | null = null;
     let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
@@ -1529,10 +1614,11 @@ export class DesktopSandboxBridge {
       attempt <= DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS;
       attempt++
     ) {
-      if (this.isStoppingOrStopped) return;
+      if (!canPublish()) return;
 
       try {
         await this.forwardChunk(commandId, chunk, sequence);
+        if (!canPublish()) return;
         recoveryState.publishedChunks += 1;
         if (chunk.type === "exit" || chunk.type === "error") {
           recoveryState.terminalChunkPublished = true;
@@ -1579,6 +1665,7 @@ export class DesktopSandboxBridge {
         }
         return;
       } catch (error) {
+        if (!canPublish()) return;
         const reason = classifyDesktopStreamPublishFailure(error);
         if (!reason) throw error;
 
@@ -1626,7 +1713,7 @@ export class DesktopSandboxBridge {
           Date.now() < recoveryDeadlineAt
         ) {
           await this.waitForRelayReady(attempt, recoveryDeadlineAt);
-          if (this.isStoppingOrStopped) return;
+          if (!canPublish()) return;
           if (Date.now() < recoveryDeadlineAt) continue;
         }
 
