@@ -2,6 +2,7 @@ import { OperationChannelRouter } from "@/packages/local/src/operation-channels"
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   sandboxConnectionChannel,
   type SandboxMessage,
@@ -187,16 +188,6 @@ function isTargetedIncomingMessage(
       type === "pty_resize" ||
       type === "pty_kill")
   );
-}
-
-// "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
-// identity is missing/expired, not a connection lifecycle event), so the
-// catch path needs to recognize it as a terminate-the-loop signal too.
-function isUnauthenticatedError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== "object") return false;
-  return (data as { code?: string }).code === "UNAUTHORIZED";
 }
 
 // Join an existing auth-stop event to its backend failure without copying error
@@ -387,7 +378,7 @@ export class DesktopSandboxBridge {
         this.startupGeneration !== generation
       )
         return;
-      if (isUnauthenticatedError(error)) {
+      if (isUnauthenticatedConvexError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
           ...nativeAuthDiagnostics(error, "localSandbox:heartbeatDesktop"),
@@ -556,7 +547,7 @@ export class DesktopSandboxBridge {
             connectionId: this.connectionId,
           });
         } catch (error) {
-          if (isUnauthenticatedError(error)) {
+          if (isUnauthenticatedConvexError(error)) {
             const eventProps = {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
