@@ -510,6 +510,40 @@ describe("useSandboxPreference", () => {
     },
   );
 
+  it("keeps live reconnect callbacks valid when Retry is clicked", async () => {
+    let config!: BridgeConfig;
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(
+      (value: BridgeConfig) => {
+        config = value;
+        return {
+          start: jest.fn().mockResolvedValue("connection"),
+          stop: jest.fn().mockResolvedValue(undefined),
+          getConnectionId: () => "connection",
+        };
+      },
+    );
+    const mounted = renderHook(
+      ({ authenticated }) => useSandboxPreference(authenticated),
+      {
+        initialProps: { authenticated: true },
+      },
+    );
+    try {
+      await waitFor(() =>
+        expect(mounted.result.current.desktopBridgeStatus).toBe("connected"),
+      );
+      act(() => config.onConnectionState?.("connecting"));
+      act(() => mounted.result.current.retryDesktopBridge());
+      act(() => config.onConnectionState?.("connected"));
+      expect(mounted.result.current.desktopBridgeStatus).toBe("connected");
+      expect(mounted.result.current.desktopBridgeActive).toBe(true);
+      expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
+    } finally {
+      mounted.rerender({ authenticated: false });
+      mounted.unmount();
+    }
+  });
+
   it("preserves a terminal failure across remounts until an explicit retry", async () => {
     const configs: BridgeConfig[] = [];
     (DesktopSandboxBridge as jest.Mock).mockImplementation(

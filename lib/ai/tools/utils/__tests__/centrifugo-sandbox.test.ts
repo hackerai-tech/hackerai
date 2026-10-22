@@ -1035,6 +1035,39 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each(["client", "subscription"] as const)(
+      "settles immediately when reconnect ends in a terminal %s disconnect",
+      async (target) => {
+        const { promise } = startCommand(createSandbox(), "sleep 30", {
+          timeoutMs: 5000,
+        });
+        const outcome = jest.fn();
+        void promise.then(outcome, outcome);
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        const client = mockClients[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        client.emit("error", {
+          type: "transport",
+          error: { code: 2, message: "transport closed" },
+        });
+        expect(outcome).not.toHaveBeenCalled();
+        if (target === "client")
+          client.emit("disconnected", { code: 3501, reason: "unauthorized" });
+        else
+          sub.emit("unsubscribed", { code: 103, reason: "permission denied" });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(outcome).toHaveBeenCalledWith(
+          expect.objectContaining({
+            message: expect.stringContaining("terminally"),
+          }),
+        );
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(sub.publish).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it("records aggregate bytes for a large command without per-operation traffic logs", async () => {
       const sandbox = createSandbox();
       const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});

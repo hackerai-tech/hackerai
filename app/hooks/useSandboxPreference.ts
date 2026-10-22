@@ -450,6 +450,9 @@ export function useSandboxPreference(
 
   const retryDesktopBridge = useCallback(() => {
     if (!isAuthenticated || !isTauriEnvironment()) return;
+    // A live bridge owns its bounded transport recovery. Keep its callbacks
+    // valid (and any running commands intact) when Retry is clicked mid-reconnect.
+    if (activeBridge?.getConnectionId()) return;
     bridgeGeneration += 1;
     bridgeRecoveryExhausted = false;
     clearBridgeRecovery(true);

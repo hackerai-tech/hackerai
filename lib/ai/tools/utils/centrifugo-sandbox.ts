@@ -1062,6 +1062,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           }
         });
 
+        subscription.on("unsubscribed", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(
+            new Error(
+              `Centrifugo subscription terminally unsubscribed: ${ctx.reason}`,
+            ),
+          );
+        });
+
         // Wait for subscription to be fully established before publishing command.
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
@@ -1212,8 +1223,16 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           });
         });
 
-        subscription.subscribe();
-        client.connect();
+        client.on("disconnected", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(
+            new Error(
+              `Centrifugo client terminally disconnected: ${ctx.reason}`,
+            ),
+          );
+        });
 
         client.on("connected", () => {
           tConnected = Date.now();
@@ -1246,6 +1265,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             );
           }
         });
+
+        subscription.subscribe();
+        client.connect();
       });
 
       return result;
