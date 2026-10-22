@@ -777,6 +777,49 @@ describe("failed local attachment admission", () => {
     });
   });
 
+  it.each(["synchronous", "asynchronous"])(
+    "catches %s action errors and releases the retry guard",
+    async (failureKind) => {
+      mockRegenerate.mockClear();
+      const failure = new Error("stream unavailable");
+      const logged = jest.spyOn(console, "error").mockImplementation(() => {});
+      mockRegenerate.mockImplementationOnce(() => {
+        if (failureKind === "synchronous") throw failure;
+        return Promise.reject(failure);
+      });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "failed-retry",
+          messages: localMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          isUserMessagePersisted: async () => true,
+          status: "error",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      try {
+        await act(async () => {
+          await expect(result.current.handleRetry()).resolves.toBeUndefined();
+        });
+        expect(logged).toHaveBeenCalledWith(
+          "Failed to retry response:",
+          failure,
+        );
+        await act(async () => {
+          await result.current.handleRetry();
+        });
+        expect(mockRegenerate).toHaveBeenCalledTimes(2);
+      } finally {
+        logged.mockRestore();
+      }
+    },
+  );
+
   it("keeps regeneration semantics once the same user turn is persisted", async () => {
     mockRegenerate.mockClear();
     const { result } = renderHook(() =>
