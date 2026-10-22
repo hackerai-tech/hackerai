@@ -8,6 +8,7 @@ import type {
 const HEAP_GROWTH_CHECKPOINT_BYTES = 32 * 1024 * 1024;
 const CHECKPOINT_INTERVAL_MS = 10 * 60 * 1000;
 const PERIODIC_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
+const MEMORY_SAMPLE_INTERVAL_MS = 10 * 1000;
 
 type MemorySnapshot = {
   rss: number;
@@ -89,8 +90,10 @@ export class AgentLongMemoryTelemetry {
 
     this.periodicTimer = setInterval(() => {
       if (!this.latestInput) return;
-      this.captureCheckpoint(this.latestInput, "periodic");
-    }, PERIODIC_CHECKPOINT_INTERVAL_MS);
+      // Short runs can exhaust memory between provider callbacks. Sample often,
+      // but retain the heap-growth gate and quiet-stream reporting interval.
+      this.captureCheckpoint(this.latestInput, true);
+    }, MEMORY_SAMPLE_INTERVAL_MS);
     this.periodicTimer.unref?.();
   }
 
@@ -111,7 +114,7 @@ export class AgentLongMemoryTelemetry {
 
   private captureCheckpoint(
     input: MemoryCheckpointInput,
-    reasonOverride?: MemoryCheckpointEvent["checkpoint_reason"],
+    periodicSample = false,
   ): boolean {
     try {
       const now = this.now();
@@ -127,17 +130,19 @@ export class AgentLongMemoryTelemetry {
       this.heapUsedHighWater = Math.max(this.heapUsedHighWater, heapUsed);
 
       const reason =
-        reasonOverride ??
-        (this.lastEmittedAt === undefined
+        this.lastEmittedAt === undefined
           ? "initial"
           : input.force
             ? "forced"
-            : heapUsed - this.lastEmittedHeapUsed >=
-                HEAP_GROWTH_CHECKPOINT_BYTES
-              ? "heap_growth"
-              : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
-                ? "interval"
-                : undefined);
+            : periodicSample &&
+                now - this.lastEmittedAt >= PERIODIC_CHECKPOINT_INTERVAL_MS
+              ? "periodic"
+              : heapUsed - this.lastEmittedHeapUsed >=
+                  HEAP_GROWTH_CHECKPOINT_BYTES
+                ? "heap_growth"
+                : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
+                  ? "interval"
+                  : undefined;
 
       if (!reason) return false;
 
