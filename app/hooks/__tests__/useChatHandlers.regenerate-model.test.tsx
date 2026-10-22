@@ -624,3 +624,224 @@ describe("useChatHandlers regenerate model", () => {
     );
   });
 });
+
+describe("failed local attachment admission", () => {
+  const localMessages = [
+    {
+      id: "unsaved-user-turn",
+      role: "user",
+      parts: [
+        { type: "text", text: "Read the attached fixtures" },
+        ...["txt", "pdf", "docx"].map((extension) => ({
+          type: "file",
+          mediaType: "application/octet-stream",
+          url: "",
+          filename: `fixture.${extension}`,
+          storage: "local-desktop",
+          localAttachmentId: `local-${extension}`,
+          localPath: `/fixtures/file.${extension}`,
+        })),
+      ],
+    },
+  ] as ChatMessage[];
+
+  it.each([false, true])(
+    "retries the original unpersisted turn with source paths (existing task: %s)",
+    async (isExistingChat) => {
+      mockRegenerate.mockClear();
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "staging-failure",
+          messages: localMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat,
+          isUserMessagePersisted: async () => false,
+          status: "error",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        await result.current.handleRetry();
+      });
+      expect(mockRegenerate).toHaveBeenCalledTimes(1);
+      expect(mockRegenerate).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          regenerate: false,
+          messages: localMessages,
+          useClientMessagesForRegenerate: true,
+        }),
+      });
+      expect(localMessages[0].id).toBe("unsaved-user-turn");
+    },
+  );
+
+  it("does not alter or resubmit the turn when persistence cannot be checked", async () => {
+    mockRegenerate.mockClear();
+    mockSetMessages.mockClear();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "unknown-persistence",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: async () => {
+          throw new Error("offline");
+        },
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(require("sonner").toast.error).toHaveBeenCalledWith(
+      "Could not check the saved request. Please retry.",
+    );
+  });
+
+  it("admits only one retry through lookup and streaming, then releases the guard", async () => {
+    mockRegenerate.mockClear();
+    let resolveCheck!: (value: boolean) => void;
+    let finishRun!: () => void;
+    const check = jest.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    mockRegenerate.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRun = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "single-retry",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: check,
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    let first!: Promise<void>;
+    await act(async () => {
+      first = result.current.handleRetry();
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCheck(false);
+    });
+    expect(mockRegenerate).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishRun();
+      await first;
+    });
+    // A lookup failure must release the guard too, so the user can try again.
+    check.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    check.mockImplementationOnce(async () => true);
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(check).toHaveBeenCalledTimes(3);
+    expect(mockRegenerate).toHaveBeenCalledTimes(2);
+    expect(mockRegenerate).toHaveBeenLastCalledWith({
+      body: expect.objectContaining({ regenerate: true }),
+    });
+  });
+
+  it.each(["synchronous", "asynchronous"])(
+    "catches %s action errors and releases the retry guard",
+    async (failureKind) => {
+      mockRegenerate.mockClear();
+      const failure = new Error("stream unavailable");
+      const logged = jest.spyOn(console, "error").mockImplementation(() => {});
+      mockRegenerate.mockImplementationOnce(() => {
+        if (failureKind === "synchronous") throw failure;
+        return Promise.reject(failure);
+      });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "failed-retry",
+          messages: localMessages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          isUserMessagePersisted: async () => true,
+          status: "error",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      try {
+        await act(async () => {
+          await expect(result.current.handleRetry()).resolves.toBeUndefined();
+        });
+        expect(logged).toHaveBeenCalledWith(
+          "Failed to retry response:",
+          failure,
+        );
+        await act(async () => {
+          await result.current.handleRetry();
+        });
+        expect(mockRegenerate).toHaveBeenCalledTimes(2);
+      } finally {
+        logged.mockRestore();
+      }
+    },
+  );
+
+  it("keeps regeneration semantics once the same user turn is persisted", async () => {
+    mockRegenerate.mockClear();
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "accepted-task",
+        messages: localMessages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        isUserMessagePersisted: async () => true,
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(mockRegenerate).toHaveBeenCalledWith({
+      body: expect.objectContaining({ regenerate: true }),
+    });
+  });
+});

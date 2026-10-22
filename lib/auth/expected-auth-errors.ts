@@ -6,6 +6,17 @@ const INVALID_CODE_VERIFIER_MESSAGE = "invalid code verifier";
 const SIGN_IN_SESSION_UNVERIFIED_MESSAGE =
   "sign-in session could not be verified";
 
+/** A structured Convex auth rejection is terminal, unlike a transport failure. */
+export const isUnauthenticatedConvexError = (value: unknown): boolean => {
+  if (!value || typeof value !== "object") return false;
+  const data = (value as { data?: unknown }).data;
+  return (
+    !!data &&
+    typeof data === "object" &&
+    (data as { code?: unknown }).code === "UNAUTHORIZED"
+  );
+};
+
 const getStringValue = (
   value: Record<string, unknown>,
   key: string,

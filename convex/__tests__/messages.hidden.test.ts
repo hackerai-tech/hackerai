@@ -1429,3 +1429,39 @@ describe("client stop-save routing provenance", () => {
     );
   });
 });
+
+describe("isUserMessagePersisted", () => {
+  const check = async (message: any, identity: any = { subject: USER_ID }) => {
+    const first = jest
+      .fn<any>()
+      .mockResolvedValueOnce(message)
+      .mockResolvedValueOnce({ user_id: USER_ID });
+    const ctx = {
+      auth: { getUserIdentity: async () => identity },
+      db: { query: () => ({ withIndex: () => ({ first }) }) },
+    };
+    const { isUserMessagePersisted } = await import("../messages");
+    return (isUserMessagePersisted as any).handler(ctx, {
+      chatId: CHAT_ID,
+      messageId: "msg-1",
+    });
+  };
+
+  it("checks saved turns independently of any client history page", async () => {
+    await expect(check(makeMessage())).resolves.toBe(true);
+  });
+  it("allows an absent turn before the first chat write", async () => {
+    await expect(check(null)).resolves.toBe(false);
+  });
+  it.each([{ user_id: "another-user" }, { chat_id: "another-chat" }])(
+    "rejects a message outside the authenticated chat: %j",
+    async (overrides) => {
+      await expect(check(makeMessage(overrides))).rejects.toThrow(
+        "Unauthorized",
+      );
+    },
+  );
+  it("requires authentication even for a missing message", async () => {
+    await expect(check(null, null)).rejects.toThrow("Unauthorized");
+  });
+});

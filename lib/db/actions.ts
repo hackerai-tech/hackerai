@@ -944,11 +944,13 @@ export async function saveChat({
   userId,
   title,
   projectId,
+  sandboxType,
 }: {
   id: string;
   userId: string;
   title: string;
   projectId?: string;
+  sandboxType?: string;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -956,6 +958,7 @@ export async function saveChat({
     userId,
     title,
     ...(projectId ? { projectId } : {}),
+    ...(sandboxType ? { sandboxType } : {}),
   };
 
   try {
@@ -1226,6 +1229,7 @@ export async function handleInitialChatAndUserMessage({
   chat,
   isHidden,
   projectId,
+  sandboxType,
   onPersistenceStep,
 }: {
   chatId: string;
@@ -1235,6 +1239,7 @@ export async function handleInitialChatAndUserMessage({
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
   projectId?: string;
+  sandboxType?: string;
   onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
   const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
@@ -1271,6 +1276,7 @@ export async function handleInitialChatAndUserMessage({
       userId,
       title,
       projectId,
+      sandboxType,
     });
   } else {
     // Check if user owns the chat
@@ -1449,6 +1455,23 @@ export async function getMessagesByChatId({
   let existingMessages: UIMessage[] = [];
   const abliterationHistory: AbliterationHistoryEntry[] = [];
 
+  // Retry payloads can include client history for local attachment restaging.
+  // Keep stored records authoritative and append only the unseen client tail;
+  // older client rows must not be reintroduced after paginated/truncated history.
+  const appendNewClientMessages = (history: UIMessage[]): UIMessage[] => {
+    const seen = new Set(history.map((message) => message.id));
+    let lastStoredIndex = -1;
+    newMessages.forEach((message, index) => {
+      if (seen.has(message.id)) lastStoredIndex = index;
+    });
+    const newTail = newMessages.slice(lastStoredIndex + 1).filter((message) => {
+      if (seen.has(message.id)) return false;
+      seen.add(message.id);
+      return true;
+    });
+    return [...history, ...newTail];
+  };
+
   {
     // Check if chat exists first to avoid unnecessary Convex query
     chat = await getChatById({ id: chatId });
@@ -1532,7 +1555,7 @@ export async function getMessagesByChatId({
           const existingChrono = [...fetchedDesc].reverse();
           const candidate = regenerate
             ? existingChrono
-            : [...existingChrono, ...newMessages];
+            : appendNewClientMessages(existingChrono);
 
           // Incrementally fetch file tokens only for new file IDs not yet cached
           if (!skipFileTokens) {
@@ -1742,7 +1765,7 @@ export async function getMessagesByChatId({
     }
   } else {
     // For normal chat, merge existing messages with the new user message
-    allMessages = [...existingMessages, ...newMessages];
+    allMessages = appendNewClientMessages(existingMessages);
   }
 
   const truncateResult = await truncateMessagesWithFileTokens(

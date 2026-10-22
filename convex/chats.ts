@@ -720,6 +720,7 @@ export const saveChat = mutation({
     userId: v.string(),
     title: v.string(),
     projectId: v.optional(v.string()),
+    sandboxType: v.optional(v.string()),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -791,6 +792,7 @@ export const saveChat = mutation({
         title: args.title,
         user_id: args.userId,
         project_id: projectId,
+        ...(args.sandboxType ? { sandbox_type: args.sandboxType } : {}),
         update_time: Date.now(),
       });
 

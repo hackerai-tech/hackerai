@@ -349,6 +349,92 @@ describe("useSandboxPreference", () => {
     }
   });
 
+  it.each(["manual retry", "fresh sign-in"])(
+    "stops unauthorized startup retries until %s",
+    async (recovery) => {
+      const instances: Array<{ start: jest.Mock; stop: jest.Mock }> = [];
+      const unauthorized = Object.assign(new Error("Registration rejected"), {
+        data: { code: "UNAUTHORIZED" },
+      });
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(() => {
+        const index = instances.length;
+        const instance = {
+          start: jest
+            .fn()
+            .mockImplementation(() =>
+              index === 0
+                ? Promise.reject(unauthorized)
+                : Promise.resolve("new-connection"),
+            ),
+          stop: jest.fn().mockResolvedValue(undefined),
+          getConnectionId: jest
+            .fn()
+            .mockReturnValue(index === 0 ? null : "new-connection"),
+        };
+        instances.push(instance);
+        return instance;
+      });
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      jest.useFakeTimers();
+      const { result, rerender } = renderHook(
+        ({ authenticated }) => useSandboxPreference(authenticated),
+        { initialProps: { authenticated: true } },
+      );
+      try {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        expect(result.current.desktopBridgeStatus).toBe("failed");
+        expect(result.current.desktopBridgeActive).toBe(false);
+        expect(instances[0].stop).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(120_000);
+          window.dispatchEvent(new Event("online"));
+          window.dispatchEvent(new Event("focus"));
+          document.dispatchEvent(new Event("visibilitychange"));
+          await jest.advanceTimersByTimeAsync(120_000);
+        });
+        expect(instances).toHaveLength(1);
+        expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+          "desktop_bridge_recovery_scheduled",
+          expect.anything(),
+        );
+        expect(result.current.desktopBridgeStatus).toBe("failed");
+
+        if (recovery === "manual retry") {
+          await act(async () => {
+            result.current.retryDesktopBridge();
+          });
+        } else {
+          act(() => rerender({ authenticated: false }));
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(0);
+          });
+          expect(result.current.desktopBridgeStatus).toBe("idle");
+          await act(async () => rerender({ authenticated: true }));
+        }
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        expect(instances).toHaveLength(2);
+        expect(result.current.desktopBridgeStatus).toBe("connected");
+        expect(result.current.desktopBridgeActive).toBe(true);
+      } finally {
+        act(() => rerender({ authenticated: false }));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        jest.useRealTimers();
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it("invalidates on auth loss and automatically recovers a stale connection", async () => {
     let resolveFirstStart: ((connectionId: string) => void) | undefined;
     const firstStart = new Promise<string>((resolve) => {

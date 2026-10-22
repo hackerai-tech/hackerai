@@ -1088,6 +1088,29 @@ export const saveMessage = mutation({
   },
 });
 
+/** Check retry admission independently of the client's loaded history pages. */
+export const isUserMessagePersisted = query({
+  args: { chatId: v.string(), messageId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) throw new Error("Unauthorized: User not authenticated");
+    await assertUserCanAccessChatHistory(ctx, user.subject);
+
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+      .first();
+    // A rejected first admission may not have created the chat yet.
+    if (!message) return false;
+    if (message.user_id !== user.subject || message.chat_id !== args.chatId) {
+      throw new Error("Unauthorized: Message does not belong to this chat");
+    }
+    await loadOwnedChat(ctx, args.chatId, user.subject);
+    return message.role === "user";
+  },
+});
+
 /**
  * Get messages for a chat with pagination
  */

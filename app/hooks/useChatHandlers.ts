@@ -64,6 +64,7 @@ interface UseChatHandlersProps {
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
   isExistingChat: boolean;
+  isUserMessagePersisted?: (messageId: string) => boolean | Promise<boolean>;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
@@ -108,6 +109,7 @@ export const useChatHandlers = ({
   regenerate,
   setMessages,
   isExistingChat,
+  isUserMessagePersisted,
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
@@ -163,6 +165,7 @@ export const useChatHandlers = ({
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
   const recoveryPendingRef = useRef(false);
+  const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
@@ -177,14 +180,12 @@ export const useChatHandlers = ({
       ? !!file.localAttachmentId && !!file.localPath
       : !!file.fileId);
 
-  const runChatAction = (
+  const runChatAction = async (
     description: string,
     action: () => void | Promise<void>,
-  ): void => {
+  ): Promise<void> => {
     try {
-      void Promise.resolve(action()).catch((error) => {
-        console.error(`Failed to ${description}:`, error);
-      });
+      await action();
     } catch (error) {
       console.error(`Failed to ${description}:`, error);
     }
@@ -630,7 +631,9 @@ export const useChatHandlers = ({
       return false;
     }
     if (sendDisabledReasonRef.current) return false;
-    if (!isExistingChat) {
+    // Local staging can fail before a task exists. Keep its optimistic message
+    // and source paths mounted until the server admits the run.
+    if (!isExistingChat && !hasLocalDesktopFiles) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
@@ -821,87 +824,110 @@ export const useChatHandlers = ({
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
-    if (sendDisabledReasonRef.current) return;
-    const lastUserId = messages
-      .slice()
-      .reverse()
-      .find((message) => message.role === "user")?.id;
-    const queuedAttempt = messageQueue.find(
-      (message) => message.id === lastUserId && message.deliveryStatus,
-    );
-    if (queuedAttempt && sendQueuedMessage) {
-      await handleSendNow(queuedAttempt.id, options);
-      return;
-    }
-    if (
-      isAgentMode(chatModeRef.current) &&
-      getAutoContinueChainAssistantIds(messages).length > 0
-    ) {
-      try {
-        await continueSavedTask(options);
-      } catch {
-        toast.error(
-          "Could not resume. Your saved progress is still available.",
-        );
+    if (sendDisabledReasonRef.current || retryPendingRef.current) return;
+    retryPendingRef.current = true;
+    try {
+      const lastUserId = messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "user")?.id;
+      const queuedAttempt = messageQueue.find(
+        (message) => message.id === lastUserId && message.deliveryStatus,
+      );
+      if (queuedAttempt && sendQueuedMessage) {
+        await handleSendNow(queuedAttempt.id, options);
+        return;
       }
-      return;
-    }
-    setIsAutoResuming(false);
-    resetAutoContinueCount?.();
+      if (
+        isAgentMode(chatModeRef.current) &&
+        getAutoContinueChainAssistantIds(messages).length > 0
+      ) {
+        try {
+          await continueSavedTask(options);
+        } catch {
+          toast.error(
+            "Could not resume. Your saved progress is still available.",
+          );
+        }
+        return;
+      }
+      // Read authoritative state before mutating the transcript. A failed or
+      // unavailable check must not turn a saved request into a new submission.
+      let retryUnpersistedMessage = false;
+      if (lastUserId) {
+        try {
+          retryUnpersistedMessage = isUserMessagePersisted
+            ? !(await isUserMessagePersisted(lastUserId))
+            : !isExistingChat;
+        } catch {
+          toast.error("Could not check the saved request. Please retry.");
+          return;
+        }
+      }
+      if (sendDisabledReasonRef.current) return;
+      setIsAutoResuming(false);
+      resetAutoContinueCount?.();
 
-    // Stop any active stream first to prevent message order issues and wasted tokens
-    if (hasActiveRunToReplace()) {
-      if (!(await stopActiveRunForReplacement())) return;
-    }
-    if (sendDisabledReasonRef.current) return;
-    const agentRunRequestId = uuidv4();
+      // Stop any active stream first to prevent message order issues and wasted tokens
+      if (hasActiveRunToReplace()) {
+        if (!(await stopActiveRunForReplacement())) return;
+      }
+      if (sendDisabledReasonRef.current) return;
+      const agentRunRequestId = uuidv4();
 
-    const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
-    const cleanedTodos = removeTodosBySourceMessages(
-      todos,
-      todos
-        .filter((t) => t.sourceMessageId)
-        .map((t) => t.sourceMessageId as string),
-    );
-    if (cleanedTodos !== todos) setTodos(cleanedTodos);
+      const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
+      const cleanedTodos = removeTodosBySourceMessages(
+        todos,
+        todos
+          .filter((t) => t.sourceMessageId)
+          .map((t) => t.sourceMessageId as string),
+      );
+      if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
-    const messagesToLastUser = getMessagesUpToLastRealUser(messages);
-    setMessages(messagesToLastUser);
+      const messagesToLastUser = getMessagesUpToLastRealUser(messages);
+      setMessages(messagesToLastUser);
 
-    const shouldSendClientMessagesForRegenerate =
-      hasRestageableLocalDesktopAttachments(messagesToLastUser);
-    const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
-      ? messagesToLastUser
-      : [];
+      // Admission may fail before the user message is persisted. Retrying that
+      // turn must save the same message ID instead of regenerating absent history.
+      const shouldSendClientMessagesForRegenerate =
+        retryUnpersistedMessage ||
+        hasRestageableLocalDesktopAttachments(messagesToLastUser);
+      const persistentRegenerateMessages = shouldSendClientMessagesForRegenerate
+        ? messagesToLastUser
+        : [];
 
-    // Delete any persisted partial/error response before retrying. The backend
-    // otherwise fetches that stale trailing chain when client messages are not
-    // needed to restage local desktop attachments.
-    if (chainAssistantIds.length > 0) {
-      await deleteLastAssistantMessage({
-        chatId,
-        resetSummary: true,
-        todos: cleanedTodos,
-      });
-    }
-
-    if (sendDisabledReasonRef.current) return;
-    runChatAction("retry response", () =>
-      regenerate({
-        body: {
-          mode: chatModeRef.current,
-          messages: persistentRegenerateMessages,
+      // Delete any persisted partial/error response before retrying. The backend
+      // otherwise fetches that stale trailing chain when client messages are not
+      // needed to restage local desktop attachments.
+      if (chainAssistantIds.length > 0) {
+        await deleteLastAssistantMessage({
+          chatId,
+          resetSummary: true,
           todos: cleanedTodos,
-          regenerate: true,
-          agentRunRequestId,
-          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
-          sandboxPreference,
-          agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: options.selectedModel ?? requestSelectedModel,
-          ...(options.limitRescue && { limitRescue: options.limitRescue }),
-        },
-      }),
-    );
+        });
+      }
+
+      if (sendDisabledReasonRef.current) return;
+      await runChatAction("retry response", () =>
+        regenerate({
+          body: {
+            mode: chatModeRef.current,
+            messages: persistentRegenerateMessages,
+            todos: cleanedTodos,
+            regenerate: !retryUnpersistedMessage,
+            agentRunRequestId,
+            useClientMessagesForRegenerate:
+              shouldSendClientMessagesForRegenerate,
+            sandboxPreference,
+            agentPermissionMode: agentPermissionModeRef.current,
+            selectedModel: options.selectedModel ?? requestSelectedModel,
+            ...(options.limitRescue && { limitRescue: options.limitRescue }),
+          },
+        }),
+      );
+    } finally {
+      retryPendingRef.current = false;
+    }
   };
 
   const handleEditMessage = async (
