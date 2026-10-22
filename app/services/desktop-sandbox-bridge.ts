@@ -468,7 +468,10 @@ export class DesktopSandboxBridge {
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
-    if (!this.config.relayTelemetry) this.relayTelemetry.flush();
+    if (!this.config.relayTelemetry) {
+      this.relayTelemetry.flush();
+      this.relayTelemetry.reset();
+    }
     const client = this.client;
     const subscription = this.subscription;
     this.client = null;
@@ -2140,7 +2143,10 @@ export class DesktopSandboxBridge {
     this.stopHeartbeat();
     this.relayStarted = false;
     this.clearReconnectTimer();
-    if (!this.config.relayTelemetry) this.relayTelemetry.flush();
+    if (!this.config.relayTelemetry) {
+      this.relayTelemetry.flush();
+      this.relayTelemetry.reset();
+    }
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;

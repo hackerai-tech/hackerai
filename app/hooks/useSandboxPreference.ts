@@ -317,7 +317,7 @@ export function useSandboxPreference(
       };
     }
 
-    if (navigator.onLine === false || bridgeRecoveryPausedOffline) {
+    if (navigator.onLine === false) {
       bridgeRecoveryPausedOffline = true;
       syncBridgeState(false, "connecting");
       return () => {
@@ -326,6 +326,7 @@ export function useSandboxPreference(
           bridgeStateListener = null;
       };
     }
+    bridgeRecoveryPausedOffline = false;
 
     async function startBridge() {
       const startGeneration = bridgeGeneration;

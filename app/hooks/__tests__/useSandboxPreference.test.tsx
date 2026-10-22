@@ -448,21 +448,17 @@ describe("useSandboxPreference", () => {
     }
   });
 
-  it("does not replenish retries during brief recoveries in a flapping outage", async () => {
-    const configs: BridgeConfig[] = [];
-    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    (DesktopSandboxBridge as jest.Mock).mockImplementation(
-      (config: BridgeConfig) => {
-        configs.push(config);
-        return {
-          start: jest.fn().mockResolvedValue("flapping-connection"),
-          stop: jest.fn().mockResolvedValue(undefined),
-          getConnectionId: jest.fn().mockReturnValue("flapping-connection"),
-        };
-      },
-    );
+  it("resumes an offline-paused bridge when remounted after the network returned", async () => {
+    const online = jest
+      .spyOn(navigator, "onLine", "get")
+      .mockReturnValue(false);
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(() => ({
+      start: jest.fn().mockResolvedValue("online-connection"),
+      stop: jest.fn().mockResolvedValue(undefined),
+      getConnectionId: jest.fn().mockReturnValue("online-connection"),
+    }));
     jest.useFakeTimers();
-    const { result, rerender } = renderHook(
+    let view = renderHook(
       ({ authenticated }) => useSandboxPreference(authenticated),
       { initialProps: { authenticated: true } },
     );
@@ -470,28 +466,88 @@ describe("useSandboxPreference", () => {
       await act(async () => {
         await jest.advanceTimersByTimeAsync(0);
       });
-      for (const delay of [1_000, 3_000, 8_000, 16_000, 30_000, 60_000]) {
-        act(() => configs.at(-1)?.onConnectionState?.("connected"));
-        await act(async () => {
-          await jest.advanceTimersByTimeAsync(75_000);
-        });
-        act(() => configs.at(-1)?.onTerminated?.("transport_disconnected"));
-        await act(async () => {
-          await jest.advanceTimersByTimeAsync(delay);
-        });
-      }
-      act(() => configs.at(-1)?.onTerminated?.("transport_disconnected"));
-      expect(result.current.desktopBridgeStatus).toBe("failed");
-      expect(DesktopSandboxBridge).toHaveBeenCalledTimes(7);
-    } finally {
-      act(() => rerender({ authenticated: false }));
+      expect(DesktopSandboxBridge).not.toHaveBeenCalled();
+      view.unmount();
+      online.mockReturnValue(true);
+      view = renderHook(
+        ({ authenticated }) => useSandboxPreference(authenticated),
+        { initialProps: { authenticated: true } },
+      );
       await act(async () => {
         await jest.advanceTimersByTimeAsync(0);
       });
+      expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
+      expect(view.result.current.desktopBridgeStatus).toBe("connected");
+    } finally {
+      act(() => view.rerender({ authenticated: false }));
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      online.mockRestore();
       jest.useRealTimers();
-      warn.mockRestore();
     }
   });
+
+  it.each(["brief", "stable"])(
+    "only replenishes flapping retry budgets after stable recovery (%s)",
+    async (recovery) => {
+      const configs: BridgeConfig[] = [];
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: BridgeConfig) => {
+          configs.push(config);
+          return {
+            start: jest.fn().mockResolvedValue("flapping-connection"),
+            stop: jest.fn().mockResolvedValue(undefined),
+            getConnectionId: jest.fn().mockReturnValue("flapping-connection"),
+          };
+        },
+      );
+      jest.useFakeTimers();
+      const { result, rerender } = renderHook(
+        ({ authenticated }) => useSandboxPreference(authenticated),
+        { initialProps: { authenticated: true } },
+      );
+      try {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        for (const delay of [1_000, 3_000, 8_000, 16_000, 30_000, 60_000]) {
+          act(() => configs.at(-1)?.onConnectionState?.("connected"));
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(75_000);
+          });
+          act(() => configs.at(-1)?.onTerminated?.("transport_disconnected"));
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(delay);
+          });
+        }
+        if (recovery === "stable") {
+          act(() => configs.at(-1)?.onConnectionState?.("connected"));
+          await act(async () => {
+            await jest.advanceTimersByTimeAsync(5 * 60_000);
+          });
+        }
+        act(() => configs.at(-1)?.onTerminated?.("transport_disconnected"));
+        expect(result.current.desktopBridgeStatus).toBe(
+          recovery === "stable" ? "connecting" : "failed",
+        );
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(1_000);
+        });
+        expect(DesktopSandboxBridge).toHaveBeenCalledTimes(
+          recovery === "stable" ? 8 : 7,
+        );
+      } finally {
+        act(() => rerender({ authenticated: false }));
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        jest.useRealTimers();
+        warn.mockRestore();
+      }
+    },
+  );
 
   it.each(["manual retry", "fresh sign-in"])(
     "stops unauthorized startup retries until %s",
@@ -726,7 +782,7 @@ describe("useSandboxPreference", () => {
         }
 
         expect(bridgeInstances).toHaveLength(7);
-        // A socket that drops before a full minute is not a stable recovery.
+        // A socket that drops before the stability window is not a recovery.
         // Its old reset timer must not replenish the finite retry budget.
         act(() => bridgeConfigs.at(-1)?.onConnectionState?.("connected"));
         await act(async () => {

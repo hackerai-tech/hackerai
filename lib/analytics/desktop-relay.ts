@@ -63,12 +63,7 @@ export class DesktopRelayTelemetry {
     if (this.buckets.size === 0) this.windowStartedAt = now;
     // The owner can retain this buffer across bridge replacement. Flush even
     // when callbacks stop, rather than waiting for another connection failure.
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(() => {
-        this.flushTimer = null;
-        this.flush();
-      }, WINDOW_MS);
-    }
+    this.scheduleFlush();
     const nextBucket: Bucket = {
       event,
       properties,
@@ -79,6 +74,14 @@ export class DesktopRelayTelemetry {
     };
     this.buckets.set(key, nextBucket);
     this.capturePending(nextBucket);
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flush();
+    }, WINDOW_MS);
   }
 
   private capturePending(bucket: Bucket): boolean {
@@ -110,6 +113,7 @@ export class DesktopRelayTelemetry {
         this.buckets.delete(key);
       }
     }
+    if (this.buckets.size > 0) this.scheduleFlush();
   }
 
   reset(): void {
