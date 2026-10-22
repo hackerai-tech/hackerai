@@ -37,7 +37,8 @@ export async function recoverCrashedAgentRun({
   ) {
     throw new Error("Agent crash recovery run ownership mismatch");
   }
-  const deadline = Date.now() + REPLAY_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + REPLAY_TIMEOUT_MS;
   const assertWithinBudget = () => {
     if (controller.signal.aborted || Date.now() >= deadline)
       throw new Error("Agent crash recovery timed out");
@@ -155,6 +156,19 @@ export async function recoverCrashedAgentRun({
       });
       if (result === "stale_run") return "stale";
     }
+    console.info(
+      JSON.stringify({
+        event: "agent_crash_progress_recovered",
+        service: "hackerai-web",
+        chat_id: chatId,
+        user_id: userId,
+        trigger_run_id: runId,
+        message_count: recovered.length,
+        record_count: records,
+        replay_bytes: bytes,
+        elapsed_ms: Date.now() - startedAt,
+      }),
+    );
     return "recovered";
   } finally {
     clearTimeout(timer);

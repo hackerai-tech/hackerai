@@ -225,3 +225,24 @@ it("enforces the message budget across the whole replay", async () => {
   );
   expect(mockSave).not.toHaveBeenCalled();
 });
+
+it("emits a bounded recovery receipt without transcript content", async () => {
+  const log = jest.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    mockRead.mockResolvedValue(
+      stream(text("first", "private fixture content")),
+    );
+    await recoverCrashedAgentRun(input);
+    expect(log).toHaveBeenCalledTimes(1);
+    const receipt = JSON.parse(log.mock.calls[0][0]);
+    expect(receipt).toMatchObject({
+      event: "agent_crash_progress_recovered",
+      trigger_run_id: "run",
+      message_count: 1,
+      record_count: 3,
+    });
+    expect(JSON.stringify(receipt)).not.toContain("private fixture content");
+  } finally {
+    log.mockRestore();
+  }
+});
