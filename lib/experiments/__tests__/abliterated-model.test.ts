@@ -16,6 +16,7 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn(), warn: jest.fn() },
 }));
 import {
+  ABLITERATION_LARGE_FLASH_MODEL_ID,
   ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
   ABLITERATION_LARGE_V2_MODEL_ID,
@@ -27,6 +28,7 @@ describe("Abliteration model identity", () => {
   it("recognizes the internal route and provider model IDs", () => {
     expect(isAbliterationModel(ABLITERATION_MODEL_KEY)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_MODEL_ID)).toBe(true);
+    expect(isAbliterationModel(ABLITERATION_LARGE_FLASH_MODEL_ID)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_KEY)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_ID)).toBe(true);
     expect(isAbliterationModel("model-deepseek-v4-flash-0731")).toBe(false);

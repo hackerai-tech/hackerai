@@ -108,14 +108,14 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-abliterated") as { modelId: string })
         .modelId,
-    ).toBe("abliterated-model");
+    ).toBe("abliterated-model-large-flash");
     expect(
       (
         myProvider.languageModel("model-abliterated-large-v2") as {
           modelId: string;
         }
       ).modelId,
-    ).toBe("abliterated-model-large-v2");
+    ).toBe("abliterated-model-large-flash");
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
     ).toBe("x-ai/grok-4.6");
