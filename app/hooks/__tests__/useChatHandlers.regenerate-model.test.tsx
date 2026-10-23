@@ -467,9 +467,9 @@ describe("useChatHandlers regenerate model", () => {
     expect(stopped).toBe(true);
   });
 
-  it("reports a failed Trigger cancellation to approval UI callers", async () => {
+  it("reports a terminal cancellation rejection to approval UI callers", async () => {
     const fetchMock = jest.fn(
-      async () => ({ ok: false, status: 500 }) as Response,
+      async () => ({ ok: false, status: 403 }) as Response,
     );
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,

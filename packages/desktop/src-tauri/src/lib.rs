@@ -9,7 +9,7 @@ use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1344,8 +1344,47 @@ enum StreamEvent {
     },
 }
 
-type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
+#[derive(Default)]
+struct StreamCommandRegistry {
+    running: HashMap<String, u32>,
+    // Keep cancellation until app exit, including IPCs that arrive before launch.
+    canceled: HashSet<String>,
+}
 
+type StreamCommandState = std::sync::Arc<std::sync::Mutex<StreamCommandRegistry>>;
+
+fn spawn_stream_command(
+    state: &StreamCommandState,
+    command_id: &str,
+    cmd: &mut tokio::process::Command,
+) -> Result<Option<tokio::process::Child>, String> {
+    // Spawn and PID registration must be atomic with respect to cancellation.
+    let mut commands = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned")?;
+    if commands.canceled.contains(command_id) {
+        return Ok(None);
+    }
+    if commands.running.contains_key(command_id) {
+        return Err("Command is already running".to_string());
+    }
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    if let Some(pid) = child.id() {
+        commands.running.insert(command_id.to_string(), pid);
+    }
+    Ok(Some(child))
+}
+
+fn request_stream_command_cancel(
+    state: &StreamCommandState,
+    command_id: &str,
+) -> Result<Option<u32>, String> {
+    let mut commands = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned")?;
+    commands.canceled.insert(command_id.to_string());
+    Ok(commands.running.get(command_id).copied())
+}
 #[tauri::command]
 async fn execute_command(
     command: String,
@@ -1397,12 +1436,10 @@ async fn execute_stream_command(
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
-    if let Some(pid) = child.id() {
-        if let Ok(mut commands) = state.lock() {
-            commands.insert(command_id.clone(), pid);
-        }
-    }
+    let Some(mut child) = spawn_stream_command(&state, &command_id, &mut cmd)? else {
+        let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
+        return Ok(());
+    };
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -1463,7 +1500,7 @@ async fn execute_stream_command(
         }
     }
     if let Ok(mut commands) = state.lock() {
-        commands.remove(&command_id);
+        commands.running.remove(&command_id);
     }
     Ok(())
 }
@@ -1473,17 +1510,13 @@ async fn cancel_stream_command(
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
 ) -> Result<bool, String> {
-    let pid = state
-        .lock()
-        .map_err(|_| "stream command state lock poisoned".to_string())?
-        .get(&command_id)
-        .copied();
+    let pid = request_stream_command_cancel(&state, &command_id)?;
 
     if let Some(pid) = pid {
         Ok(platform::cancel_process_tree(pid).await)
     } else {
-        // Cancellation is idempotent. The command may have exited and removed
-        // itself from the map while the cancellation request was in flight.
+        // Either it already exited, or its future launch is now fenced. A
+        // concurrent launch cannot pass the fence before registering its PID.
         Ok(true)
     }
 }
@@ -1968,6 +2001,51 @@ async fn execute_pty_kill(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn stream_cancel_before_launch_prevents_a_native_process() {
+        let state = StreamCommandState::default();
+        assert_eq!(
+            request_stream_command_cancel(&state, "stopped").unwrap(),
+            None
+        );
+        let mut cmd = platform::build_command("echo should-not-run", None, None);
+        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
+            .unwrap()
+            .is_none());
+        // A duplicate late delivery must remain canceled as well.
+        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
+            .unwrap()
+            .is_none());
+        let mut replacement = platform::build_command("echo replacement", None, None);
+        let mut child = spawn_stream_command(&state, "replacement", &mut replacement)
+            .unwrap()
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_cancel_after_launch_stops_the_registered_process_group() {
+        let state = StreamCommandState::default();
+        let mut cmd = platform::build_command("sleep 30", None, None);
+        cmd.kill_on_drop(true);
+        let mut child = spawn_stream_command(&state, "running", &mut cmd)
+            .unwrap()
+            .unwrap();
+        let pid = request_stream_command_cancel(&state, "running")
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(pid), child.id());
+        // Reap concurrently: an unreaped shell can keep its process group alive.
+        let (canceled, exited) = tokio::join!(platform::cancel_process_tree(pid), child.wait());
+        assert!(canceled);
+        assert!(!exited.unwrap().success());
+        state.lock().unwrap().running.remove("running");
+        assert!(spawn_stream_command(&state, "running", &mut cmd)
+            .unwrap()
+            .is_none());
+    }
+
     fn unique_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "hackerai-desktop-{}-{}",
@@ -2240,7 +2318,7 @@ pub fn run() {
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
         .manage(
-            std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
+            std::sync::Arc::new(std::sync::Mutex::new(StreamCommandRegistry::default()))
                 as StreamCommandState,
         )
         .manage(PendingDesktopAuthStates(std::sync::Mutex::new(

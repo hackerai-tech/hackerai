@@ -1,3 +1,7 @@
+import {
+  registerDesktopCommand,
+  wasDesktopRunStopped,
+} from "./desktop-command-cancellation";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
@@ -1022,14 +1026,18 @@ export class DesktopSandboxBridge {
         if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
       };
       try {
-        await invoke("execute_stream_command", {
-          commandId: command.commandId,
-          command: command.command,
-          cwd: command.cwd,
-          env: command.env,
-          timeoutMs: command.timeout ?? 30_000,
-          onEvent: channel,
-        });
+        if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          stream.append({ type: "exit", exitCode: 130 });
+        } else {
+          await invoke("execute_stream_command", {
+            commandId: command.commandId,
+            command: command.command,
+            cwd: command.cwd,
+            env: command.env,
+            timeoutMs: command.timeout ?? 30_000,
+            onEvent: channel,
+          });
+        }
       } catch (error) {
         stream.append({
           type: "error",
@@ -1070,6 +1078,19 @@ export class DesktopSandboxBridge {
   }
 
   private async handleCommand(command: CommandMessage): Promise<void> {
+    const unregister = registerDesktopCommand(
+      command.commandId,
+      command.chatId,
+      command.triggerRunId,
+    );
+    try {
+      await this.executeCommand(command);
+    } finally {
+      unregister();
+    }
+  }
+
+  private async executeCommand(command: CommandMessage): Promise<void> {
     if (
       command.outputProtocol === "ack-v1" &&
       this.operationRouter?.retainCommandOutput(command.commandId)
@@ -1279,14 +1300,18 @@ export class DesktopSandboxBridge {
       };
 
       try {
-        await invoke("execute_stream_command", {
-          commandId,
-          command: command.command,
-          cwd: command.cwd,
-          env: command.env,
-          timeoutMs: command.timeout ?? 30000,
-          onEvent: channel,
-        });
+        if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          channel.onmessage({ type: "exit", exitCode: 130 });
+        } else {
+          await invoke("execute_stream_command", {
+            commandId,
+            command: command.command,
+            cwd: command.cwd,
+            env: command.env,
+            timeoutMs: command.timeout ?? 30000,
+            onEvent: channel,
+          });
+        }
       } finally {
         // Delivery can outlive the process. A later Stop must still acknowledge
         // that there is no native process left to cancel.

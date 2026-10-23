@@ -74,9 +74,44 @@ const requestFor = (chatId: string) =>
 describe("agent resume route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetChatById.mockReset();
+    mockSetActiveTriggerRun.mockReset();
+    mockRunsRetrieve.mockReset();
+    mockRecover.mockReset();
     mockRecover.mockResolvedValue("recovered" as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
+
+  it.each([
+    { activeRun: undefined, owner: "user-1", expectedStatus: 204 },
+    { activeRun: "run-new", owner: "user-1", expectedStatus: 409 },
+    { activeRun: undefined, owner: "user-other", expectedStatus: 403 },
+  ])(
+    "reconciles a terminal detach race without hiding a replacement run: $expectedStatus",
+    async ({ activeRun, owner, expectedStatus }) => {
+      const { createAgentResumeGet } = await import("../agent-resume-route");
+      mockGetChatById
+        .mockResolvedValueOnce({
+          user_id: "user-1",
+          active_trigger_run_id: "run-stopped",
+        } as never)
+        .mockResolvedValueOnce({
+          user_id: owner,
+          active_trigger_run_id: activeRun,
+        } as never);
+      mockRunsRetrieve.mockResolvedValueOnce({ status: "CANCELED" } as never);
+      mockSetActiveTriggerRun.mockResolvedValueOnce("stale" as never);
+      const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
+        requestFor("chat-1"),
+      );
+      expect(response.status).toBe(expectedStatus);
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(1);
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedRunId: "run-stopped" }),
+      );
+      expect(mockCreatePublicToken).not.toHaveBeenCalled();
+    },
+  );
 
   it("awaits crash recovery before detaching and leaves mapping intact on failure", async () => {
     const { createAgentResumeGet } = await import("../agent-resume-route");

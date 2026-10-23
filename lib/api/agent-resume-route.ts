@@ -134,8 +134,19 @@ export const createAgentResumeGet =
           ...(runStatus === "CRASHED" ? { recoveredCrash: true } : {}),
           clearApprovalPending: true,
         });
-        if (detached === "stale")
-          return new NextResponse(null, { status: 409 });
+        if (detached === "stale") {
+          // Stop may already have cleared this run while resume was retrieving
+          // its terminal status. There is nothing to resume in that case; keep
+          // a real replacement run distinct from successful cancellation.
+          stage = "reconcile_terminal_trigger_run";
+          const latestChat = await getChatById({ id: chatId });
+          if (!latestChat || latestChat.user_id !== userId) {
+            return new NextResponse("Forbidden", { status: 403 });
+          }
+          return new NextResponse(null, {
+            status: latestChat.active_trigger_run_id ? 409 : 204,
+          });
+        }
         return new NextResponse(null, { status: 204 });
       }
 
