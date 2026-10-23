@@ -102,8 +102,8 @@ async function shouldUseWindowsFileSizeCommand(
 ): Promise<boolean> {
   return (
     isCentrifugoSandbox(sandbox) &&
-    sandbox.isWindows() &&
-    (await sandbox.detectShell()) === "cmd"
+    (await sandbox.detectShell()) === "cmd" &&
+    sandbox.isWindows()
   );
 }
 

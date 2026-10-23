@@ -186,6 +186,7 @@ describe("generated artifact delivery over HTTP", () => {
       sandboxKind: "centrifugo",
       getConnectionId: () => "reconnected-same-machine",
       isWindows: () => options.windows ?? false,
+      detectShell: async () => (options.windows ? "cmd" : "bash"),
       supportsNativeFileRelay: () => nativeMetadata,
       commands: {
         run: jest.fn(async (command: string) => {

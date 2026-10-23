@@ -642,6 +642,31 @@ describe("uploadSandboxFileToConvex", () => {
     );
   });
 
+  test("detects cmd before choosing metadata for a relay without platform info", async () => {
+    const sandbox = makeSandbox(0, false, false);
+    sandbox.detectShell.mockImplementation(async () => {
+      // The real adapter's cached cmd result also makes isWindows() true.
+      sandbox.isWindows.mockReturnValue(true);
+      return "cmd";
+    });
+    sandbox.commands.run.mockImplementation(async (command) =>
+      command.startsWith("cmd /d /v:on /s /c")
+        ? { stdout: "4321", stderr: "", exitCode: 0 }
+        : { stdout: "", stderr: "POSIX syntax is unavailable", exitCode: 1 },
+    );
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "C:\\owned\\report.txt",
+    });
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.txt",
+      "application/octet-stream",
+      "u1",
+      4321,
+    );
+  });
+
   test("keeps POSIX metadata commands for Git Bash on Windows", async () => {
     const sandbox = makeSandbox(321, false, true);
     sandbox.detectShell.mockResolvedValue("bash");
