@@ -38,6 +38,7 @@ import {
 import {
   CentrifugoMessageReassembler,
   CentrifugoPublishQueue,
+  RelayOutputOverflowError,
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
 import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
@@ -355,6 +356,7 @@ export class LocalSandboxClient {
         sessionId,
         data,
       }).catch((err: unknown) => {
+        if (err instanceof RelayOutputOverflowError) return;
         console.error(
           chalk.red(
             `[PTY] Failed to publish data for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -372,6 +374,7 @@ export class LocalSandboxClient {
         sessionId,
         exitCode,
       }).catch((err: unknown) => {
+        if (err instanceof RelayOutputOverflowError) return;
         console.error(
           chalk.red(
             `[PTY] Failed to publish exit for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -389,6 +392,7 @@ export class LocalSandboxClient {
         sessionId,
         message: error.message,
       }).catch((err: unknown) => {
+        if (err instanceof RelayOutputOverflowError) return;
         console.error(
           chalk.red(
             `[PTY] Failed to publish error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -663,6 +667,13 @@ export class LocalSandboxClient {
       this.centrifuge,
       this.userId!,
       this.connectionId!,
+      (operation) => {
+        if (operation.kind === "pty") this.processRunner.stop(operation.id);
+        if (operation.kind === "command") {
+          const proc = this.activeStreamCommands.get(operation.id);
+          if (proc) this.terminateProcessTree(proc);
+        }
+      },
     );
     this.operationRouter = operationRouter;
     this.subscription.on("publication", (ctx: PublicationContext) => {
@@ -734,15 +745,17 @@ export class LocalSandboxClient {
     }
     try {
       const queue = this.publishQueue;
+      const subscription = this.subscription;
       const payload = data as unknown as Record<string, unknown>;
       if (this.operationRouter) {
         await this.operationRouter.publish(payload, (value) =>
-          queue.publish(value),
+          subscription!.publish(value),
         );
       } else {
         await queue.publish(payload);
       }
     } catch (err: unknown) {
+      if (err instanceof RelayOutputOverflowError) throw err;
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error(chalk.red(`Publish failed: ${msg}`));
       throw err;
@@ -980,6 +993,7 @@ export class LocalSandboxClient {
           commandId,
           data: chunk,
         }).catch((err: unknown) => {
+          if (err instanceof RelayOutputOverflowError) return;
           console.error(
             chalk.red(
               `[ERROR] Failed to publish stdout: ${err instanceof Error ? err.message : String(err)}`,
@@ -990,12 +1004,14 @@ export class LocalSandboxClient {
 
       proc.stderr?.on("data", (data: Buffer) => {
         const chunk = data.toString();
-        accumulatedStderr += chunk;
+        // Retain only a bounded diagnostic tail for the local exit display.
+        accumulatedStderr = (accumulatedStderr + chunk).slice(-64 * 1024);
         this.publishToChannel({
           type: "stderr",
           commandId,
           data: chunk,
         }).catch((err: unknown) => {
+          if (err instanceof RelayOutputOverflowError) return;
           console.error(
             chalk.red(
               `[ERROR] Failed to publish stderr: ${err instanceof Error ? err.message : String(err)}`,
@@ -1017,6 +1033,7 @@ export class LocalSandboxClient {
             commandId,
             data: "\n[Command timed out and was terminated]",
           }).catch((err: unknown) => {
+            if (err instanceof RelayOutputOverflowError) return;
             console.error(
               chalk.red(
                 `[ERROR] Failed to publish timeout stderr: ${err instanceof Error ? err.message : String(err)}`,
@@ -1030,6 +1047,7 @@ export class LocalSandboxClient {
           commandId,
           exitCode,
         }).catch((err: unknown) => {
+          if (err instanceof RelayOutputOverflowError) return;
           console.error(
             chalk.red(
               `[CRITICAL] Failed to publish EXIT message: ${err instanceof Error ? err.message : String(err)}`,
@@ -1086,6 +1104,7 @@ export class LocalSandboxClient {
           commandId,
           message: error.message,
         }).catch((err: unknown) => {
+          if (err instanceof RelayOutputOverflowError) return;
           console.error(
             chalk.red(
               `[ERROR] Failed to publish error message: ${err instanceof Error ? err.message : String(err)}`,
@@ -1097,6 +1116,7 @@ export class LocalSandboxClient {
           commandId,
           exitCode: 1,
         }).catch((err: unknown) => {
+          if (err instanceof RelayOutputOverflowError) return;
           console.error(
             chalk.red(
               `[CRITICAL] Failed to publish EXIT after process error: ${err instanceof Error ? err.message : String(err)}`,
@@ -1247,6 +1267,7 @@ export class LocalSandboxClient {
       this.subscription.unsubscribe();
       this.subscription = undefined;
     }
+    this.publishQueue?.close();
     this.publishQueue = undefined;
     this.operationRouter?.stop();
     this.operationRouter = undefined;

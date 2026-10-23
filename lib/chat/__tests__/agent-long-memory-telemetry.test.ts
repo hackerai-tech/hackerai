@@ -207,6 +207,163 @@ describe("AgentLongMemoryTelemetry", () => {
     }
   });
 
+  it("captures rapid heap growth before a short provider operation ends", () => {
+    jest.useFakeTimers();
+    try {
+      let heapUsed = 100 * MIB;
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_short",
+        chatId: "chat_short",
+        userId: "user_short",
+        emit,
+        readMemory: () => ({
+          rss: heapUsed + 100 * MIB,
+          heapTotal: heapUsed + 50 * MIB,
+          heapUsed,
+          external: 0,
+          arrayBuffers: 0,
+        }),
+        readHeapLimit: () => 416 * MIB,
+      });
+      telemetry.checkpoint({
+        phase: "provider_request",
+        providerRequest,
+        retention,
+      });
+      telemetry.startPeriodicCheckpoints();
+      telemetry.startPeriodicCheckpoints();
+      expect(jest.getTimerCount()).toBe(1);
+
+      heapUsed += 32 * MIB;
+      jest.advanceTimersByTime(9_999);
+      expect(emit).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(emit.mock.calls[1]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+        heap_used_bytes: 132 * MIB,
+        provider_request: providerRequest,
+        retention,
+      });
+
+      heapUsed += 31 * MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit).toHaveBeenCalledTimes(2);
+      heapUsed += MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit.mock.calls[2]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+        heap_used_high_water_bytes: 164 * MIB,
+      });
+
+      telemetry.dispose();
+      expect(jest.getTimerCount()).toBe(0);
+      heapUsed += 64 * MIB;
+      jest.advanceTimersByTime(120_000);
+      expect(emit).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps quiet sampling silent and waits two minutes after a growth emission", () => {
+    jest.useFakeTimers();
+    try {
+      let heapUsed = 100 * MIB;
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_quiet",
+        chatId: "chat_quiet",
+        userId: "user_quiet",
+        emit,
+        readMemory: () => ({
+          rss: 250 * MIB,
+          heapTotal: 220 * MIB,
+          heapUsed,
+          external: 0,
+          arrayBuffers: 0,
+        }),
+      });
+      telemetry.checkpoint({ phase: "provider_request" });
+      telemetry.startPeriodicCheckpoints();
+      jest.advanceTimersByTime(90_000);
+      expect(emit).toHaveBeenCalledTimes(1);
+
+      heapUsed += 32 * MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit.mock.calls[1]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+      });
+      jest.advanceTimersByTime(119_999);
+      expect(emit).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(1);
+      expect(emit.mock.calls[2]?.[0]).toMatchObject({
+        checkpoint_reason: "periodic",
+      });
+
+      jest.advanceTimersByTime(110_000);
+      heapUsed += 32 * MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit.mock.calls[3]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+        heap_used_bytes: 164 * MIB,
+      });
+      telemetry.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("isolates timer collector failures and retains the latest provider context", () => {
+    jest.useFakeTimers();
+    try {
+      let unavailable = false;
+      let heapUsed = 100 * MIB;
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_failure",
+        chatId: "chat_failure",
+        userId: "user_failure",
+        emit,
+        readMemory: () => {
+          if (unavailable) throw new Error("private collector failure");
+          return {
+            rss: 250 * MIB,
+            heapTotal: 220 * MIB,
+            heapUsed,
+            external: 0,
+            arrayBuffers: 0,
+          };
+        },
+      });
+      telemetry.checkpoint({ phase: "provider_request", providerRequest });
+      telemetry.startPeriodicCheckpoints();
+      const nextRequest = { ...providerRequest, step_index: 4 };
+      telemetry.checkpoint({
+        phase: "provider_request",
+        providerRequest: nextRequest,
+        retention,
+      });
+      unavailable = true;
+      expect(() => jest.advanceTimersByTime(10_000)).not.toThrow();
+      expect(emit).toHaveBeenCalledTimes(1);
+      unavailable = false;
+      heapUsed += 32 * MIB;
+      jest.advanceTimersByTime(10_000);
+      expect(emit.mock.calls[1]?.[0]).toMatchObject({
+        checkpoint_reason: "heap_growth",
+        provider_request: nextRequest,
+        retention,
+      });
+      expect(JSON.stringify(emit.mock.calls)).not.toContain(
+        "private collector failure",
+      );
+      telemetry.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("forces a failure checkpoint and keeps prior high-water values", () => {
     let heapUsed = 200 * MIB;
     const emit = jest.fn();

@@ -97,8 +97,14 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function shouldTryWindowsFileSizeFallback(sandbox: AnySandbox): boolean {
-  return isCentrifugoSandbox(sandbox) && sandbox.isWindows();
+async function shouldUseWindowsFileSizeCommand(
+  sandbox: AnySandbox,
+): Promise<boolean> {
+  return (
+    isCentrifugoSandbox(sandbox) &&
+    (await sandbox.detectShell()) === "cmd" &&
+    sandbox.isWindows()
+  );
 }
 
 function formatUnsupportedWindowsPathCharacter(character: string): string {
@@ -128,14 +134,8 @@ function assertWindowsFileSizeFallbackPathSafe(fullPath: string): void {
 function formatFileSizeFailure(
   fullPath: string,
   statResult: SandboxCommandResult,
-  winResult?: SandboxCommandResult,
 ): Error {
-  const details = [
-    statResult.stderr,
-    statResult.stdout,
-    winResult?.stderr,
-    winResult?.stdout,
-  ]
+  const details = [statResult.stderr, statResult.stdout]
     .map((value) => value?.trim())
     .filter(Boolean)
     .join("; ");
@@ -202,6 +202,10 @@ async function getSandboxFileSize(
     }
   }
 
+  if (await shouldUseWindowsFileSizeCommand(sandbox)) {
+    return getWindowsSandboxFileSize(sandbox, fullPath);
+  }
+
   const quotedPath = shellQuote(fullPath);
   const commandOptions = buildSandboxCommandOptions(sandbox);
   let statResult: SandboxCommandResult;
@@ -232,30 +236,36 @@ async function getSandboxFileSize(
     statResult = commandResult;
   }
 
-  let fileSize = parseInt(statResult.stdout.trim(), 10);
+  const fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && statResult.exitCode === 0) {
     return fileSize;
   }
 
-  if (!shouldTryWindowsFileSizeFallback(sandbox)) {
-    logger.error("sandbox_generated_file_size_failed", undefined, {
-      event: "sandbox_generated_file_size_failed",
-      service: "chat-handler",
-      ...getSandboxLogFields(sandbox),
-      file_name: getFileNameFromPath(fullPath),
-      file_path: fullPath,
-      stat_exit_code: statResult.exitCode,
-      stat_stderr: statResult.stderr?.slice(0, 500),
-      stat_stdout: statResult.stdout?.slice(0, 500),
-    });
-    throw formatFileSizeFailure(fullPath, statResult);
-  }
+  logger.error("sandbox_generated_file_size_failed", undefined, {
+    event: "sandbox_generated_file_size_failed",
+    service: "chat-handler",
+    ...getSandboxLogFields(sandbox),
+    file_name: getFileNameFromPath(fullPath),
+    file_path: fullPath,
+    stat_exit_code: statResult.exitCode,
+    stat_stderr: statResult.stderr?.slice(0, 500),
+    stat_stdout: statResult.stdout?.slice(0, 500),
+  });
+  throw formatFileSizeFailure(fullPath, statResult);
+}
+
+async function getWindowsSandboxFileSize(
+  sandbox: AnySandbox,
+  fullPath: string,
+): Promise<number> {
+  const commandOptions = buildSandboxCommandOptions(sandbox);
 
   assertWindowsFileSizeFallbackPathSafe(fullPath);
 
-  // Windows cmd.exe fallback: delayed expansion avoids reparsing path
-  // metacharacters such as & after the command has been parsed.
-  const winCommand = `setlocal EnableDelayedExpansion && for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI`;
+  // The relay may set env vars earlier in the same cmd.exe /C command.
+  // Enable delayed expansion in a child: inline SETLOCAL has no effect outside
+  // a batch file. Keep the path in env so shell metacharacters remain data.
+  const winCommand = `cmd /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
   let winResult: SandboxCommandResult;
   try {
     winResult = await sandbox.commands.run(winCommand, {
@@ -280,9 +290,6 @@ async function getSandboxFileSize(
           ...getSandboxLogFields(sandbox),
           file_name: getFileNameFromPath(fullPath),
           file_path: fullPath,
-          stat_exit_code: statResult.exitCode,
-          stat_stderr: statResult.stderr?.slice(0, 500),
-          stat_stdout: statResult.stdout?.slice(0, 500),
           error: errorToLog(error),
         },
       );
@@ -290,7 +297,7 @@ async function getSandboxFileSize(
     }
     winResult = commandResult;
   }
-  fileSize = parseInt(winResult.stdout.trim(), 10);
+  const fileSize = parseInt(winResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && winResult.exitCode === 0) {
     return fileSize;
   }
@@ -301,14 +308,11 @@ async function getSandboxFileSize(
     ...getSandboxLogFields(sandbox),
     file_name: getFileNameFromPath(fullPath),
     file_path: fullPath,
-    stat_exit_code: statResult.exitCode,
-    stat_stderr: statResult.stderr?.slice(0, 500),
-    stat_stdout: statResult.stdout?.slice(0, 500),
     windows_exit_code: winResult.exitCode,
     windows_stderr: winResult.stderr?.slice(0, 500),
     windows_stdout: winResult.stdout?.slice(0, 500),
   });
-  throw formatFileSizeFailure(fullPath, statResult, winResult);
+  throw formatFileSizeFailure(fullPath, winResult);
 }
 
 function assertSandboxFileSizeAllowed(fileName: string, size: number): void {

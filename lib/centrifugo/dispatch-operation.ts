@@ -12,6 +12,7 @@ export async function dispatchIsolatedOperation(
   request: Record<string, unknown>,
   isActive: () => boolean,
   reply: Subscription,
+  onBeforePublish?: () => void,
 ): Promise<void> {
   let onReady: (ctx: PublicationContext) => void;
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -49,6 +50,7 @@ export async function dispatchIsolatedOperation(
     })) {
       if (!isActive())
         throw new Error("Relay operation ended before dispatch completed");
+      onBeforePublish?.();
       await control.publish(fragment);
     }
     timeout = setTimeout(

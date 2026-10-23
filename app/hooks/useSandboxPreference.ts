@@ -45,6 +45,20 @@ let bridgeStateListener:
       environmentId?: string,
     ) => void)
   | null = null;
+let bridgeRetryListener: (() => void) | null = null;
+let bridgeStatus: DesktopBridgeStatus = "idle";
+let bridgeEnvironmentId: string | undefined;
+
+function publishBridgeState(
+  active: boolean,
+  status: DesktopBridgeStatus,
+  environmentId?: string,
+): void {
+  bridgeStatus = status;
+  if (environmentId) bridgeEnvironmentId = environmentId;
+  bridgeStateListener?.(active, status, bridgeEnvironmentId);
+}
+
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [
   1_000, 3_000, 8_000, 16_000, 30_000, 60_000,
 ];
@@ -232,12 +246,12 @@ export function useSandboxPreference(
         bridgeRecoveryExhausted = true;
         bridgeRecoveryPausedOffline = false;
         bridgeRecoveryResumeAt = Date.now() + DESKTOP_BRIDGE_RESUME_COOLDOWN_MS;
-        updateBridgeState(false, "failed");
+        publishBridgeState(false, "failed");
         return true;
       }
       if (navigator.onLine === false) {
         bridgeRecoveryPausedOffline = true;
-        updateBridgeState(false, "connecting");
+        publishBridgeState(false, "connecting");
         return true;
       }
 
@@ -261,13 +275,13 @@ export function useSandboxPreference(
         attempt,
         delayMs,
       });
-      updateBridgeState(false, "connecting");
+      publishBridgeState(false, "connecting");
       bridgeRecoveryTimer = setTimeout(() => {
         bridgeRecoveryTimer = null;
         if (generation !== bridgeGeneration) return;
         bridgeGeneration += 1;
         bridgeStartPromise = null;
-        setDesktopBridgeRetryAttempt((currentAttempt) => currentAttempt + 1);
+        bridgeRetryListener?.();
       }, delayMs);
       return true;
     };
@@ -280,6 +294,9 @@ export function useSandboxPreference(
       bridgeTelemetry.reset();
       syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
+      bridgeRetryListener = null;
+      bridgeStatus = "idle";
+      bridgeEnvironmentId = undefined;
       bridgeGeneration += 1;
       bridgeStartPromise = null;
       const bridgeToStop = activeBridge;
@@ -293,45 +310,59 @@ export function useSandboxPreference(
     }
 
     bridgeStateListener = updateBridgeState;
+    const requestBridgeRetry = () =>
+      setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
+    bridgeRetryListener = requestBridgeRetry;
 
-    // React remounts and wake events must not silently replenish retry budgets.
-    if (bridgeRecoveryExhausted) {
-      syncBridgeState(false, "failed");
-      return () => {
-        cancelled = true;
-        if (bridgeStateListener === updateBridgeState)
-          bridgeStateListener = null;
-      };
-    }
+    // The singleton survives remounts; its events and timers must target the
+    // currently mounted consumer, not the component that first started it.
+    const handleBeforeUnload = () => {
+      bridgeTelemetry.flush();
+      bridgeGeneration += 1;
+      clearBridgeRecovery(true);
+      bridgeStartPromise = null;
+      bridgeStateListener = null;
+      bridgeRetryListener = null;
+      bridgeStatus = "idle";
+      bridgeEnvironmentId = undefined;
+      void activeBridge?.stop();
+      activeBridge = null;
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    const cleanup = () => {
+      cancelled = true;
+      if (bridgeStateListener === updateBridgeState) bridgeStateListener = null;
+      if (bridgeRetryListener === requestBridgeRetry)
+        bridgeRetryListener = null;
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
 
-    // Already running — just sync bridge active state.
-    if (activeBridge?.getConnectionId()) {
-      syncDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
-      syncBridgeState(true, "connected");
-      // setSandboxPreferenceState(activeBridge.getConnectionId()!);
-      return () => {
-        cancelled = true;
-        if (bridgeStateListener === updateBridgeState) {
-          bridgeStateListener = null;
-        }
-      };
+    // A connection ID survives transient transport outages. Preserve the
+    // actual readiness state and any backoff instead of declaring it ready.
+    if (
+      activeBridge?.getConnectionId() ||
+      bridgeRecoveryTimer ||
+      bridgeStatus === "failed" ||
+      bridgeRecoveryExhausted
+    ) {
+      syncDesktopEnvironmentId(
+        bridgeEnvironmentId ?? activeBridge?.getEnvironmentId?.(),
+      );
+      syncBridgeState(bridgeStatus === "connected", bridgeStatus);
+      return cleanup;
     }
 
     if (navigator.onLine === false) {
       bridgeRecoveryPausedOffline = true;
+      bridgeStatus = "connecting";
       syncBridgeState(false, "connecting");
-      return () => {
-        cancelled = true;
-        if (bridgeStateListener === updateBridgeState)
-          bridgeStateListener = null;
-      };
+      return cleanup;
     }
     bridgeRecoveryPausedOffline = false;
 
     async function startBridge() {
       const startGeneration = bridgeGeneration;
-      setDesktopBridgeActive(false);
-      setDesktopBridgeStatus("connecting");
+      publishBridgeState(false, "connecting");
       try {
         if (!bridgeStartPromise) {
           const generation = startGeneration;
@@ -357,7 +388,7 @@ export function useSandboxPreference(
                       clearTimeout(bridgeStableResetTimer);
                       bridgeStableResetTimer = null;
                     }
-                    bridgeStateListener?.(
+                    publishBridgeState(
                       state === "connected",
                       state,
                       environmentId,
@@ -370,7 +401,7 @@ export function useSandboxPreference(
                       bridgeRecoveryExhausted = false;
                       bridgeRecoveryPausedOffline = false;
                       clearBridgeRecovery(true);
-                      bridgeStateListener?.(false, "failed");
+                      publishBridgeState(false, "failed");
                       return;
                     }
                     scheduleBridgeRecovery(reason, generation);
@@ -403,9 +434,7 @@ export function useSandboxPreference(
         const bridge = await bridgeStartPromise;
         if (cancelled || !bridge) return;
 
-        setDesktopBridgeActive(true);
-        setDesktopEnvironmentId(bridge.getEnvironmentId?.());
-        setDesktopBridgeStatus("connected");
+        publishBridgeState(true, "connected", bridge.getEnvironmentId?.());
       } catch (error) {
         if (cancelled) return;
         if (isUnauthenticatedConvexError(error)) {
@@ -424,8 +453,7 @@ export function useSandboxPreference(
           if (scheduleBridgeRecovery("startup_failed", startGeneration)) return;
         }
         console.error("[DesktopSandboxBridge] Failed to start:", error);
-        setDesktopBridgeActive(false);
-        setDesktopBridgeStatus("failed");
+        publishBridgeState(false, "failed");
         toast.error("Desktop sandbox failed to connect.", {
           description: "Retry the local connection to use Agent mode.",
         });
@@ -434,31 +462,7 @@ export function useSandboxPreference(
 
     startBridge();
 
-    // Cleanup on beforeunload (page close/refresh)
-    const handleBeforeUnload = () => {
-      bridgeTelemetry.flush();
-      bridgeGeneration += 1;
-      clearBridgeRecovery(true);
-      bridgeStartPromise = null;
-      bridgeStateListener = null;
-      try {
-        activeBridge?.stop();
-      } catch {
-        // Best-effort
-      }
-      activeBridge = null;
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
-    return () => {
-      cancelled = true;
-      if (bridgeStateListener === updateBridgeState) {
-        bridgeStateListener = null;
-      }
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      // Don't tear down the bridge on React strict mode unmount —
-      // it's a module-level singleton that persists across remounts.
-    };
+    return cleanup;
   }, [desktopBridgeRetryAttempt, isAuthenticated]);
 
   useEffect(() => {
@@ -494,14 +498,16 @@ export function useSandboxPreference(
 
   const retryDesktopBridge = useCallback(() => {
     if (!isAuthenticated || !isTauriEnvironment()) return;
+    // A live bridge owns its bounded transport recovery. Keep its callbacks
+    // valid (and any running commands intact) when Retry is clicked mid-reconnect.
+    if (activeBridge?.getConnectionId()) return;
     bridgeGeneration += 1;
     bridgeRecoveryExhausted = false;
     bridgeRecoveryPausedOffline = false;
     bridgeRecoveryResumeAt = 0;
     clearBridgeRecovery(true);
     bridgeStartPromise = null;
-    setDesktopBridgeActive(false);
-    setDesktopBridgeStatus("connecting");
+    publishBridgeState(false, "connecting");
     setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
   }, [isAuthenticated]);
 

@@ -1,3 +1,4 @@
+import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
@@ -28,6 +29,9 @@ import {
 import {
   CentrifugoMessageReassembler,
   CentrifugoPublishQueue,
+  RELAY_QUEUE_MAX_BYTES,
+  RELAY_QUEUE_MAX_MESSAGES,
+  RelayOutputOverflowError,
 } from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
@@ -101,6 +105,7 @@ interface StreamChunk {
 }
 
 interface DesktopStreamPublishRecoveryState {
+  initialRelayGeneration: number;
   failureReported: boolean;
   recoveryReported: boolean;
   exhaustionReported: boolean;
@@ -156,7 +161,15 @@ function classifyDesktopStreamPublishFailure(
   return null;
 }
 
+type OutputControl = {
+  type: "command_output_ack" | "command_output_resume";
+  commandId: string;
+  targetConnectionId: string;
+  sequence: number;
+};
+
 type TargetedIncomingMessage =
+  | OutputControl
   | CommandMessage
   | CommandCancelMessage
   | FileRequestMessage
@@ -179,6 +192,8 @@ function isTargetedIncomingMessage(
     typeof targetConnectionId === "string" &&
     (type === "command" ||
       type === "command_cancel" ||
+      type === "command_output_ack" ||
+      type === "command_output_resume" ||
       type === "file_stat" ||
       type === "file_read" ||
       type === "file_write" ||
@@ -462,6 +477,8 @@ export class DesktopSandboxBridge {
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();
@@ -476,6 +493,7 @@ export class DesktopSandboxBridge {
     const subscription = this.subscription;
     this.client = null;
     this.subscription = null;
+    this.publishQueue?.close();
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;
@@ -740,6 +758,15 @@ export class DesktopSandboxBridge {
           });
           break;
 
+        case "command_output_ack":
+        case "command_output_resume": {
+          const stream = this.acknowledgedOutputs.get(message.commandId);
+          if (message.type === "command_output_ack")
+            stream?.acknowledge(message.sequence);
+          else stream?.resume(message.sequence);
+          break;
+        }
+
         case "command_cancel":
           this.handleCommandCancel(message as CommandCancelMessage).catch(
             (err) => {
@@ -815,6 +842,22 @@ export class DesktopSandboxBridge {
       client,
       userId,
       connectionId,
+      (operation) => {
+        void import("@tauri-apps/api/core")
+          .then(({ invoke }) => {
+            if (operation.kind === "pty")
+              return invoke("execute_pty_kill", { sessionId: operation.id });
+            if (operation.kind === "command")
+              return invoke("cancel_stream_command", {
+                commandId: operation.id,
+              });
+          })
+          .catch(() => {
+            console.error(
+              "[DesktopSandboxBridge] Output overflow cleanup failed",
+            );
+          });
+      },
     );
     this.operationRouter = operationRouter;
     const reassembler = new CentrifugoMessageReassembler();
@@ -941,7 +984,90 @@ export class DesktopSandboxBridge {
     return undefined;
   }
 
+  private acknowledgedOutputs = new Map<string, AcknowledgedCommandOutput>();
+
+  private async handleAcknowledgedCommand(
+    command: CommandMessage,
+  ): Promise<void> {
+    const router = this.operationRouter!;
+    const connectionId = this.connectionId;
+    const deadline =
+      Date.now() +
+      (command.timeout ?? 30_000) +
+      DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+    const stream = new AcknowledgedCommandOutput(
+      command.commandId,
+      deadline,
+      (frame) => router.publish(frame as unknown as Record<string, unknown>),
+      () =>
+        !this.isStoppingOrStopped &&
+        this.operationRouter === router &&
+        this.connectionId === connectionId,
+    );
+    this.acknowledgedOutputs.set(command.commandId, stream);
+    this.commandDeliveryDeadlines.set(command.commandId, deadline);
+    this.activeCommands.add(command.commandId);
+    try {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+      const channel = new Channel<StreamChunk>();
+      channel.onmessage = (chunk) => {
+        if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
+      };
+      try {
+        await invoke("execute_stream_command", {
+          commandId: command.commandId,
+          command: command.command,
+          cwd: command.cwd,
+          env: command.env,
+          timeoutMs: command.timeout ?? 30_000,
+          onEvent: channel,
+        });
+      } catch (error) {
+        stream.append({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.activeCommands.delete(command.commandId);
+      }
+      // Native completion and result delivery have separate lifetimes.
+      await stream.delivered;
+    } catch (error) {
+      if (stream.canceled) return;
+      console.warn("[desktop-bridge] acknowledged output incomplete", {
+        commandId: command.commandId,
+      });
+      // Explicitly fail completeness, never synthesize successful exit or rerun.
+      if (this.operationRouter === router && !this.isStoppingOrStopped) {
+        await router
+          .publish({
+            type: "command_output_unavailable",
+            commandId: command.commandId,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Command output recovery failed",
+          })
+          .catch(() => {});
+      }
+    } finally {
+      stream.stop();
+      this.acknowledgedOutputs.delete(command.commandId);
+      this.commandDeliveryDeadlines.delete(command.commandId);
+      this.activeCommands.delete(command.commandId);
+      // Retain only the lightweight route after cancellation: a lost cancel
+      // response must still be answerable on retry. Its existing TTL closes it.
+      if (!stream.canceled) router.closeCommand(command.commandId);
+    }
+  }
+
   private async handleCommand(command: CommandMessage): Promise<void> {
+    if (
+      command.outputProtocol === "ack-v1" &&
+      this.operationRouter?.retainCommandOutput(command.commandId)
+    ) {
+      return this.handleAcknowledgedCommand(command);
+    }
     const { commandId } = command;
     const commandConnectionId = this.connectionId;
     const commandRouter = this.operationRouter;
@@ -956,6 +1082,7 @@ export class DesktopSandboxBridge {
     this.activeCommands.add(commandId);
     const commandStartedAt = Date.now();
     const recoveryState: DesktopStreamPublishRecoveryState = {
+      initialRelayGeneration: this.successfulRelayConnections,
       failureReported: false,
       recoveryReported: false,
       exhaustionReported: false,
@@ -1652,6 +1779,7 @@ export class DesktopSandboxBridge {
       commandId: command.commandId,
       canceled,
     });
+    if (canceled) this.acknowledgedOutputs.get(command.commandId)?.cancel();
   }
 
   private async forwardChunk(
@@ -1739,6 +1867,29 @@ export class DesktopSandboxBridge {
       if (!canPublish()) return;
 
       try {
+        // The Desktop socket can reconnect before the worker. With broker
+        // history disabled, flushing in that gap loses output despite publish
+        // succeeding. Keep recovery bounded by the existing delivery deadline.
+        if (
+          (recoveryState.failureReported ||
+            this.successfulRelayConnections !==
+              recoveryState.initialRelayGeneration) &&
+          this.operationRouter &&
+          !(await this.operationRouter
+            .hasCommandReceiver(commandId)
+            .catch((error: unknown) => {
+              if (classifyDesktopStreamPublishFailure(error)) throw error;
+              // An inconclusive lookup is never proof of a receiver. Retain
+              // output and retry within the same bounded delivery window.
+              return false;
+            }))
+        ) {
+          throw {
+            code: errorCodes.timeout,
+            message: "Command receiver has not rejoined",
+          };
+        }
+        if (!canPublish()) return;
         await this.forwardChunk(commandId, chunk, sequence);
         if (!canPublish()) return;
         recoveryState.publishedChunks += 1;
@@ -1927,16 +2078,20 @@ export class DesktopSandboxBridge {
     }
     try {
       const queue = this.publishQueue;
+      const subscription = this.subscription;
       const payload = message as unknown as Record<string, unknown>;
       if (this.operationRouter) {
         await this.operationRouter.publish(payload, (value) =>
-          queue.publish(value),
+          subscription!.publish(value),
         );
       } else {
         await queue.publish(payload);
       }
     } catch (error) {
-      if (!classifyDesktopStreamPublishFailure(error)) {
+      if (
+        !(error instanceof RelayOutputOverflowError) &&
+        !classifyDesktopStreamPublishFailure(error)
+      ) {
         console.error(
           "[DesktopSandboxBridge] Failed to publish result:",
           error,
@@ -1948,6 +2103,8 @@ export class DesktopSandboxBridge {
 
   private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
     const { sessionId, command, cols, rows, cwd, env } = msg;
+    const router = this.operationRouter;
+    const subscription = this.subscription;
 
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
@@ -1955,21 +2112,31 @@ export class DesktopSandboxBridge {
       const channel = new Channel<string>();
       let ready = false;
       const pendingChunks: string[] = [];
-      // Serialize publishes: Rust now flushes per-read (could be per-char on
-      // interactive echo). Firing 12 unawaited publishes at the Centrifuge
-      // client caused reordered arrival at the server, producing garbled
-      // terminal rendering. Chain through this promise to preserve order.
-      let publishQueue: Promise<void> = Promise.resolve();
-      const enqueuePublish = (msg: SandboxMessage) => {
-        publishQueue = publishQueue.then(() =>
-          this.publishResult(msg).catch((err) => {
-            console.error(
-              "[DesktopSandboxBridge] Failed to publish",
-              msg.type,
-              err,
-            );
-          }),
+      let pendingBytes = 0;
+      let failed = false;
+      const failOutput = () => {
+        if (failed) return;
+        failed = true;
+        pendingChunks.length = 0;
+        pendingBytes = 0;
+        ptyBuffer = "";
+        if (ptyDebounceTimer) clearTimeout(ptyDebounceTimer);
+        ptyDebounceTimer = null;
+        router?.failOutput({ sessionId }, (value) =>
+          subscription!.publish(value),
         );
+      };
+      // publishResult synchronously admits to the bounded operation queue;
+      // another promise chain here would retain output outside that budget.
+      const enqueuePublish = (message: SandboxMessage) => {
+        if (failed || this.operationRouter !== router) return;
+        void this.publishResult(message).catch((error) => {
+          if (error instanceof RelayOutputOverflowError) failOutput();
+          else
+            console.error(
+              "[DesktopSandboxBridge] Failed to publish PTY output",
+            );
+        });
       };
 
       // Debounce buffer for PTY output - accumulate chunks before publishing
@@ -1991,6 +2158,12 @@ export class DesktopSandboxBridge {
       };
 
       const forwardPtyChunk = (chunk: string) => {
+        if (
+          failed ||
+          this.isStoppingOrStopped ||
+          this.operationRouter !== router
+        )
+          return;
         // The Tauri PTY backend sends raw output strings and a final JSON
         // exit sentinel: {"type":"exit","exitCode":N,"sessionId":"..."}.
         // We require ALL three sentinel fields before treating a chunk as an
@@ -2025,14 +2198,33 @@ export class DesktopSandboxBridge {
 
         // Accumulate chunks and debounce publish
         ptyBuffer += chunk;
-        if (!ptyDebounceTimer) {
+        if (ptyBuffer.length >= 16 * 1024) {
+          if (ptyDebounceTimer) clearTimeout(ptyDebounceTimer);
+          flushPtyBuffer();
+        } else if (!ptyDebounceTimer) {
           ptyDebounceTimer = setTimeout(flushPtyBuffer, PTY_DEBOUNCE_MS);
         }
       };
 
       channel.onmessage = (chunk: string) => {
-        if (!ready) pendingChunks.push(chunk);
-        else forwardPtyChunk(chunk);
+        if (
+          failed ||
+          this.isStoppingOrStopped ||
+          this.operationRouter !== router
+        )
+          return;
+        if (!ready) {
+          const bytes = new TextEncoder().encode(chunk).byteLength;
+          if (
+            pendingChunks.length >= RELAY_QUEUE_MAX_MESSAGES ||
+            pendingBytes + bytes > RELAY_QUEUE_MAX_BYTES
+          ) {
+            failOutput();
+            return;
+          }
+          pendingBytes += bytes;
+          pendingChunks.push(chunk);
+        } else forwardPtyChunk(chunk);
       };
 
       const result = (await invoke("execute_pty_create", {
@@ -2044,6 +2236,16 @@ export class DesktopSandboxBridge {
         env,
         onData: channel,
       })) as { pid: number | null; session_id: string };
+
+      if (
+        failed ||
+        this.isStoppingOrStopped ||
+        this.operationRouter !== router
+      ) {
+        // Creation may have registered the process after the first kill attempt.
+        await invoke("execute_pty_kill", { sessionId });
+        return;
+      }
 
       // Rust's PtyCreateResult.pid is Option<u32> — serializes to `null` when
       // the child didn't expose a pid. Reject that case explicitly so the
@@ -2064,6 +2266,7 @@ export class DesktopSandboxBridge {
       ready = true;
       for (const chunk of pendingChunks) forwardPtyChunk(chunk);
       pendingChunks.length = 0;
+      pendingBytes = 0;
     } catch (err) {
       // The failure path never reaches the channel.onmessage listener, so
       // no pty_data was queued for this session — publishResult direct is
@@ -2137,6 +2340,8 @@ export class DesktopSandboxBridge {
   async stop(): Promise<void> {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
     this.commandDeliveryCleanupTimers.clear();
@@ -2147,6 +2352,7 @@ export class DesktopSandboxBridge {
       this.relayTelemetry.flush();
       this.relayTelemetry.reset();
     }
+    this.publishQueue?.close();
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;
