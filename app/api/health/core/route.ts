@@ -182,6 +182,12 @@ export async function GET(request: NextRequest) {
         ok: true,
         service: "core",
         checkedAt,
+        runtimeIdentity: {
+          nodeVersion: process.versions.node,
+          deploymentId: process.env.VERCEL_DEPLOYMENT_ID ?? null,
+          commitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+          convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null,
+        },
         dependencies: {
           workos,
         },
