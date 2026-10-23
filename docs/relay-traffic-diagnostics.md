@@ -81,7 +81,11 @@ Local/Desktop record stores also emit two counters:
 `hackerai.local_relay.terminal_record_payload_bytes`. Cloud stores emit neither.
 Both use bounded labels only: `source` (Agent, chat handler, or unknown when
 unavailable), `operation`, `outcome`, `transport` (`native_file` or
-`posix_command`), and `reason` (`none`, `windows`, or `node_unavailable`). No
+`posix_command`), and `reason` (`none`, `windows`, or `node_unavailable`). Checkpoint writes also
+include `failure_category`: a bounded transport, filesystem, unsupported-client,
+unsafe-artifact, or unknown classification; successful and unclassified operations
+use `none`. Shell stderr is classified locally and discarded, never used as a
+metric label. No
 commands, output, paths, user/scope/session identifiers, or error text are labels.
 
 - `checkpoint_write`: UTF-8 bytes in the complete serialized record submitted
@@ -113,7 +117,19 @@ flow toward the server, although both pass through the relay.
 
 Use the chronological within-minute query above with the new metric name and
 partition by **machine, worker, operation, outcome, transport, reason and
-source**. Never sum cumulative snapshots. The same initial/boundary/reset
+source and failure_category** (including missing labels on older workers). Never sum cumulative snapshots. The same initial/boundary/reset
 under-counting and exporter-coverage limits apply. Compare complete UTC windows
 and the mix of fallback outcomes before changing persistence behavior. These
 metrics arrive after the server deployment; no client update is required.
+
+## File response recovery
+
+Isolated file requests can opt into `fileResponseAck`. The client retains the
+first completed response, bounded by an aggregate 4 MiB budget and the original
+operation deadline, until the server acknowledges receipt on the same operation
+channel. Retries use backoff and check receiver presence before retransmitting
+payloads. They resend only the response, never the filesystem operation. Stops
+and connection replacement discard old response state. Older clients ignore the
+opt-in field and keep their existing delivery behavior; legacy shared-channel
+requests do not enable this protocol. Deployment alone does not prove that a
+client loaded the new router.

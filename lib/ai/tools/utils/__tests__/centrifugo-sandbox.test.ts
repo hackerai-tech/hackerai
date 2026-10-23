@@ -378,18 +378,35 @@ describe("CentrifugoSandbox", () => {
     await jest.advanceTimersByTimeAsync(0);
     const control = mockSubscriptions[1];
     expect(control.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "file_write", operationChannel: true }),
+      expect.objectContaining({
+        type: "file_write",
+        operationChannel: true,
+        fileResponseAck: true,
+      }),
     );
     reply.emit("publication", {
       data: { type: "operation_ready", requestId: FIXED_UUID },
     });
     await jest.advanceTimersByTimeAsync(0);
+    reply.emit("error", {
+      type: "subscribe",
+      error: { code: 1, message: "timeout" },
+    });
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
     reply.emit("subscribed");
     expect(control.publish).toHaveBeenCalledTimes(1);
     reply.emit("publication", {
       data: { type: "file_ok", requestId: FIXED_UUID },
     });
     await expect(pending).resolves.toBeUndefined();
+    expect(reply.publish).toHaveBeenCalledWith({
+      type: "file_response_ack",
+      requestId: FIXED_UUID,
+      targetConnectionId: defaultConnection.connectionId,
+    });
+    expect(reply.publish.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      reply.unsubscribe.mock.invocationCallOrder[0],
+    );
     expect(control.unsubscribe).toHaveBeenCalled();
     expect(reply.unsubscribe).toHaveBeenCalled();
   });

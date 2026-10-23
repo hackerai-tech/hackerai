@@ -553,20 +553,41 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new Error(message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Acknowledge receipt before removing our operation subscription. A
+        // lost ACK can repeat the response, never the filesystem operation.
+        const acknowledge =
+          isolated && subscription
+            ? subscription.publish({
+                type: "file_response_ack",
+                requestId,
+                targetConnectionId: this.connectionInfo.connectionId,
+              })
+            : Promise.resolve();
+        void acknowledge
+          .catch(() => {})
+          .finally(() => {
+            cleanup();
+            if (message.type === "file_error")
+              reject(new Error(message.message));
+            else resolve(message as T);
+          });
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
           new Error(
             `Centrifugo file subscription error: ${ctx.error?.message ?? "unknown"}`,
@@ -614,6 +635,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
+            ...(isolated ? { fileResponseAck: true } : {}),
             path: this.resolveWorkingPath(input.path),
             requestId,
             ...(this.workingDirectory &&

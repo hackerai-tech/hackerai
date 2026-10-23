@@ -1091,6 +1091,104 @@ describe("command cancellation acknowledgement", () => {
 // ── native desktop file relay ─────────────────────────────────────────
 
 describe("native desktop file relay", () => {
+  it("recovers the reply after a real append succeeds without appending twice", async () => {
+    jest.useFakeTimers();
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "file-ack-test-"));
+    const file = path.join(dir, "out.txt");
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    try {
+      await bridge.start();
+      const append = jest.fn(async () => {
+        await fs.appendFile(file, "once\n");
+        return { ok: true };
+      });
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request") return append();
+        throw new Error("unexpected native command");
+      };
+      let loseReply = true;
+      mockSubscription.publish.mockImplementation(async (message) => {
+        if (message.type === "file_ok" && loseReply) {
+          loseReply = false;
+          throw { code: 1 };
+        }
+      });
+      const start = {
+        type: "file_append",
+        requestId: "append-ack",
+        targetConnectionId: "conn-123",
+        operationChannel: true,
+        fileResponseAck: true,
+        path: file,
+        content: "once\n",
+      };
+      getPublicationHandler()({ data: start });
+      // The only mocked native boundary actually mutates a disposable file.
+      await jest.advanceTimersByTimeAsync(0);
+      await append.mock.results[0].value;
+      await jest.advanceTimersByTimeAsync(0);
+      getPublicationHandler()({ data: start });
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(file, "utf8")).toBe("once\n");
+      expect(
+        mockSubscription.publish.mock.calls.filter(
+          ([m]) => m.type === "file_ok",
+        ),
+      ).toHaveLength(2);
+      expect(
+        mockSubscription.publish.mock.calls.some(
+          ([m]) => m.type === "file_error",
+        ),
+      ).toBe(false);
+      for (const [event, handler] of mockSubscription.on.mock.calls) {
+        if (event === "publication")
+          handler({
+            data: {
+              type: "file_response_ack",
+              requestId: "append-ack",
+              targetConnectionId: "conn-123",
+            },
+          });
+      }
+      expect(mockClient.removeSubscription).toHaveBeenCalled();
+    } finally {
+      await bridge.stop();
+      await fs.rm(dir, { recursive: true, force: true });
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it("discards a native reply that finishes after the bridge stops", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    let finish!: (value: unknown) => void;
+    mockInvokeHandler = () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      });
+    getPublicationHandler()({
+      data: {
+        type: "file_write",
+        requestId: "late-file",
+        targetConnectionId: "conn-123",
+        path: "fixture",
+        content: "once",
+      },
+    });
+    await Promise.resolve();
+    await bridge.stop();
+    finish({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSubscription.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "late-file" }),
+    );
+  });
+
   it.each(["file_write", "file_append"])(
     "does not replay %s after an uncertain transport failure",
     async (type) => {
