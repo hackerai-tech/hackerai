@@ -1105,7 +1105,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "exit":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                terminalReceived = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               if (terminalReceived) break;
@@ -1137,7 +1143,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "error":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                terminalReceived = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               console.warn(

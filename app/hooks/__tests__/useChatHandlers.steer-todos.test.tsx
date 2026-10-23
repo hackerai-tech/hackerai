@@ -4,7 +4,11 @@ import type { ChatMessage, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 
 const mockCaptureAuthenticatedEvent = jest.fn();
+const mockCaptureCancellationEvent = jest.fn();
 jest.mock("@/lib/analytics/client", () => ({
+  getIdentifiedAnalyticsUserId: () => "test-user",
+  captureQueuedAuthenticatedEvent: (...args: unknown[]) =>
+    mockCaptureCancellationEvent(...args),
   captureAuthenticatedEvent: (...args: unknown[]) =>
     mockCaptureAuthenticatedEvent(...args),
 }));
@@ -34,6 +38,7 @@ let mockInput = "";
 let mockUploadedFiles: any[] = [];
 let mockSandboxPreference = "e2b";
 let mockChatMode = "agent";
+let mockQueueBehavior = "queue";
 let mockQueuedDeliveryStatus: "failed" | undefined;
 
 const todos: Todo[] = [
@@ -95,7 +100,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
       },
     ],
     removeQueuedMessage: mockRemoveQueuedMessage,
-    queueBehavior: "queue",
+    queueBehavior: mockQueueBehavior,
     sandboxPreference: mockSandboxPreference,
     agentPermissionMode: "full_access",
     selectedModel: "hackerai-standard",
@@ -145,6 +150,7 @@ describe("useChatHandlers steer todo handoff", () => {
     mockUploadedFiles = [];
     mockSandboxPreference = "e2b";
     mockChatMode = "agent";
+    mockQueueBehavior = "queue";
     mockQueuedDeliveryStatus = undefined;
     Object.defineProperty(navigator, "onLine", {
       configurable: true,
@@ -421,6 +427,7 @@ describe("useChatHandlers steer todo handoff", () => {
     // that has not returned its handle yet.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockCancelDesktopRunLocally).not.toHaveBeenCalled();
+    expect(mockCaptureCancellationEvent).not.toHaveBeenCalled();
     activeTriggerRunRef.current = "run-replacement";
     await act(async () => {
       finishStart({
@@ -433,6 +440,15 @@ describe("useChatHandlers steer todo handoff", () => {
       } as Response);
       expect(await stopped).toBe(true);
     });
+    expect(mockCaptureCancellationEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "agent_run_cancellation_requested",
+        properties: expect.objectContaining({
+          action: "stop",
+          triggerRunId: "run-starting",
+        }),
+      }),
+    );
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/agent/cancel",
       expect.objectContaining({
@@ -532,6 +548,7 @@ describe("useChatHandlers steer todo handoff", () => {
     });
     expect(mockStop).toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
+    expect(mockCaptureCancellationEvent).not.toHaveBeenCalled();
   });
 
   it("retains the starting run while Send now waits for todo persistence", async () => {
@@ -686,54 +703,78 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockCancelStream).not.toHaveBeenCalled();
   });
 
-  it("persists todos and cancels the active run before sending the queued message", async () => {
-    const { result } = renderHook(() =>
-      useChatHandlers({
-        chatId: "chat-1",
-        messages,
-        sendMessage: mockSendMessage,
-        stop: mockStop,
-        regenerate: jest.fn(),
-        setMessages: mockSetMessages,
-        isExistingChat: true,
-        status: "streaming",
-        isSendingNowRef: { current: false },
-        hasManuallyStoppedRef: { current: false },
-        activeTriggerRunRef: { current: "run-1" },
-      }),
-    );
-
-    await act(async () => {
-      await result.current.handleSendNow("queued-1");
-    });
-
-    expect(mockCancelStream).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      skipSave: undefined,
-      todos,
-    });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/agent/cancel",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
+  it.each(["send_now", "stop_and_send"])(
+    "tracks %s while preserving the todo handoff",
+    async (action) => {
+      if (action === "stop_and_send") {
+        mockQueueBehavior = "stop-and-send";
+        mockInput = "Change direction";
+      }
+      const { result } = renderHook(() =>
+        useChatHandlers({
           chatId: "chat-1",
-          expectedTriggerRunId: "run-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: "run-1" },
         }),
-      }),
-    );
-    expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
-      (globalThis.fetch as jest.Mock).mock.invocationCallOrder[0],
-    );
-    expect(
-      (globalThis.fetch as jest.Mock).mock.invocationCallOrder[0],
-    ).toBeLessThan(mockSendMessage.mock.invocationCallOrder[0]);
-    expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
-    expect(mockSendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "Change direction" }),
-      expect.objectContaining({ body: expect.objectContaining({ todos }) }),
-    );
-  });
+      );
+
+      await act(async () => {
+        if (action === "send_now")
+          await result.current.handleSendNow("queued-1");
+        else
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any);
+      });
+
+      expect(mockCancelStream).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        skipSave: undefined,
+        todos,
+      });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/agent/cancel",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "chat-1",
+            expectedTriggerRunId: "run-1",
+          }),
+        }),
+      );
+      expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
+        (globalThis.fetch as jest.Mock).mock.invocationCallOrder[0],
+      );
+      expect(
+        (globalThis.fetch as jest.Mock).mock.invocationCallOrder[0],
+      ).toBeLessThan(mockSendMessage.mock.invocationCallOrder[0]);
+      if (action === "send_now")
+        expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+      expect(mockCaptureCancellationEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "agent_run_cancellation_settled",
+          properties: expect.objectContaining({
+            action,
+            reason: "steer",
+            triggerRunId: "run-1",
+            outcome: "accepted",
+          }),
+        }),
+      );
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "Change direction" }),
+        expect.objectContaining({ body: expect.objectContaining({ todos }) }),
+      );
+    },
+  );
 
   it("preserves persisted progress and todos when retrying an Agent task", async () => {
     const regenerate = jest.fn();
@@ -1021,6 +1062,16 @@ describe("useChatHandlers steer todo handoff", () => {
       await result.current.handleSendNow("queued-1");
     });
 
+    expect(mockCaptureCancellationEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "agent_run_cancellation_settled",
+        properties: expect.objectContaining({
+          action: "send_now",
+          triggerRunId: "run-1",
+          outcome: "stale_run",
+        }),
+      }),
+    );
     expect(activeTriggerRunRef.current).toBe("run-2");
     expect(hasManuallyStoppedRef.current).toBe(false);
     expect(resumeActiveRun).toHaveBeenCalledTimes(1);

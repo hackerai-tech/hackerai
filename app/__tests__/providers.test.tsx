@@ -190,6 +190,8 @@ describe("PostHogProvider", () => {
     for (const event of [
       "desktop_ack_command_started",
       "desktop_ack_command_settled",
+      "agent_run_cancellation_requested",
+      "agent_run_cancellation_settled",
     ]) {
       const allowed = {
         token: "test-ingestion-token",
@@ -197,29 +199,42 @@ describe("PostHogProvider", () => {
         $session_id: "session-123",
         $lib: "web",
         schemaVersion: 1,
-        outputProtocol: "ack-v1",
-        connectionId: "connection-123",
-        commandId: "command-123",
+
         chatId: "chat-123",
         triggerRunId: "run-123",
         hackerai_frontend_build_commit: "a".repeat(40),
-        ...(event.endsWith("settled") && {
-          outcome: "acknowledged",
-          reason: "terminal_ack",
-          observedFrames: 3,
-          enqueuedFrames: 3,
-          acknowledgedFrames: 3,
-          publishAttempts: 4,
-          replayAttempts: 1,
-          publishFailures: 0,
-          resumeRequests: 1,
-          pendingFrames: 0,
-          pendingBytes: 0,
-          peakPendingBytes: 128,
-          terminalType: "exit",
-          terminalAcknowledged: true,
-          durationMs: 2000,
-        }),
+        ...(event.startsWith("agent_run_cancellation")
+          ? {
+              cancellationId: "cancellation-123",
+              action: "stop",
+              reason: "stop",
+              ...(event.endsWith("settled") && {
+                outcome: "accepted",
+                durationMs: 2000,
+              }),
+            }
+          : {
+              outputProtocol: "ack-v1",
+              connectionId: "connection-123",
+              commandId: "command-123",
+              ...(event.endsWith("settled") && {
+                outcome: "acknowledged",
+                reason: "terminal_ack",
+                observedFrames: 3,
+                enqueuedFrames: 3,
+                acknowledgedFrames: 3,
+                publishAttempts: 4,
+                replayAttempts: 1,
+                publishFailures: 0,
+                resumeRequests: 1,
+                pendingFrames: 0,
+                pendingBytes: 0,
+                peakPendingBytes: 128,
+                terminalType: "exit",
+                terminalAcknowledged: true,
+                durationMs: 2000,
+              }),
+            }),
       };
       const sanitized = config.before_send({
         event,

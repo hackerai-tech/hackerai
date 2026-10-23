@@ -7,6 +7,7 @@ const mockSendMessage = jest.fn();
 const mockSetMessages = jest.fn();
 const mockSetIsAutoResuming = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
+const mockCaptureCancellationEvent = jest.fn();
 const mockToastInfo = jest.fn();
 let mockSelectedModel: SelectedModel = "hackerai-standard";
 const originalFetch = globalThis.fetch;
@@ -42,6 +43,9 @@ jest.mock("@/app/components/DataStreamProvider", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
+  getIdentifiedAnalyticsUserId: () => "test-user",
+  captureQueuedAuthenticatedEvent: (...args: unknown[]) =>
+    mockCaptureCancellationEvent(...args),
   captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
 }));
 
@@ -274,6 +278,61 @@ describe("useChatHandlers regenerate model", () => {
     expect(secondRequestId).toEqual(expect.any(String));
     expect(secondRequestId).not.toBe(firstRequestId);
   });
+
+  it.each([
+    ["handleStop", "stop"],
+    ["handleRegenerate", "regenerate"],
+    ["handleRetry", "retry"],
+    ["handleEditMessage", "edit"],
+  ] as const)(
+    "tracks %s against the captured run without changing cancellation",
+    async (handler, action) => {
+      Object.defineProperty(globalThis, "fetch", {
+        configurable: true,
+        value: jest.fn(async () => ({ ok: true, status: 200 }) as Response),
+      });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: "run-1" },
+        }),
+      );
+      await act(async () => {
+        if (handler === "handleEditMessage")
+          await result.current.handleEditMessage("user-1", "edited");
+        else await result.current[handler]();
+      });
+      expect(mockCaptureCancellationEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "agent_run_cancellation_requested",
+          properties: expect.objectContaining({
+            action,
+            triggerRunId: "run-1",
+            reason: action === "stop" ? "stop" : "replace",
+          }),
+        }),
+      );
+      expect(mockCaptureCancellationEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "agent_run_cancellation_settled",
+          properties: expect.objectContaining({
+            action,
+            triggerRunId: "run-1",
+            outcome: "accepted",
+          }),
+        }),
+      );
+    },
+  );
 
   it("cancels the active Trigger session before regenerating", async () => {
     const fetchMock = jest.fn(
