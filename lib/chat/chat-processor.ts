@@ -24,6 +24,7 @@ import {
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -40,7 +41,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
  *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
- *   Paid plans only use Agent mode. Max uses GLM 5.3.
+ *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
+ *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
@@ -113,11 +115,9 @@ export function selectModel(
     return autoModel;
   }
 
-  // GLM 5.3 is the Max text model. Keep image requests on the existing
-  // multimodal route because the retired experiment intentionally excluded
-  // image inputs.
+  // The exact snapshot key applies Max reasoning in buildProviderOptions.
   if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
-    return "model-grok-4.6";
+    return DEEPSEEK_1017_MODEL_KEY;
   }
 
   const providerKey = resolveAgentTierToProviderKey(allowedSelectedModel);
