@@ -2,6 +2,9 @@
 // retries; subsequent tool calls must not restart that budget indefinitely.
 const MAX_FAILED_ACQUISITIONS = 2;
 export const CLOUD_ACQUISITION_DEADLINE_MS = 30_000;
+// Only a provider-confirmed paused workspace may use this total deadline.
+// Discovery, fresh creation and running-workspace reconnects retain 30 seconds.
+export const CLOUD_RESUME_DEADLINE_MS = 90_000;
 
 const ACQUISITION_STAGES = [
   "unknown",
@@ -22,6 +25,7 @@ export const parseCloudAcquisitionStage = (
 
 export type ReportCloudAcquisitionStage = (
   stage: CloudAcquisitionStage,
+  options?: { resumingPausedWorkspace: boolean },
 ) => void;
 
 export class CloudAcquisitionTimeoutError extends Error {
@@ -77,7 +81,17 @@ export class CloudAcquisitionBudget {
     let stage: CloudAcquisitionStage = "unknown";
     let stageStartedAt = startedAt;
     let settled = false;
-    const reportStage: ReportCloudAcquisitionStage = (next) => {
+    let deadlineMs = CLOUD_ACQUISITION_DEADLINE_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    let expire: () => void;
+    const scheduleDeadline = () => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        expire,
+        Math.max(0, deadlineMs - this.failedWaitMs - (Date.now() - startedAt)),
+      );
+    };
+    const reportStage: ReportCloudAcquisitionStage = (next, options) => {
       if (
         settled ||
         controller.signal.aborted ||
@@ -86,23 +100,28 @@ export class CloudAcquisitionBudget {
         return;
       stage = next;
       stageStartedAt = Date.now();
+      if (
+        next === "connect" &&
+        options?.resumingPausedWorkspace &&
+        deadlineMs === CLOUD_ACQUISITION_DEADLINE_MS
+      ) {
+        deadlineMs = CLOUD_RESUME_DEADLINE_MS;
+        scheduleDeadline();
+      }
     };
     let timeoutError: CloudAcquisitionTimeoutError | undefined;
     const cancel = () => controller.abort(context.signal?.reason);
     context.signal?.addEventListener("abort", cancel, { once: true });
-    let timer: ReturnType<typeof setTimeout>;
     let onAbort: () => void;
     const deadline = new Promise<never>((_, reject) => {
       onAbort = () => reject(controller.signal.reason);
       controller.signal.addEventListener("abort", onAbort, { once: true });
-      timer = setTimeout(
-        () => {
-          timeoutError = new CloudAcquisitionTimeoutError(stage);
-          controller.abort(timeoutError);
-          reject(timeoutError);
-        },
-        Math.max(0, CLOUD_ACQUISITION_DEADLINE_MS - this.failedWaitMs),
-      );
+      expire = () => {
+        timeoutError = new CloudAcquisitionTimeoutError(stage);
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      };
+      scheduleDeadline();
     });
     try {
       // The race also bounds adapters that do not support cancellation. Every
