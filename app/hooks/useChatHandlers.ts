@@ -44,6 +44,10 @@ import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  prepareAgentCancellationTelemetry,
+  type AgentCancellationAction,
+} from "@/lib/analytics/agent-cancellation";
 
 interface UseChatHandlersProps {
   sendDisabledReason?: string;
@@ -222,8 +226,10 @@ export const useChatHandlers = ({
       };
 
   const cancelTriggerRun = async (
+    action: AgentCancellationAction,
     beforeCancel?: Promise<unknown>,
   ): Promise<AgentCancellationResult> => {
+    const startTelemetry = prepareAgentCancellationTelemetry(chatId, action);
     const pendingStart = getPendingAgentLongRunStart(chatId);
     if (!pendingStart && !shouldCancelTriggerRun()) {
       await beforeCancel;
@@ -264,6 +270,7 @@ export const useChatHandlers = ({
       if (startFailure) throw startFailure;
       return { outcome: "not_applicable" };
     }
+    const settleTelemetry = startTelemetry(expectedTriggerRunId);
     let retryToast: string | number | undefined;
     const result = await cancelAgentRunWithRetry(
       chatId,
@@ -275,9 +282,22 @@ export const useChatHandlers = ({
           duration: Infinity,
         });
       },
-    ).finally(() => {
-      if (retryToast !== undefined) toast.dismiss(retryToast);
-    });
+    )
+      .then(
+        (result) => {
+          settleTelemetry(
+            result.outcome === "canceled" ? "accepted" : result.outcome,
+          );
+          return result;
+        },
+        (error: unknown) => {
+          settleTelemetry("error");
+          throw error;
+        },
+      )
+      .finally(() => {
+        if (retryToast !== undefined) toast.dismiss(retryToast);
+      });
     if (result.outcome === "stale_run") return result;
     // A lost start response can still hide a newly created durable task. Keep
     // that uncertainty visible and prevent steering from starting another run.
@@ -428,10 +448,12 @@ export const useChatHandlers = ({
     return normalizedMessages;
   };
 
-  const stopActiveRunForReplacement = async (): Promise<boolean> => {
+  const stopActiveRunForReplacement = async (
+    action: "regenerate" | "retry" | "edit",
+  ): Promise<boolean> => {
     const requestGeneration = getAgentRunRequestGeneration?.();
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
-      cancelTriggerRun(),
+      cancelTriggerRun(action),
       stopActiveStream({ skipSave: true }),
     ]);
 
@@ -453,12 +475,15 @@ export const useChatHandlers = ({
     return true;
   };
 
-  const stopActiveRunForSteer = async (): Promise<boolean> => {
+  const stopActiveRunForSteer = async (
+    action: "stop_and_send" | "send_now",
+  ): Promise<boolean> => {
     const requestGeneration = getAgentRunRequestGeneration?.();
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
     // Capture a pending start now, before the todo save can outlive its response.
     const cancelResult = await cancelTriggerRun(
+      action,
       stopActiveStream({ requireCancelSuccess: true }),
     );
     if (cancelResult.outcome === "stale_run") {
@@ -578,7 +603,7 @@ export const useChatHandlers = ({
         return true;
       } else if (queueBehavior === "stop-and-send") {
         try {
-          if (!(await stopActiveRunForSteer())) return false;
+          if (!(await stopActiveRunForSteer("stop_and_send"))) return false;
         } catch (error) {
           console.error(
             "Failed to stop the active run before steering:",
@@ -708,7 +733,7 @@ export const useChatHandlers = ({
     onStopCallback?.();
 
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
-      cancelTriggerRun(),
+      cancelTriggerRun("stop"),
       stopActiveStream(),
     ]);
 
@@ -759,7 +784,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      if (!(await stopActiveRunForReplacement())) return;
+      if (!(await stopActiveRunForReplacement("regenerate"))) return;
     }
     if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
@@ -870,7 +895,7 @@ export const useChatHandlers = ({
 
       // Stop any active stream first to prevent message order issues and wasted tokens
       if (hasActiveRunToReplace()) {
-        if (!(await stopActiveRunForReplacement())) return;
+        if (!(await stopActiveRunForReplacement("retry"))) return;
       }
       if (sendDisabledReasonRef.current) return;
       const agentRunRequestId = uuidv4();
@@ -951,7 +976,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      if (!(await stopActiveRunForReplacement())) return;
+      if (!(await stopActiveRunForReplacement("edit"))) return;
     }
     if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
@@ -1142,7 +1167,7 @@ export const useChatHandlers = ({
     try {
       setIsAutoResuming(false);
       if (!message.deliveryStatus && hasActiveRunToReplace()) {
-        if (!(await stopActiveRunForSteer())) return;
+        if (!(await stopActiveRunForSteer("send_now"))) return;
       }
 
       if (sendDisabledReasonRef.current) return;

@@ -24,6 +24,7 @@ import {
   type FirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 
+import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import {
@@ -138,7 +139,9 @@ export function PostHogProvider({
 
             const sanitizedEvent = sanitizeChatPerformanceEvent(
               sanitizeDesktopAckEvent(
-                sanitizeFrontendExceptionUrlProperties(event),
+                sanitizeAgentCancellationEvent(
+                  sanitizeFrontendExceptionUrlProperties(event),
+                ),
               ),
             );
             if (shouldDropExpectedFrontendException(sanitizedEvent)) {

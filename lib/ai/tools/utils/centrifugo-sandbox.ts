@@ -751,6 +751,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let acknowledgedOutput = false;
         let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
         let terminalReceived = false;
+        let terminalReceivedDuringCancellation = false;
         let completeTerminal: (() => void) | undefined;
         const sendOutputCursor = async (
           type: "command_output_ack" | "command_output_resume",
@@ -865,6 +866,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           cancelAttemptPromise = null;
           cancelRequested = false;
           cancelPublishStarted = false;
+          if (terminalReceivedDuringCancellation) {
+            // A later ACK must not turn a failed/timed-out Stop into success.
+            completeTerminal = () => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              reject(new Error(message));
+            };
+          }
 
           if (cancelTriggeredBySignal && !settled) {
             settled = true;
@@ -1105,7 +1115,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "exit":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                terminalReceived = true;
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               if (terminalReceived) break;
@@ -1127,6 +1144,23 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "command_cancel_result":
               if (!cancelRequested) break;
+              if (terminalReceivedDuringCancellation && acknowledgedOutput) {
+                // A cancel reply does not acknowledge the sequenced terminal.
+                // Preserve receiver ownership until its ACK or the existing deadline.
+                if (!message.canceled) {
+                  completeTerminal = () => {
+                    const reason =
+                      "Local command cancellation was not confirmed.";
+                    failCancellation(reason);
+                    if (!settled) {
+                      settled = true;
+                      cleanup();
+                      reject(new Error(reason));
+                    }
+                  };
+                }
+                break;
+              }
               if (message.canceled) {
                 resolveCanceled();
               } else {
@@ -1137,7 +1171,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "error":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                terminalReceived = true;
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               console.warn(

@@ -332,6 +332,222 @@ describe("CentrifugoSandbox", () => {
     },
   );
 
+  it.each(["exit", "error"] as const)(
+    "acknowledges a sequenced %s received during cancellation before receiver cleanup",
+    async (terminalType) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      let cancel!: () => Promise<boolean>;
+      const pending = sandbox.commands.run("one execution", {
+        onCancelReady: (value) => {
+          cancel = value;
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: FIXED_UUID },
+      });
+      const settlement = jest.fn();
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 5000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+        settlement,
+      );
+      let rejected = 0;
+      reply.publish.mockImplementation(async (message) => {
+        if (message.type === "command_output_ack") {
+          if (rejected++ < 2) {
+            throw new Error("transient ACK rejection");
+          }
+          sender.acknowledge(message.sequence);
+        }
+      });
+      const canceled = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      sender.append(
+        terminalType === "exit"
+          ? { type: "exit", exitCode: 130 }
+          : { type: "error", message: "canceled" },
+      );
+      await jest.advanceTimersByTimeAsync(50);
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1500);
+      await expect(canceled).resolves.toBe(true);
+      await expect(pending).resolves.toMatchObject({ exitCode: 130 });
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(sender.delivered).resolves.toBeUndefined();
+      expect(settlement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminalAcknowledged: true,
+          pendingFrames: 0,
+        }),
+      );
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    ["exit", true],
+    ["exit", false],
+    ["error", true],
+    ["error", false],
+  ] as const)(
+    "retains sequenced %s ACK ownership across canceled=%s replies",
+    async (terminalType, cancelConfirmed) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      let cancel!: () => Promise<boolean>;
+      const pending = sandbox.commands.run("one execution", {
+        onCancelReady: (value) => {
+          cancel = value;
+        },
+      });
+      const commandResult = cancelConfirmed
+        ? expect(pending).resolves.toMatchObject({ exitCode: 130 })
+        : expect(pending).rejects.toThrow(
+            "Local command cancellation was not confirmed",
+          );
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: FIXED_UUID },
+      });
+      const settlement = jest.fn();
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 5000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+        settlement,
+      );
+      let rejected = 0;
+      reply.publish.mockImplementation(async (message) => {
+        if (message.type === "command_output_ack") {
+          if (rejected++ < 2) {
+            throw new Error("transient ACK rejection");
+          }
+          sender.acknowledge(message.sequence);
+        }
+      });
+      const canceled = cancel();
+      await jest.advanceTimersByTimeAsync(0);
+      sender.append(
+        terminalType === "exit"
+          ? { type: "exit", exitCode: 130 }
+          : { type: "error", message: "canceled" },
+      );
+      await jest.advanceTimersByTimeAsync(50);
+      reply.emit("publication", {
+        data: {
+          type: "command_cancel_result",
+          commandId: FIXED_UUID,
+          canceled: cancelConfirmed,
+        },
+      });
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1500);
+      await expect(canceled).resolves.toBe(cancelConfirmed);
+      await commandResult;
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(sender.delivered).resolves.toBeUndefined();
+      expect(settlement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminalAcknowledged: true,
+          pendingFrames: 0,
+        }),
+      );
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("keeps cancellation bounded when every terminal ACK is rejected", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const controller = new AbortController();
+    const pending = sandbox.commands.run("one execution", {
+      signal: controller.signal,
+    });
+    const result = expect(pending).rejects.toThrow(
+      "Local command cancellation was not acknowledged",
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    const control = mockSubscriptions[1];
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    const settlement = jest.fn();
+    const sender = new AcknowledgedCommandOutput(
+      FIXED_UUID,
+      Date.now() + 5000,
+      async (frame) => {
+        reply.emit("publication", { data: frame });
+      },
+      () => true,
+      settlement,
+    );
+    reply.publish.mockImplementation(async (message) => {
+      if (message.type === "command_output_ack")
+        throw new Error("ACK unavailable");
+    });
+    controller.abort();
+    sender.append({ type: "exit", exitCode: 130 });
+    await jest.advanceTimersByTimeAsync(50);
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(5000);
+    await result;
+    await expect(sender.delivered).rejects.toThrow("deadline exceeded");
+    expect(settlement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "incomplete",
+        terminalAcknowledged: false,
+      }),
+    );
+    expect(control.publish).toHaveBeenCalledTimes(1);
+    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it.each(["late-prefix", "resume", "cancel", "deadline"] as const)(
     "keeps terminal ACK recovery bounded across %s",
     async (mode) => {
