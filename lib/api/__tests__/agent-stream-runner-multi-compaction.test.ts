@@ -17,6 +17,7 @@ import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/sum
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
+const mockSummaryGenerateText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
@@ -72,6 +73,7 @@ jest.mock("ai", () => ({
   ),
   stepCountIs: jest.fn(() => () => false),
   streamText: mockStreamText,
+  generateText: (...args: unknown[]) => mockSummaryGenerateText(...args),
   wrapLanguageModel: jest.fn(({ model }) => model),
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
@@ -872,6 +874,92 @@ describe("createAgentStream repeated compaction", () => {
     mockRunSummarizationStep.mockReset();
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
+    mockSummaryGenerateText.mockReset();
+  });
+
+  it("compacts free Ask history with the context meter disabled", async () => {
+    const { generateSummaryText, buildSummaryMessage } = jest.requireActual(
+      "@/lib/chat/summarization/helpers",
+    );
+    const { getSummaryInputMaxTokens } = jest.requireActual(
+      "@/lib/chat/summarization/constants",
+    );
+    const sourceText =
+      "The verified lab marker is ABC. " +
+      "Earlier verified context. ".repeat(4000);
+    const original = uiMessage("owned-history", sourceText);
+    const state = initAgentStreamState([original], {
+      usedTokens: 0,
+      maxTokens: 0,
+    });
+    state.lastStepInputTokens = 120_000;
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockSummaryGenerateText.mockResolvedValue({
+      text: "Keep the verified lab marker ABC and continue.",
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    // Keep the real source-history budget guard and provider-request preparation.
+    // Only the external generation and summary orchestration are controlled here.
+    mockCompactModelMessagesInRun.mockImplementation(async (options) => {
+      const summary = await generateSummaryText(
+        [],
+        { modelId: "test-summary" },
+        options.mode,
+        options.chatSystemPrompt,
+        false,
+        undefined,
+        undefined,
+        options.abortSignal,
+        options.modelMessages,
+        getSummaryInputMaxTokens(options.maxTokens),
+      );
+      return {
+        summaryMessage: buildSummaryMessage(summary.text),
+        summaryText: summary.text,
+        summarizationUsage: summary.usage,
+      };
+    });
+    const context = createTestStreamContext({
+      mode: "ask",
+      subscription: "free",
+      contextUsageOn: false,
+      ctxSystemTokens: 0,
+      ctxMaxTokens: 0,
+      usageTracker: {},
+      summarizationTracker: {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
+      },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      stepNumber: 1,
+      steps: [{ toolResults: [] }],
+      messages: [
+        { role: "user", content: sourceText },
+        { role: "user", content: "Continue verification." },
+      ],
+    });
+    expect(mockSummaryGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ content: sourceText }),
+        ]),
+      }),
+    );
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "Keep the verified lab marker ABC and continue.",
+    );
+    expect(state.finalMessages).toEqual([original]);
+    expect(context.contextUsageOn).toBe(false);
+    expect(state.ctxUsage.maxTokens).toBe(0);
   });
 
   it.each([

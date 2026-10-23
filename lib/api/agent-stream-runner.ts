@@ -1033,7 +1033,12 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
-  let activeContextBudget = ctx.ctxMaxTokens;
+  // Free Ask hides its usage meter with a zero display budget. Compaction still
+  // needs the existing subscription budget to retain source history.
+  let activeContextBudget =
+    ctx.ctxMaxTokens > 0
+      ? ctx.ctxMaxTokens
+      : getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode });
   const contextFlag = getAgentModelContextFlag(ctx.selectedModelOverride);
   const expandedContextEnabled =
     ctx.mode === "agent" &&
