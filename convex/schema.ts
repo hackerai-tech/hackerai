@@ -190,6 +190,24 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  user_skill_drafts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    ids: v.array(v.id("user_skills")),
+    updated_at: v.number(),
+  })
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+  user_skills: defineTable({
+    user_id: v.string(),
+    name: v.string(),
+    description: v.string(),
+    content: v.string(),
+    is_default: v.boolean(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_default", ["user_id", "is_default"]),
   cloud_network_settings: defineTable({
     user_id: v.string(),
     policy: networkPolicy,
@@ -276,6 +294,7 @@ export default defineSchema({
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
+    user_skill_ids: v.optional(v.array(v.id("user_skills"))),
     // Legacy field retained for existing chat documents only.
     engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),

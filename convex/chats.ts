@@ -1,3 +1,4 @@
+import { snapshotSkillSelection } from "./userSkills";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
@@ -594,6 +595,7 @@ export const getChatByIdFromClient = query({
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        user_skill_ids: _privateSkillIds,
         ...chatPublic
       } = chat;
 
@@ -700,6 +702,7 @@ export const getChatById = query({
       const {
         codex_thread_id: _legacy,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        user_skill_ids: _privateSkillIds,
         ...chatPublic
       } = chat;
       return chatPublic;
@@ -788,6 +791,7 @@ export const saveChat = mutation({
       }
 
       const chatId = await ctx.db.insert("chats", {
+        user_skill_ids: await snapshotSkillSelection(ctx, args.userId, args.id),
         id: args.id,
         title: args.title,
         user_id: args.userId,
