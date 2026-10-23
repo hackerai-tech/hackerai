@@ -3,6 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
+import { cancelDesktopRunLocally } from "@/app/services/desktop-command-cancellation";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import {
@@ -233,6 +234,15 @@ export const useChatHandlers = ({
     // Capture the target before awaiting: a later run or navigation must not
     // change which task this Stop is allowed to cancel.
     const currentRunId = activeTriggerRunRef?.current;
+    const stopLocalRun = (runId: string) => {
+      void cancelDesktopRunLocally(chatId, runId).catch((error) => {
+        console.error("Failed to stop local commands:", error);
+        toast.error("Could not stop the local command. Please try Stop again.");
+      });
+    };
+    // Do not wait for an HTTP request or stream teardown before local IPC.
+    // A pending start owns a different run; never cancel the previous one.
+    if (!pendingStart && currentRunId) stopLocalRun(currentRunId);
     let startFailure: unknown;
     const [startedRun] = await Promise.all([
       pendingStart?.catch((error: unknown) => {
@@ -248,6 +258,7 @@ export const useChatHandlers = ({
       if (startFailure) throw startFailure;
       return { outcome: "not_applicable" };
     }
+    if (pendingStart) stopLocalRun(expectedTriggerRunId);
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

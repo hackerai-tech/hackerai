@@ -1,3 +1,4 @@
+import { cancelDesktopRunLocally } from "../desktop-command-cancellation";
 import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
 import {
@@ -3241,6 +3242,76 @@ it.each(["before readiness", "while publishing"])(
       releasePublish();
       await bridge.stop();
       mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+    }
+  },
+);
+
+it.each([false, true])(
+  "cancels only the stopped run locally while relay delivery hangs (ack: %s)",
+  async (acknowledged) => {
+    jest.useFakeTimers();
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const running = new Map<string, () => void>();
+    const executed: string[] = [];
+    const canceled: string[] = [];
+    const native = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      const id = args?.commandId as string;
+      if (cmd === "execute_stream_command") {
+        executed.push(id);
+        const channel = capturedChannel!;
+        return new Promise<void>((resolve) =>
+          running.set(id, () => {
+            channel.onmessage!({ type: "exit", exitCode: 130 });
+            resolve();
+          }),
+        );
+      }
+      if (cmd === "cancel_stream_command") {
+        canceled.push(id);
+        running.get(id)?.();
+        running.delete(id);
+        return true;
+      }
+      return native(cmd, args);
+    };
+    const send = (id: string, chatId: string, triggerRunId: string) =>
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: id,
+          command: "sleep 120",
+          chatId,
+          triggerRunId,
+          targetConnectionId: "conn-123",
+          ...(acknowledged
+            ? { outputProtocol: "ack-v1", operationChannel: true }
+            : {}),
+        },
+      });
+    try {
+      send("target", "chat-a", `run-a-${acknowledged}`);
+      send("other-chat", "chat-b", "run-b");
+      send("newer-run", "chat-a", "run-new");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(executed).toEqual(["target", "other-chat", "newer-run"]);
+      mockSubscription.publish.mockImplementation(() => new Promise(() => {}));
+      // Native execution survives a terminal relay disconnect. Stop must too.
+      await bridge.stop();
+      await cancelDesktopRunLocally("chat-a", `run-a-${acknowledged}`);
+      expect(canceled).toEqual(["target"]);
+      expect([...running.keys()]).toEqual(["other-chat", "newer-run"]);
+      // A command already queued by the stopped worker must not execute on reconnect.
+      await bridge.start();
+      send("late-target", "chat-a", `run-a-${acknowledged}`);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(executed).toEqual(["target", "other-chat", "newer-run"]);
+    } finally {
+      for (const finish of running.values()) finish();
+      await bridge.stop();
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+      jest.useRealTimers();
     }
   },
 );
