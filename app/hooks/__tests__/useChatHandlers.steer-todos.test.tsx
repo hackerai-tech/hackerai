@@ -324,6 +324,57 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it("delivers Stop after leaving the chat without targeting a replacement run", async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchMock = jest.mocked(fetch);
+      fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+      const activeTriggerRunRef = { current: "run-offline-navigation" };
+      const { result, unmount } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-navigation",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef,
+        }),
+      );
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop();
+      });
+      expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+        "chat-navigation",
+        "run-offline-navigation",
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      activeTriggerRunRef.current = "run-replacement";
+      unmount();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+        expect(await stopped).toBe(true);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(JSON.parse(init!.body as string)).toEqual({
+          chatId: "chat-navigation",
+          expectedTriggerRunId: "run-offline-navigation",
+        });
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("waits for a pending start and cancels its exact run after an early Stop", async () => {
     let finishStart!: (response: Response) => void;
     const controller = new AbortController();
