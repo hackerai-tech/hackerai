@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import {
   afterEach,
   beforeEach,
@@ -53,6 +53,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    browserHandoffs: { getForUser: "getForUser" },
     subagents: {
       getOwned: "getOwned",
       getMessagesOwned: "getMessagesOwned",
@@ -155,6 +156,152 @@ describe("ComputerSidebar reconnect behavior", () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it("shows command expansion only alongside a browser section", () => {
+    const props = {
+      sidebarOpen: true,
+      closeSidebar: mockCloseSidebar,
+      browserChatId: "chat",
+    };
+    const view = render(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+    view.rerender(
+      <ComputerSidebarBase
+        {...props}
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    ).toBeVisible();
+    view.rerender(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.queryByRole("region", { name: "Agent browser preview" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+    mockUseQuery.mockReturnValue({ state: "waiting" });
+    view.rerender(
+      <ComputerSidebarBase {...props} sidebarContent={activeSidebarContent} />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    ).toBeVisible();
+    view.rerender(
+      <ComputerSidebarBase
+        {...props}
+        browserChatId={undefined}
+        sidebarContent={activeSidebarContent}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand command and output" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["echo agent-browser open", false],
+    ["agent-browser-next open", false],
+    ['printf "; agent-browser open"', false],
+    ["AGENT-BROWSER open https://example.org", false],
+    ["agent-browser open https://example.org", true],
+    ["MODE=TEST npx agent-browser@latest snapshot -i", true],
+    ['printf "READY!"; agent-browser snapshot -i', true],
+  ])(
+    "matches browser invocation rather than mentions: %s",
+    (command, expected) => {
+      render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          sidebarContent={{ ...activeSidebarContent, command }}
+        />,
+      );
+      expect(
+        screen.queryByRole("region", { name: "Agent browser preview" }) !==
+          null,
+      ).toBe(expected);
+      expect(
+        screen.queryByRole("button", { name: "Expand command and output" }) !==
+          null,
+      ).toBe(expected);
+    },
+  );
+
+  it("pins the expanded command while later tools arrive", () => {
+    const onNavigate = jest.fn();
+    const messages = [
+      {
+        id: "assistant-active",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "tool-active",
+            state: "output-available",
+            input: { command: "agent-browser snapshot -i" },
+            output: { result: { output: "initial output" } },
+          },
+        ],
+      },
+    ];
+    const view = render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+        browserChatId="chat"
+        closeSidebar={mockCloseSidebar}
+        messages={messages}
+        onNavigate={onNavigate}
+        status="streaming"
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand command and output" }),
+    );
+    view.rerender(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={{
+          ...activeSidebarContent,
+          command: "agent-browser snapshot -i",
+        }}
+        browserChatId="chat"
+        closeSidebar={mockCloseSidebar}
+        messages={[...messages, otherToolMessage]}
+        onNavigate={onNavigate}
+        status="streaming"
+      />,
+    );
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByRole("dialog")).getByTestId("terminal-code-block"),
+    ).toHaveTextContent("agent-browser snapshot -i");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close expanded command" }),
+    );
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
   });
 
   it("expands and restores without closing or remounting the terminal", () => {

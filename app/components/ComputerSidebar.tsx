@@ -23,6 +23,7 @@ import type { UIMessage } from "ai";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { ExpandedTerminalButton } from "./ExpandedTerminalButton";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
@@ -65,6 +66,8 @@ import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { AgentBrowserPreview } from "./AgentBrowserPreview";
+import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -90,6 +93,9 @@ interface ComputerSidebarProps {
   realtimeRecovery?: {
     onRetry: () => void;
   };
+  browserChatId?: string;
+  browserAgentId?: string;
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -327,6 +333,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   onFollowingLiveChange,
   backNavigation,
   realtimeRecovery,
+  browserChatId,
+  browserAgentId = "parent",
+  onBrowserContinue,
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -334,6 +343,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const sidebarRef = useRef<HTMLDivElement>(null);
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [isWrapped, setIsWrapped] = useState(true);
+  const [browserPreviewVisible, setBrowserPreviewVisible] = useState(false);
   const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
 
@@ -717,6 +727,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               </div>
             </div>
 
+            {sidebarOpen && browserChatId && (
+              <AgentBrowserPreview
+                onVisibilityChange={setBrowserPreviewVisible}
+                onContinue={onBrowserContinue}
+                chatId={browserChatId}
+                agentId={browserAgentId}
+                liveSelection={isAtLive && isFollowingLive}
+                browserRequested={
+                  !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
+                }
+                runActive={status === "streaming" || status === "submitted"}
+                onJumpToLive={handleJumpToLive}
+              />
+            )}
+
             {realtimeRecovery && (
               <div
                 role="alert"
@@ -780,53 +805,63 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch &&
-                  !isNotes &&
-                  !isFinding &&
-                  !isToolError &&
-                  !isSharedFiles && (
-                    <CodeActionButtons
-                      content={
-                        isFile && resolvedFile
-                          ? resolvedFile.content
-                          : isTerminal && resolvedTerminal
-                            ? resolvedTerminal.output
-                              ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                              : `$ ${resolvedTerminal.command}`
-                            : isProxy && resolvedProxy
-                              ? resolvedProxy.output
-                                ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
-                                : `$ ${resolvedProxy.command}`
-                              : ""
-                      }
-                      filename={
-                        isFile
-                          ? sidebarContent.action === "searching"
-                            ? "search-results.txt"
-                            : sidebarContent.path.split("/").pop() || "code.txt"
-                          : "terminal-output.txt"
-                      }
-                      language={
-                        isFile
-                          ? sidebarContent.action === "searching"
-                            ? "text"
-                            : sidebarContent.language ||
-                              getLanguageFromPath(sidebarContent.path)
-                          : "ansi"
-                      }
-                      isWrapped={isWrapped}
-                      onToggleWrap={handleToggleWrap}
-                      variant="sidebar"
-                      // xterm manages its own wrapping; the toggle is a no-op
-                      // for interactive PTY output.
-                      showWrap={
-                        !(
-                          (isTerminal && resolvedTerminal?.rawBytes) ||
-                          (isFile && resolvedFile?.action === "viewing")
-                        )
-                      }
+                <div className="flex items-center">
+                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
+                    <ExpandedTerminalButton
+                      key={resolvedTerminal.toolCallId}
+                      terminal={resolvedTerminal}
+                      onExpand={() => setIsFollowingLive(false)}
                     />
                   )}
+                  {!isWebSearch &&
+                    !isNotes &&
+                    !isFinding &&
+                    !isToolError &&
+                    !isSharedFiles && (
+                      <CodeActionButtons
+                        content={
+                          isFile && resolvedFile
+                            ? resolvedFile.content
+                            : isTerminal && resolvedTerminal
+                              ? resolvedTerminal.output
+                                ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                                : `$ ${resolvedTerminal.command}`
+                              : isProxy && resolvedProxy
+                                ? resolvedProxy.output
+                                  ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                                  : `$ ${resolvedProxy.command}`
+                                : ""
+                        }
+                        filename={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "search-results.txt"
+                              : sidebarContent.path.split("/").pop() ||
+                                "code.txt"
+                            : "terminal-output.txt"
+                        }
+                        language={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "text"
+                              : sidebarContent.language ||
+                                getLanguageFromPath(sidebarContent.path)
+                            : "ansi"
+                        }
+                        isWrapped={isWrapped}
+                        onToggleWrap={handleToggleWrap}
+                        variant="sidebar"
+                        // xterm manages its own wrapping; the toggle is a no-op
+                        // for interactive PTY output.
+                        showWrap={
+                          !(
+                            (isTerminal && resolvedTerminal?.rawBytes) ||
+                            (isFile && resolvedFile?.action === "viewing")
+                          )
+                        }
+                      />
+                    )}
+                </div>
               </div>
 
               {/* Content */}
@@ -1258,12 +1293,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 };
 
 const SubagentComputerSidebar = ({
+  chatId,
   closeSidebar,
   parentMessages,
   openSidebar,
   origin,
   sidebarContent,
+  onBrowserContinue,
 }: {
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  chatId: string;
   closeSidebar: () => void;
   parentMessages: any[];
   openSidebar: (content: SidebarContent) => void;
@@ -1365,7 +1404,10 @@ const SubagentComputerSidebar = ({
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
       sidebarOpen
+      browserChatId={chatId}
+      browserAgentId={origin.subagentId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}
@@ -1389,9 +1431,11 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  chatId?: string;
   messages?: any[];
   status?: ChatStatus;
-}> = ({ messages, status }) => {
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+}> = ({ chatId, messages, status, onBrowserContinue }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
 
@@ -1408,7 +1452,9 @@ export const ComputerSidebar: React.FC<{
   if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
     return (
       <SubagentComputerSidebar
+        onBrowserContinue={onBrowserContinue}
         key={sidebarContent.origin.subagentId}
+        chatId={chatId ?? ""}
         closeSidebar={closeSidebar}
         parentMessages={messages ?? []}
         openSidebar={openSidebar}
@@ -1420,7 +1466,9 @@ export const ComputerSidebar: React.FC<{
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
       sidebarOpen={sidebarOpen}
+      browserChatId={chatId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}

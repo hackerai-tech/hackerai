@@ -1,3 +1,4 @@
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
   restoreProviderRecoveryContext,
@@ -758,6 +759,8 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
+  getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
@@ -1488,6 +1491,7 @@ export async function createAgentStream(
         stepIndex: number;
       }
     | undefined;
+  let rejectedRequestRecoveryMessages: ModelMessage[] | undefined;
   const compactRejectedRequest = async (): Promise<string | undefined> => {
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
@@ -1549,16 +1553,21 @@ export async function createAgentStream(
     if (!summaryText.trim()) return undefined;
     const recoveryPrompt =
       summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
-    // The immediate retry bypasses prepareProviderMessages. Apply the same
-    // trusted annotation policy to both the retry and its rolling checkpoint.
-    const [annotatedMessage] = preparePlatformAuthorizationForModel(
+    // This retry bypasses prepareStep and prepareProviderMessages. Re-read
+    // private handoff instructions after lossy summarization, then apply the
+    // same trusted annotation policy at the provider boundary.
+    const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+    rejectedRequestRecoveryMessages = projectHandoffNotes(
       [{ role: "user", content: recoveryPrompt }],
+      handoffNotes,
+    );
+    return preparePlatformAuthorizationForModel(
+      rejectedRequestRecoveryMessages,
       hasPlatformAnnotationContext(),
       activeStepModelName,
-    );
-    return typeof annotatedMessage?.content === "string"
-      ? annotatedMessage.content
-      : recoveryPrompt;
+    )
+      .map((message) => message.content)
+      .join("\n\n");
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
@@ -1567,7 +1576,11 @@ export async function createAgentStream(
     historyEnabled = false;
     historyReplay.reset();
     rollingContextCheckpoint = {
-      baseMessages: [{ role: "user", content: summary }],
+      // Keep notes as separate messages so subsequent projection recognizes
+      // them and does not inject the same private update twice.
+      baseMessages: rejectedRequestRecoveryMessages ?? [
+        { role: "user", content: summary },
+      ],
       rawMessageCursor: rejectedRequestSource.rawMessages.length,
     };
     saveProviderRecoveryContext(
@@ -1909,6 +1922,7 @@ export async function createAgentStream(
       refund: () => ctx.usageRefundTracker.refund(),
     });
 
+  const projectHandoffNotes = createBrowserHandoffNoteProjector();
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
     // copy of every provider request; response messages still drive persistence.
@@ -1978,9 +1992,19 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      await ctx.waitForBrowserHandoff?.(abortSignal);
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      // Saved handoff notes can change the user's instructions. If the read
+      // fails, retry/fail this step rather than act with silently missing context.
+      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] =>
+        projectHandoffNotes(messages, handoffNotes);
+      if (handoffNotes.length && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
       const nextNetworkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
       if (nextNetworkSection !== networkSection && historyEnabled) {
         historyEnabled = false;
@@ -2009,6 +2033,8 @@ export async function createAgentStream(
       let rollingModelMessages = historyEnabled
         ? historyReplay.project(rawModelMessages)
         : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      // Anchor private notes before image elision changes prior tool messages.
+      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       if (!historyEnabled)
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
@@ -2230,6 +2256,11 @@ export async function createAgentStream(
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
               }
+              // Keep notes out of the durable checkpoint; fetch the current
+              // handoff context again on each step, including after compaction.
+              summarizedModelMessages = withHandoffNotes(
+                summarizedModelMessages,
+              );
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
@@ -2423,7 +2454,7 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  nextBaseMessages,
+                  withHandoffNotes(nextBaseMessages),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {
@@ -2978,7 +3009,10 @@ export async function createAgentStream(
           isProviderContentFilterFinishReason(finishResult.finishReason))
           ? finishResult.finishReason
           : undefined;
+      // A final response can arrive while the user is taking control. Hold normal
+      // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
+      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (
