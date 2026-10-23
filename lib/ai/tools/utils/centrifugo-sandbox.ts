@@ -1512,7 +1512,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
    * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
-  private async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
+  async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
     const declaredPlatform = this.connectionInfo.osInfo?.platform;
