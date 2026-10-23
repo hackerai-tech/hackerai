@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import type { SandboxType, ToolContext } from "@/types";
+import type { AnySandbox, SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 import { logger } from "@/lib/logger";
 import {
@@ -8,7 +8,10 @@ import {
   type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
-import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import {
+  getSandboxLogFields,
+  isCentrifugoSandbox,
+} from "./utils/sandbox-types";
 import { waitForForegroundCommands } from "./utils/foreground-commands";
 import {
   getSandboxWithFallbackGuard,
@@ -32,6 +35,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
       let relayRecoverySucceeded = false;
       let streamNotificationFailures = 0;
       let foregroundCommandsWaited = 0;
+      const observedSandboxTypes = new Set<
+        "cloud" | "desktop" | "remote-connection"
+      >();
+      const observeSandboxType = (sandbox: AnySandbox) => {
+        try {
+          const type = getSandboxLogFields(sandbox).sandbox_type;
+          switch (type) {
+            case "cloud":
+            case "desktop":
+            case "remote-connection":
+              observedSandboxTypes.add(type);
+          }
+        } catch {
+          // Optional identity observation must not fail a delivery.
+        }
+      };
       type FailurePhase =
         | GeneratedFileUploadPhase
         | "sandbox_setup"
@@ -109,6 +128,10 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             relay_recovery_attempted: relayRecoveryAttempted,
             relay_recovery_succeeded: relayRecoverySucceeded,
             sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
+            // Manager state can change while an earlier adapter is still used.
+            // These are acquired candidates, not per-file execution attribution.
+            observed_sandbox_type_version: 1,
+            observed_sandbox_types: [...observedSandboxTypes],
           });
         } catch {
           // Analytics cannot turn a stored artifact into a failed delivery.
@@ -118,6 +141,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
+        observeSandboxType(sandbox);
 
         // SDK tool calls in one model step execute concurrently. A file may
         // still be being created by another foreground call in this context.
@@ -131,6 +155,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         if (foregroundCommandsWaited > 0) {
           setupStage = "reacquisition";
           ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
+          observeSandboxType(sandbox);
         }
         setupStage = null;
         currentPhase = "unknown";
@@ -165,6 +190,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             );
             const { sandbox: recoveredSandbox } =
               await getSandboxWithFallbackGuard({ sandboxManager });
+            observeSandboxType(recoveredSandbox);
             if (!isCentrifugoSandbox(recoveredSandbox)) {
               throw new Error(
                 "The selected local sandbox changed during file recovery. Reconnect it and try again.",
