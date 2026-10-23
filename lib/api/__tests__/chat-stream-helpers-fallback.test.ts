@@ -10,7 +10,6 @@ import {
   buildProviderOptions,
   getFallbackSlugs,
   getContentFilterRetryModel,
-  getFallbackSlugs,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
