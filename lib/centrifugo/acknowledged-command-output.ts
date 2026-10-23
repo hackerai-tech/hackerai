@@ -96,13 +96,34 @@ export class AcknowledgedCommandOutput {
     const bytes = new TextEncoder().encode(
       chunk.data ?? chunk.message ?? "",
     ).byteLength;
-    if (this.pending.size >= 4096 || this.bytes + bytes > 8 * 1024 * 1024) {
+    // Native pipe reads can arrive as thousands of tiny callbacks before the
+    // broker replies. Combine only adjacent, never-published data so a small
+    // burst doesn't consume the entire frame allowance. Sent sequence IDs and
+    // their payloads stay immutable for receipt/replay deduplication.
+    const tail = this.pending.get(this.nextSequence - 1);
+    const canCombine =
+      (chunk.type === "stdout" || chunk.type === "stderr") &&
+      tail?.frame.type === chunk.type &&
+      tail.attempts === 0 &&
+      tail.bytes + bytes <= 16 * 1024;
+    if (
+      (!canCombine && this.pending.size >= 4096) ||
+      this.bytes + bytes > 8 * 1024 * 1024
+    ) {
       this.stop(
         new Error(
           "Command output recovery buffer exceeded; output completeness is unknown.",
         ),
         "buffer_limit",
       );
+      return;
+    }
+    if (canCombine && tail) {
+      tail.frame.data = (tail.frame.data ?? "") + (chunk.data ?? "");
+      tail.bytes += bytes;
+      this.bytes += bytes;
+      this.peakPendingBytes = Math.max(this.peakPendingBytes, this.bytes);
+      void this.pump();
       return;
     }
     const sequence = this.nextSequence++;
