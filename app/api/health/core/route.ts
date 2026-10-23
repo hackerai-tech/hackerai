@@ -10,6 +10,18 @@ const WORKOS_USERS_URL = "https://api.workos.com/user_management/users?limit=1";
 const WORKOS_FETCH_TIMEOUT_MS = 4_000;
 const HEALTH_CHECK_TOKEN_HEADER = "x-hackerai-health-token";
 
+const runtimeIdentity = {
+  nodeVersion: process.versions.node,
+  deploymentId: process.env.VERCEL_DEPLOYMENT_ID ?? null,
+  commitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+  convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null,
+};
+// Log once per worker initialization so operators can verify the executing
+// binary without exposing runtime details in unauthenticated responses.
+console.info(
+  JSON.stringify({ event: "core_runtime_identity", ...runtimeIdentity }),
+);
+
 type DependencyHealth = {
   ok: boolean;
   status: number | null;
@@ -182,12 +194,7 @@ export async function GET(request: NextRequest) {
         ok: true,
         service: "core",
         checkedAt,
-        runtimeIdentity: {
-          nodeVersion: process.versions.node,
-          deploymentId: process.env.VERCEL_DEPLOYMENT_ID ?? null,
-          commitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
-          convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null,
-        },
+        runtimeIdentity,
         dependencies: {
           workos,
         },
