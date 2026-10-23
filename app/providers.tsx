@@ -24,6 +24,7 @@ import {
   type FirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 
+import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import {
   captureXReferralVisit,
@@ -136,7 +137,9 @@ export function PostHogProvider({
             if (!userId) return null;
 
             const sanitizedEvent = sanitizeChatPerformanceEvent(
-              sanitizeFrontendExceptionUrlProperties(event),
+              sanitizeDesktopAckEvent(
+                sanitizeFrontendExceptionUrlProperties(event),
+              ),
             );
             if (shouldDropExpectedFrontendException(sanitizedEvent)) {
               return null;
