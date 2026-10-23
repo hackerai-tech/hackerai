@@ -5,7 +5,10 @@ import {
   CentrifugoMessageReassembler,
   isCentrifugoTransportFragment,
 } from "@/packages/local/src/centrifugo-transport";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
+} from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -50,6 +53,8 @@ jest.mock("centrifuge", () => ({
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
+  captureQueuedAuthenticatedEvent: jest.fn().mockReturnValue(true),
+  getIdentifiedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
 }));
 
 // Mock Tauri IPC
@@ -3156,6 +3161,26 @@ it.each(["ack", "cancel"])(
         },
       });
       await jest.advanceTimersByTimeAsync(0);
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "desktop_ack_command_started",
+          properties: expect.objectContaining({
+            commandId: "ack-native",
+            outputProtocol: "ack-v1",
+          }),
+        }),
+      );
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "desktop_ack_command_settled",
+          properties: expect.objectContaining({
+            commandId: "ack-native",
+            outcome: mode === "ack" ? "acknowledged" : "canceled",
+            terminalAcknowledged: mode === "ack",
+            replayAttempts: expect.any(Number),
+          }),
+        }),
+      );
       if (mode === "ack") {
         expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       } else {
@@ -3278,6 +3303,80 @@ it.each(["before readiness", "while publishing"])(
   },
 );
 
+it("reports ACK expiry while the native invocation is still pending", async () => {
+  jest.useFakeTimers();
+  const bridge = new DesktopSandboxBridge(buildConfig());
+  await bridge.start();
+  const reply = {
+    ...mockSubscription,
+    on: jest.fn(),
+    publish: jest.fn().mockResolvedValue(undefined),
+    unsubscribe: jest.fn(),
+    removeAllListeners: jest.fn(),
+  };
+  mockClient.newSubscription.mockReturnValueOnce(reply);
+  const original = mockInvokeHandler;
+  let finishNative: (() => void) | undefined;
+  mockInvokeHandler = async (cmd, args) => {
+    if (cmd === "execute_stream_command") {
+      capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "private native output",
+      });
+      await new Promise<void>((resolve) => {
+        finishNative = resolve;
+      });
+      return;
+    }
+    return original(cmd, args);
+  };
+  try {
+    getPublicationHandler()({
+      data: {
+        type: "command",
+        commandId: "ack-hung-native",
+        command: "private command",
+        timeout: 1000,
+        outputProtocol: "ack-v1",
+        targetConnectionId: "conn-123",
+        operationChannel: true,
+      },
+    });
+    await jest.advanceTimersByTimeAsync(31_000);
+    const settlements = jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.filter(
+        ([event]) =>
+          event.event === "desktop_ack_command_settled" &&
+          event.properties?.commandId === "ack-hung-native",
+      );
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0][0].properties).toMatchObject({
+      outcome: "incomplete",
+      reason: "deadline_exceeded",
+      terminalAcknowledged: false,
+      pendingFrames: 1,
+      acknowledgedFrames: 0,
+    });
+    expect(JSON.stringify(settlements)).not.toContain("private");
+    finishNative!();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(
+      jest
+        .mocked(captureQueuedAuthenticatedEvent)
+        .mock.calls.filter(
+          ([event]) =>
+            event.event === "desktop_ack_command_settled" &&
+            event.properties?.commandId === "ack-hung-native",
+        ),
+    ).toHaveLength(1);
+  } finally {
+    finishNative?.();
+    mockInvokeHandler = original;
+    await bridge.stop();
+    jest.useRealTimers();
+  }
+});
 it.each([false, true])(
   "cancels only the stopped run locally while relay delivery hangs (ack: %s)",
   async (acknowledged) => {

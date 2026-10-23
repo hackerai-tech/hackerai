@@ -187,6 +187,68 @@ describe("PostHogProvider", () => {
       });
       expect(JSON.stringify(sanitized)).not.toContain("private");
     }
+    for (const event of [
+      "desktop_ack_command_started",
+      "desktop_ack_command_settled",
+    ]) {
+      const allowed = {
+        token: "test-ingestion-token",
+        distinct_id: "user-123",
+        $session_id: "session-123",
+        $lib: "web",
+        schemaVersion: 1,
+        outputProtocol: "ack-v1",
+        connectionId: "connection-123",
+        commandId: "command-123",
+        chatId: "chat-123",
+        triggerRunId: "run-123",
+        hackerai_frontend_build_commit: "a".repeat(40),
+        ...(event.endsWith("settled") && {
+          outcome: "acknowledged",
+          reason: "terminal_ack",
+          observedFrames: 3,
+          enqueuedFrames: 3,
+          acknowledgedFrames: 3,
+          publishAttempts: 4,
+          replayAttempts: 1,
+          publishFailures: 0,
+          resumeRequests: 1,
+          pendingFrames: 0,
+          pendingBytes: 0,
+          peakPendingBytes: 128,
+          terminalType: "exit",
+          terminalAcknowledged: true,
+          durationMs: 2000,
+        }),
+      };
+      const sanitized = config.before_send({
+        event,
+        properties: {
+          ...allowed,
+          $current_url: "https://preview.test/c/chat?secret=private",
+          $referrer: "https://target.test/private",
+          $pathname: "/private",
+          $initial_current_url: "https://target.test/private",
+          utm_campaign: "private",
+          registered_content: "private",
+          command: "private",
+          output: "private",
+          error: "private",
+          $set: { private_content: "private" },
+        },
+        ...{
+          $set: { private_content: "private" },
+          $set_once: { private_content: "private" },
+        },
+      });
+      expect(sanitized?.properties).toEqual(allowed);
+      expect(JSON.stringify(sanitized)).not.toContain("private");
+    }
+    const ordinaryEvent = {
+      event: "ordinary_event",
+      properties: { retained: "value" },
+    };
+    expect(config.before_send(ordinaryEvent)).toEqual(ordinaryEvent);
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
   });
