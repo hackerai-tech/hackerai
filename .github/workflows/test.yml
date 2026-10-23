@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test pip bootstrap integrity
+        run: python3 -B -m unittest discover -s docker -p 'test_pip_bootstrap.py' -v
+
       - name: Type check
         run: pnpm typecheck
 

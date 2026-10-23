@@ -176,10 +176,24 @@ RUN set -eux; \
     test "$(go env GOVERSION)" = go1.27.3; \
     rm /tmp/node.tar.xz /tmp/go.tar.gz
 
-# Keep dpkg-owned Python packages intact while replacing pip's vendored CA
-# bundle and the separate bundle used by requests/httpx.
-RUN python3 -m pip install --break-system-packages --no-cache-dir \
-    --ignore-installed 'pip==26.2.2' 'certifi==2026.10.19'
+# Old pip can retain compromised roots in its vendored CA bundle. Download
+# both wheels with curl, verify PyPI's release hashes before any installation,
+# then install offline while preserving the dpkg-owned Python packages.
+RUN set -eux; \
+    bootstrap_dir="$(mktemp -d)"; \
+    trap 'rm -rf "$bootstrap_dir"' EXIT; \
+    curl --fail --silent --show-error --location --retry 3 \
+      https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl \
+      -o "$bootstrap_dir/pip-26.2.2-py3-none-any.whl"; \
+    curl --fail --silent --show-error --location --retry 3 \
+      https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl \
+      -o "$bootstrap_dir/certifi-2026.10.19-py3-none-any.whl"; \
+    echo "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70  $bootstrap_dir/pip-26.2.2-py3-none-any.whl" | sha256sum -c -; \
+    echo "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b  $bootstrap_dir/certifi-2026.10.19-py3-none-any.whl" | sha256sum -c -; \
+    python3 -m pip install --break-system-packages --no-cache-dir \
+      --ignore-installed --no-index --no-deps --disable-pip-version-check \
+      "$bootstrap_dir/pip-26.2.2-py3-none-any.whl" \
+      "$bootstrap_dir/certifi-2026.10.19-py3-none-any.whl"
 
 # ============================================================================
 # WhatWeb Ruby Library Symlink Fix
