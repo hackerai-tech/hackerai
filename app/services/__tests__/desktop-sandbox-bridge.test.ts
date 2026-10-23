@@ -5,6 +5,7 @@ import {
   isCentrifugoTransportFragment,
 } from "@/packages/local/src/centrifugo-transport";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -595,6 +596,37 @@ it("summarizes repeated relay errors on stop without changing recovery callbacks
     telemetry_occurrences: 19,
   });
   expect(mockClient.disconnect).toHaveBeenCalled();
+});
+
+it("keeps one telemetry window across replacement bridges", async () => {
+  jest.useFakeTimers();
+  const relayTelemetry = new DesktopRelayTelemetry(captureAuthenticatedEvent);
+  try {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      mockClient.on.mockClear();
+      const bridge = new DesktopSandboxBridge({
+        ...buildConfig(),
+        relayTelemetry,
+      });
+      await bridge.start();
+      getClientHandler("error")({
+        type: "transport",
+        error: { code: 2, message: "transport closed" },
+      });
+      await bridge.stop();
+    }
+    const errors = () =>
+      jest
+        .mocked(captureAuthenticatedEvent)
+        .mock.calls.filter(([event]) => event === "desktop_bridge_relay_error");
+    expect(errors()).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(errors()).toHaveLength(2);
+    expect(errors()[1][1]).toMatchObject({ telemetry_occurrences: 5 });
+  } finally {
+    relayTelemetry.flush();
+    jest.useRealTimers();
+  }
 });
 
 describe("terminal connection state", () => {
