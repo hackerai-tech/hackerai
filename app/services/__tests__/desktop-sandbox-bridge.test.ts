@@ -3276,8 +3276,9 @@ it.each([false, true])(
       }
       return native(cmd, args);
     };
+    let publication = getPublicationHandler();
     const send = (id: string, chatId: string, triggerRunId: string) =>
-      getPublicationHandler()({
+      publication({
         data: {
           type: "command",
           commandId: id,
@@ -3303,10 +3304,21 @@ it.each([false, true])(
       expect(canceled).toEqual(["target"]);
       expect([...running.keys()]).toEqual(["other-chat", "newer-run"]);
       // A command already queued by the stopped worker must not execute on reconnect.
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
       await bridge.start();
+      publication = mockSubscription.on.mock.calls
+        .filter(([event]: [string]) => event === "publication")
+        .at(-1)![1];
       send("late-target", "chat-a", `run-a-${acknowledged}`);
       await jest.advanceTimersByTimeAsync(0);
       expect(executed).toEqual(["target", "other-chat", "newer-run"]);
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commandId: "late-target",
+          type: "exit",
+          exitCode: 130,
+        }),
+      );
     } finally {
       for (const finish of running.values()) finish();
       await bridge.stop();
