@@ -715,6 +715,8 @@ export function isAutoModelSelectionForRetry({
   return (
     !selectedModelOverride ||
     selectedModelOverride === "auto" ||
+    (selectedModelOverride === "hackerai-max" &&
+      selectedModel === DEEPSEEK_1017_MODEL_KEY) ||
     AUTO_MODEL_KEYS.has(selectedModel) ||
     EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
   );

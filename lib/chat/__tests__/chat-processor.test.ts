@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import {
   limitImageParts,
   selectModel,
@@ -302,7 +303,7 @@ describe("selectModel", () => {
               !maxAllowed
                 ? "model-deepseek-v4-flash-vision-pro"
                 : hasImage
-                  ? "model-grok-4.6"
+                  ? DEEPSEEK_1017_MODEL_KEY
                   : "model-glm-5.3",
             );
           }
