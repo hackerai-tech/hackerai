@@ -740,6 +740,24 @@ export const useChatHandlers = ({
     return triggerCancelResult.status === "fulfilled";
   };
 
+  // Response replacement is an explicit deletion, so reconcile immediately
+  // instead of waiting for the sidebar's reconnect grace period.
+  const reconcileSidebar = (remainingMessages: ChatMessage[]) => {
+    const currentSidebarContent = sidebarContentRef.current;
+    if (sidebarOpenRef.current && currentSidebarContent) {
+      const nextSidebarContent = reconcileSidebarContentAfterRegeneration(
+        remainingMessages,
+        currentSidebarContent,
+      );
+
+      if (!nextSidebarContent) {
+        closeSidebar();
+      } else if (nextSidebarContent !== currentSidebarContent) {
+        openSidebar(nextSidebarContent);
+      }
+    }
+  };
+
   const handleRegenerate = async () => {
     if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
@@ -774,19 +792,7 @@ export const useChatHandlers = ({
     // leaving old auto-continue chain messages visible in the UI.
     const trimmedMessages = getMessagesUpToLastRealUser(messages);
 
-    const currentSidebarContent = sidebarContentRef.current;
-    if (sidebarOpenRef.current && currentSidebarContent) {
-      const nextSidebarContent = reconcileSidebarContentAfterRegeneration(
-        trimmedMessages,
-        currentSidebarContent,
-      );
-
-      if (!nextSidebarContent) {
-        closeSidebar();
-      } else if (nextSidebarContent !== currentSidebarContent) {
-        openSidebar(nextSidebarContent);
-      }
-    }
+    reconcileSidebar(trimmedMessages);
 
     setMessages(trimmedMessages);
 
@@ -885,6 +891,7 @@ export const useChatHandlers = ({
       if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
       const messagesToLastUser = getMessagesUpToLastRealUser(messages);
+      reconcileSidebar(messagesToLastUser);
       setMessages(messagesToLastUser);
 
       // Admission may fail before the user message is persisted. Retrying that
@@ -987,6 +994,7 @@ export const useChatHandlers = ({
 
     if (sendDisabledReasonRef.current) return;
     setTodos(cleanedTodosForEdit);
+    reconcileSidebar(messages.slice(0, editedMessageIndex + 1));
 
     // Build updated parts: text + remaining file parts
     const buildUpdatedParts = (currentParts: any[]) => {

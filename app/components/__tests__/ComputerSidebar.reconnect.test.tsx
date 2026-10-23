@@ -299,6 +299,46 @@ describe("ComputerSidebar reconnect behavior", () => {
     );
   });
 
+  it("does not mistake a removed file for an older read of the same path", () => {
+    const onNavigate = jest.fn();
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={{
+          path: "/tmp/result.txt",
+          action: "reading",
+          content: "discarded output",
+          toolCallId: "removed-read",
+        }}
+        closeSidebar={jest.fn()}
+        messages={[
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-file",
+                toolCallId: "surviving-read",
+                state: "output-available",
+                input: { action: "read", path: "/tmp/result.txt" },
+                output: { originalContent: "previous output" },
+              },
+            ],
+          },
+        ]}
+        onNavigate={onNavigate}
+        status="ready"
+      />,
+    );
+
+    act(() => {
+      jest.advanceTimersByTime(5_000);
+    });
+
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "surviving-read" }),
+    );
+  });
+
   it("returns to the subagent and navigates the supplied child-tool timeline", () => {
     const closeSidebar = jest.fn();
     const onNavigate = jest.fn();

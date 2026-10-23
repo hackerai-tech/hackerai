@@ -975,16 +975,23 @@ const getToolCallId = (content: SidebarContent): string | undefined =>
     ? content.toolCallId
     : undefined;
 
-const isSameSidebarContent = (
+export const isSameSidebarContent = (
   left: SidebarContent,
   right: SidebarContent,
 ): boolean => {
   const leftToolCallId = getToolCallId(left);
   const rightToolCallId = getToolCallId(right);
 
-  if (leftToolCallId || rightToolCallId) {
+  if (leftToolCallId && rightToolCallId) {
     return leftToolCallId === rightToolCallId;
   }
+
+  // Findings opened outside a tool receipt can lack a tool-call selection.
+  if ("findingId" in left && "findingId" in right) {
+    return left.findingId === right.findingId;
+  }
+
+  if (leftToolCallId || rightToolCallId) return false;
 
   return (
     "path" in left &&
@@ -1005,7 +1012,10 @@ export function reconcileSidebarContentAfterRegeneration(
 ): SidebarContent | null {
   const remainingContent = extractAllSidebarContent(messages);
   const selectionStillExists = remainingContent.some((content) =>
-    isSameSidebarContent(content, sidebarContent),
+    isSameSidebarContent(
+      content,
+      sidebarContent.origin?.returnContent ?? sidebarContent,
+    ),
   );
 
   if (selectionStillExists) return sidebarContent;
