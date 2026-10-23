@@ -33,6 +33,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
   return {
     ...(e2b ? {} : { sandboxKind: "centrifugo" as const }),
     isWindows: jest.fn(() => windows),
+    detectShell: jest.fn(async () => (windows ? "cmd" : "bash")),
     commands: {
       run: jest.fn(async (command: string) => {
         if (command.includes("stat -Lc%s")) {
@@ -609,7 +610,7 @@ describe("uploadSandboxFileToConvex", () => {
             exitCode: 1,
           };
         }
-        if (command.startsWith("setlocal EnableDelayedExpansion && for %I")) {
+        if (command.startsWith("cmd /d /v:on /s /c")) {
           return { stdout: "4321", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "unexpected command", exitCode: 1 };
@@ -623,8 +624,8 @@ describe("uploadSandboxFileToConvex", () => {
     });
 
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
-      2,
-      'setlocal EnableDelayedExpansion && for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI',
+      1,
+      'cmd /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
       expect.objectContaining({
         displayName: "",
         envVars: expect.objectContaining({
@@ -638,6 +639,30 @@ describe("uploadSandboxFileToConvex", () => {
       "application/octet-stream",
       "u1",
       4321,
+    );
+  });
+
+  test("keeps POSIX metadata commands for Git Bash on Windows", async () => {
+    const sandbox = makeSandbox(321, false, true);
+    sandbox.detectShell.mockResolvedValue("bash");
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "/c/owned/report.txt",
+    });
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.txt",
+      "application/octet-stream",
+      "u1",
+      321,
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("stat -Lc%s"),
+      expect.any(Object),
+    );
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("cmd /d"),
+      expect.any(Object),
     );
   });
 
@@ -665,7 +690,7 @@ describe("uploadSandboxFileToConvex", () => {
       }),
     ).rejects.toThrow(/unsupported character/);
 
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
     expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 
