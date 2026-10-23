@@ -535,6 +535,11 @@ describe("useChatHandlers steer todo handoff", () => {
     });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(mockSendMessage).not.toHaveBeenCalled();
+    // Saving the old stream is still offline, but the new run is now known.
+    expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+      "chat-1",
+      "run-starting",
+    );
     await act(async () => {
       finishSave(null);
       await steering;

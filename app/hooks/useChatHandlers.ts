@@ -245,10 +245,18 @@ export const useChatHandlers = ({
     if (!pendingStart && currentRunId) stopLocalRun(currentRunId);
     let startFailure: unknown;
     const [startedRun] = await Promise.all([
-      pendingStart?.catch((error: unknown) => {
-        startFailure = error;
-        return undefined;
-      }),
+      pendingStart?.then(
+        (run) => {
+          const runId = run?.runId ?? currentRunId;
+          if (runId) stopLocalRun(runId);
+          return run;
+        },
+        (error: unknown) => {
+          startFailure = error;
+          if (currentRunId) stopLocalRun(currentRunId);
+          return undefined;
+        },
+      ),
       beforeCancel,
     ]);
     const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
@@ -258,7 +266,6 @@ export const useChatHandlers = ({
       if (startFailure) throw startFailure;
       return { outcome: "not_applicable" };
     }
-    if (pendingStart) stopLocalRun(expectedTriggerRunId);
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
