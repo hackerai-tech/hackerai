@@ -257,6 +257,214 @@ describe("CentrifugoSandbox", () => {
     expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["exit", "error"] as const)(
+    "retains the receiver after rejected terminal %s ACKs until sender replay succeeds",
+    async (terminalType) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const onStdout = jest.fn();
+      const pending = sandbox.commands.run("one execution", { onStdout });
+      let finished = false;
+      void pending.then(() => {
+        finished = true;
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: FIXED_UUID },
+      });
+      const settlement = jest.fn();
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 60_000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+        settlement,
+      );
+      let rejectedAcks = 0;
+      reply.publish.mockImplementation(async (message) => {
+        if (message.type === "command_output_ack") {
+          if (message.sequence === 1 && rejectedAcks++ < 2)
+            throw new Error("transient ACK publish rejection");
+          sender.acknowledge(message.sequence);
+        }
+      });
+      sender.append({ type: "stdout", data: "retained output" });
+      await jest.advanceTimersByTimeAsync(50);
+      sender.append(
+        terminalType === "exit"
+          ? { type: "exit", exitCode: 0 }
+          : { type: "error", message: "execution failed" },
+      );
+      await jest.advanceTimersByTimeAsync(50);
+      expect(finished).toBe(false);
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1500);
+      await expect(pending).resolves.toMatchObject({
+        stdout: "retained output",
+        stderr: terminalType === "error" ? "execution failed" : "",
+        exitCode: terminalType === "error" ? -1 : 0,
+      });
+      await expect(sender.delivered).resolves.toBeUndefined();
+      expect(settlement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "acknowledged",
+          terminalAcknowledged: true,
+          pendingFrames: 0,
+        }),
+      );
+      expect(onStdout).toHaveBeenCalledTimes(1);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["late-prefix", "resume", "cancel", "deadline"] as const)(
+    "keeps terminal ACK recovery bounded across %s",
+    async (mode) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      let cancel!: () => Promise<boolean>;
+      const pending = sandbox.commands.run("one execution", {
+        timeoutMs: 1_000,
+        onCancelReady: (value) => {
+          cancel = value;
+        },
+      });
+      let finished = false;
+      void pending.then(
+        () => {
+          finished = true;
+        },
+        () => {
+          finished = true;
+        },
+      );
+      const result =
+        mode === "deadline"
+          ? expect(pending).rejects.toThrow("Command timeout after 36000ms")
+          : undefined;
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: FIXED_UUID },
+      });
+      const settlement = jest.fn();
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 36_000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+        settlement,
+      );
+      let allowTerminal = false;
+      let releasePrefix!: () => void;
+      reply.publish.mockImplementation(async (message) => {
+        if (
+          message.type === "command_output_ack" ||
+          message.type === "command_output_resume"
+        ) {
+          if (message.sequence === 0 && mode === "late-prefix")
+            await new Promise<void>((resolve) => {
+              releasePrefix = resolve;
+            });
+          if (message.sequence === 1 && !allowTerminal)
+            throw new Error("terminal ACK unavailable");
+          if (message.type === "command_output_resume")
+            sender.resume(message.sequence);
+          else sender.acknowledge(message.sequence);
+        }
+      });
+      sender.append({ type: "stdout", data: "once" });
+      await jest.advanceTimersByTimeAsync(50);
+      sender.append({ type: "exit", exitCode: 0 });
+      await jest.advanceTimersByTimeAsync(50);
+      expect(finished).toBe(false);
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      if (mode === "late-prefix") {
+        releasePrefix();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(finished).toBe(false);
+        expect(reply.unsubscribe).not.toHaveBeenCalled();
+        allowTerminal = true;
+        await jest.advanceTimersByTimeAsync(1500);
+      } else if (mode === "resume") {
+        reply.emit("subscribing");
+        allowTerminal = true;
+        reply.emit("subscribed", { recovered: false });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(reply.publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "command_output_resume",
+            sequence: 1,
+          }),
+        );
+      } else if (mode === "cancel") {
+        const canceled = cancel();
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: {
+            type: "command_cancel_result",
+            commandId: FIXED_UUID,
+            canceled: true,
+          },
+        });
+        sender.cancel();
+        await expect(canceled).resolves.toBe(true);
+      } else {
+        await jest.advanceTimersByTimeAsync(36_000);
+        await result;
+      }
+      if (mode === "cancel") {
+        await expect(pending).resolves.toMatchObject({ exitCode: 130 });
+        await expect(sender.delivered).rejects.toThrow("canceled");
+      } else if (mode !== "deadline") {
+        await expect(pending).resolves.toMatchObject({
+          stdout: "once",
+          exitCode: 0,
+        });
+        await expect(sender.delivered).resolves.toBeUndefined();
+      } else {
+        await expect(sender.delivered).rejects.toThrow("deadline exceeded");
+        expect(settlement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            outcome: "incomplete",
+            reason: "deadline_exceeded",
+            terminalAcknowledged: false,
+          }),
+        );
+      }
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it("dispatches an isolated command once, releases control, and cancels on its operation channel", async () => {
     const sandbox = new CentrifugoSandbox(
       "user-1",

@@ -751,19 +751,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let acknowledgedOutput = false;
         let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
         let terminalReceived = false;
+        let completeTerminal: (() => void) | undefined;
         const sendOutputCursor = async (
           type: "command_output_ack" | "command_output_resume",
         ) => {
           if (!subscription || settled || !acknowledgedOutput) return;
+          // A preceding output ACK may complete after terminal receipt. Only
+          // a successfully published terminal cursor can release its receiver.
+          const sequence = lastStreamSequence;
           try {
             await subscription.publish({
               type,
               commandId,
-              sequence: lastStreamSequence,
+              sequence,
               targetConnectionId: this.connectionInfo.connectionId,
             });
+            if (!settled && terminalReceived && sequence === lastStreamSequence)
+              completeTerminal?.();
           } catch {
-            /* Sender retains unacknowledged output and retries it. */
+            // Keep the receiver until sender replay, reconnect, cancellation,
+            // or the existing deadline; never redispatch the command.
           }
         };
         const acknowledgeOutput = () => {
@@ -1025,6 +1032,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             return;
           }
 
+          if (terminalReceived && message.type !== "command_cancel_result") {
+            if (acknowledgedOutput && sequence === lastStreamSequence)
+              acknowledgeOutput();
+            return;
+          }
+
           if (sequence !== undefined) {
             if (sequence <= lastStreamSequence) {
               if (acknowledgedOutput) acknowledgeOutput();
@@ -1097,7 +1110,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               }
               if (terminalReceived) break;
               terminalReceived = true;
-              void sendOutputCursor("command_output_ack").then(() => {
+              completeTerminal = () => {
                 if (settled) return;
                 settled = true;
                 cleanup();
@@ -1107,7 +1120,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   exitCode: message.exitCode,
                   pid: message.pid,
                 });
-              });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
             case "command_cancel_result":
               if (!cancelRequested) break;
@@ -1138,7 +1154,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               );
               if (terminalReceived) break;
               terminalReceived = true;
-              void sendOutputCursor("command_output_ack").then(() => {
+              completeTerminal = () => {
                 if (settled) return;
                 settled = true;
                 cleanup();
@@ -1149,7 +1165,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                     : message.message,
                   exitCode: -1,
                 });
-              });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
           }
         });
