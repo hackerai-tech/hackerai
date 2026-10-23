@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
@@ -7,6 +7,14 @@ const mockCaptureAuthenticatedEvent = jest.fn();
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) =>
     mockCaptureAuthenticatedEvent(...args),
+}));
+
+const mockCancelDesktopRunLocally = jest.fn(
+  async (_chatId: string, _runId: string) => undefined,
+);
+jest.mock("@/app/services/desktop-command-cancellation", () => ({
+  cancelDesktopRunLocally: (...args: [string, string]) =>
+    mockCancelDesktopRunLocally(...args),
 }));
 
 const mockCancelStream = jest.fn(async () => null);
@@ -275,6 +283,98 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it("starts native cancellation without waiting for an offline server", async () => {
+    let finishCancel!: (response: Response) => void;
+    (globalThis.fetch as jest.Mock<typeof fetch>).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishCancel = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-offline" },
+      }),
+    );
+    let stopped!: Promise<boolean>;
+    act(() => {
+      stopped = result.current.handleStop();
+    });
+    expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+      "chat-1",
+      "run-offline",
+    );
+    await act(async () => {
+      await waitFor(() => expect(finishCancel).toBeDefined());
+      finishCancel({
+        ok: true,
+        json: async () => ({ canceled: true }),
+      } as Response);
+      await stopped;
+    });
+  });
+
+  it("delivers Stop after leaving the chat without targeting a replacement run", async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchMock = jest.mocked(fetch);
+      fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+      const activeTriggerRunRef = { current: "run-offline-navigation" };
+      const { result, unmount } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-navigation",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef,
+        }),
+      );
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop();
+      });
+      expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+        "chat-navigation",
+        "run-offline-navigation",
+      );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      activeTriggerRunRef.current = "run-replacement";
+      unmount();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1_000);
+        expect(await stopped).toBe(true);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(JSON.parse(init!.body as string)).toEqual({
+          chatId: "chat-navigation",
+          expectedTriggerRunId: "run-offline-navigation",
+        });
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("waits for a pending start and cancels its exact run after an early Stop", async () => {
     let finishStart!: (response: Response) => void;
     const controller = new AbortController();
@@ -320,6 +420,7 @@ describe("useChatHandlers steer todo handoff", () => {
     // The old no-active-run response must not be mistaken for stopping a start
     // that has not returned its handle yet.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockCancelDesktopRunLocally).not.toHaveBeenCalled();
     activeTriggerRunRef.current = "run-replacement";
     await act(async () => {
       finishStart({
@@ -340,6 +441,10 @@ describe("useChatHandlers steer todo handoff", () => {
           expectedTriggerRunId: "run-starting",
         }),
       }),
+    );
+    expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+      "chat-1",
+      "run-starting",
     );
     expect(await stream).toMatchObject({ name: "AbortError" });
     expect(onRunStarted).not.toHaveBeenCalled();
@@ -481,6 +586,11 @@ describe("useChatHandlers steer todo handoff", () => {
     });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(mockSendMessage).not.toHaveBeenCalled();
+    // Saving the old stream is still offline, but the new run is now known.
+    expect(mockCancelDesktopRunLocally).toHaveBeenCalledWith(
+      "chat-1",
+      "run-starting",
+    );
     await act(async () => {
       finishSave(null);
       await steering;

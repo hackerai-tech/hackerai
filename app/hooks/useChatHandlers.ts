@@ -3,12 +3,11 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
+import { cancelDesktopRunLocally } from "@/app/services/desktop-command-cancellation";
+import { cancelAgentRunWithRetry } from "@/app/services/agent-run-cancellation";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
-import {
-  AGENT_CANCEL_ENDPOINT,
-  AGENT_RESUME_ENDPOINT,
-} from "@/lib/api/agent-endpoints";
+import { AGENT_RESUME_ENDPOINT } from "@/lib/api/agent-endpoints";
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
@@ -233,12 +232,29 @@ export const useChatHandlers = ({
     // Capture the target before awaiting: a later run or navigation must not
     // change which task this Stop is allowed to cancel.
     const currentRunId = activeTriggerRunRef?.current;
+    const stopLocalRun = (runId: string) => {
+      void cancelDesktopRunLocally(chatId, runId).catch((error) => {
+        console.error("Failed to stop local commands:", error);
+        toast.error("Could not stop the local command. Please try Stop again.");
+      });
+    };
+    // Do not wait for an HTTP request or stream teardown before local IPC.
+    // A pending start owns a different run; never cancel the previous one.
+    if (!pendingStart && currentRunId) stopLocalRun(currentRunId);
     let startFailure: unknown;
     const [startedRun] = await Promise.all([
-      pendingStart?.catch((error: unknown) => {
-        startFailure = error;
-        return undefined;
-      }),
+      pendingStart?.then(
+        (run) => {
+          const runId = run?.runId ?? currentRunId;
+          if (runId) stopLocalRun(runId);
+          return run;
+        },
+        (error: unknown) => {
+          startFailure = error;
+          if (currentRunId) stopLocalRun(currentRunId);
+          return undefined;
+        },
+      ),
       beforeCancel,
     ]);
     const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
@@ -248,43 +264,21 @@ export const useChatHandlers = ({
       if (startFailure) throw startFailure;
       return { outcome: "not_applicable" };
     }
-    const response = await fetch(AGENT_CANCEL_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chatId,
-        expectedTriggerRunId,
-      }),
+    let retryToast: string | number | undefined;
+    const result = await cancelAgentRunWithRetry(
+      chatId,
+      expectedTriggerRunId,
+      () => {
+        retryToast = toast.info("Stop is waiting for a connection", {
+          description:
+            "Your cancellation will retry automatically. Keep the app open.",
+          duration: Infinity,
+        });
+      },
+    ).finally(() => {
+      if (retryToast !== undefined) toast.dismiss(retryToast);
     });
-    if (response.status === 409) {
-      const payload = (await response.json().catch(() => null)) as {
-        reason?: unknown;
-        activeTriggerRunId?: unknown;
-      } | null;
-      if (payload?.reason === "stale_run") {
-        const hasActiveTriggerRunId = Object.prototype.hasOwnProperty.call(
-          payload,
-          "activeTriggerRunId",
-        );
-        return {
-          outcome: "stale_run",
-          expectedTriggerRunId,
-          ...(hasActiveTriggerRunId
-            ? {
-                activeTriggerRunId:
-                  typeof payload.activeTriggerRunId === "string"
-                    ? payload.activeTriggerRunId
-                    : null,
-              }
-            : {}),
-        };
-      }
-    }
-    if (!response.ok) {
-      throw new Error(
-        `Agent cancellation failed with status ${response.status}`,
-      );
-    }
+    if (result.outcome === "stale_run") return result;
     // A lost start response can still hide a newly created durable task. Keep
     // that uncertainty visible and prevent steering from starting another run.
     if (startFailure) throw startFailure;
