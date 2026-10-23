@@ -104,6 +104,7 @@ function streamedCompletion(model: string) {
 describe.each([
   ["abliterated-model", 0.00088],
   ["abliterated-model-large-v2", 0.00184],
+  ["abliterated-model-large-flash", 0.00068],
 ] as const)("%s usage accounting through the installed SDK", (model, cost) => {
   it.each([false, true])(
     "counts input, cache reads, and reasoning once (stream=%s)",

@@ -249,7 +249,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-abliterated",
-        responseModel: "abliterated-model",
+        responseModel: "abliterated-model-large-flash",
       }),
     ).toBe("model-abliterated");
     expect(
@@ -266,10 +266,22 @@ describe("buildProviderOptions fallback chain", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-abliterated-large-v2",
-        responseModel: "abliterated-model-large-v2",
+        responseModel: "abliterated-model-large-flash",
       }),
     ).toBe("model-abliterated-large-v2");
   });
+
+  it.each([
+    ["model-abliterated", "abliterated-model"],
+    ["model-abliterated-large-v2", "abliterated-model-large-v2"],
+  ])(
+    "preserves old provider attribution for in-flight %s responses",
+    (modelName, responseModel) => {
+      expect(
+        resolveServedModelForCostAccounting({ modelName, responseModel }),
+      ).toBe(responseModel);
+    },
+  );
 
   it.each(["ask", "agent"] as const)(
     "keeps %s titles on low reasoning",

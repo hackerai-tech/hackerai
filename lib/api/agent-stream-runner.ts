@@ -1297,8 +1297,8 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
-    // Keep the three-step treatment schedule, but do not shrink long Agent
-    // history just to fit the base Abliteration model's smaller window.
+    // Preserve the expanded-context alias and its existing recovery policy.
+    // Both Abliteration aliases now execute the multimodal Large Flash model.
     return expandedContextEnabled &&
       effectiveModel === ABLITERATION_MODEL_KEY &&
       activeModelInputTokens >
@@ -1408,9 +1408,7 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages, {
-          force: effectiveModelName === ABLITERATION_LARGE_V2_MODEL_KEY,
-        })
+      ? await preprocessAbliterationImages(toolCallRepair.messages)
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)

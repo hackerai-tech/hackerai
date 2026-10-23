@@ -1112,8 +1112,8 @@ describe("createAgentStream repeated compaction", () => {
       const ids: Record<string, string> = {
         "model-deepseek-v4.1-flash-1017-pro":
           "deepseek/deepseek-v4.1-flash-1017",
-        "model-abliterated": "abliterated-model",
-        "model-abliterated-large-v2": "abliterated-model-large-v2",
+        "model-abliterated": "abliterated-model-large-flash",
+        "model-abliterated-large-v2": "abliterated-model-large-flash",
         "model-glm-5.3": "z-ai/glm-5.3",
       };
       const stream = (await createAgentStream(
@@ -1140,16 +1140,10 @@ describe("createAgentStream repeated compaction", () => {
           messages: [{ role: "user", content: text }],
         });
         expect(prepared.model.modelId).toBe(
-          stepNumber < 3
-            ? enabled && tokens > 180_000
-              ? "abliterated-model-large-v2"
-              : "abliterated-model"
-            : ids[baseline],
+          stepNumber < 3 ? "abliterated-model-large-flash" : ids[baseline],
         );
         if (enabled && stepNumber < 3)
-          expect(state.ctxUsage.maxTokens).toBe(
-            tokens > 180_000 ? 484_000 : 200_000,
-          );
+          expect(state.ctxUsage.maxTokens).toBe(508_288);
       }
     },
   );
@@ -3110,7 +3104,7 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("describes even a single image before sending long Max history to text-only Large v2", async () => {
+  it("preserves native images when the expanded-context alias executes Flash", async () => {
     const text = " ordinary".repeat(190_000);
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
       {
@@ -3127,11 +3121,8 @@ describe("createAgentStream repeated compaction", () => {
         agentModelContextEnabled: true,
         selectedModelOverride: "hackerai-max",
         trackedProvider: {
-          languageModel: (name: string) => ({
-            modelId:
-              name === "model-abliterated-large-v2"
-                ? "abliterated-model-large-v2"
-                : "abliterated-model",
+          languageModel: () => ({
+            modelId: "abliterated-model-large-flash",
           }),
         },
         abliteratedStepRouting: {
@@ -3146,9 +3137,10 @@ describe("createAgentStream repeated compaction", () => {
         maxTokens: 200_000,
       }),
     )) as any;
-    expect(stream.model.modelId).toBe("abliterated-model-large-v2");
-    expect(JSON.stringify(stream.messages)).toContain("image_description");
-    expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+    expect(stream.model.modelId).toBe("abliterated-model-large-flash");
+    expect(JSON.stringify(stream.messages)).not.toContain("image_description");
+    expect(JSON.stringify(stream.messages)).toContain('"type":"image"');
+    expect(mockDescribeImage).not.toHaveBeenCalled();
   });
 
   it("does not start the main provider when initial OCR fails", async () => {
