@@ -4,7 +4,10 @@ import {
   CentrifugoMessageReassembler,
   isCentrifugoTransportFragment,
 } from "@/packages/local/src/centrifugo-transport";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
+} from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -49,6 +52,8 @@ jest.mock("centrifuge", () => ({
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
+  captureQueuedAuthenticatedEvent: jest.fn().mockReturnValue(true),
+  getIdentifiedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
 }));
 
 // Mock Tauri IPC
@@ -3155,6 +3160,26 @@ it.each(["ack", "cancel"])(
         },
       });
       await jest.advanceTimersByTimeAsync(0);
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "desktop_ack_command_started",
+          properties: expect.objectContaining({
+            commandId: "ack-native",
+            outputProtocol: "ack-v1",
+          }),
+        }),
+      );
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "desktop_ack_command_settled",
+          properties: expect.objectContaining({
+            commandId: "ack-native",
+            outcome: mode === "ack" ? "acknowledged" : "canceled",
+            terminalAcknowledged: mode === "ack",
+            replayAttempts: expect.any(Number),
+          }),
+        }),
+      );
       if (mode === "ack") {
         expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       } else {

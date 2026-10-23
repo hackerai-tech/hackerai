@@ -2,6 +2,7 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { startDesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
@@ -995,6 +996,12 @@ export class DesktopSandboxBridge {
       Date.now() +
       (command.timeout ?? 30_000) +
       DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+    const onSettled = startDesktopAckTelemetry({
+      connectionId,
+      commandId: command.commandId,
+      chatId: command.chatId,
+      triggerRunId: command.triggerRunId,
+    });
     const stream = new AcknowledgedCommandOutput(
       command.commandId,
       deadline,
@@ -1003,6 +1010,7 @@ export class DesktopSandboxBridge {
         !this.isStoppingOrStopped &&
         this.operationRouter === router &&
         this.connectionId === connectionId,
+      onSettled,
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
