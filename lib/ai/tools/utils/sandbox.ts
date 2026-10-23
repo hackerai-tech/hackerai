@@ -6,6 +6,7 @@ import { readNetworkSettings } from "@/lib/cloud-network/service";
 import { e2bNetwork } from "@/lib/cloud-network/policy";
 import {
   CloudAcquisitionTimeoutError,
+  CLOUD_RESUME_DEADLINE_MS,
   type ReportCloudAcquisitionStage,
 } from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
@@ -110,8 +111,8 @@ export const ensureSandboxConnection = async (
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion, signal } = options;
   signal?.throwIfAborted();
-  // The SDK aborts fetch with this shared deadline signal. Do not shorten the
-  // returned client's default timeout for subsequent commands/file operations.
+  // The SDK aborts fetch with this shared deadline signal. Paused restores use
+  // a longer SDK timeout as well; the total acquisition deadline remains authoritative.
   const requestOptions = { signal };
 
   // Return existing sandbox if already connected
@@ -162,23 +163,30 @@ export const ensureSandboxConnection = async (
           template: info.metadata.template,
           sandboxVersion: info.metadata.sandboxVersion,
         };
-      options.reportStage?.("connect");
+      const resumingPausedWorkspace = info.state === "paused";
+      options.reportStage?.("connect", { resumingPausedWorkspace });
       const sandbox = await retryWithBackoff(
         () =>
           Sandbox.connect(options.destinationId!, {
             ...createCluster.connectionOptions,
             ...requestOptions,
+            ...(resumingPausedWorkspace
+              ? { requestTimeoutMs: CLOUD_RESUME_DEADLINE_MS, retries: 0 }
+              : {}),
             timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           }),
         {
           signal,
-          maxRetries: MAX_CONNECT_RETRIES,
+          // A failed restore can have an uncertain provider-side outcome.
+          // Do not issue another resume automatically within this acquisition.
+          maxRetries: resumingPausedWorkspace ? 1 : MAX_CONNECT_RETRIES,
           baseDelayMs: 400,
           jitterMs: 40,
         },
       );
       signal?.throwIfAborted();
       await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
+      signal?.throwIfAborted();
       setSandbox(sandbox);
       reportBoot("reuse_existing", 0);
       return { sandbox };
@@ -285,23 +293,28 @@ export const ensureSandboxConnection = async (
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         phase = "connect";
-        options.reportStage?.("connect");
+        const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
+        options.reportStage?.("connect", { resumingPausedWorkspace });
         const sandbox = await retryWithBackoff(
           () =>
             Sandbox.connect(existingSandboxInfo.sandboxId, {
               ...existingCluster.connectionOptions,
               ...requestOptions,
+              ...(resumingPausedWorkspace
+                ? { requestTimeoutMs: CLOUD_RESUME_DEADLINE_MS, retries: 0 }
+                : {}),
               timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
             }),
           {
             signal,
-            maxRetries: MAX_CONNECT_RETRIES,
+            maxRetries: resumingPausedWorkspace ? 1 : MAX_CONNECT_RETRIES,
             baseDelayMs: 400,
             jitterMs: 40,
           },
         );
         signal?.throwIfAborted();
         await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
+        signal?.throwIfAborted();
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };

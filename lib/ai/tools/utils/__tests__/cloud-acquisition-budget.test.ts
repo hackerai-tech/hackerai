@@ -2,6 +2,7 @@ import { classifySandboxReadinessFailureSignal } from "../sandbox-readiness-fail
 import {
   CloudAcquisitionBudget,
   CLOUD_ACQUISITION_DEADLINE_MS,
+  CLOUD_RESUME_DEADLINE_MS,
   CloudAcquisitionTimeoutError,
   CloudAcquisitionBudgetExhaustedError,
   isCloudAcquisitionBudgetSpent,
@@ -41,6 +42,42 @@ describe("cloud acquisition deadline", () => {
       stage_elapsed_ms: 25_000,
       failed_acquisition_wait_ms: 30_000,
     });
+  });
+
+  it("extends only a confirmed paused resume and never resets the absolute ceiling", async () => {
+    const budget = new CloudAcquisitionBudget();
+    const result = budget
+      .run(
+        async (_, report) => {
+          await new Promise((resolve) => setTimeout(resolve, 20_000));
+          report("connect", { resumingPausedWorkspace: true });
+          await new Promise((resolve) => setTimeout(resolve, 50_000));
+          report("connect", { resumingPausedWorkspace: true });
+          return new Promise(() => {});
+        },
+        { userId: "test" },
+      )
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(CLOUD_RESUME_DEADLINE_MS);
+    expect(await result).toBeInstanceOf(CloudAcquisitionTimeoutError);
+    await expect(
+      budget.run(async () => "unexpected", { userId: "test" }),
+    ).rejects.toBeInstanceOf(CloudAcquisitionBudgetExhaustedError);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("cannot extend discovery by claiming a paused workspace", async () => {
+    const result = new CloudAcquisitionBudget()
+      .run(
+        async (_, report) => {
+          report("discovery", { resumingPausedWorkspace: true });
+          return new Promise(() => {});
+        },
+        { userId: "test" },
+      )
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(CLOUD_ACQUISITION_DEADLINE_MS);
+    expect(await result).toMatchObject({ acquisitionStage: "discovery" });
   });
 
   it("bounds a never-settling call, aborts its signal, and refuses another attempt", async () => {
