@@ -10,6 +10,36 @@ use crate::platform;
 
 pub(crate) type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+#[cfg(target_os = "linux")]
+struct CancellableWriter {
+    inner: std::fs::File,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(target_os = "linux")]
+impl Write for CancellableWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        loop {
+            if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "PTY session stopped",
+                ));
+            }
+            match self.inner.write(data) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: PtyWriter,
@@ -95,21 +125,64 @@ impl PtyManager {
             }
         }
 
+        // Duplicated Linux PTY handles share file status flags. Make both input
+        // and output interruptible: closing another duplicate cannot interrupt
+        // a kernel write blocked behind a full terminal input buffer.
+        #[cfg(target_os = "linux")]
+        {
+            let fd = pair
+                .master
+                .as_raw_fd()
+                .ok_or("Missing Linux PTY descriptor")?;
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags == -1
+                || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+            {
+                return Err(format!(
+                    "Failed to configure PTY: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+
         // Acquire fallible handles before spawning so setup failures cannot orphan a child.
         let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
+        let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(not(target_os = "linux"))]
         let writer = pair
             .master
             .take_writer()
             .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
+        #[cfg(target_os = "linux")]
+        let writer: Box<dyn Write + Send> = {
+            use std::os::fd::FromRawFd;
+            let fd = pair
+                .master
+                .as_raw_fd()
+                .ok_or("Missing Linux PTY descriptor")?;
+            let fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+            if fd == -1 {
+                return Err(format!(
+                    "Failed to clone PTY writer: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // Own the duplicate without portable-pty's drop-time newline/EOT.
+            // Teardown follows child exit; injecting input then can be echoed
+            // into the output that is still being drained.
+            Box::new(CancellableWriter {
+                inner: unsafe { std::fs::File::from_raw_fd(fd) },
+                shutdown: shutdown_flag.clone(),
+            })
+        };
         let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn command: {}", e))?;
         let pid = child.process_id();
-        let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = PtySession {
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
@@ -256,6 +329,11 @@ fn supervise_pty(
                 }
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    #[cfg(target_os = "linux")]
+                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                        thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
                     // Unix PTYs can report EIO instead of EOF after the slave closes.
@@ -541,6 +619,99 @@ mod tests {
         write.join().unwrap();
         let (_, exit_code) = wait_for_exit(&rx);
         assert_ne!(exit_code, 0);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn input_waits_for_a_slow_native_reader_without_losing_bytes() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "slow-input".into(),
+                "stty -icanon -echo; printf ready; sleep 0.3; head -c 262144 | wc -c".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        let writer = manager.input_writer("slow-input").unwrap();
+        PtyManager::write_input(writer, &"x".repeat(262144)).unwrap();
+        let (output, exit_code) = wait_for_exit(&rx);
+        assert_eq!(exit_code, 0);
+        assert_eq!(output.trim(), "262144");
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn queued_native_input_is_rejected_after_stop() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "queued-input".into(),
+                "stty -icanon -echo; printf ready; exec sleep 30".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        let writer = manager.input_writer("queued-input").unwrap();
+        let queued = writer.clone();
+        let (finished, writing) = mpsc::channel();
+        let write = thread::spawn(move || {
+            finished
+                .send(PtyManager::write_input(
+                    writer,
+                    &"x".repeat(4 * 1024 * 1024),
+                ))
+                .unwrap();
+        });
+        assert!(matches!(
+            writing.recv_timeout(Duration::from_millis(200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        manager.kill("queued-input").unwrap();
+        assert!(writing
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_err());
+        write.join().unwrap();
+        let (_, exit_code) = wait_for_exit(&rx);
+        assert_ne!(exit_code, 0);
+        assert!(PtyManager::write_input(queued.clone(), "late input").is_err());
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(manager.sessions.lock().unwrap().is_empty());
+
+        // A retained writer cannot deliver input to a replacement session,
+        // even when the caller reuses the same logical session ID.
+        let (channel, rx) = self::channel();
+        manager
+            .create(
+                "queued-input".into(),
+                "stty -echo; printf ready; IFS= read -r line; printf 'received:%s' \"$line\""
+                    .into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        assert!(PtyManager::write_input(queued, "stale input\n").is_err());
+        let writer = manager.input_writer("queued-input").unwrap();
+        PtyManager::write_input(writer, "fresh input\n").unwrap();
+        let (output, exit_code) = wait_for_exit(&rx);
+        assert_eq!(exit_code, 0);
+        assert_eq!(output, "received:fresh input");
         assert!(manager.sessions.lock().unwrap().is_empty());
     }
 
