@@ -294,6 +294,42 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it("waits for attachment removal before accepting a message", async () => {
+    const attachment: UploadedFileState = {
+      file: new File(["fixture"], "removing.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "removing-file",
+    };
+    render(
+      <TestWrapper>
+        <UploadedFilesSetter
+          files={[{ ...attachment, removing: true }]}
+          label="Removal pending"
+        />
+        <UploadedFilesSetter files={[attachment]} label="Removal failed" />
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Removal pending" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Removal failed" }));
+    expect(input).toHaveValue("Keep this draft");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps goal intent when a responsive layout remounts the same draft", async () => {
     mockSandboxState = {
       chatMode: "agent",
@@ -421,6 +457,8 @@ describe("ChatInput - Integration Tests", () => {
       screen.getByRole("button", { name: "Exit goal mode" }),
     ).toBeVisible();
     expect(screen.getByText("goal-context.txt")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     expect(mockOnSubmit).not.toHaveBeenCalled();
   });
 

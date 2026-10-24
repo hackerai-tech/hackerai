@@ -777,6 +777,9 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
+    (uploadedFiles.some((file) => file.removing)
+      ? "Wait for the attachment to finish removing."
+      : undefined) ??
     sendDisabledReason ??
     (user
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
@@ -825,7 +828,13 @@ const ChatInputContent = ({
       selectGoal();
       return;
     }
-    if (isOffline || effectiveSendDisabledReason) return;
+    if (
+      isOffline ||
+      effectiveSendDisabledReason ||
+      (goalMode && !input.trim())
+    ) {
+      return;
+    }
 
     const canSubmit =
       (status === "ready" || status === "streaming") &&
@@ -1091,7 +1100,11 @@ const ChatInputContent = ({
                 uploadedFiles={uploadedFiles}
                 chatMode={user ? chatMode : "ask"}
                 isOnline={!isOffline}
-                sendDisabledReason={effectiveSendDisabledReason}
+                sendDisabledReason={
+                  goalMode && !input.trim()
+                    ? "Describe your goal before sending."
+                    : effectiveSendDisabledReason
+                }
               />
             </div>
           </div>
