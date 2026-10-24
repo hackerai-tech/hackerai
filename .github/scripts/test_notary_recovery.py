@@ -49,6 +49,9 @@ class NotaryRecoveryTests(unittest.TestCase):
                 print(" ".join(os.environ[key] for key in ("APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID")), flush=True)
                 if os.environ["FIXTURE_MODE"] == "waiting":
                     time.sleep(30)
+                if os.environ["FIXTURE_MODE"] != "missing-status":
+                    status = "Invalid" if os.environ["FIXTURE_MODE"] in ("rejected", "invalid-zero") else "Accepted"
+                    print("status: " + status, flush=True)
                 sys.exit(1 if os.environ["FIXTURE_MODE"] == "rejected" else 0)
             if command == "notarytool log":
                 print(os.environ["APPLE_PASSWORD"], file=sys.stderr, flush=True)
@@ -96,6 +99,15 @@ class NotaryRecoveryTests(unittest.TestCase):
         result = self.notarize("staple-failed")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("assess", self.actions.read_text())
+
+    def test_zero_exit_without_explicit_acceptance_cannot_staple(self):
+        for mode in ("invalid-zero", "missing-status"):
+            with self.subTest(mode=mode):
+                self.actions.unlink(missing_ok=True)
+                result = self.notarize(mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.actions.read_text().splitlines(), ["notarytool submit", "notarytool log"])
+                self.assert_redacted(result.stdout + result.stderr + self.log.read_text())
 
     def test_missing_credentials_cannot_submit(self):
         del self.env["APPLE_PASSWORD"]

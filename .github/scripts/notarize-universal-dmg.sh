@@ -19,7 +19,7 @@ if ! xcrun notarytool submit "$DMG" \
   --team-id "$APPLE_TEAM_ID" \
   --wait 2>&1 |
   python3 "$SCRIPT_DIR/redact-notary-output.py" |
-  tee "$LOG"; then
+  tee "$LOG" || ! grep -Eq '^[[:space:]]*status: Accepted[[:space:]]*$' "$LOG"; then
   echo "::error::Notarization failed!"
   SUBMISSION_ID="$(grep -o 'id: [a-f0-9-]*' "$LOG" | head -1 | cut -d' ' -f2 || true)"
   if [[ -n "$SUBMISSION_ID" ]]; then
