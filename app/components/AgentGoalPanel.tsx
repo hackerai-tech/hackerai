@@ -490,9 +490,8 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="relative z-0 order-1 mx-3 -mb-5 min-w-0 shrink-0 text-sm"
+      className="relative z-0 order-1 mx-3 -mb-5 flex min-w-0 shrink-0 flex-col-reverse text-sm"
     >
-      {expanded && details}
       <div className="rounded-t-[22px] border border-black/8 bg-muted px-2 pb-5 dark:border-border">
         <div className="flex min-h-12 min-w-0 items-center gap-2">
           <button
@@ -526,6 +525,7 @@ export function AgentGoalPanel({
           {actions}
         </div>
       </div>
+      {expanded && details}
     </section>
   );
 }
