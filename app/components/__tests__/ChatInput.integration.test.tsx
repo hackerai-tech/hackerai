@@ -294,6 +294,85 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it("preserves a goal draft and attachment while an approval replaces the composer", async () => {
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "user_123" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    const file: UploadedFileState = {
+      file: new File(["Goal attachment fixture"], "goal-context.txt", {
+        type: "text/plain",
+      }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "goal-context-file",
+    };
+    const approval = {
+      approvalId: "goal-approval",
+      toolCallId: "goal-tool",
+      title: "Allow this local check?",
+      target: "pwd",
+      detail: "Approve to continue.",
+      kind: "terminal" as const,
+      operation: "terminal_execute",
+    };
+    const ui = (pending: boolean) => (
+      <TestWrapper>
+        <UploadedFilesSetter files={[file]} label="Attach goal context" />
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          status="ready"
+          chatId="goal-approval-chat"
+          onSendNow={jest.fn()}
+          storedApprovalRequest={pending ? approval : null}
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(ui(false));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Attach goal context" }),
+    );
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "/goal" },
+    });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+
+    rerender(ui(true));
+    expect(screen.getByTestId("agent-approval-prompt")).toBeVisible();
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("goal-context.txt")).not.toBeInTheDocument();
+
+    rerender(ui(false));
+    expect(await screen.findByRole("textbox")).toHaveValue("/goal");
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Goal Set a goal to keep pursuing" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Exit goal mode" }),
+    ).toBeVisible();
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+  });
+
   describe("Sandbox disconnect warnings", () => {
     afterEach(() => jest.restoreAllMocks());
     const ui = () => (
@@ -1273,7 +1352,7 @@ describe("ChatInput - Integration Tests", () => {
         screen.getByText("Check whether the target host is reachable."),
       ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
-      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).not.toBeVisible();
     });
 
     it("merges the stored reviewer summary into the matching live approval", async () => {
@@ -1338,7 +1417,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByRole("button", { name: "Allow once" }),
       ).not.toBeInTheDocument();
-      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).not.toBeVisible();
 
       fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
 

@@ -797,6 +797,7 @@ const ChatInputContent = ({
   }, [chatId, chatMode, subscription]);
   useEffect(() => setDismissedGoalSuggestion(false), [input]);
   const showGoalSuggestion =
+    !showAgentApprovalPrompt &&
     goalEnabled &&
     !goalMode &&
     !dismissedGoalSuggestion &&
@@ -965,52 +966,12 @@ const ChatInputContent = ({
           />
         )}
 
-        {user && (
-          <div className="flex flex-col [&>*+*]:rounded-t-none">
-            <TodoPanel status={status} />
-
-            {messageQueue.length > 0 && (
-              <QueuedMessagesPanel
-                messages={messageQueue}
-                onSendNow={onSendNow}
-                onEdit={updateQueuedMessage}
-                onEditingMessageChange={setEditingQueuedMessageId}
-                onDelete={removeQueuedMessage}
-                isStreaming={status === "streaming"}
-                queueBehavior={queueBehavior}
-                onQueueBehaviorChange={setQueueBehavior}
-              />
-            )}
-          </div>
-        )}
-
-        {uploadedFiles && uploadedFiles.length > 0 && (
-          <FileUploadPreview
-            uploadedFiles={uploadedFiles}
-            onRemoveFile={handleRemoveFile}
-            onRetryFile={handleRetryFile}
-            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
-            onShowGeneratedTextInField={handleShowGeneratedTextInField}
-            generatedTextAttachmentsAvailable={isAgent}
-          />
-        )}
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          aria-label="Upload files"
-          onChange={handleFileUploadEvent}
-        />
-
-        {goalPanel}
         {showGoalSuggestion && (
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={selectGoal}
-            className="order-1 mb-2 flex w-full items-center gap-3 rounded-2xl border bg-muted p-3 text-left hover:bg-accent"
+            className="order-1 mb-2 flex w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted p-3 text-left hover:bg-accent"
           >
             <Target className="size-4 shrink-0" />
             <span>Goal</span>
@@ -1019,99 +980,146 @@ const ChatInputContent = ({
             </span>
           </button>
         )}
-        {showAgentApprovalPrompt ? (
-          <AgentApprovalPrompt
-            request={approvalRequest}
-            hasConnectionError={status === "error"}
-            onRetryConnection={onReconnect}
-            onStop={() => void handleAgentStop()}
-          />
-        ) : (
-          <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
-            data-testid="chat-input-surface"
-          >
-            <ChatInputTextarea
-              draftId={draftId}
-              chatMode={chatMode}
-              onEnterSubmit={handleSubmit}
-              minRows={isCentered ? 3 : 1}
-              placeholder={
-                goalMode
-                  ? "Describe your goal, define measurable outcomes for best results"
-                  : placeholder
-              }
-              onCommandKeyDown={(e) => {
-                if (showGoalSuggestion && e.key === "Tab") {
-                  e.preventDefault();
-                  selectGoal();
-                }
-                if (e.key === "Escape") {
-                  setGoalMode(false);
-                  setDismissedGoalSuggestion(true);
-                }
-              }}
-              autoFocus={autoFocus}
-            />
-            <ChatInputToolbar
-              goalControl={
-                goalMode ? (
-                  <button
-                    type="button"
-                    aria-label="Exit goal mode"
-                    title="Goal · 3 runs by default"
-                    onClick={() => setGoalMode(false)}
-                    className="flex shrink-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-muted"
-                  >
-                    <Target className="size-4" />
-                    Goal
-                    <X className="size-3" />
-                  </button>
-                ) : undefined
-              }
-              compactAgentControls={compactAgentControls}
-              onAttachClick={handleAttachClick}
-              isGenerating={isGenerating}
-              hideStop={hideStop}
-              onStop={() => void handleAgentStop()}
-              onSubmit={handleSubmit}
-              status={status}
-              isUploadingFiles={isUploadingFiles}
-              input={input}
-              uploadedFiles={uploadedFiles}
-              chatMode={user ? chatMode : "ask"}
-              isOnline={!isOffline}
-              sendDisabledReason={effectiveSendDisabledReason}
-            />
-          </div>
-        )}
+        {goalPanel}
+        <div className="relative z-10 order-1 flex min-w-0 flex-col">
+          {user && (
+            <div className="flex flex-col [&>*+*]:rounded-t-none">
+              <TodoPanel status={status} />
 
-        {/* Compact Agent controls below the input. The composer switches to
-            this strip whenever its own width is constrained, even on desktop. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
-          <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
-            data-compact={compactAgentControls ? "true" : "false"}
-            data-testid="chat-input-agent-context"
-          >
+              {messageQueue.length > 0 && (
+                <QueuedMessagesPanel
+                  messages={messageQueue}
+                  onSendNow={onSendNow}
+                  onEdit={updateQueuedMessage}
+                  onEditingMessageChange={setEditingQueuedMessageId}
+                  onDelete={removeQueuedMessage}
+                  isStreaming={status === "streaming"}
+                  queueBehavior={queueBehavior}
+                  onQueueBehaviorChange={setQueueBehavior}
+                />
+              )}
+            </div>
+          )}
+
+          {!showAgentApprovalPrompt &&
+            uploadedFiles &&
+            uploadedFiles.length > 0 && (
+              <FileUploadPreview
+                uploadedFiles={uploadedFiles}
+                onRemoveFile={handleRemoveFile}
+                onRetryFile={handleRetryFile}
+                onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+                onShowGeneratedTextInField={handleShowGeneratedTextInField}
+                generatedTextAttachmentsAvailable={isAgent}
+              />
+            )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            aria-label="Upload files"
+            onChange={handleFileUploadEvent}
+          />
+
+          {showAgentApprovalPrompt && (
+            <AgentApprovalPrompt
+              request={approvalRequest}
+              hasConnectionError={status === "error"}
+              onRetryConnection={onReconnect}
+              onStop={() => void handleAgentStop()}
+            />
+          )}
+          {/* Keep the draft mounted through approvals: remounting the textarea
+              can reload storage before its debounced draft save has run. */}
+          <div hidden={showAgentApprovalPrompt}>
             <div
-              className="min-w-0 flex-1"
-              data-testid="chat-input-mobile-sandbox"
+              className={`chat-input-glass-surface relative z-10 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+              data-testid="chat-input-surface"
             >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                compact
+              <ChatInputTextarea
+                draftId={draftId}
+                chatMode={chatMode}
+                onEnterSubmit={handleSubmit}
+                minRows={isCentered ? 3 : 1}
+                placeholder={
+                  goalMode
+                    ? "Describe your goal, define measurable outcomes for best results"
+                    : placeholder
+                }
+                onCommandKeyDown={(e) => {
+                  if (showGoalSuggestion && e.key === "Tab") {
+                    e.preventDefault();
+                    selectGoal();
+                  }
+                  if (e.key === "Escape") {
+                    setGoalMode(false);
+                    setDismissedGoalSuggestion(true);
+                  }
+                }}
+                autoFocus={autoFocus}
+              />
+              <ChatInputToolbar
+                goalControl={
+                  goalMode ? (
+                    <button
+                      type="button"
+                      aria-label="Exit goal mode"
+                      title="Goal · 3 runs by default"
+                      onClick={() => setGoalMode(false)}
+                      className="flex shrink-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-muted"
+                    >
+                      <Target className="size-4" />
+                      Goal
+                      <X className="size-3" />
+                    </button>
+                  ) : undefined
+                }
+                compactAgentControls={compactAgentControls}
+                onAttachClick={handleAttachClick}
+                isGenerating={isGenerating}
+                hideStop={hideStop}
+                onStop={() => void handleAgentStop()}
+                onSubmit={handleSubmit}
+                status={status}
+                isUploadingFiles={isUploadingFiles}
+                input={input}
+                uploadedFiles={uploadedFiles}
+                chatMode={user ? chatMode : "ask"}
+                isOnline={!isOffline}
+                sendDisabledReason={effectiveSendDisabledReason}
               />
             </div>
-            <div
-              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
-              data-testid="chat-input-mobile-permission"
-            >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
-            </div>
           </div>
-        )}
+
+          {/* Compact Agent controls below the input. The composer switches to
+            this strip whenever its own width is constrained, even on desktop. */}
+          {user && isAgent && !showAgentApprovalPrompt && (
+            <div
+              className={`chat-input-glass-context relative z-0 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+              data-compact={compactAgentControls ? "true" : "false"}
+              data-testid="chat-input-agent-context"
+            >
+              <div
+                className="min-w-0 flex-1"
+                data-testid="chat-input-mobile-sandbox"
+              >
+                <SandboxSelector
+                  value={sandboxPreference}
+                  onChange={setSandboxPreference}
+                  compact
+                />
+              </div>
+              <div
+                className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                data-testid="chat-input-mobile-permission"
+              >
+                <AgentPermissionSelector analyticsSurface="chat_input" />
+              </div>
+            </div>
+          )}
+        </div>
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
