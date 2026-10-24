@@ -381,6 +381,9 @@ describe("goal controls", () => {
         screen.queryByRole("dialog", { name: "Goal controls" }),
       ).not.toBeInTheDocument(),
     );
+    expect(
+      screen.getByRole("button", { name: "Show goal controls" }),
+    ).toHaveFocus();
   });
 
   it("resumes a paused mobile goal from its popover and then dismisses it", async () => {

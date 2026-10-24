@@ -65,6 +65,7 @@ export function AgentGoalPanel({
   const isMobile = useIsMobile();
   const [mobileOpen, setMobileOpen] = useState(false);
   const openingEditor = useRef(false);
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null);
   const detailsId = useId();
   const [formError, setFormError] = useState("");
   const [reply, setReply] = useState("");
@@ -237,6 +238,7 @@ export function AgentGoalPanel({
           onClick={() => {
             openingEditor.current = isMobile === true;
             setMobileOpen(false);
+            if (isMobile) mobileTriggerRef.current?.focus();
             openSidebar({ kind: "goal", chatId });
           }}
         >
@@ -406,6 +408,7 @@ export function AgentGoalPanel({
         <Popover open={mobileOpen} onOpenChange={setMobileOpen}>
           <PopoverTrigger asChild>
             <button
+              ref={mobileTriggerRef}
               type="button"
               aria-label={
                 mobileOpen ? "Hide goal controls" : "Show goal controls"
