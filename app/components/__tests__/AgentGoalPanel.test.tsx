@@ -11,6 +11,8 @@ jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
+let mockIsMobile = false;
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 const mockOpenSidebar = jest.fn();
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ openSidebar: mockOpenSidebar }),
@@ -36,6 +38,8 @@ const goal = {
 };
 describe("goal controls", () => {
   beforeEach(() => {
+    mockIsMobile = false;
+    mockOpenSidebar.mockClear();
     setMockQueryResult(undefined);
     global.fetch = jest
       .fn()
@@ -338,5 +342,131 @@ describe("goal controls", () => {
         }),
       ),
     );
+  });
+  it("keeps mobile controls behind a pill and closes them when opening the editor", async () => {
+    mockIsMobile = true;
+    setMockQueryResult({
+      ...goal,
+      state: "running",
+      activeRunId: "run",
+      startedAt: Date.now() - 5000,
+    });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle={false}
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    await act(async () => {});
+    expect(screen.getByRole("status")).toHaveTextContent("Pursuing goal");
+    expect(
+      screen.queryByRole("button", { name: "Pause goal" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show goal controls" }));
+    expect(
+      screen.getByRole("dialog", { name: "Goal controls" }),
+    ).toHaveTextContent("Create marker");
+    expect(screen.getByRole("button", { name: "Pause goal" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    expect(mockOpenSidebar).toHaveBeenCalledWith({
+      kind: "goal",
+      chatId: "chat",
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Goal controls" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("resumes a paused mobile goal from its popover and then dismisses it", async () => {
+    mockIsMobile = true;
+    setMockQueryResult({ ...goal, state: "paused", maxRuns: 3 });
+    const send = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={send}
+        settings={settings}
+      />,
+    );
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Show goal controls" }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          body: expect.objectContaining({
+            goal: { action: "resume", additionalRuns: 0 },
+          }),
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Goal controls" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("dismisses the mobile popover with Escape and restores focus to its pill", async () => {
+    mockIsMobile = true;
+    setMockQueryResult({ ...goal, state: "paused", maxRuns: 3 });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    await act(async () => {});
+    const trigger = screen.getByRole("button", { name: "Show goal controls" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Goal controls" }), {
+      key: "Escape",
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Goal controls" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
+  it("shows the saved completion duration instead of continuing the timer", async () => {
+    mockIsMobile = true;
+    setMockQueryResult({
+      ...goal,
+      state: "achieved",
+      startedAt: 1000,
+      achievedAt: 66000,
+    });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    await act(async () => {});
+    expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+    expect(
+      screen.getByLabelText("Elapsed time 1m 5s, including pauses and waiting"),
+    ).toBeVisible();
   });
 });

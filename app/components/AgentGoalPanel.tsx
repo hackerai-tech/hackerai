@@ -2,6 +2,12 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -56,6 +62,9 @@ export function AgentGoalPanel({
   const [enabled, setEnabled] = useState(false);
   const { openSidebar } = useGlobalState();
   const [expanded, setExpanded] = useState(false);
+  const isMobile = useIsMobile();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const openingEditor = useRef(false);
   const detailsId = useId();
   const [formError, setFormError] = useState("");
   const [reply, setReply] = useState("");
@@ -86,6 +95,10 @@ export function AgentGoalPanel({
       });
     }
   }, [enabled, eligible, goal]);
+  useEffect(() => {
+    setMobileOpen(false);
+    setExpanded(false);
+  }, [chatId, goal?._id]);
   if (!goal) return null;
   const active = goal && !["achieved", "canceled"].includes(goal.state);
   const resumable =
@@ -154,6 +167,7 @@ export function AgentGoalPanel({
       });
       setReply("");
       setAdditionalRuns(0);
+      setMobileOpen(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);
@@ -161,6 +175,295 @@ export function AgentGoalPanel({
     } finally {
       setSubmitting(false);
     }
+  }
+  const actions = (
+    <div
+      className={`flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground empty:hidden ${isMobile ? "[&_button]:min-h-11 [&_button]:min-w-11" : ""}`}
+    >
+      {active &&
+        ["queued", "running", "needs_approval", "waiting"].includes(
+          goal.state,
+        ) && (
+          <Button
+            size={isMobile ? "icon" : "icon-sm"}
+            variant="ghost"
+            disabled={controlling}
+            aria-label="Pause goal"
+            title="Pause goal"
+            onClick={() => control("pause")}
+          >
+            <Pause className="size-4" />
+          </Button>
+        )}
+      {(canResume || (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="px-2 text-xs"
+          aria-label="Resume goal"
+          disabled={
+            busy ||
+            !canResume ||
+            !idle ||
+            !enabled ||
+            !eligible ||
+            !!disabledReason
+          }
+          onClick={() => submit()}
+        >
+          Resume
+        </Button>
+      )}
+      {resumable &&
+        goal.runs >= goal.maxRuns &&
+        goal.maxRuns < GOAL_MAX_RUNS &&
+        !expanded && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="px-2 text-xs"
+            onClick={() => setExpanded(true)}
+          >
+            Add runs
+          </Button>
+        )}
+      {goal.state !== "achieved" && (
+        <Button
+          size={isMobile ? "icon" : "icon-sm"}
+          variant="ghost"
+          aria-label="Edit goal"
+          title="Edit goal"
+          disabled={controlling}
+          onClick={() => {
+            openingEditor.current = isMobile === true;
+            setMobileOpen(false);
+            openSidebar({ kind: "goal", chatId });
+          }}
+        >
+          <Pencil className="size-4" />
+        </Button>
+      )}
+      {goal && (
+        <Button
+          size={isMobile ? "icon" : "icon-sm"}
+          variant="ghost"
+          disabled={controlling}
+          aria-label="Delete goal"
+          title="Delete goal"
+          onClick={() => control("clear")}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      )}
+    </div>
+  );
+  const details = (
+    <div
+      id={detailsId}
+      className={
+        isMobile
+          ? "space-y-3 border-t pt-3 text-sm"
+          : "mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
+      }
+    >
+      <p className="text-xs text-muted-foreground">
+        {goal.runs}/{goal.maxRuns} runs used
+      </p>
+      {resumable && (
+        <div className="space-y-2">
+          {goal.runs >= goal.maxRuns && goal.maxRuns < GOAL_MAX_RUNS && (
+            <label className="block">
+              Additional runs (normal plan usage)
+              <Input
+                aria-label="Additional goal runs"
+                type="number"
+                min={0}
+                max={GOAL_MAX_RUNS - goal.maxRuns}
+                step={1}
+                value={additionalRuns}
+                onChange={(e) => setAdditionalRuns(Number(e.target.value))}
+                className="w-24"
+              />
+              <span className="text-xs text-muted-foreground">
+                Add 1–{GOAL_MAX_RUNS - goal.maxRuns} runs, then choose Resume
+                goal.
+              </span>
+              {!validAdditionalRuns && (
+                <span role="alert" className="block text-destructive">
+                  Choose a whole number from 1 to {GOAL_MAX_RUNS - goal.maxRuns}
+                  .
+                </span>
+              )}
+            </label>
+          )}
+          <label className="block">
+            Reply or new information (optional)
+            <Textarea
+              aria-label="Goal reply"
+              value={reply}
+              maxLength={4000}
+              onChange={(e) => setReply(e.target.value)}
+            />
+          </label>
+          {goal.runs >= GOAL_MAX_RUNS && (
+            <p className="text-muted-foreground">
+              This goal used all {GOAL_MAX_RUNS} runs.{" "}
+              {active
+                ? "Stop it, then set a new goal to continue with a fresh budget."
+                : "Set a new goal to continue with a fresh budget."}
+            </p>
+          )}
+          {disabledReason && (
+            <p className="text-muted-foreground">{disabledReason}</p>
+          )}
+          {(!enabled || !eligible) && (
+            <p className="text-muted-foreground">
+              Starting or resuming goals requires Agent mode, a paid plan, and
+              goal access.
+            </p>
+          )}
+          {formError && (
+            <p role="alert" className="text-destructive">
+              {formError}
+            </p>
+          )}
+        </div>
+      )}
+      <p className="whitespace-pre-wrap">{goal.objective}</p>
+      <p>{goal.reason}</p>
+      {goal.state !== "achieved" &&
+        goal.progress &&
+        goal.progress !== goal.reason && (
+          <p className="text-muted-foreground whitespace-pre-wrap">
+            Latest progress: {goal.progress}
+          </p>
+        )}
+      {goal.judgment && goal.judgment.reason !== goal.reason && (
+        <p className="text-muted-foreground">
+          Completion check: {goal.judgment.reason}
+        </p>
+      )}
+      <ul className="space-y-1">
+        {goal.criteria.map((criterion, i) => (
+          <li key={i}>
+            {goal.state === "achieved" ? "✓ " : `${i + 1}. `}
+            {criterion}
+            {goal.state !== "achieved" &&
+              goal.evidence.some((e) => e.criterion === i) && (
+                <span className="text-xs text-muted-foreground">
+                  {" "}
+                  · Evidence saved, awaiting verification
+                </span>
+              )}
+          </li>
+        ))}
+      </ul>
+      <details>
+        <summary className="cursor-pointer">
+          Completion contract and evidence
+        </summary>
+        <div className="space-y-1 py-2">
+          {goal.verificationCommand && (
+            <p>
+              Verification:{" "}
+              <code className="whitespace-pre-wrap">
+                {goal.verificationCommand}
+              </code>
+            </p>
+          )}
+          {goal.constraints && <p>Preserve: {goal.constraints}</p>}
+          {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
+          {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
+          {goal.evidence.map((e) => (
+            <p key={e.criterion}>
+              Criterion {e.criterion + 1}: {e.explanation} ·{" "}
+              <a
+                className="underline"
+                href={getSourceMessageHref(chatId, e.messageId ?? e.runId)}
+              >
+                saved run evidence
+              </a>
+            </p>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+  if (isMobile) {
+    const mobileLabel =
+      goal.state === "running"
+        ? "Pursuing goal"
+        : goal.state === "achieved"
+          ? "Goal achieved"
+          : ["paused", "queued", "canceled", "blocked"].includes(goal.state)
+            ? `${stateLabels[goal.state]} goal`
+            : stateLabels[goal.state];
+    return (
+      <section
+        aria-label="Agent goal"
+        className="relative z-10 order-1 flex min-w-0 shrink-0 justify-center py-2"
+      >
+        <Popover open={mobileOpen} onOpenChange={setMobileOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={
+                mobileOpen ? "Hide goal controls" : "Show goal controls"
+              }
+              className="flex min-h-11 max-w-full items-center gap-2 rounded-full border bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Target className="size-4 shrink-0" aria-hidden="true" />
+              <span
+                role="status"
+                aria-live="polite"
+                className="min-w-0 truncate"
+              >
+                {mobileLabel}
+              </span>
+              {goal.startedAt !== undefined && (
+                <GoalElapsedTime
+                  startedAt={goal.startedAt}
+                  achievedAt={goal.achievedAt}
+                />
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            sideOffset={12}
+            collisionPadding={12}
+            aria-label="Goal controls"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => {
+              if (openingEditor.current) event.preventDefault();
+              openingEditor.current = false;
+            }}
+            className="w-[calc(100vw-2rem)] max-w-sm max-h-[min(60dvh,var(--radix-popover-content-available-height))] space-y-2 overflow-y-auto overscroll-contain rounded-2xl bg-popover/95 p-3 shadow-xl backdrop-blur-xl break-words [overflow-wrap:anywhere]"
+          >
+            <p className="max-h-24 overflow-y-auto whitespace-pre-wrap text-sm">
+              {goal.objective}
+            </p>
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={detailsId}
+                onClick={() => setExpanded(!expanded)}
+                className="flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Details{" "}
+                <ChevronDown
+                  className={`size-3 transition-transform ${expanded ? "rotate-180" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {actions}
+            </div>
+            {expanded && details}
+          </PopoverContent>
+        </Popover>
+      </section>
+    );
   }
   return (
     <section
@@ -198,217 +501,45 @@ export function AgentGoalPanel({
                 aria-hidden="true"
               />
             </button>
-            <div className="flex shrink-0 items-center gap-0.5 text-muted-foreground empty:hidden">
-              {active &&
-                ["queued", "running", "needs_approval", "waiting"].includes(
-                  goal.state,
-                ) && (
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    disabled={controlling}
-                    aria-label="Pause goal"
-                    title="Pause goal"
-                    onClick={() => control("pause")}
-                  >
-                    <Pause className="size-4" />
-                  </Button>
-                )}
-              {(canResume ||
-                (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="px-2 text-xs"
-                  aria-label="Resume goal"
-                  disabled={
-                    busy ||
-                    !canResume ||
-                    !idle ||
-                    !enabled ||
-                    !eligible ||
-                    !!disabledReason
-                  }
-                  onClick={() => submit()}
-                >
-                  Resume
-                </Button>
-              )}
-              {resumable &&
-                goal.runs >= goal.maxRuns &&
-                goal.maxRuns < GOAL_MAX_RUNS &&
-                !expanded && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="px-2 text-xs"
-                    onClick={() => setExpanded(true)}
-                  >
-                    Add runs
-                  </Button>
-                )}
-              {goal.state !== "achieved" && (
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label="Edit goal"
-                  title="Edit goal"
-                  disabled={controlling}
-                  onClick={() => openSidebar({ kind: "goal", chatId })}
-                >
-                  <Pencil className="size-4" />
-                </Button>
-              )}
-              {goal && (
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  disabled={controlling}
-                  aria-label="Delete goal"
-                  title="Delete goal"
-                  onClick={() => control("clear")}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              )}
-            </div>
+            {actions}
           </div>
-          {expanded && (
-            <div
-              id={detailsId}
-              className="mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
-            >
-              <p className="text-xs text-muted-foreground">
-                {goal.runs}/{goal.maxRuns} runs used
-              </p>
-              {resumable && (
-                <div className="space-y-2">
-                  {goal.runs >= goal.maxRuns &&
-                    goal.maxRuns < GOAL_MAX_RUNS && (
-                      <label className="block">
-                        Additional runs (normal plan usage)
-                        <Input
-                          aria-label="Additional goal runs"
-                          type="number"
-                          min={0}
-                          max={GOAL_MAX_RUNS - goal.maxRuns}
-                          step={1}
-                          value={additionalRuns}
-                          onChange={(e) =>
-                            setAdditionalRuns(Number(e.target.value))
-                          }
-                          className="w-24"
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          Add 1–{GOAL_MAX_RUNS - goal.maxRuns} runs, then choose
-                          Resume goal.
-                        </span>
-                        {!validAdditionalRuns && (
-                          <span role="alert" className="block text-destructive">
-                            Choose a whole number from 1 to{" "}
-                            {GOAL_MAX_RUNS - goal.maxRuns}.
-                          </span>
-                        )}
-                      </label>
-                    )}
-                  <label className="block">
-                    Reply or new information (optional)
-                    <Textarea
-                      aria-label="Goal reply"
-                      value={reply}
-                      maxLength={4000}
-                      onChange={(e) => setReply(e.target.value)}
-                    />
-                  </label>
-                  {goal.runs >= GOAL_MAX_RUNS && (
-                    <p className="text-muted-foreground">
-                      This goal used all {GOAL_MAX_RUNS} runs.{" "}
-                      {active
-                        ? "Stop it, then set a new goal to continue with a fresh budget."
-                        : "Set a new goal to continue with a fresh budget."}
-                    </p>
-                  )}
-                  {disabledReason && (
-                    <p className="text-muted-foreground">{disabledReason}</p>
-                  )}
-                  {(!enabled || !eligible) && (
-                    <p className="text-muted-foreground">
-                      Starting or resuming goals requires Agent mode, a paid
-                      plan, and goal access.
-                    </p>
-                  )}
-                  {formError && (
-                    <p role="alert" className="text-destructive">
-                      {formError}
-                    </p>
-                  )}
-                </div>
-              )}
-              <p className="whitespace-pre-wrap">{goal.objective}</p>
-              <p>{goal.reason}</p>
-              {goal.state !== "achieved" &&
-                goal.progress &&
-                goal.progress !== goal.reason && (
-                  <p className="text-muted-foreground whitespace-pre-wrap">
-                    Latest progress: {goal.progress}
-                  </p>
-                )}
-              {goal.judgment && goal.judgment.reason !== goal.reason && (
-                <p className="text-muted-foreground">
-                  Completion check: {goal.judgment.reason}
-                </p>
-              )}
-              <ul className="space-y-1">
-                {goal.criteria.map((criterion, i) => (
-                  <li key={i}>
-                    {goal.state === "achieved" ? "✓ " : `${i + 1}. `}
-                    {criterion}
-                    {goal.state !== "achieved" &&
-                      goal.evidence.some((e) => e.criterion === i) && (
-                        <span className="text-xs text-muted-foreground">
-                          {" "}
-                          · Evidence saved, awaiting verification
-                        </span>
-                      )}
-                  </li>
-                ))}
-              </ul>
-              <details>
-                <summary className="cursor-pointer">
-                  Completion contract and evidence
-                </summary>
-                <div className="space-y-1 py-2">
-                  {goal.verificationCommand && (
-                    <p>
-                      Verification:{" "}
-                      <code className="whitespace-pre-wrap">
-                        {goal.verificationCommand}
-                      </code>
-                    </p>
-                  )}
-                  {goal.constraints && <p>Preserve: {goal.constraints}</p>}
-                  {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
-                  {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
-                  {goal.evidence.map((e) => (
-                    <p key={e.criterion}>
-                      Criterion {e.criterion + 1}: {e.explanation} ·{" "}
-                      <a
-                        className="underline"
-                        href={getSourceMessageHref(
-                          chatId,
-                          e.messageId ?? e.runId,
-                        )}
-                      >
-                        saved run evidence
-                      </a>
-                    </p>
-                  ))}
-                </div>
-              </details>
-            </div>
-          )}
+          {expanded && details}
         </div>
       )}
     </section>
+  );
+}
+
+function GoalElapsedTime({
+  startedAt,
+  achievedAt,
+}: {
+  startedAt: number;
+  achievedAt?: number;
+}) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (achievedAt !== undefined) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [achievedAt]);
+  const seconds = Math.max(
+    0,
+    Math.floor(((achievedAt ?? now) - startedAt) / 1000),
+  );
+  const duration =
+    seconds < 60
+      ? `${seconds}s`
+      : seconds < 3600
+        ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+        : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return (
+    <span
+      aria-label={`Elapsed time ${duration}, including pauses and waiting`}
+      className="shrink-0 tabular-nums"
+      title="Elapsed time since goal creation, including pauses and waiting"
+    >
+      {duration}
+    </span>
   );
 }
