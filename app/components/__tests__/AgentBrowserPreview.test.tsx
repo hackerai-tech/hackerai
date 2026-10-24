@@ -80,6 +80,28 @@ it("allows takeover while the Agent is waiting for the user", async () => {
   expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
 });
 
+it("explains a lost control lease and offers recovery only after it expires", async () => {
+  mockSession = {
+    sessionId: "session-a",
+    state: "human",
+    grantExpiresAt: Date.now() + 30_000,
+  };
+  await mount();
+  expect(screen.getByText("Waiting for browser control…")).toBeInTheDocument();
+  expect(screen.getByText(/If you just reloaded/)).toHaveTextContent(
+    "The Agent stays paused.",
+  );
+  await takeControl();
+  expect(actions).toEqual([]);
+  await act(async () => {
+    jest.advanceTimersByTime(30_001);
+  });
+  expect(screen.getByText("Paused for handoff")).toBeInTheDocument();
+  expect(screen.queryByText(/If you just reloaded/)).not.toBeInTheDocument();
+  await takeControl();
+  expect(actions.at(-1)).toMatchObject({ action: "take" });
+});
+
 it("releases a takeover that completes after the sidebar closes", async () => {
   let finish!: (value: Response) => void;
   handleAction = (body) =>

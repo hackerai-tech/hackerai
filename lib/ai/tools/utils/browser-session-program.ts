@@ -91,7 +91,7 @@ if verify.exists():
             command = arg
             break
     if command != 'snapshot':
-        print('Browser handoff resumed. Take a fresh snapshot and verify the page and signed-in identity, if any, before another browser action.', file=sys.stderr)
+        print('Browser handoff resumed; this command was not executed. The browser is still open and user input is preserved. Run agent-browser snapshot -i first in this same session, without prepending get url or open. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
         sys.exit(75)
     result = __import__('subprocess').run([%r, *args], close_fds=True)
     if result.returncode == 0:

@@ -807,7 +807,7 @@ export function AgentBrowserPreview({
             : effectiveState === "recovery"
               ? "Paused for handoff"
               : effectiveState === "human"
-                ? "Controlled in another window"
+                ? "Waiting for browser control…"
                 : effectiveState === "waiting"
                   ? "Waiting for you"
                   : "Live preview";
@@ -1084,11 +1084,13 @@ export function AgentBrowserPreview({
                   : runActive
                     ? "Take control is available after an eligible Cloud Agent opens its browser."
                     : "This Agent run has ended, so browser control is unavailable. Ask the Agent to reopen the page and wait for you to take control."
-                : !liveSelection
-                  ? "This browser is live. Take control to pause the Agent; the tool history below is earlier."
-                  : frameStale
-                    ? "Take control will be available when the live browser preview connects."
-                    : "Take control to click and type. The Agent’s browser actions pause until you resume."}
+                : effectiveState === "human" && !human
+                  ? "If you just reloaded, controls will recover shortly. Otherwise, continue in the window already controlling this browser. The Agent stays paused."
+                  : !liveSelection
+                    ? "This browser is live. Take control to pause the Agent; the tool history below is earlier."
+                    : frameStale
+                      ? "Take control will be available when the live browser preview connects."
+                      : "Take control to click and type. The Agent’s browser actions pause until you resume."}
             </span>
           ) : null}
         </div>

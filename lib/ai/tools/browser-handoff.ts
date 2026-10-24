@@ -28,7 +28,7 @@ export function createBrowserHandoff(
       return {
         status: "resumed",
         message:
-          "The user finished browser takeover. Read the private handoff context and take a fresh snapshot before any further browser action.",
+          "The user finished browser takeover. Read the private handoff context, then run agent-browser snapshot -i as the first browser command in the same session. Do not prepend get url, reopen the page, switch sessions, or repair the browser. The current page and user input are preserved. Inspect the snapshot before deciding the next action.",
       };
     },
   });
