@@ -18,6 +18,7 @@ import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
   LocalCommandRelayUnsubscribedError,
   isLocalCommandRelayUnsubscribedError,
+  getLocalFileRequestFailure,
 } from "../local-sandbox-errors";
 import {
   CentrifugoMessageReassembler,
@@ -2808,6 +2809,118 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("native desktop file relay", () => {
+    it("classifies unavailable native stat without starting a client", async () => {
+      const error = await createSandbox()
+        .files.stat("/PRIVATE-file")
+        .catch((e) => e);
+      expect(error.message).toBe("Native desktop file relay is not available.");
+      expect(getLocalFileRequestFailure(error)).toBe("unavailable");
+      expect(mockClients).toHaveLength(0);
+    });
+
+    it("keeps isolated file presence rejection distinct from a dispatch error", async () => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, files: true, operationChannels: true },
+      });
+      const result = sandbox.files.stat("/PRIVATE-file").catch((e) => e);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      control.presence.mockResolvedValue({ clients: {} });
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      const error = await result;
+      expect(getLocalFileRequestFailure(error)).toBe("relay_unsubscribed");
+      expect(isLocalCommandRelayUnsubscribedError(error)).toBe(false);
+      expect(control.publish).not.toHaveBeenCalled();
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(control.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(mockClients[0].disconnect).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each([
+      "native_error",
+      "subscription_error",
+      "relay_unsubscribed",
+      "dispatch_error",
+      "readiness_timeout",
+      "aborted",
+      "timeout",
+    ] as const)(
+      "retains native stat failure origin %s and cleans up",
+      async (failure) => {
+        const sandbox = createSandbox({
+          isDesktop: true,
+          capabilities: {
+            commands: true,
+            files: true,
+            operationChannels: failure === "readiness_timeout",
+          },
+        });
+        const abort = new AbortController();
+        const result = sandbox.files
+          .stat("/PRIVATE-report.zip", {
+            timeoutMs: 10000,
+            signal: abort.signal,
+          })
+          .catch((error) => error);
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        if (failure === "relay_unsubscribed") {
+          sub.presence.mockResolvedValue({ clients: {} });
+        }
+        if (failure === "dispatch_error") {
+          sub.publish.mockRejectedValue(new Error("PRIVATE-publish-message"));
+        }
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        if (failure === "native_error") {
+          sub.emit("publication", {
+            data: {
+              type: "file_error",
+              requestId: FIXED_UUID,
+              message: "PRIVATE-native-message",
+            },
+          });
+        } else if (failure === "subscription_error") {
+          sub.emit("error", {
+            error: { message: "PRIVATE-subscription-message" },
+          });
+        } else if (failure === "aborted") {
+          abort.abort();
+        } else if (failure === "timeout") {
+          await jest.advanceTimersByTimeAsync(15000);
+        } else if (failure === "readiness_timeout") {
+          await jest.advanceTimersByTimeAsync(5000);
+        }
+        const error = await result;
+        expect(error).toBeInstanceOf(Error);
+        expect(error.name).toBe("Error");
+        expect(getLocalFileRequestFailure(error)).toBe(failure);
+        if (failure === "native_error")
+          expect(error.message).toBe("PRIVATE-native-message");
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(mockClients[0].disconnect).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+        // Late publications/reconnects cannot dispatch another metadata request.
+        const dispatches = sub.publish.mock.calls.length;
+        sub.emit("subscribed");
+        sub.emit("publication", {
+          data: {
+            type: "file_stat_result",
+            requestId: FIXED_UUID,
+            path: "/PRIVATE-report.zip",
+            kind: "file",
+            sizeBytes: 4,
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).toHaveBeenCalledTimes(dispatches);
+      },
+    );
+
     it("resolves relative file paths from the project folder", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\hackerai");
       const promise = sandbox.files.read("src\\app.ts");

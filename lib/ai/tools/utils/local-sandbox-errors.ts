@@ -1,6 +1,46 @@
 export const LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE =
   "LOCAL_COMMAND_RELAY_UNSUBSCRIBED" as const;
 
+export type LocalFileRequestFailure =
+  | "unavailable"
+  | "aborted"
+  | "timeout"
+  | "native_error"
+  | "subscription_error"
+  | "relay_unsubscribed"
+  | "readiness_timeout"
+  // A dispatch error does not establish whether the client received the request.
+  | "dispatch_error";
+
+/** Records the local failure origin without classifying private error text. */
+export class LocalFileRequestError extends Error {
+  constructor(
+    readonly failure: LocalFileRequestFailure,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export function getLocalFileRequestFailure(
+  error: unknown,
+): LocalFileRequestFailure | "unknown" {
+  if (error instanceof LocalFileRequestError) {
+    switch (error.failure) {
+      case "unavailable":
+      case "aborted":
+      case "timeout":
+      case "native_error":
+      case "subscription_error":
+      case "relay_unsubscribed":
+      case "readiness_timeout":
+      case "dispatch_error":
+        return error.failure;
+    }
+  }
+  return "unknown";
+}
+
 /** Transport evidence used to retry only commands that never reached publication. */
 export class LocalCommandDispatchError extends Error {
   readonly code = "LOCAL_COMMAND_DISPATCH_ERROR";
