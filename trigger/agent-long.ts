@@ -5108,6 +5108,12 @@ export const agentLongTask = task({
                                 messages: retryMessages,
                                 isAborted: retryAborted,
                               }) => {
+                                // Capture this attempt before it can schedule another retry.
+                                goalFinalMessages = retainGoalRunMessages(
+                                  goalFinalMessages,
+                                  retryMessages,
+                                  goalRunMessageIds,
+                                );
                                 let finalRetryScheduled = false;
                                 try {
                                   const normalizedRetryMessages = retryMessages
