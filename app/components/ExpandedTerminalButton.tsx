@@ -9,6 +9,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { isInteractiveShellAction } from "./tools/shell-tool-utils";
@@ -40,16 +45,20 @@ export function ExpandedTerminalButton({
         setOpen(next);
       }}
     >
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          aria-label="Expand command and output"
-          title="Expand command and output"
-          className="inline-flex min-h-9 min-w-11 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <Maximize2 size={14} aria-hidden />
-        </button>
-      </DialogTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DialogTrigger asChild>
+            <button
+              type="button"
+              aria-label="Expand command and output"
+              className="inline-flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs transition-colors text-muted-foreground hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Maximize2 size={14} aria-hidden />
+            </button>
+          </DialogTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Expand command and output</TooltipContent>
+      </Tooltip>
       <DialogContent
         aria-describedby={undefined}
         showCloseButton={false}

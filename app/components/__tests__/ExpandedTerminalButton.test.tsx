@@ -19,6 +19,19 @@ jest.mock("@/lib/utils/shiki", () => ({
   isWebAssemblyAvailable: () => false,
 }));
 
+// jsdom has no layout observer; keep the real tooltip and dialog focus behavior.
+const originalResizeObserver = global.ResizeObserver;
+beforeAll(() => {
+  global.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+});
+afterAll(() => {
+  global.ResizeObserver = originalResizeObserver;
+});
+
 const terminal: SidebarTerminal = {
   command:
     "agent-browser eval \"document.title\" && printf 'UPPER!? café 日本語\\n'",
