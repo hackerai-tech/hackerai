@@ -95,7 +95,8 @@ export function createReceiverDiagnostics(
         | "cancel_requested"
         | "sequence_gap"
         | "subscription_retry"
-        | "client_retry",
+        | "client_retry"
+        | "dispatch_uncertain",
     ) {
       emit(phase);
     },

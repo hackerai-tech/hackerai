@@ -3,7 +3,10 @@ import {
   type ReceiverCleanupReason,
 } from "@/lib/centrifugo/receiver-diagnostics";
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
-import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
+import {
+  dispatchIsolatedOperation,
+  RelayOperationReadinessTimeout,
+} from "@/lib/centrifugo/dispatch-operation";
 import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
@@ -1437,6 +1440,22 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               })
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
+                if (
+                  !settled &&
+                  isolated &&
+                  this.connectionInfo.isDesktop &&
+                  commandPublicationStarted &&
+                  (err instanceof RelayOperationReadinessTimeout ||
+                    isCentrifugoPublishTimeout(err))
+                ) {
+                  // A lost publish/readiness reply does not prove the command
+                  // failed to execute. Keep its original receiver and deadline;
+                  // never resend execution. Stop must still target this command.
+                  publishedCommand = true;
+                  diagnostics.transition("dispatch_uncertain");
+                  if (cancelRequested || opts?.signal?.aborted) publishCancel();
+                  return;
+                }
                 if (cancelRequested || opts?.signal?.aborted) {
                   failCancellation(
                     "Command publication failed while cancellation was pending.",
