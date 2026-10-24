@@ -2,6 +2,8 @@
 // from paid onboarding and model-routing feedback.
 export const AGENT_CONTEXT_FEEDBACK_FLAG = "agent_context_task_feedback_v1";
 export const AGENT_CONTEXT_FEEDBACK_PHASE = "saved_history_80k_chars_v1";
+// Older loaded clients use a different survey attribution/privacy contract.
+export const AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION = 1;
 export const AGENT_CONTEXT_FEEDBACK_MIN_CHARS = 80_000;
 export const AGENT_CONTEXT_FEEDBACK_HISTORY_LIMIT = 8;
 export const AGENT_CONTEXT_FEEDBACK_KEYS = [
