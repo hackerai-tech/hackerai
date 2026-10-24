@@ -25,6 +25,7 @@ import {
 } from "@/lib/analytics/acquisition";
 
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
+import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import {
@@ -137,10 +138,12 @@ export function PostHogProvider({
             // incidental component events and SDK autocapture out of the stream.
             if (!userId) return null;
 
-            const sanitizedEvent = sanitizeChatPerformanceEvent(
-              sanitizeDesktopAckEvent(
-                sanitizeAgentCancellationEvent(
-                  sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeContextFeedbackEvent(
+              sanitizeChatPerformanceEvent(
+                sanitizeDesktopAckEvent(
+                  sanitizeAgentCancellationEvent(
+                    sanitizeFrontendExceptionUrlProperties(event),
+                  ),
                 ),
               ),
             );

@@ -21,6 +21,7 @@ import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
+import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
@@ -1954,6 +1955,18 @@ export const agentLongTask = task({
         getAgentModelContextFlag(selectedModelOverride),
       );
       const agentModelContextEnabled = agentModelContextVariant === "test";
+      const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
+        posthog,
+        userId,
+        chatId,
+        messageId: assistantMessageId,
+        triggerRunId: ctx.run.id,
+        mode,
+        subscription,
+        selectedModelOverride,
+        variant: agentModelContextVariant,
+        release: ctx.deployment?.version ?? "unknown",
+      });
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
         getMessagesByChatId({
@@ -2118,17 +2131,19 @@ export const agentLongTask = task({
           })
         : undefined;
 
-      const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
-        assignment: abliteratedExperiment,
-        selectedModelOverride,
-        release: ctx.deployment?.version,
-        posthog,
-        userId,
-        chatId,
-        messageId: assistantMessageId,
-        mode,
-        subscription,
-      });
+      const taskOutcomeSurvey =
+        contextTaskOutcomeSurvey ??
+        (await selectTaskOutcomeSurvey({
+          assignment: abliteratedExperiment,
+          selectedModelOverride,
+          release: ctx.deployment?.version,
+          posthog,
+          userId,
+          chatId,
+          messageId: assistantMessageId,
+          mode,
+          subscription,
+        }));
 
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
@@ -4172,6 +4187,7 @@ export const agentLongTask = task({
                 await saveMessage({
                   chatId,
                   userId,
+                  triggerRunId: ctx.run.id,
                   message: processed,
                   extraFileIds: newFileIds,
                   usage: state.streamUsage,
@@ -4828,6 +4844,7 @@ export const agentLongTask = task({
                             await saveMessage({
                               chatId,
                               userId,
+                              triggerRunId: ctx.run.id,
                               message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
@@ -5002,6 +5019,7 @@ export const agentLongTask = task({
                                       await saveMessage({
                                         chatId,
                                         userId,
+                                        triggerRunId: ctx.run.id,
                                         message,
                                         extraFileIds: preservedFileIds,
                                         model:
@@ -5385,6 +5403,10 @@ export const agentLongTask = task({
                           await saveMessage({
                             chatId,
                             userId,
+                            triggerRunId:
+                              processed.role === "assistant"
+                                ? ctx.run.id
+                                : undefined,
                             message: processed,
                             extraFileIds: newFileIds,
                             model: state.responseModel || configuredModelId,
