@@ -108,3 +108,16 @@ it("indexes stored file IDs without depending on expiring download URLs", () => 
     source: "Saved files",
   });
 });
+
+it("does not mistake literal truncation markers in fully written source for an excerpt", () => {
+  const message = result("write", "cloud", "");
+  message.parts[0].input = {
+    action: "write",
+    path: "/reports/report.md",
+    text: "const items = [...[1, 2]]; // [truncated]",
+  } as any;
+  expect(collectChatFiles([message])[0]).toMatchObject({
+    partial: false,
+    text: "const items = [...[1, 2]]; // [truncated]",
+  });
+});

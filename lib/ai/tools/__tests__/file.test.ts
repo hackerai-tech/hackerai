@@ -312,6 +312,7 @@ describe("file tool large text safety", () => {
     })) as { content: string };
 
     expect(result.content).toContain("too large to read in full");
+    expect(result).not.toHaveProperty("originalContent");
     expect(result.content).toContain("range [1, 200]");
     expect(sandbox.files.read).not.toHaveBeenCalled();
   });

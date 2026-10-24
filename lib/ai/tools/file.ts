@@ -1538,7 +1538,6 @@ export const createFile = (context: ToolContext) => {
                     : "line count unavailable";
                 return {
                   content: `Text file: ${filename}\nFile is too large to read in full (${formatBytes(readPayload.sizeBytes)}, ${totalLines}). Use the range parameter to read a smaller slice, e.g. range [1, 200].`,
-                  originalContent: "",
                 };
               }
 

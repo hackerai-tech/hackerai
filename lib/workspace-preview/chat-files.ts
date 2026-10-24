@@ -111,7 +111,8 @@ export function collectChatFiles(
           partial = originalText === undefined;
         }
       }
-      partial ||= truncated(content) || truncated(originalText);
+      partial ||=
+        (action !== "write" && truncated(content)) || truncated(originalText);
       const snapshot = output?.fileSnapshot;
       const source = sourceLabel(snapshot?.environment);
       const previews =

@@ -445,7 +445,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const capturedFiles = useMemo(() => collectChatFiles(messages), [messages]);
   const capturedFile =
-    resolvedFile && !resolvedFile.isExecuting && !resolvedFile.error
+    resolvedFile &&
+    resolvedFile.action !== "viewing" &&
+    !resolvedFile.isExecuting &&
+    !resolvedFile.error
       ? capturedFiles.find(
           (file) => file.toolCallId === resolvedFile.toolCallId,
         )

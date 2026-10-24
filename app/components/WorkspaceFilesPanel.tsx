@@ -342,7 +342,7 @@ export function LiveWorkspaceFilesPanel({
               className="rounded px-1 py-2 hover:bg-muted"
               onClick={() => navigate("")}
             >
-              /home/user
+              {status?.root ?? "Workspace"}
             </button>
             {path
               .split("/")
