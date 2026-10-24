@@ -42,6 +42,11 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      - name: Test Linux AppImage child library isolation
+        run: |
+          rustc --edition 2021 --test packages/desktop/src-tauri/src/child_environment.rs -o "$RUNNER_TEMP/appimage-child-environment-tests"
+          "$RUNNER_TEMP/appimage-child-environment-tests"
+
       - name: Verify paid usage transactions against Redis
         run: |
           sudo apt-get update -qq

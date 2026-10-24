@@ -78,6 +78,17 @@ impl PtyManager {
             cmd.cwd(dir);
         }
 
+        if let Some(libraries) = crate::child_environment::appimage_library_path_override() {
+            match libraries {
+                Some(value) => {
+                    cmd.env("LD_LIBRARY_PATH", value);
+                }
+                None => {
+                    cmd.env_remove("LD_LIBRARY_PATH");
+                }
+            }
+        }
+
         if let Some(ref env_map) = env {
             for (k, v) in env_map {
                 cmd.env(k, v);
