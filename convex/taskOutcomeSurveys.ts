@@ -28,6 +28,7 @@ import {
 import {
   AGENT_CONTEXT_FEEDBACK_HISTORY_LIMIT,
   AGENT_CONTEXT_FEEDBACK_MIN_CHARS,
+  AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION,
   contextFeedbackSourceChars,
 } from "../lib/feedback/agent-context";
 
@@ -344,7 +345,13 @@ export const linkMessage = mutation({
 });
 
 export const getForMessage = query({
-  args: { chat_id: v.string(), message_id: v.string() },
+  args: {
+    chat_id: v.string(),
+    message_id: v.string(),
+    context_feedback_version: v.optional(
+      v.literal(AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION),
+    ),
+  },
   returns: v.union(taskOutcomeDocument, v.null()),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
@@ -363,6 +370,11 @@ export const getForMessage = query({
       row.answered_at
     )
       return null;
+    if (
+      row.survey_kind === "agent_context" &&
+      args.context_feedback_version !== AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION
+    )
+      return null;
     if (!(await hasContextResult(ctx, row))) return null;
     return row;
   },
@@ -371,6 +383,9 @@ export const getForMessage = query({
 export const record = mutation({
   args: {
     id: v.id("task_outcome_surveys"),
+    context_feedback_version: v.optional(
+      v.literal(AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION),
+    ),
     action: v.union(
       v.literal("shown"),
       v.literal("viewed"),
@@ -387,6 +402,11 @@ export const record = mutation({
     const row = await ctx.db.get(args.id);
     if (!user || !row || row.user_id !== user.subject)
       throw new ConvexError("Not authorized");
+    if (
+      row.survey_kind === "agent_context" &&
+      args.context_feedback_version !== AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION
+    )
+      return null;
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))

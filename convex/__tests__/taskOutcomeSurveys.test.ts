@@ -41,6 +41,12 @@ const args = {
   release: "test-release",
 };
 
+const invokeCompatible = (
+  fn: unknown,
+  ctx: unknown,
+  args: Record<string, unknown>,
+) => invoke(fn, ctx, { ...args, context_feedback_version: 1 });
+
 function setup() {
   const rows: any[] = [];
   const messages: any[] = [
@@ -165,6 +171,49 @@ describe("Agent context feedback reservation and result visibility", () => {
     selected_model_override: "hackerai-pro",
     feedback_phase: AGENT_CONTEXT_FEEDBACK_PHASE,
   };
+  it("withholds context rows and all writes from clients without the capability", async () => {
+    const { ctx, messages, rows } = setup();
+    const row = await invoke(reserveContext, ctx, contextArgs);
+    messages.push({
+      id: args.message_id,
+      chat_id: args.chat_id,
+      user_id: args.user_id,
+      role: "assistant",
+      parts: [{ type: "text", text: "Saved result" }],
+      trigger_run_id: "trigger-1",
+      finish_reason: "stop",
+    });
+    expect(
+      await invoke(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: args.message_id,
+      }),
+    ).toBeNull();
+    expect(
+      await invoke(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+    expect(rows[0]).not.toHaveProperty("shown_at");
+    expect(rows[0]).not.toHaveProperty("answer");
+    expect(rows[0]).not.toHaveProperty("reason");
+  });
+  it.each(["viewed", "dismissed", "answered", "reason"])(
+    "rejects legacy %s writes even with a previously claimed row",
+    async (action) => {
+      const { ctx, rows } = setup();
+      const row = await invoke(reserveContext, ctx, contextArgs);
+      Object.assign(rows[0], { shown_at: Date.now(), answer: "no" });
+      const before = { ...rows[0] };
+      expect(
+        await invoke(record, ctx, {
+          id: row._id,
+          action,
+          answer: "no",
+          reason: "incorrect",
+        }),
+      ).toBeNull();
+      expect(rows[0]).toEqual(before);
+    },
+  );
   it.each(["control", "test"])(
     "uses original history for %s before any outcome, without billing enrollment",
     async (variant) => {
@@ -185,13 +234,13 @@ describe("Agent context feedback reservation and result visibility", () => {
       expect(rows).toHaveLength(1);
       expect(row).not.toHaveProperty("paid_start_event_id");
       expect(
-        await invoke(getForMessage, ctx, {
+        await invokeCompatible(getForMessage, ctx, {
           chat_id: args.chat_id,
           message_id: args.message_id,
         }),
       ).toBeNull();
       expect(
-        await invoke(record, ctx, { id: row._id, action: "shown" }),
+        await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
       ).toBeNull();
       // A failed/unseen result remains selected, never deleted from the denominator.
       expect(rows).toHaveLength(1);
@@ -257,34 +306,34 @@ describe("Agent context feedback reservation and result visibility", () => {
     };
     messages.push(result);
     expect(
-      await invoke(record, ctx, { id: row._id, action: "shown" }),
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
     ).toBeNull();
     result.trigger_run_id = "trigger-1";
     expect(
-      await invoke(getForMessage, ctx, {
+      await invokeCompatible(getForMessage, ctx, {
         chat_id: args.chat_id,
         message_id: args.message_id,
       }),
     ).toMatchObject({ _id: row._id });
     expect(
-      await invoke(record, ctx, { id: row._id, action: "shown" }),
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
     ).toMatchObject({ shown_at: expect.any(Number) });
     expect(
-      await invoke(record, ctx, { id: row._id, action: "shown" }),
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
     ).toBeNull();
-    await invoke(record, ctx, { id: row._id, action: "viewed" });
-    await invoke(record, ctx, {
+    await invokeCompatible(record, ctx, { id: row._id, action: "viewed" });
+    await invokeCompatible(record, ctx, {
       id: row._id,
       action: "answered",
       answer: "no",
     });
-    await invoke(record, ctx, {
+    await invokeCompatible(record, ctx, {
       id: row._id,
       action: "reason",
       reason: "incorrect",
     });
     expect(
-      await invoke(record, ctx, {
+      await invokeCompatible(record, ctx, {
         id: row._id,
         action: "answered",
         answer: "solved",
@@ -297,7 +346,7 @@ describe("Agent context feedback reservation and result visibility", () => {
       experiment_variant: "control",
     });
     expect(
-      await invoke(getForMessage, ctx, {
+      await invokeCompatible(getForMessage, ctx, {
         chat_id: args.chat_id,
         message_id: args.message_id,
       }),
