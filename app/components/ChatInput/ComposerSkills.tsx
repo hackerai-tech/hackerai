@@ -17,6 +17,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { MAX_SELECTED_SKILLS } from "@/lib/user-skills/contracts";
+import { searchUserSkills } from "@/lib/user-skills/search";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -108,10 +109,7 @@ export function ComposerSkillsProvider({
     saving ||
     library === undefined ||
     selection === undefined;
-  const needle = query.toLocaleLowerCase().trim();
-  const matches = (library ?? []).filter((skill) =>
-    `${skill.name} ${skill.description}`.toLocaleLowerCase().includes(needle),
-  );
+  const matches = searchUserSkills(library ?? [], query);
   const activeIndex = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (index: number) => `${listId}-${index}`;
 
@@ -187,18 +185,23 @@ export function ComposerSkillsProvider({
       return;
     }
     const before = element.value.slice(0, element.selectionStart);
-    const match = /(?:^|\s)\$([^\s$]*)$/.exec(before);
-    if (!match) {
+    const match = /(?:^|\s)(\$|\/skill:)([^\s$]*)$/i.exec(before);
+    // Currency and shell substitutions are ordinary text, not skill shortcuts.
+    const literalDollar =
+      match?.[1] === "$" &&
+      (/^\.?\d[\d,._]*(?:[kmbt]|e\d+)?[.,;:!?)]*$/i.test(match[2]) ||
+        /^[({]/.test(match[2]));
+    if (!match || literalDollar) {
       token.current = null;
       dismissed.current = null;
       setOpen(false);
       return;
     }
-    const start = before.length - match[1].length - 1;
+    const start = before.length - match[2].length - match[1].length;
     token.current = { start, end: before.length, text: before.slice(start) };
     if (dismissed.current === start) return;
     dismissed.current = null;
-    setQuery(match[1]);
+    setQuery(match[2]);
     setActive(0);
     setOpen(true);
   }
@@ -438,7 +441,7 @@ export function ComposerSkillsButton() {
       aria-expanded={skills.open}
       aria-controls={skills.open ? skills.listId : undefined}
       aria-label="Add skill"
-      title="Add a skill ($)"
+      title="Add a skill ($ or /skill:)"
       disabled={skills.disabled}
       onClick={skills.toggle}
     >

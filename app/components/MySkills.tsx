@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { downloadFile } from "@/lib/utils/file-download";
+import { searchUserSkills } from "@/lib/user-skills/search";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -230,13 +231,13 @@ function SkillsControl({
         surface: conversationText === undefined ? "library" : "conversation",
       });
   }, [open, conversationText]);
-  const visibleSkills = library?.filter(
-    (skill) =>
-      (filter === "all" || skill.isDefault) &&
-      `${skill.name} ${skill.description}`
-        .toLocaleLowerCase()
-        .includes(search.trim().toLocaleLowerCase()),
-  );
+  const visibleSkills =
+    library === undefined
+      ? undefined
+      : searchUserSkills(
+          library.filter((skill) => filter === "all" || skill.isDefault),
+          search,
+        );
   function newSkill() {
     setError("");
     setEditor({ source: "manual", draft: { ...emptyDraft } });
@@ -686,7 +687,8 @@ function SkillsControl({
                 <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-foreground">
                   $
                 </kbd>{" "}
-                in a chat to choose a skill.
+                or <kbd className="font-sans">/skill:</kbd> in a chat to choose
+                a skill.
               </p>
               {!!library?.length && (
                 <details className="mt-2">

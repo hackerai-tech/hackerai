@@ -184,6 +184,35 @@ it("keeps the draft intact and shows a failed selection without recording succes
   expect(mockSaving).toHaveBeenLastCalledWith(false);
 });
 
+it("selects a skill from the slash shortcut on a later line and preserves the surrounding draft", async () => {
+  render(<Harness />);
+  const input = typeAt("Review scope\n/skill:aprv then summarize", 24);
+  expect(screen.getByRole("option", { name: /API review/ })).toBeVisible();
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() =>
+    expect(input).toHaveValue("Review scope\n then summarize"),
+  );
+  expect(mockSelect).toHaveBeenCalledWith({ chatId: "chat-1", ids: ["one"] });
+  expect(mockSubmit).not.toHaveBeenCalled();
+});
+
+it.each([
+  "costs $100",
+  "costs $9.99",
+  "costs $10k.",
+  "echo $(whoami)",
+  "echo ${HOME}",
+  "/tmp/skill",
+  "/skills",
+])("does not open the skill picker for ordinary text: %s", (message) => {
+  render(<Harness />);
+  const input = typeAt(message);
+  expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(mockSubmit).toHaveBeenCalledTimes(1);
+  expect(input).toHaveValue(message);
+});
+
 it("supports button search and keyboard navigation while respecting an explicit empty selection", async () => {
   render(<Harness />);
   expect(screen.queryByRole("button", { name: /Remove API/ })).toBeNull();
