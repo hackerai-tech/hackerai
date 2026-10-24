@@ -148,6 +148,7 @@ export function AgentGoalPanel({
       return;
     setSubmitting(true);
     setFormError("");
+    setMobileOpen(false);
     try {
       await send(
         {
@@ -168,7 +169,6 @@ export function AgentGoalPanel({
       });
       setReply("");
       setAdditionalRuns(0);
-      setMobileOpen(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);

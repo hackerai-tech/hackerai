@@ -389,7 +389,13 @@ describe("goal controls", () => {
   it("resumes a paused mobile goal from its popover and then dismisses it", async () => {
     mockIsMobile = true;
     setMockQueryResult({ ...goal, state: "paused", maxRuns: 3 });
-    const send = jest.fn().mockResolvedValue(undefined);
+    let finish!: () => void;
+    const send = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
     render(
       <AgentGoalPanel
         chatId="chat"
@@ -418,6 +424,7 @@ describe("goal controls", () => {
         screen.queryByRole("dialog", { name: "Goal controls" }),
       ).not.toBeInTheDocument(),
     );
+    await act(async () => finish());
   });
 
   it("dismisses the mobile popover with Escape and restores focus to its pill", async () => {
