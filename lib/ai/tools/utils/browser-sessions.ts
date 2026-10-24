@@ -171,7 +171,10 @@ export class BrowserSessions {
   }
 
   /** Park a requested handoff without occupying a sandbox process. */
-  async waitForHumanHandoff(signal?: AbortSignal): Promise<void> {
+  async waitForHumanHandoff(
+    signal?: AbortSignal,
+    requestAnotherTakeover = false,
+  ): Promise<void> {
     signal?.throwIfAborted();
     const scope = this.handoffScope;
     if (!scope || this.closed)
@@ -209,6 +212,7 @@ export class BrowserSessions {
         userId: scope.userId,
         sessionId: current.session.sessionId,
         expectedUpdatedAt: current.state.updatedAt,
+        ...(requestAnotherTakeover ? { requestAnotherTakeover: true } : {}),
       }),
       signal,
     );

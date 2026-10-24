@@ -164,6 +164,28 @@ describe("browser handoff ownership", () => {
     expect(row.waiting_for_handoff).toBeUndefined();
     expect(rows.messages).toHaveLength(1);
     expect(rows.messages[0].is_hidden).toBe(true);
+    // A late first handoff request must not park the Agent again after exit.
+    const repeatedRequest = {
+      ...scope,
+      expectedUpdatedAt: row.updated_at as number,
+    };
+    expect(
+      await browser.requestWaitForBackend.handler(
+        ctx as never,
+        repeatedRequest,
+      ),
+    ).toBe(true);
+    expect(row.state).toBe("agent");
+    expect(row.waiting_for_handoff).toBeUndefined();
+
+    // A genuinely requested second takeover still has a dedicated wait.
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, {
+        ...repeatedRequest,
+        requestAnotherTakeover: true,
+      }),
+    ).toBe(true);
+    expect(row.state).toBe("waiting");
   });
 
   it("rejects stale, foreign and expired handoff wait requests", async () => {

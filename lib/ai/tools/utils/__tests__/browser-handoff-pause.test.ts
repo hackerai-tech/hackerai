@@ -105,6 +105,29 @@ it("Stop interrupts the dedicated wait and never reports a successful handoff", 
   expect(jest.getTimerCount()).toBe(0);
 });
 
+it.each([undefined, true])(
+  "passes the explicit repeat request (%s) through the tool to wait admission",
+  async (requestAnotherTakeover) => {
+    const { sessions } = await owner();
+    mockQuery.mockResolvedValue({
+      state: "agent",
+      runActive: true,
+      updatedAt: 123,
+    });
+    mockMutation.mockClear();
+    const tool = createBrowserHandoff(sessions);
+    await expect(
+      tool.execute!(
+        { requestAnotherTakeover },
+        { toolCallId: "handoff", messages: [] },
+      ),
+    ).resolves.toMatchObject({ status: "resumed" });
+    const admission = mockMutation.mock.calls[0][1];
+    expect(admission.requestAnotherTakeover).toBe(requestAnotherTakeover);
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
 it("does not overwrite a resume that wins the wait registration race", async () => {
   const { sessions } = await owner();
   mockQuery.mockResolvedValue({

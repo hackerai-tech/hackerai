@@ -270,7 +270,11 @@ export const getForBackend = query({
 
 /** Park the Agent before takeover without keeping a shell command running. */
 export const requestWaitForBackend = mutation({
-  args: { ...serviceSessionArgs, expectedUpdatedAt: v.number() },
+  args: {
+    ...serviceSessionArgs,
+    expectedUpdatedAt: v.number(),
+    requestAnotherTakeover: v.optional(v.boolean()),
+  },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -280,6 +284,9 @@ export const requestWaitForBackend = mutation({
     // A takeover or completed resume that won the race must not be overwritten.
     if (row.state !== "agent" || row.updated_at !== args.expectedUpdatedAt)
       return false;
+    // The user can finish takeover before the model calls its first wait tool.
+    // Treat that request as already fulfilled instead of silently parking again.
+    if (row.exit_note_ids?.length && !args.requestAnotherTakeover) return true;
     await ctx.db.patch(row._id, {
       state: "waiting",
       waiting_for_handoff: true,
