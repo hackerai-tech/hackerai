@@ -154,16 +154,28 @@ export function mergePersistedGoalMessages<T extends ReconciledMessage>(
     return [...persisted];
   const savedById = new Map(persisted.map((message) => [message.id, message]));
   const currentIds = new Set(current.map((message) => message.id));
+  const beforeShared = new Map<string, T[]>();
+  let pending: T[] = [];
+  for (const saved of persisted) {
+    if (currentIds.has(saved.id)) {
+      beforeShared.set(saved.id, pending);
+      pending = [];
+    } else {
+      pending.push(saved);
+    }
+  }
   return [
-    ...current.map((message) => {
+    ...current.flatMap((message) => {
       const saved = savedById.get(message.id);
-      if (!saved || saved.role !== message.role || !saved.metadata?.goal)
-        return message;
-      return {
-        ...message,
-        metadata: { ...message.metadata, goal: saved.metadata.goal },
-      };
+      const merged =
+        saved?.role === message.role && saved.metadata?.goal
+          ? {
+              ...message,
+              metadata: { ...message.metadata, goal: saved.metadata.goal },
+            }
+          : message;
+      return [...(beforeShared.get(message.id) ?? []), merged];
     }),
-    ...persisted.filter((message) => !currentIds.has(message.id)),
+    ...pending,
   ];
 }

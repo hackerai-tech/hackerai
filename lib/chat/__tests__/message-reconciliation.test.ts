@@ -242,3 +242,20 @@ it("shows a saved continuation and receipt without regressing earlier streamed t
   });
   expect(merged[1]).toEqual(continuation);
 });
+
+it("places delayed saved continuations before later local user turns", () => {
+  const local = createAssistantMessage("Full first response");
+  const saved = createAssistantMessage("Full first");
+  const user = createAssistantMessage("A later user turn", {
+    id: "user-2",
+    role: "user",
+  });
+  const continuation = createAssistantMessage("Second work slice", {
+    id: "assistant-2",
+  });
+  const merged = mergePersistedGoalMessages(
+    [local, user],
+    [saved, continuation, user],
+  );
+  expect(merged).toEqual([local, continuation, user]);
+});
