@@ -8,6 +8,8 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type Dispatch,
+  type SetStateAction,
 } from "react";
 
 type ComposerActions = {
@@ -21,9 +23,22 @@ const ComposerActionsContext = createContext<ComposerActions | undefined>(
   undefined,
 );
 
+const ComposerGoalContext = createContext<
+  | {
+      draftId: string | null;
+      setDraftId: Dispatch<SetStateAction<string | null>>;
+    }
+  | undefined
+>(undefined);
+
 export function ComposerStateProvider({ children }: { children: ReactNode }) {
   const [input, setInputState] = useState("");
   const inputRef = useRef(input);
+  const [goalDraftId, setGoalDraftId] = useState<string | null>(null);
+  const goal = useMemo(
+    () => ({ draftId: goalDraftId, setDraftId: setGoalDraftId }),
+    [goalDraftId],
+  );
 
   const setInput = useCallback((value: string) => {
     inputRef.current = value;
@@ -44,7 +59,9 @@ export function ComposerStateProvider({ children }: { children: ReactNode }) {
   return (
     <ComposerActionsContext.Provider value={actions}>
       <ComposerInputContext.Provider value={input}>
-        {children}
+        <ComposerGoalContext.Provider value={goal}>
+          {children}
+        </ComposerGoalContext.Provider>
       </ComposerInputContext.Provider>
     </ComposerActionsContext.Provider>
   );
@@ -68,4 +85,25 @@ export function useComposerActions(): ComposerActions {
     );
   }
   return actions;
+}
+
+// New-chat composers move between centered and bottom placement at mobile
+// breakpoints. Keep goal intent with the draft across those component remounts.
+export function useComposerGoalMode(draftId: string) {
+  const goal = useContext(ComposerGoalContext);
+  if (goal === undefined) {
+    throw new Error(
+      "useComposerGoalMode must be used within a ComposerStateProvider",
+    );
+  }
+  const { setDraftId } = goal;
+  const setGoalMode = useCallback(
+    (enabled: boolean) => {
+      setDraftId((current) =>
+        enabled ? draftId : current === draftId ? null : current,
+      );
+    },
+    [draftId, setDraftId],
+  );
+  return [goal.draftId === draftId, setGoalMode] as const;
 }

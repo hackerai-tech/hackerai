@@ -7,6 +7,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
   useComposerInput,
+  useComposerGoalMode,
 } from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
 import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
@@ -781,20 +782,22 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
-  const [goalMode, setGoalMode] = useState(false);
+  const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
   const [goalEnabled, setGoalEnabled] = useState(false);
   const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
   useEffect(() => {
-    setGoalMode(false);
     setGoalEnabled(false);
-    if (chatMode !== "agent" || subscription === "free") return;
+    if (chatMode !== "agent" || subscription === "free") {
+      setGoalMode(false);
+      return;
+    }
     const abort = new AbortController();
     fetch("/api/agent-goal", { signal: abort.signal, cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => setGoalEnabled(data?.enabled === true))
       .catch(() => undefined);
     return () => abort.abort();
-  }, [chatId, chatMode, subscription]);
+  }, [chatId, chatMode, subscription, setGoalMode]);
   useEffect(() => setDismissedGoalSuggestion(false), [input]);
   const showGoalSuggestion =
     !showAgentApprovalPrompt &&

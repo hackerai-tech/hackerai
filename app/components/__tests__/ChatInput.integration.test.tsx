@@ -294,6 +294,57 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it("keeps goal intent when a responsive layout remounts the same draft", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    const ui = (placement: string, chatId: string) => (
+      <TestWrapper>
+        <ChatInput
+          key={placement}
+          chatId={chatId}
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(ui("mobile", "goal-draft"));
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "/goal" },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    );
+    rerender(ui("desktop", "goal-draft"));
+    expect(
+      screen.getByRole("button", { name: "Exit goal mode" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Verify the attachment" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Verify the attachment",
+      ),
+    );
+    rerender(ui("desktop", "another-draft"));
+    expect(
+      screen.queryByRole("button", { name: "Exit goal mode" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("preserves a goal draft and attachment while an approval replaces the composer", async () => {
     jest.mocked(useAuth).mockReturnValue({
       user: { id: "user_123" },
