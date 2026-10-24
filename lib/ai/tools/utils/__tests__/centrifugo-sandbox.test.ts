@@ -142,7 +142,19 @@ function startCommand(
 }
 
 describe("CentrifugoSandbox", () => {
+  let receiverLog: jest.SpyInstance;
+  const receiverRecords = () =>
+    receiverLog.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return {};
+        }
+      })
+      .filter((record) => record.event === "desktop_command_receiver");
   beforeEach(() => {
+    receiverLog = jest.spyOn(console, "info").mockImplementation(() => {});
     jest.mocked(relayTraffic.recordRelayReceivedBytes).mockClear();
     mockSubscriptions = [];
     mockClients = [];
@@ -151,6 +163,7 @@ describe("CentrifugoSandbox", () => {
   });
 
   afterEach(() => {
+    receiverLog.mockRestore();
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
   });
@@ -326,6 +339,24 @@ describe("CentrifugoSandbox", () => {
         }),
       );
       expect(onStdout).toHaveBeenCalledTimes(1);
+      const logs = receiverRecords();
+      expect(
+        logs.some(
+          (record) =>
+            record.phase === "cursor_publish_failed" && record.sequence === 1,
+        ),
+      ).toBe(true);
+      expect(logs.at(-1)).toMatchObject({
+        phase: "cleanup",
+        reason: "terminal_ack_published",
+        terminal_received: true,
+        terminal_type: terminalType,
+        last_published_sequence: 1,
+        cursor_publish_failures: 2,
+      });
+      expect(JSON.stringify(logs)).not.toMatch(
+        /retained output|execution failed|one execution|transient ACK publish rejection/,
+      );
       expect(control.publish).toHaveBeenCalledTimes(1);
       expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
@@ -675,6 +706,25 @@ describe("CentrifugoSandbox", () => {
           }),
         );
       }
+      const finalLog = receiverRecords().at(-1);
+      expect(finalLog).toMatchObject({
+        phase: "cleanup",
+        reason:
+          mode === "deadline"
+            ? "deadline"
+            : mode === "cancel"
+              ? "canceled"
+              : "terminal_ack_published",
+        terminal_received: true,
+      });
+      if (mode === "resume")
+        expect(finalLog).toMatchObject({
+          subscription_generation: 2,
+          resume_attempts: 1,
+          last_published_sequence: 1,
+        });
+      if (mode === "deadline")
+        expect(finalLog.cursor_publish_failures).toBeGreaterThan(2);
       expect(control.publish).toHaveBeenCalledTimes(1);
       expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
