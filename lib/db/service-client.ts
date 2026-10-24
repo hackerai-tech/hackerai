@@ -157,8 +157,25 @@ export function createServiceFetch(
   };
 }
 
-export function createServiceConvexClient(url: string): ConvexHttpClient {
-  const client = new ConvexHttpClient(url, { fetch: createServiceFetch(url) });
+export function createServiceConvexClient(
+  url: string,
+  options?: { signal?: AbortSignal },
+): ConvexHttpClient {
+  const signal = options?.signal;
+  const transport: typeof fetch = signal
+    ? (input, init) => {
+        signal.throwIfAborted();
+        return globalThis.fetch(input, {
+          ...init,
+          signal: init?.signal
+            ? AbortSignal.any([init.signal, signal])
+            : signal,
+        });
+      }
+    : globalThis.fetch;
+  const client = new ConvexHttpClient(url, {
+    fetch: createServiceFetch(url, transport),
+  });
   // SDK serialization happens before fetch and can echo the original arguments.
   return new Proxy(client, {
     get(target, property) {

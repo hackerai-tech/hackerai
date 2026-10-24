@@ -1,3 +1,4 @@
+import { readFailures } from "@/lib/cloud-recovery/store";
 import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import type { AnySandbox, SandboxBootInfo, SubscriptionTier } from "@/types";
@@ -26,6 +27,7 @@ import {
 export type CloudSandboxAcquisitionContext = {
   signal?: AbortSignal;
   onTimeout?: () => void;
+  onFailure?: () => void;
   acquisitionId?: string;
   provider?: CloudSandboxProvider;
   selectionReason?: CloudSandboxSelectionReason;
@@ -117,13 +119,26 @@ export async function ensureCloudSandboxConnection(options: {
       }
       selectionReason = "recovered_workspace";
     }
+    const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
+      ? await readFailures(options.userId)
+      : null;
+    const destinationId =
+      state?.phase === "e2b" ? state.destinationId : failed?.sandboxId;
+    if (
+      failed &&
+      (!options.context?.triggerRegion ||
+        getE2BClusterRouting(failed.region).createCluster.cluster !==
+          getE2BClusterRouting(options.context.triggerRegion).createCluster
+            .cluster ||
+        (state?.phase === "e2b" && state.destinationId !== failed.sandboxId))
+    )
+      throw new CloudWorkspaceUnavailableError();
+    // Ordinary retries must remain pinned to the known failed workspace. A
+    // temporarily empty inventory cannot authorize an empty replacement.
     // Register activity before any provider connect or create. The recovery
     // claim requires this 15-minute activity key to be absent, so it cannot
     // fence an acquisition after lookup but before the provider request.
-    await assertCloudWorkspaceAvailable(
-      options.userId,
-      state?.phase === "e2b" ? state.destinationId : undefined,
-    );
+    await assertCloudWorkspaceAvailable(options.userId, destinationId);
     const result = await ensureSandboxConnection(
       {
         userID: options.userId,
@@ -144,7 +159,7 @@ export async function ensureCloudSandboxConnection(options: {
         triggerRegion: options.context?.triggerRegion,
         acquisitionId,
         triggerRunId: options.context?.triggerRunId,
-        destinationId: state?.phase === "e2b" ? state.destinationId : undefined,
+        destinationId,
       },
     );
     options.reportStage?.("workspace_verification");
@@ -159,6 +174,11 @@ export async function ensureCloudSandboxConnection(options: {
     recordOutcome("success");
     return { ...result, provider: "e2b" };
   } catch (error) {
+    try {
+      options.context?.onFailure?.();
+    } catch {
+      /* A closed stream cannot mask the acquisition failure. */
+    }
     recordOutcome("error");
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,
@@ -199,6 +219,7 @@ export async function terminateCloudSandboxesForUser(
     phase: "claim" | "provider_cleanup" | "finalize",
     outcome: "started" | "success" | "error",
     providerCleanupSucceeded?: boolean,
+    claimFailureReason?: CloudWorkspaceUnavailableError["cleanupClaimFailureReason"],
   ) => {
     // Diagnostics must not affect ownership, deletion or finalization. Never
     // include the persisted fence, sandbox identifiers or provider errors.
@@ -211,6 +232,9 @@ export async function terminateCloudSandboxesForUser(
       duration_ms: Math.max(0, Date.now() - startedAt),
       ...(providerCleanupSucceeded !== undefined
         ? { provider_cleanup_succeeded: providerCleanupSucceeded }
+        : {}),
+      ...(claimFailureReason !== undefined
+        ? { claim_failure_reason: claimFailureReason }
         : {}),
     };
     try {
@@ -229,7 +253,12 @@ export async function terminateCloudSandboxesForUser(
   try {
     cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
   } catch (error) {
-    recordCleanup("claim", "error");
+    recordCleanup(
+      "claim",
+      "error",
+      undefined,
+      CloudWorkspaceUnavailableError.getCleanupClaimFailureReason(error),
+    );
     throw error;
   }
   recordCleanup("claim", "success");

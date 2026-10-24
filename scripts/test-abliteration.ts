@@ -20,11 +20,11 @@ async function main() {
     await import("../lib/ai/tool-call-id-namespace");
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
-  // Retain the old smoke command as an alias; both routes use the base provider.
+  // Exercise either persisted registry alias; both now use Large Flash.
   const useProBaseline =
     process.argv.includes("--pro-baseline") ||
     process.argv.includes("--large-v2");
-  const expectedProviderModel = "abliterated-model";
+  const expectedProviderModel = "abliterated-model-large-flash";
   const assignment = await evaluateAbliteratedModel({
     userId: "local-provider-smoke",
     selectedModel: useProBaseline
@@ -45,6 +45,8 @@ async function main() {
     ],
   });
   if (!assignment) throw new Error("AssignmentUnavailable");
+  if (process.argv.includes("--large-v2"))
+    assignment.modelKey = "model-abliterated-large-v2";
   const telemetry = new AbliteratedModelTelemetry(
     {
       capture: (event) => {
@@ -104,9 +106,10 @@ async function main() {
   console.log(
     JSON.stringify({
       test: useProBaseline
-        ? "abliteration_pro_selector_base_provider_and_telemetry"
+        ? "abliteration_pro_selector_flash_provider_and_telemetry"
         : "abliteration_provider_and_telemetry",
       passed,
+      modelKey: assignment.modelKey,
       model: responseModel,
       toolExecutions,
       durationMs: Date.now() - startedAt,

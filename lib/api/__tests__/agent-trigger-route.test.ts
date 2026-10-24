@@ -1,7 +1,3 @@
-jest.mock("@/lib/engagement-scope/admission", () => ({
-  recordUserScope: jest.fn().mockResolvedValue(undefined),
-  retryUserScope: jest.fn().mockResolvedValue(undefined),
-}));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 class MockResponse {
@@ -44,6 +40,8 @@ jest.mock("@/lib/goals/server", () => ({
   goalServiceKey: () => "synthetic",
   reconcileGoal: async () => null,
 }));
+const mockSandboxContext = jest.fn<any>();
+const mockSandboxClose = jest.fn<any>();
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
@@ -91,7 +89,10 @@ jest.mock("@/lib/api/agent-approval-session", () => ({
 }));
 
 jest.mock("@/lib/ai/tools/utils/hybrid-sandbox-manager", () => ({
-  HybridSandboxManager: class HybridSandboxManager {},
+  HybridSandboxManager: class HybridSandboxManager {
+    getSandboxContextForPrompt = mockSandboxContext;
+    consumeFallbackInfo = () => null;
+  },
 }));
 
 jest.mock("@/lib/ai/tools/utils/sandbox-fallback", () => ({
@@ -177,6 +178,7 @@ describe("web request correlation at Agent dispatch", () => {
     endpoint: "/api/agent" | "/api/agent-long",
     agentPermissionMode: string,
     header?: string,
+    body: Record<string, unknown> = {},
   ) =>
     createAgentTriggerPost({ endpoint })({
       headers: new Headers(
@@ -193,8 +195,57 @@ describe("web request correlation at Agent dispatch", () => {
           },
         ],
         webRequestId: "untrusted-body-canary",
+        ...body,
       }),
     } as any);
+
+  it.each(["desktop", "desktop-environment:test", "e2b"])(
+    "saves %s at admission before dispatch",
+    async (sandboxPreference) => {
+      const response = await start("/api/agent", "full_access", requestId, {
+        sandboxPreference,
+      });
+      expect(response.status).toBe(200);
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ sandboxType: sandboxPreference }),
+      );
+      expect(
+        mockHandleInitialChatAndUserMessage.mock.invocationCallOrder[0],
+      ).toBeLessThan(mockTriggerTask.mock.invocationCallOrder[0]);
+    },
+  );
+
+  it.each([
+    ["send", {}],
+    ["regenerate", { regenerate: true, messages: [] }],
+    ["continue", { isAutoContinue: true }],
+  ])(
+    "admits %s on a legacy chat without depending on retired scope storage",
+    async (_operation, body) => {
+      getChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        engagement_scope_expected: true,
+        update_time: 1,
+      });
+      const response = await start(
+        "/api/agent",
+        "full_access",
+        requestId,
+        body,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ runId: "run-existing" });
+      expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat-1", userId: "user-1" }),
+      );
+      expect(mockTriggerTask).toHaveBeenCalledWith(
+        "agent-long",
+        expect.objectContaining({ chatId: "chat-1" }),
+        expect.anything(),
+      );
+    },
+  );
 
   it.each(dispatchPaths)(
     "correlates %s %s without changing retry identity or payload",
@@ -273,6 +324,261 @@ describe("web request correlation at Agent dispatch", () => {
       );
     },
   );
+  it.each(
+    dispatchPaths.flatMap(([endpoint, mode]) =>
+      [
+        "sandbox_context",
+        "acquire_sandbox",
+        "upload_files",
+        "close_sandbox",
+      ].map((step) => ({ endpoint, mode, step })),
+    ),
+  )(
+    "attributes blocked Desktop preparation $step on $endpoint/$mode",
+    async ({ endpoint, mode, step }) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const files = require("@/lib/utils/sandbox-file-utils");
+      const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+      let finish!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const sandbox = { close: mockSandboxClose };
+      const messages = [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "private-attachment-canary" }],
+        },
+      ];
+      files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+      files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+        messages,
+        sandboxFiles: [{ localSourcePath: "/private/file-canary" }],
+      });
+      files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+      mockSandboxContext.mockImplementation(async () => {
+        if (step === "sandbox_context") await blocked;
+      });
+      fallback.getSandboxWithFallbackGuard.mockImplementation(async () => {
+        if (step === "acquire_sandbox") await blocked;
+        return { sandbox };
+      });
+      files.uploadSandboxFiles.mockImplementation(
+        async (_files: unknown, getSandbox: () => Promise<unknown>) => {
+          await getSandbox();
+          if (step === "upload_files") await blocked;
+          return { failedCount: 0, pathRewrites: [] };
+        },
+      );
+      mockSandboxClose.mockImplementation(async () => {
+        if (step === "close_sandbox") await blocked;
+      });
+      try {
+        const response = start(endpoint, mode, requestId, {
+          sandboxPreference: "desktop",
+        });
+        await jest.advanceTimersByTimeAsync(10_000);
+        const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+        expect(diagnostic).toMatchObject({
+          event: "agent_start_slow_request",
+          stage: "prepare_desktop_attachments",
+          desktop_attachment_step: step,
+        });
+        expect(JSON.stringify(diagnostic)).not.toMatch(
+          /private-attachment-canary|file-canary|private-prompt-canary/,
+        );
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+        expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+        finish();
+        expect((await response).status).toBe(200);
+        expect(mockSandboxClose).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        finish();
+        files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+        warn.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("omits completed Desktop preparation from a later persistence warning", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const files = require("@/lib/utils/sandbox-file-utils");
+    const fallback = require("@/lib/ai/tools/utils/sandbox-fallback");
+    const messages = [{ id: "message-1", role: "user", parts: [] }];
+    files.hasLocalDesktopSourcePaths.mockReturnValue(true);
+    files.prepareLocalDesktopAttachmentsForTrigger.mockReturnValue({
+      messages,
+      sandboxFiles: [{}],
+    });
+    files.rewriteSandboxFilePathsInMessages.mockReturnValue(messages);
+    mockSandboxContext.mockResolvedValue(undefined);
+    mockSandboxClose.mockResolvedValue(undefined);
+    fallback.getSandboxWithFallbackGuard.mockResolvedValue({
+      sandbox: { close: mockSandboxClose },
+    });
+    files.uploadSandboxFiles.mockImplementation(
+      async (_files: unknown, getSandbox: () => Promise<unknown>) => {
+        await getSandbox();
+        return { failedCount: 0, pathRewrites: [] };
+      },
+    );
+    let finish!: () => void;
+    mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      const response = start("/api/agent", "full_access", requestId, {
+        sandboxPreference: "desktop",
+      });
+      await jest.advanceTimersByTimeAsync(10_000);
+      const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("persist_user_message");
+      expect(diagnostic).not.toHaveProperty("desktop_attachment_step");
+      finish();
+      expect((await response).status).toBe(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      finish?.();
+      files.hasLocalDesktopSourcePaths.mockReturnValue(false);
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(["save_chat", "reset_stream", "save_user_message"])(
+    "attributes a blocked initial persistence operation to %s without admitting the run early",
+    async (step) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        let finish!: () => void;
+        mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+          ({ onPersistenceStep }: any) => {
+            onPersistenceStep(step);
+            return new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          },
+        );
+        const response = start("/api/agent", "full_access", requestId);
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+          event: "agent_start_slow_request",
+          stage: "persist_user_message",
+          initial_persistence_step: step,
+        });
+        expect(warn.mock.calls[0][0]).not.toContain("private-prompt-canary");
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        finish();
+        expect((await response).status).toBe(200);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        warn.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ["/api/agent", "save_chat"],
+    ["/api/agent", "reset_stream"],
+    ["/api/agent-long", "save_user_message"],
+  ] as const)(
+    "attributes a failed %s initial persistence operation to %s without starting a run",
+    async (endpoint, step) => {
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+          async ({ onPersistenceStep }: any) => {
+            onPersistenceStep(step);
+            throw new TypeError("value is not iterable");
+          },
+        );
+        const response = await start(endpoint, "full_access", requestId);
+        expect(response.status).toBe(500);
+        expect(await response.json()).toMatchObject({
+          message: "Something went wrong. Please try again later.",
+          cause: "Failed to start agent run",
+        });
+        expect(log).toHaveBeenCalledTimes(1);
+        const diagnostic = JSON.parse(log.mock.calls[0][0] as string);
+        expect(diagnostic).toMatchObject({
+          event: "agent_route_failed",
+          stage: "persist_user_message",
+          initial_persistence_step: step,
+          error_name: "TypeError",
+          error_message: "value is not iterable",
+        });
+        expect(JSON.stringify(diagnostic)).not.toContain(
+          "private-prompt-canary",
+        );
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+        expect(sessions.start).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it("does not attribute a later startup failure to completed persistence", async () => {
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+        async ({ onPersistenceStep }: any) => {
+          onPersistenceStep("save_user_message");
+        },
+      );
+      mockTriggerTask.mockRejectedValueOnce(new Error("queue unavailable"));
+      expect((await start("/api/agent", "full_access", requestId)).status).toBe(
+        500,
+      );
+      const diagnostic = JSON.parse(log.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("tasks.trigger");
+      expect(diagnostic).not.toHaveProperty("initial_persistence_step");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("does not attach the completed persistence step to a later startup stage", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockHandleInitialChatAndUserMessage.mockImplementationOnce(
+        async ({ onPersistenceStep }: any) => {
+          onPersistenceStep("save_user_message");
+        },
+      );
+      let finish!: (token: string) => void;
+      mockCreatePublicToken.mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const response = start("/api/agent", "full_access", requestId);
+      await jest.advanceTimersByTimeAsync(10_000);
+      const diagnostic = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(diagnostic.stage).toBe("create_tokens_and_associate_run");
+      expect(diagnostic).not.toHaveProperty("initial_persistence_step");
+      finish("test-token");
+      expect((await response).status).toBe(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe("Agent trigger route lifecycle", () => {

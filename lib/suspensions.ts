@@ -107,8 +107,57 @@ export async function assertUserCanStartBillingTransaction(userId: string) {
   throw new Error(BILLING_ERRORS.accountSuspended);
 }
 
-export async function assertUserCanAccessChatHistory(userId: string) {
-  const suspension = await getActiveChatAccessBlockForUser(userId);
+/** Partial-save preflight may retry one failed transport read before any writes. */
+export async function assertUserCanAccessChatHistory(
+  userId: string,
+  options?: { retryNetworkFailure?: boolean; signal?: AbortSignal },
+) {
+  options?.signal?.throwIfAborted();
+  let suspension;
+  try {
+    suspension = await getActiveChatAccessBlockForUser(userId);
+    options?.signal?.throwIfAborted();
+  } catch (error) {
+    if (
+      !options?.retryNetworkFailure ||
+      !(error instanceof TypeError) ||
+      error.message !== "fetch failed"
+    ) {
+      throw error;
+    }
+    options.signal?.throwIfAborted();
+    const fields = {
+      user_id: userId,
+      reason: "network_fetch_failed",
+      retry_limit: 1,
+    };
+    console.warn(
+      JSON.stringify({ event: "history_access_gate_read_retry", ...fields }),
+    );
+    try {
+      await delay(250, undefined, { signal: options.signal });
+      options.signal?.throwIfAborted();
+      suspension = await getActiveChatAccessBlockForUser(userId);
+      options.signal?.throwIfAborted();
+      console.info(
+        JSON.stringify({
+          event: "history_access_gate_read_retry_result",
+          ...fields,
+          outcome: "read_succeeded",
+          access: suspension ? "blocked" : "allowed",
+        }),
+      );
+    } catch (retryError) {
+      console.warn(
+        JSON.stringify({
+          event: "history_access_gate_read_retry_result",
+          ...fields,
+          outcome: options.signal?.aborted ? "canceled" : "exhausted",
+        }),
+      );
+      throw retryError;
+    }
+  }
   if (!suspension) return;
 
   throw new ChatSDKError(

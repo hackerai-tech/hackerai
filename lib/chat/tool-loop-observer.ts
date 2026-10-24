@@ -12,6 +12,12 @@ export type AgentGuardrailObservation = {
   run_cost_dollars?: number;
 };
 
+export type ToolResultCycle = {
+  toolNames: string[];
+  repeatCount: number;
+  cycleLength: number;
+};
+
 type ToolCall = { toolCallId: string; toolName: string; input: unknown };
 type ToolResult = { toolCallId: string; output: unknown };
 type Step = { fingerprint: string; toolNames: string[] };
@@ -107,7 +113,19 @@ function fingerprint(value: unknown): string | undefined {
 /** Bounded request-lifetime history, shared by replacement provider streams. */
 export class ToolLoopObserver {
   private history: Step[] = [];
+  private currentCycle: ToolResultCycle | undefined;
   private reported = new Set<string>();
+
+  /** Latest completed-step cycle, including laps that do not emit a nudge. */
+  getCurrentCycle(): ToolResultCycle | undefined {
+    return this.currentCycle;
+  }
+
+  /** Break evidence continuity while retaining per-request telemetry limits. */
+  reset(): void {
+    this.history = [];
+    this.currentCycle = undefined;
+  }
 
   /** Share report suppression across fallback streams to bound per-request log volume. */
   shouldReport(reason: string, action: string, repeatCount: number): boolean {
@@ -122,11 +140,11 @@ export class ToolLoopObserver {
     calls: readonly ToolCall[],
     results: readonly ToolResult[],
     allowedTools: ReadonlySet<string>,
-  ):
-    | { toolNames: string[]; repeatCount: number; cycleLength: number }
-    | undefined {
+  ): ToolResultCycle | undefined {
+    const previousCycle = this.currentCycle;
+    this.currentCycle = undefined;
     const clear = () => {
-      this.history = [];
+      this.reset();
       return undefined;
     };
     if (!calls.length || calls.length > 64 || results.length > 64)
@@ -179,9 +197,7 @@ export class ToolLoopObserver {
       )
         laps++;
       if (laps >= REPORT_LAPS[0]) {
-        if (!(REPORT_LAPS as readonly number[]).includes(laps))
-          return undefined;
-        return {
+        this.currentCycle = {
           toolNames: [
             ...new Set(
               this.history.slice(-period).flatMap((step) => step.toolNames),
@@ -190,6 +206,14 @@ export class ToolLoopObserver {
           repeatCount: laps,
           cycleLength: period,
         };
+        // Rotating ABABAB into BABABA is still the same lap. Expose current
+        // state to the hard stop, but only emit a nudge when a threshold is
+        // first reached. A gap or changed result clears previousCycle.
+        const reachedThreshold =
+          (REPORT_LAPS as readonly number[]).includes(laps) &&
+          (previousCycle?.repeatCount !== laps ||
+            previousCycle.cycleLength !== period);
+        return reachedThreshold ? this.currentCycle : undefined;
       }
     }
     return undefined;

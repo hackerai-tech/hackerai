@@ -231,6 +231,51 @@ describe("captureToolCalls", () => {
 });
 
 describe("captureAgentRun", () => {
+  it.each(
+    (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
+      (flag) =>
+        (["control", "test"] as const).map((variant) => ({ flag, variant })),
+    ),
+  )(
+    "attributes the normal run outcome to $flag $variant",
+    ({ flag, variant }) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "user",
+        chatId: "chat",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome: "success",
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "model-glm-5.3",
+        configuredModelId: "z-ai/glm-5.3",
+        abliteratedProviderSummary: undefined,
+        agentModelContextVariant: variant,
+        agentModelContextFlag: flag,
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "hackerai-agent_run",
+          properties: expect.objectContaining({
+            [`$feature/${flag}`]: variant,
+          }),
+        }),
+      );
+      const outcome = capture.mock.calls.find(
+        ([event]) => event.event === "hackerai-agent_run",
+      )![0];
+      const other =
+        flag === "agent_pro_context_v1"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      expect(outcome.properties[`$feature/${other}`]).toBeUndefined();
+    },
+  );
+
   it("captures one sanitized agent run event with sandbox type", () => {
     const capture = jest.fn();
 
@@ -1278,12 +1323,12 @@ describe("captureUsageCost", () => {
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
         usage_economics_version: 2,
-        usage_pricing_version: "request-1.20-extra-1.20-v2",
-        request_usage_multiplier: 1.2,
-        included_usage_multiplier: 1.2,
-        extra_usage_multiplier: 1.2,
+        usage_pricing_version: "request-1.30-extra-1.30-v2",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.3,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.8,
+        effective_extra_usage_multiplier: 1.95,
         included_usage_value_dollars: 0.1,
         extra_usage_charge_dollars: 0.48,
         covered_usage_value_dollars: 0.58,
@@ -1427,12 +1472,12 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        usage_pricing_version: "request-1.20-extra-1.20-v2",
-        request_usage_multiplier: 1.2,
-        included_usage_multiplier: 1.2,
-        extra_usage_multiplier: 1.2,
+        usage_pricing_version: "request-1.30-extra-1.30-v2",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.3,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.8,
+        effective_extra_usage_multiplier: 1.95,
         settlement_capture_reason: "anomaly",
         settlement_run_sampled:
           isUsageSettlementSuccessSampled("settlement_123"),
@@ -2113,6 +2158,38 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it.each([
+    ["acquisition", "connect", "connect"],
+    ["acquisition", "PRIVATE_STAGE_CANARY", undefined],
+    ["transfer", "connect", undefined],
+  ])(
+    "bounds cloud stage in compact diagnostics %p/%p",
+    (phase, stage, expected) => {
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        createChatLogger({
+          chatId: "chat-opaque",
+          endpoint: "/api/agent",
+        }).emitChatError(
+          new ChatSDKError("bad_request:sandbox", "Upload failed", {
+            upload_failure_kind: "url",
+            upload_failure_phase: phase,
+            upload_failure_acquisition_stage: stage,
+          }),
+        );
+        const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+        expect(wideEvent.error.metadata.upload_failure_acquisition_stage).toBe(
+          expected,
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "PRIVATE_STAGE_CANARY",
+        );
+      } finally {
+        logSpy.mockRestore();
+      }
+    },
+  );
+
   it("marks transient sandbox upload failures retriable", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
@@ -2349,6 +2426,86 @@ describe("createChatLogger ChatSDKError metadata", () => {
 });
 
 describe("createChatLogger OpenRouter metadata", () => {
+  it.each([
+    {},
+    { openrouter_generation_id: "gen-current-error" },
+    {
+      provider_name: "CurrentProvider",
+      openrouter_generation_id: "gen-current-error",
+      openrouter_request_id: "req-current-error",
+      openrouter_upstream_id: "upstream-current-error",
+    },
+  ])(
+    "keeps failed-call attribution separate from the previous response: %j",
+    (metadata) => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const phSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
+      try {
+        const logger = createChatLogger({
+          chatId: "attribution",
+          endpoint: "/api/agent",
+        });
+        logger.setModelResponse("successful/model", {
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        const error = Object.assign(new Error("Bad gateway"), {
+          statusCode: 502,
+        });
+        logger.recordProviderError(error, {
+          mode: "agent",
+          model: "test-model",
+          requestedModelSlug: "test/model",
+          openRouterMetadata: metadata,
+        });
+        const fields = phSpy.mock.calls.at(-1)![1];
+        expect(fields).toMatchObject({
+          provider_name: metadata.provider_name,
+          provider_name_source: metadata.provider_name
+            ? "openrouter_error_metadata"
+            : undefined,
+          provider_attribution_available: Boolean(metadata.provider_name),
+          openrouter_generation_id: metadata.openrouter_generation_id,
+          openrouter_request_id: metadata.openrouter_request_id,
+          openrouter_upstream_id: metadata.openrouter_upstream_id,
+        });
+        const emitted = JSON.stringify([errorSpy.mock.calls, phSpy.mock.calls]);
+        for (const previous of [
+          "PreviousProvider",
+          "gen-previous-success",
+          "req-previous-success",
+          "upstream-previous-success",
+        ])
+          expect(emitted).not.toContain(previous);
+        logger.emitUnexpectedError(error);
+        const wideEvent = JSON.parse(String(logSpy.mock.calls.at(-1)![0]));
+        expect(wideEvent.model).toMatchObject({
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        expect(JSON.stringify(wideEvent.provider_error)).not.toContain(
+          "previous-success",
+        );
+        expect(wideEvent.provider_error.provider_name).toBe(
+          metadata.provider_name,
+        );
+        for (const [key, value] of Object.entries(metadata))
+          expect(wideEvent.provider_error).toHaveProperty(key, value);
+      } finally {
+        errorSpy.mockRestore();
+        logSpy.mockRestore();
+        phSpy.mockRestore();
+      }
+    },
+  );
+
   it("records request and upstream IDs for failed provider streams", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -2589,3 +2746,72 @@ describe("createChatLogger provider stream timeout", () => {
     }
   });
 });
+
+it.each([
+  ["ask", "success", true, "stop", false, true],
+  ["agent", "success", true, "stop", false, true],
+  ["ask", "success", false, "stop", false, false],
+  ["agent", "error", false, "error", false, false],
+  ["agent", "aborted", true, "stop", false, false],
+  ["agent", "success", true, "length", false, false],
+  ["agent", "success", true, "stop", true, false],
+] as const)(
+  "records paid experiment terminal outcome (%s %s)",
+  (
+    mode,
+    outcome,
+    hasResponseContent,
+    finishReason,
+    stepLimitReached,
+    naturalCompletion,
+  ) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
+      posthog: { capture } as any,
+      userId: "user",
+      chatId: "chat",
+      endpoint: "/api/chat",
+      mode,
+      subscription: "pro",
+      outcome,
+      hasResponseContent,
+      finishReason,
+      responseMessageId: "recovered-message",
+      selectedModel: "model-deepseek-v4.1-flash-1017-pro",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      stepLimitTelemetry: { stepLimitReached } as any,
+      experiment: {
+        key: "paid_pro_auto_deepseek_1017_v1",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls
+      .map(([e]) => e as any)
+      .filter((e) => e.event === "paid_model_response_outcome");
+    expect(events).toHaveLength(1);
+    expect(events[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      message_id: "recovered-message",
+      experiment_variant: "test",
+      mode,
+      outcome,
+      has_response_content: hasResponseContent,
+      natural_completion: naturalCompletion,
+      fallback_served: true,
+      response_model: "z-ai/glm-5.3-flash",
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:paid-model-outcome",
+      $process_person_profile: false,
+    });
+    expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+  },
+);

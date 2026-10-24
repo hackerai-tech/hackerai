@@ -53,6 +53,9 @@ export const SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS = 8_000;
 // Bound the entire model-message projection sent to the summarizer. This is a
 // second safety net after per-tool/media compaction.
 export const SUMMARY_INPUT_MAX_TOKENS = 64_000;
+// Prior checkpoints already condense earlier work. Reserve up to a quarter of
+// the normal input budget instead of clipping them like a verbose new message.
+export const SUMMARY_PRIOR_CHECKPOINT_MAX_TOKENS = 16_000;
 export const SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS = 1024;
 export const SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS = 512;
 

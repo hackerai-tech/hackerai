@@ -5,6 +5,7 @@ const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
 jest.mock("@/lib/ai/abliteration", () => ({
   ABLITERATION_MODEL_KEY: "model-abliterated",
+  ABLITERATION_LARGE_V2_MODEL_KEY: "model-abliterated-large-v2",
   isAbliterationConfigured: mockConfigured,
 }));
 jest.mock("@/lib/posthog/server", () => ({
@@ -31,6 +32,36 @@ describe("compaction model assignment and telemetry", () => {
     mockConfigured.mockReturnValue(true);
     mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
+  });
+  it("records safe provider rejection facts without response content", async () => {
+    const policy = new CompactionModelPolicy(context);
+    const attempt = policy.start(await policy.resolve(), "run_scoped");
+    attempt.attempt(
+      "model-abliterated-large-v2",
+      "error",
+      1907,
+      undefined,
+      "provider_error",
+      {
+        statusCode: 400,
+        responseBody: JSON.stringify({
+          error: {
+            code: "too_many_tool_calls",
+            message: "private customer content",
+          },
+        }),
+      },
+    );
+    const properties = mockEvent.mock.calls.find(
+      ([name]) => name === "compaction_model_attempt_finished",
+    )![1];
+    expect(properties).toMatchObject({
+      provider_status_code: 400,
+      provider_error_code: "too_many_tool_calls",
+    });
+    expect(JSON.stringify(properties)).not.toContain(
+      "private customer content",
+    );
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses Abliteration for %s and emits policy telemetry only at compaction",
@@ -96,12 +127,65 @@ describe("compaction model assignment and telemetry", () => {
       expect(serializedEvents).not.toContain("error_message");
     },
   );
+  it.each([
+    ["hackerai-max", "max_large_v2_context_v1"],
+    ["hackerai-pro", "pro_large_v2_context_v1"],
+  ] as const)(
+    "keeps %s summary outcomes in their own cohort",
+    async (selectedModel, expectedPolicy) => {
+      const policy = new CompactionModelPolicy({
+        ...context,
+        selectedModel,
+        expandedAgentContext: true,
+      });
+      const assignment = await policy.resolve();
+      expect(assignment.model).toBe("model-abliterated-large-v2");
+      const telemetry = policy.start(assignment, "run_scoped");
+      telemetry.finish("completed", "model-abliterated-large-v2");
+      expect(mockEvent).toHaveBeenCalledWith(
+        "compaction_model_finished",
+        expect.objectContaining({
+          compaction_policy: expectedPolicy,
+          outcome: "completed",
+        }),
+      );
+    },
+  );
   it("starts with GLM when Abliteration credentials are missing", async () => {
     mockConfigured.mockReturnValue(false);
     expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
       model: "model-glm-5.3-flash",
     });
     expect(mockEvent).not.toHaveBeenCalled();
+  });
+  it.each(["agent", "ask"] as const)(
+    "expands only Agent Max compaction, mode=%s",
+    async (mode) => {
+      const assignment = await new CompactionModelPolicy({
+        ...context,
+        mode,
+        expandedAgentContext: true,
+      }).resolve();
+      expect(assignment.model).toBe(
+        mode === "agent" ? "model-abliterated-large-v2" : "model-abliterated",
+      );
+      expect(assignment.expandedAgentContext).toBe(
+        mode === "agent" ? true : undefined,
+      );
+    },
+  );
+  it("preserves moderation-based selection with the larger Max fallback", async () => {
+    mockFlag.mockResolvedValue(true);
+    expect(
+      await new CompactionModelPolicy({
+        ...context,
+        expandedAgentContext: true,
+      }).resolve(),
+    ).toMatchObject({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated-large-v2",
+      expandedAgentContext: true,
+    });
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     "uses the moderation decision for %s in Ask and Agent",

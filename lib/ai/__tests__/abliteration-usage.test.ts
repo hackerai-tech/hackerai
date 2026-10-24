@@ -104,6 +104,7 @@ function streamedCompletion(model: string) {
 describe.each([
   ["abliterated-model", 0.00088],
   ["abliterated-model-large-v2", 0.00184],
+  ["abliterated-model-large-flash", 0.00068],
 ] as const)("%s usage accounting through the installed SDK", (model, cost) => {
   it.each([false, true])(
     "counts input, cache reads, and reasoning once (stream=%s)",
@@ -170,7 +171,7 @@ describe.each([
         JSON.stringify({
           id: "gen-synthetic",
           created: 1,
-          model: "deepseek/deepseek-v4.1-flash",
+          model: "deepseek/deepseek-v4.1-flash-1017",
           choices: [
             {
               index: 0,
@@ -188,7 +189,7 @@ describe.each([
       ),
     );
     const continuation = await generateText({
-      model: openRouter("deepseek/deepseek-v4.1-flash"),
+      model: openRouter("deepseek/deepseek-v4.1-flash-1017"),
       prompt: "Synthetic continuation request",
     });
     tracker.accumulateStep(continuation.usage, continuation.response.modelId);

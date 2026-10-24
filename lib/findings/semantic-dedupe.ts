@@ -1,6 +1,6 @@
 import { generateText, Output, NoObjectGeneratedError } from "ai";
 import { z } from "zod";
-import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import { myProvider, resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 import { buildProviderOptions } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { createFinding, getFindingDedupeContext } from "@/lib/db/actions";
@@ -11,7 +11,7 @@ import {
   type FindingDedupeContext,
 } from "./dedupe-context";
 
-const MODEL = resolveTierToProviderKey("hackerai-standard", "agent");
+const MODEL = resolveAgentTierToProviderKey("hackerai-standard");
 const decisionSchema = z.object({
   duplicate_id: z.string().nullable(),
   confidence: z.enum(["high", "uncertain"]),

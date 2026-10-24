@@ -41,6 +41,14 @@ export type GoalJudgment = {
   reason: string;
 };
 
+// Long objectives retain their full text; the default criterion references it
+// instead of duplicating it into a field with a smaller limit.
+export function defaultGoalCriterion(objective: string): string {
+  return objective.trim().length <= 1000
+    ? objective.trim()
+    : "The full stated objective has been achieved and verified.";
+}
+
 export function validGoalStart(
   value: unknown,
 ): value is { objective: string; criteria: string[]; maxRuns: number } {

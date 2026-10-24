@@ -318,3 +318,36 @@ describe("bounded RPC failure diagnostics", () => {
     },
   );
 });
+
+it("cancels only the request-scoped client's in-flight transport", async () => {
+  const controller = new AbortController();
+  let connected!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    connected = resolve;
+  });
+  globalThis.fetch = jest.fn(async (_input, init) => {
+    if (!init?.signal)
+      return new Response(
+        JSON.stringify({ status: "success", value: null, logLines: [] }),
+      );
+    connected();
+    return new Promise<Response>((_resolve, reject) =>
+      init.signal!.addEventListener(
+        "abort",
+        () => reject(init.signal!.reason),
+        { once: true },
+      ),
+    );
+  });
+  const reference = makeFunctionReference<"mutation">("fixture:accept");
+  const scoped = createServiceConvexClient(deployment, {
+    signal: controller.signal,
+  });
+  const pending = scoped.mutation(reference, {});
+  const rejected = expect(pending).rejects.toThrow("fixture deadline");
+  await ready;
+  controller.abort(new Error("fixture deadline"));
+  await rejected;
+  const ordinary = createServiceConvexClient(deployment);
+  await expect(ordinary.mutation(reference, {})).resolves.toBeNull();
+});

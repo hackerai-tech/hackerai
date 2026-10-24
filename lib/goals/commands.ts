@@ -1,4 +1,5 @@
 import {
+  defaultGoalCriterion,
   GOAL_DEFAULT_RUNS,
   GOAL_MAX_RUNS,
   validGoalStart,
@@ -69,13 +70,13 @@ export function parseGoalCommand(text: string): GoalCommand | null {
   const result = {
     action: "start" as const,
     objective,
-    criteria: criteria.length ? criteria : [objective],
+    criteria: criteria.length ? criteria : [defaultGoalCriterion(objective)],
     maxRuns,
     ...contract,
   };
   if (!validGoalStart(result))
     throw new Error(
-      `A goal needs an objective, 1–8 criteria, and 1–${GOAL_MAX_RUNS} runs. Contract fields must be at most 2,000 characters.`,
+      `Use an objective up to 4,000 characters, 1–8 criteria up to 1,000 characters each, and 1–${GOAL_MAX_RUNS} runs. Contract fields must be at most 2,000 characters.`,
     );
   return result;
 }

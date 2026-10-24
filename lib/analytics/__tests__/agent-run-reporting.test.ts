@@ -21,6 +21,35 @@ function setup() {
 }
 
 describe("Agent run reporting", () => {
+  it.each(
+    (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
+      (flag) =>
+        (["control", "test"] as const).map((variant) => ({ flag, variant })),
+    ),
+  )(
+    "preserves $flag $variant assignment on normal and fallback completion",
+    ({ flag, variant }) => {
+      const { reporter, events } = setup();
+      reporter.setAgentModelContextVariant(variant, flag);
+      const capture = jest.fn(() => {
+        throw new Error("enqueue failed");
+      });
+      reporter.captureTerminal(capture, { outcome: "error" });
+      expect(capture).toHaveBeenCalledWith({
+        outcome: "error",
+        agentModelContextVariant: variant,
+        agentModelContextFlag: flag,
+      });
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties[`$feature/${flag}`]).toBe(variant);
+      const other =
+        flag === "agent_pro_context_v1"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      expect(events()[0].properties[`$feature/${other}`]).toBeUndefined();
+    },
+  );
+
   it("reports database setup failure once without pretending missing costs are zero", () => {
     const { reporter, events } = setup();
     reporter.fail(

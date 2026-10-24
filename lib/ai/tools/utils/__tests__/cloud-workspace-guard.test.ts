@@ -38,6 +38,60 @@ describe("cloud workspace guard", () => {
     process.env = originalEnv;
   });
 
+  it("keeps reason metadata out of generic error serialization and rejects arbitrary runtime values", () => {
+    const error = new CloudWorkspaceUnavailableError("private-reason" as never);
+    expect(error.cleanupClaimFailureReason).toBe("unknown");
+    expect(Object.keys(error)).toEqual(["name"]);
+    expect(JSON.stringify(error)).not.toContain("reason");
+  });
+
+  it.each([
+    ["state_unavailable", "read"],
+    ["state_unavailable", "malformed"],
+    ["cleanup_blocked", "blocked"],
+    ["recovery_pending", "pending"],
+    ["store_unavailable", "unconfigured"],
+    ["claim_conflict", "conflict"],
+    ["store_error", "write"],
+  ])(
+    "keeps cleanup denied with bounded %s diagnostics for %s",
+    async (reason, failure) => {
+      if (failure === "read")
+        mockGet.mockRejectedValue(new Error("private-store-error"));
+      if (failure === "malformed")
+        mockGet.mockResolvedValue({ token: "private-state" });
+      if (failure === "blocked")
+        mockGet.mockResolvedValue({
+          version: 1,
+          phase: "cleanup",
+          token: "private-owner",
+        });
+      if (failure === "pending")
+        mockGet.mockResolvedValue({
+          ...recovered,
+          recoveryPending: { secret: "private-recovery" },
+        });
+      if (failure === "unconfigured") {
+        mockConfigured = false;
+        process.env = { ...process.env, NODE_ENV: "production" };
+      }
+      if (failure === "conflict") mockEval.mockResolvedValue(0);
+      if (failure === "write")
+        mockEval.mockRejectedValue(new Error("private-store-error"));
+      await expect(
+        claimCloudWorkspaceCleanup("user-1", true),
+      ).rejects.toMatchObject({
+        name: "CloudWorkspaceUnavailableError",
+        message:
+          "Cloud workspace needs recovery. Please retry later. Your existing workspace has been preserved.",
+        cleanupClaimFailureReason: reason,
+      });
+      expect(mockEval).toHaveBeenCalledTimes(
+        ["conflict", "write"].includes(failure) ? 1 : 0,
+      );
+    },
+  );
+
   it("keeps the existing namespace and exact recovered destination", async () => {
     mockGet.mockResolvedValue(recovered);
     await expect(readCloudWorkspaceState("user-1")).resolves.toEqual(recovered);
@@ -253,4 +307,23 @@ describe("cloud workspace guard", () => {
     process.env = { ...process.env, NODE_ENV: "development" };
     await expect(readCloudWorkspaceState("user-1")).resolves.toBeNull();
   });
+});
+
+it("refuses a customer claim when a preservation field appeared before fencing", async () => {
+  mockGet.mockResolvedValue({ ...recovered, preservationHold: "pending" });
+  mockEval.mockClear();
+  await expect(
+    claimE2BDiskRecovery({
+      userId: "user-1",
+      sandboxId: recovered.destinationId,
+      region: "us-east-1",
+      token: "customer-attempt",
+      operatorId: "customer:user-1",
+      customerConsent: {
+        key: "cloud_recovery_consent:v1:user-1",
+        token: "customer-attempt",
+      },
+    }),
+  ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+  expect(mockEval).not.toHaveBeenCalled();
 });

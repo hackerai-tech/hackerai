@@ -111,6 +111,9 @@ describe("GET /api/health/core", () => {
     expect(body).toMatchObject({
       ok: true,
       service: "core",
+      runtimeIdentity: {
+        nodeVersion: process.versions.node,
+      },
       dependencies: {
         workos: {
           ok: true,
@@ -135,6 +138,7 @@ describe("GET /api/health/core", () => {
       error: "unauthorized",
     });
     expect(mockFetch).not.toHaveBeenCalled();
+    expect(body).not.toHaveProperty("runtimeIdentity");
   });
 
   it("returns 503 when required configuration is missing", async () => {

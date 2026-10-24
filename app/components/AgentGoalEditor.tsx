@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Target, X } from "lucide-react";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { toast } from "sonner";
+import { defaultGoalCriterion } from "@/lib/goals/contracts";
 
 export function AgentGoalEditor({
   chatId,
@@ -161,8 +162,8 @@ function GoalForm({
             aria-label="Goal objective"
             value={objective}
             onChange={(e) => {
-              if (criteria.trim() === objective.trim())
-                setCriteria(e.target.value);
+              if (criteria.trim() === defaultGoalCriterion(objective))
+                setCriteria(defaultGoalCriterion(e.target.value));
               setObjective(e.target.value);
             }}
             maxLength={4000}

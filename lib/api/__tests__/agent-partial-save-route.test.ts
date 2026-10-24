@@ -15,6 +15,17 @@ const mockUpdateChat = jest.fn();
 const mockAssertUserCanAccessChatHistory = jest.fn();
 const mockCreateRedisClient = jest.fn();
 const mockVerifyAgentRunCorrelationToken = jest.fn();
+const mockSuspensionQuery = jest.fn();
+
+jest.mock("server-only", () => ({}), { virtual: true });
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    userSuspensions: { getActiveChatAccessBlockByUser: "history-access" },
+  },
+}));
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ query: mockSuspensionQuery }),
+}));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -130,6 +141,7 @@ describe("createAgentPartialSavePost", () => {
     infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     mockGetUserID.mockResolvedValue("user-1" as never);
+    mockSuspensionQuery.mockReset();
     mockAssertUserCanAccessChatHistory.mockResolvedValue(undefined as never);
     mockCreateRedisClient.mockReturnValue(null);
     mockVerifyAgentRunCorrelationToken.mockReturnValue(true);
@@ -157,6 +169,101 @@ describe("createAgentPartialSavePost", () => {
     },
   };
   const diagnosticRequestId = "96gzc-1791986448417-ffa75b7dd65b";
+
+  const useRealHistoryGuard = () => {
+    const actual =
+      jest.requireActual<typeof import("@/lib/suspensions")>(
+        "@/lib/suspensions",
+      );
+    mockAssertUserCanAccessChatHistory.mockImplementation(
+      actual.assertUserCanAccessChatHistory as never,
+    );
+  };
+
+  it("saves once after a real history gate recovers from a transport failure", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(null as never);
+    const controller = new AbortController();
+    const req = { ...request(), signal: controller.signal };
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ saved: true });
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockVerifyAgentRunCorrelationToken).toHaveBeenCalledTimes(1);
+    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+  });
+
+  it("does not parse or save when the recovered authoritative history read blocks access", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce({
+        category: "support_confirmed_fraud",
+        source: "support",
+        source_id: "PRIVATE_BLOCK_CANARY",
+      } as never);
+    const req = request();
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(403);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockVerifyAgentRunCorrelationToken).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify([...warnSpy.mock.calls, ...infoSpy.mock.calls]),
+    ).not.toContain("PRIVATE_BLOCK_CANARY");
+  });
+
+  it("stops before private input and writes after the history read retry is exhausted", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    mockSuspensionQuery.mockRejectedValue(
+      new TypeError("fetch failed") as never,
+    );
+    const req = request();
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(500);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(2);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
+
+  it("cancels history-read backoff without a second read or any write", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    useRealHistoryGuard();
+    const controller = new AbortController();
+    mockSuspensionQuery.mockRejectedValue(
+      new TypeError("fetch failed") as never,
+    );
+    warnSpy.mockImplementation((message) => {
+      if (String(message).includes('"event":"history_access_gate_read_retry"'))
+        controller.abort();
+    });
+    const req = { ...request(), signal: controller.signal };
+    const response = await createAgentPartialSavePost()(req);
+    expect(response.status).toBe(500);
+    expect(mockSuspensionQuery).toHaveBeenCalledTimes(1);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockUpdateChat).not.toHaveBeenCalled();
+  });
 
   const deferred = () => {
     let resolve!: (value?: any) => void;
@@ -187,6 +294,8 @@ describe("createAgentPartialSavePost", () => {
       stage: "history_access",
       outcome: "pending",
       elapsed_ms: 10_000,
+      warning_threshold_ms: 10_000,
+      timer_lateness_ms: 0,
       request_id: diagnosticRequestId,
       user_id: diagnosticUser,
       run_correlation_verified: false,
@@ -202,6 +311,8 @@ describe("createAgentPartialSavePost", () => {
       stage: "chat_lookup",
       outcome: "pending",
       elapsed_ms: 20_000,
+      warning_threshold_ms: 20_000,
+      timer_lateness_ms: 0,
       requested_chat_id: diagnosticBody.chatId,
       run_correlation_verified: false,
       message_save_completed: false,
@@ -213,6 +324,50 @@ describe("createAgentPartialSavePost", () => {
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("PRIVATE_");
     lookup.resolve(chat({ user_id: diagnosticUser }));
     expect((await pending).status).toBe(200);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("identifies both thresholds when warning callbacks are delayed", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    jest.useFakeTimers();
+    const startedAt = Date.now();
+    const save = deferred();
+    mockGetUserID.mockResolvedValue(diagnosticUser as never);
+    mockGetChatById.mockResolvedValue(
+      chat({ user_id: diagnosticUser }) as never,
+    );
+    mockSaveMessage.mockReturnValue(save.promise as never);
+    const pending = createAgentPartialSavePost()(request(diagnosticBody));
+    await jest.advanceTimersByTimeAsync(0);
+    const clock = jest.spyOn(Date, "now").mockReturnValue(startedAt + 20_314);
+    try {
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      const warnings = warnSpy.mock.calls.map(([value]) =>
+        JSON.parse(String(value)),
+      );
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          stage: "save_message",
+          elapsed_ms: 20_314,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 10_314,
+        }),
+        expect.objectContaining({
+          stage: "save_message",
+          elapsed_ms: 20_314,
+          warning_threshold_ms: 20_000,
+          timer_lateness_ms: 314,
+        }),
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("PRIVATE_");
+    } finally {
+      clock.mockRestore();
+      save.resolve();
+      expect((await pending).status).toBe(200);
+    }
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
   });
 
@@ -512,7 +667,10 @@ describe("createAgentPartialSavePost", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual({ saved: true });
     expect(mockGetUserID).toHaveBeenCalled();
-    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1");
+    expect(mockAssertUserCanAccessChatHistory).toHaveBeenCalledWith("user-1", {
+      retryNetworkFailure: true,
+      signal: undefined,
+    });
     expect(mockGetChatById).toHaveBeenCalledWith({ id: "chat-1" });
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.objectContaining({

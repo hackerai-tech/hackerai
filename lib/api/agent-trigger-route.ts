@@ -4,9 +4,9 @@ import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
 import {
-  recordUserScope,
-  retryUserScope,
-} from "@/lib/engagement-scope/admission";
+  readCloudWorkspaceState,
+  assertCloudWorkspaceAvailable,
+} from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -25,6 +25,7 @@ import {
   getChatById,
   getUserCustomization,
   handleInitialChatAndUserMessage,
+  type InitialChatPersistenceStep,
   setActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
@@ -510,6 +511,13 @@ export const createAgentTriggerPost =
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
     let stage = "parse_request";
+    let initialPersistenceStep: InitialChatPersistenceStep | undefined;
+    let desktopAttachmentStep:
+      | "sandbox_context"
+      | "acquire_sandbox"
+      | "upload_files"
+      | "close_sandbox"
+      | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -535,6 +543,12 @@ export const createAgentTriggerPost =
           chat_id: diagnosticContext.chatId,
           trigger_run_id: diagnosticContext.runId,
           stage,
+          ...(stage === "persist_user_message" && initialPersistenceStep
+            ? { initial_persistence_step: initialPersistenceStep }
+            : {}),
+          ...(stage === "prepare_desktop_attachments" && desktopAttachmentStep
+            ? { desktop_attachment_step: desktopAttachmentStep }
+            : {}),
           elapsed_ms: Date.now() - routeStartedAt,
         }),
       );
@@ -590,6 +604,18 @@ export const createAgentTriggerPost =
         retryNetworkFailure: true,
         signal: req.signal,
       });
+      // Serialize cloud Agent admission with recovery before a run is queued.
+      // The same activity/fence CAS protects acquisition and cached clients.
+      if (
+        process.env.CLOUD_DISK_RECOVERY_TARGETS &&
+        (!sandboxPreference || sandboxPreference === "e2b")
+      ) {
+        const workspace = await readCloudWorkspaceState(userId);
+        await assertCloudWorkspaceAvailable(
+          userId,
+          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+        );
+      }
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({
@@ -741,6 +767,7 @@ export const createAgentTriggerPost =
             null,
             subscription,
           );
+          desktopAttachmentStep = "sandbox_context";
           await sandboxManager.getSandboxContextForPrompt();
           assertLocalSandboxFallbackAllowed({
             fallbackInfo: sandboxManager.consumeFallbackInfo(),
@@ -750,14 +777,17 @@ export const createAgentTriggerPost =
           let stagedSandbox: any = null;
           let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
           try {
+            desktopAttachmentStep = "upload_files";
             uploadResult = await uploadSandboxFiles(
               sandboxFiles,
               async () => {
+                desktopAttachmentStep = "acquire_sandbox";
                 const { sandbox } = await getSandboxWithFallbackGuard({
                   sandboxManager,
                   requireLocalSandbox: true,
                 });
                 stagedSandbox = sandbox;
+                desktopAttachmentStep = "upload_files";
                 return sandbox;
               },
               {
@@ -771,6 +801,7 @@ export const createAgentTriggerPost =
               },
             );
           } finally {
+            desktopAttachmentStep = "close_sandbox";
             await stagedSandbox?.close?.().catch(() => {});
           }
           if (uploadResult.failedCount > 0) {
@@ -778,7 +809,7 @@ export const createAgentTriggerPost =
               uploadResult.failedCount === 1 ? "attachment" : "attachments";
             throw new ChatSDKError(
               "bad_request:api",
-              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Reconnect this computer and retry the message. If the file was moved or deleted, reattach it.`,
             );
           }
           preparedMessages = rewriteSandboxFilePathsInMessages(
@@ -831,20 +862,12 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        sandboxType: sandboxPreference ?? "e2b",
+        onPersistenceStep: (step) => {
+          initialPersistenceStep = step;
+        },
       });
-      if (
-        !isAutoContinue &&
-        (regenerate || messagesForPersistence.length > 0)
-      ) {
-        await retryUserScope({ userId, chatId });
-        if (!regenerate)
-          await recordUserScope({
-            userId,
-            chatId,
-            messageId:
-              messagesForPersistence[messagesForPersistence.length - 1].id,
-          });
-      }
+      initialPersistenceStep = undefined;
 
       if (!existingChat) await reserveGoal();
       if (reservedGoal && goalRequest?.action === "start") {
@@ -1144,7 +1167,7 @@ export const createAgentTriggerPost =
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
-        context: { ...diagnosticContext, stage },
+        context: { ...diagnosticContext, stage, initialPersistenceStep },
       });
     } finally {
       clearInterval(slowRequestInterval);

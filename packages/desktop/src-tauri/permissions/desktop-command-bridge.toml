@@ -12,6 +12,7 @@ commands.allow = [
   "read_generated_text_attachment",
   "remove_generated_text_attachment",
   "read_local_file",
+  "read_local_preview_file",
   "desktop_file_request",
   "execute_command",
   "execute_stream_command",

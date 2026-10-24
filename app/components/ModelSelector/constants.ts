@@ -1,5 +1,4 @@
-import type { ChatMode, SelectedModel } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
+import type { SelectedModel } from "@/types/chat";
 
 export interface ModelOption {
   id: SelectedModel;
@@ -8,24 +7,6 @@ export interface ModelOption {
   description?: string;
   thinking?: boolean;
 }
-
-export const ASK_MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: "hackerai-standard",
-    label: "HackerAI Standard",
-    description: "Reliable performance for everyday tasks",
-  },
-  {
-    id: "hackerai-pro",
-    label: "HackerAI Pro",
-    description: "Superior performance for most assignments",
-  },
-  {
-    id: "hackerai-max",
-    label: "HackerAI Max",
-    description: "Maximum intelligence for complex work",
-  },
-];
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   {
@@ -47,8 +28,3 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     thinking: true,
   },
 ];
-
-export const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
-  const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
-  return options[0].id;
-};

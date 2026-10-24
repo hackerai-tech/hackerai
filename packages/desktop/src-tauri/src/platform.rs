@@ -1,3 +1,7 @@
+/// Stops console children (bash, cmd, taskkill) from opening a visible window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Check if a path is executable (Unix: has execute permission).
 #[cfg(not(windows))]
 fn is_executable(path: &std::path::Path) -> bool {
@@ -79,6 +83,7 @@ pub fn get_shell_config() -> ShellConfig {
 ///   3. `where git` → `<gitDir>/../../bin/bash.exe`
 #[cfg(windows)]
 fn find_git_bash() -> Option<String> {
+    use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command as StdCommand;
 
@@ -98,7 +103,11 @@ fn find_git_bash() -> Option<String> {
         }
     }
 
-    if let Ok(out) = StdCommand::new("where").arg("git").output() {
+    if let Ok(out) = StdCommand::new("where")
+        .arg("git")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
@@ -132,6 +141,7 @@ pub fn build_command(
 
     #[cfg(windows)]
     {
+        cmd.creation_flags(CREATE_NO_WINDOW);
         if config.is_cmd {
             // cmd.exe does not understand MSVCRT-style `\"` escaping that
             // Rust's std `Command::arg` applies on Windows. Use `raw_arg`
@@ -161,6 +171,17 @@ pub fn build_command(
 
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
+    }
+
+    if let Some(libraries) = crate::child_environment::appimage_library_path_override() {
+        match libraries {
+            Some(value) => {
+                cmd.env("LD_LIBRARY_PATH", value);
+            }
+            None => {
+                cmd.env_remove("LD_LIBRARY_PATH");
+            }
+        }
     }
 
     if let Some(env) = env {
@@ -250,6 +271,7 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
     {
         return tokio::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await
             .map(|output| output.status.success())

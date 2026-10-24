@@ -1,4 +1,4 @@
-import { deleteScopeBatch } from "./engagementScopes";
+import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
 import { query, mutation, internalMutation } from "./lib/serviceFunctions";
@@ -725,6 +725,7 @@ export const saveChat = mutation({
     userId: v.string(),
     title: v.string(),
     projectId: v.optional(v.string()),
+    sandboxType: v.optional(v.string()),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -796,6 +797,7 @@ export const saveChat = mutation({
         title: args.title,
         user_id: args.userId,
         project_id: projectId,
+        ...(args.sandboxType ? { sandbox_type: args.sandboxType } : {}),
         update_time: Date.now(),
       });
 
@@ -1720,6 +1722,7 @@ export const setActiveTriggerRun = mutation({
     expectedRunId: v.optional(v.string()),
     expectedApprovalSessionId: v.optional(v.string()),
     clearApprovalPending: v.optional(v.boolean()),
+    recoveredCrash: v.optional(v.boolean()),
   },
   returns: v.union(
     v.literal("updated"),
@@ -1755,6 +1758,18 @@ export const setActiveTriggerRun = mutation({
     ) {
       return "stale" as const;
     }
+    if (
+      args.recoveredCrash &&
+      (args.triggerRunId !== null || !args.expectedRunId)
+    )
+      throw new Error("Crash recovery requires a conditional detach");
+    if (
+      args.recoveredCrash &&
+      (chat.canceled_at !== undefined ||
+        chat.deletion_started_at !== undefined ||
+        (await isUserDeletionFenced(ctx.db, chat.user_id)))
+    )
+      return "stale" as const;
     const shouldClearApprovalPending =
       args.clearApprovalPending === true || args.triggerRunId !== null;
     const finishedActiveRun =
@@ -1762,6 +1777,11 @@ export const setActiveTriggerRun = mutation({
 
     await ctx.db.patch(chat._id, {
       active_trigger_run_id: args.triggerRunId ?? undefined,
+      ...(args.recoveredCrash &&
+      !chat.finish_reason &&
+      chat.canceled_at === undefined
+        ? { finish_reason: "trigger_crashed_client_saved" }
+        : {}),
       ...(finishedActiveRun ? { last_run_finished_at: Date.now() } : {}),
       ...(args.triggerRunId !== null ? { canceled_at: undefined } : {}),
       ...(args.approvalSessionId !== undefined

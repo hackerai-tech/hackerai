@@ -178,3 +178,16 @@ describe("goal commands and contract validation", () => {
     expect(() => parseGoalCommand("/goal Fix\nruns: 9")).toThrow();
   });
 });
+
+it("accepts the full objective limit without truncating it into a criterion", () => {
+  for (const length of [1000, 1001, 4000]) {
+    const objective = "x".repeat(length);
+    const command = parseGoalCommand(`/goal ${objective}`);
+    expect(command).toMatchObject({ action: "start", objective });
+    expect(validGoalStart(command)).toBe(true);
+  }
+  expect(() => parseGoalCommand(`/goal ${"x".repeat(4001)}`)).toThrow();
+  expect(() =>
+    parseGoalCommand(`/goal Fix\ncriterion: ${"x".repeat(1001)}`),
+  ).toThrow();
+});

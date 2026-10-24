@@ -643,7 +643,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
     expect(agentPartialSaveRouteSrc).toMatch(/getUserID\(req\)/);
     expect(agentPartialSaveRouteSrc).toMatch(
-      /assertUserCanAccessChatHistory\(userId\)/,
+      /await assertUserCanAccessChatHistory\(userId,\s*\{\s*retryNetworkFailure:\s*true,\s*signal:\s*req\.signal,?\s*\}\)/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(
       /getChatById\(\{\s*id:\s*body\.chatId\s*\}\)/,
@@ -1609,6 +1609,32 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(directThrowIdx);
   });
 
+  test("provider failure envelopes never enrich an error from completed-call state", () => {
+    const envelopeCalls = [
+      ...taskSrc.matchAll(/wrapProviderTerminalError\([\s\S]*?\}\s*\)/g),
+    ];
+    expect(envelopeCalls).toHaveLength(4);
+    for (const [call] of envelopeCalls) {
+      expect(call).toMatch(
+        /openRouterMetadata:\s*(?:state\.|terminalAgentState\?\.)providerErrorMetadata/,
+      );
+    }
+    const recoveryDecision = taskSrc.slice(
+      taskSrc.indexOf('triggerLogger.info("Provider recovery decision"'),
+      taskSrc.indexOf(
+        "const retryMessageId = generateId()",
+        taskSrc.indexOf('triggerLogger.info("Provider recovery decision"'),
+      ),
+    );
+    expect(recoveryDecision).toMatch(
+      /served_model:\s*state\.providerErrorMetadata\s*\?\.openrouter_selected_model,/,
+    );
+    expect(recoveryDecision).not.toContain("state.responseModel");
+    expect(taskSrc).toMatch(
+      /upstreamProvider: terminalError\s*\? state\.providerErrorMetadata\?\.provider_name\s*: state\.openRouterMetadata\.provider_name,/,
+    );
+  });
+
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const terminalErrorIdx = taskSrc.indexOf(
@@ -1627,7 +1653,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1697,13 +1723,13 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
-      /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+      /getNextProviderDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
     );
     expect(taskSrc).toMatch(
       /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
     );
     expect(
-      taskSrc.match(/getNextDeepSeekProDisconnectRetryModel\(\{/g),
+      taskSrc.match(/getNextProviderDisconnectRetryModel\(\{/g),
     ).toHaveLength(1);
     const finalRetryCacheBaselineIdx = taskSrc.indexOf(
       "preFallbackCacheRead =",

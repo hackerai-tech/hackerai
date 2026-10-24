@@ -113,3 +113,21 @@ it("explains invalid criteria before saving and permits correction without losin
   fireEvent.click(save);
   await waitFor(() => expect(close).toHaveBeenCalled());
 });
+
+it("can save a long edited objective without an oversized automatic criterion", async () => {
+  setMockQueryResult({ ...goal, criteria: [goal.objective] });
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  const close = jest.fn();
+  render(<AgentGoalEditor chatId="chat" onClose={close} />);
+  const objective = "A".repeat(4000);
+  fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+    target: { value: objective },
+  });
+  const save = screen.getByRole("button", { name: "Save and pause" });
+  expect(save).toBeEnabled();
+  fireEvent.click(save);
+  await waitFor(() => expect(close).toHaveBeenCalled());
+  const body = JSON.parse((fetch as jest.Mock).mock.calls[0][1].body);
+  expect(body.objective).toBe(objective);
+  expect(body.criteria[0].length).toBeLessThanOrEqual(1000);
+});
