@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { accessLocalWorkspaceFiles } from "@/lib/sandbox/local-workspace-files";
 import { GET, POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById } from "@/lib/db/actions";
@@ -7,6 +8,12 @@ import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 
+jest.mock("@/lib/sandbox/local-workspace-files", () => ({
+  accessLocalWorkspaceFiles: jest.fn(),
+}));
+jest.mock("@/lib/chat/project-context", () => ({
+  resolveProjectExecutionContext: jest.fn().mockResolvedValue({}),
+}));
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
 jest.mock("@/lib/auth/get-user-id", () => ({ getUserIDAndPro: jest.fn() }));
@@ -46,6 +53,14 @@ const request = (values = {}) =>
   });
 beforeEach(() => {
   jest.resetAllMocks();
+  jest
+    .mocked(
+      require("@/lib/chat/project-context").resolveProjectExecutionContext,
+    )
+    .mockResolvedValue({});
+  jest
+    .mocked(accessLocalWorkspaceFiles)
+    .mockResolvedValue({ state: "disconnected", environmentLabel: "Local" });
   jest.mocked(getUserIDAndPro).mockResolvedValue({
     userId: "owner",
     subscription: "pro",
@@ -98,7 +113,8 @@ it("never probes cloud for a Desktop task and rejects traversal and unpinned dow
     .mocked(getChatById)
     .mockResolvedValue({ user_id: "owner", sandbox_type: "desktop" } as any);
   expect(await (await POST(request())).json()).toEqual({
-    state: "unsupported",
+    state: "disconnected",
+    environmentLabel: "Local",
   });
   expect((await POST(request({ path: "../secret" }))).status).toBe(400);
   jest
@@ -120,7 +136,7 @@ it("returns private responses and suppresses raw provider errors", async () => {
 it("bounds repeated workspace access before calling the provider", async () => {
   jest
     .mocked(createRedisClient)
-    .mockReturnValue({ eval: async () => 61 } as any);
+    .mockReturnValue({ eval: async () => 121 } as any);
   const response = await POST(request());
   expect(response.status).toBe(429);
   expect(await response.json()).toEqual({ error: "rate_limited" });

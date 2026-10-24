@@ -1335,411 +1335,432 @@ export const createFile = (context: ToolContext) => {
       { action, path, brief, text, range, edits },
       { toolCallId },
     ) => {
-      try {
-        let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
-        if (action === "write" || action === "append" || action === "edit") {
-          const serializedEdits = edits ? JSON.stringify(edits) : undefined;
-          const exactContent =
-            action === "edit" ? serializedEdits : (text ?? undefined);
-          const autoReviewContentComplete =
-            exactContent !== undefined &&
-            exactContent.length <= MAX_AUTO_REVIEW_FILE_CHANGE_CHARS;
-          const approval = await context.requestToolApproval?.({
-            toolCallId,
-            toolName: "file",
-            operation:
-              action === "write"
-                ? "file_write"
-                : action === "append"
-                  ? "file_append"
-                  : "file_edit",
-            target: path,
-            brief,
-            autoReviewContext: {
-              type: "file_change",
-              action,
-              path,
-              ...(action === "edit"
-                ? autoReviewContentComplete
-                  ? { edits }
-                  : {}
-                : exactContent !== undefined
-                  ? {
-                      text: exactContent.slice(
-                        0,
-                        MAX_AUTO_REVIEW_FILE_CHANGE_CHARS,
-                      ),
-                    }
-                  : {}),
-              complete: autoReviewContentComplete,
-            },
-          });
-          if (approval && !approval.approved) {
-            return {
-              error: approval.reason,
-              approvalDenied: true,
-            };
+      let source: { environment: string; identity: string } | undefined;
+      const executeOperation = async () => {
+        try {
+          let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
+          if (action === "write" || action === "append" || action === "edit") {
+            const serializedEdits = edits ? JSON.stringify(edits) : undefined;
+            const exactContent =
+              action === "edit" ? serializedEdits : (text ?? undefined);
+            const autoReviewContentComplete =
+              exactContent !== undefined &&
+              exactContent.length <= MAX_AUTO_REVIEW_FILE_CHANGE_CHARS;
+            const approval = await context.requestToolApproval?.({
+              toolCallId,
+              toolName: "file",
+              operation:
+                action === "write"
+                  ? "file_write"
+                  : action === "append"
+                    ? "file_append"
+                    : "file_edit",
+              target: path,
+              brief,
+              autoReviewContext: {
+                type: "file_change",
+                action,
+                path,
+                ...(action === "edit"
+                  ? autoReviewContentComplete
+                    ? { edits }
+                    : {}
+                  : exactContent !== undefined
+                    ? {
+                        text: exactContent.slice(
+                          0,
+                          MAX_AUTO_REVIEW_FILE_CHANGE_CHARS,
+                        ),
+                      }
+                    : {}),
+                complete: autoReviewContentComplete,
+              },
+            });
+            if (approval && !approval.approved) {
+              return {
+                error: approval.reason,
+                approvalDenied: true,
+              };
+            }
+            approvedSandboxIdentity = approval?.approved
+              ? approval.sandboxIdentity
+              : undefined;
           }
-          approvedSandboxIdentity = approval?.approved
-            ? approval.sandboxIdentity
-            : undefined;
-        }
 
-        const { sandbox } = await getSandboxForFileTool(
-          approvedSandboxIdentity,
-        );
+          const { sandbox } = await getSandboxForFileTool(
+            approvedSandboxIdentity,
+          );
 
-        switch (action) {
-          case "view": {
-            const viewStartedAt = Date.now();
+          source = {
+            environment: getSandboxLogFields(sandbox).sandbox_type,
+            identity: isCentrifugoSandbox(sandbox)
+              ? sandbox.getConnectionId()
+              : sandbox.sandboxId,
+          };
+          switch (action) {
+            case "view": {
+              const viewStartedAt = Date.now();
 
-            if (!canReturnMultimodalFiles()) {
-              captureFileViewImageUsage({
-                context,
-                sandbox,
-                path,
-                stage: "initial_inspection",
-                outcome: "unsupported_model",
-                durationMs: Date.now() - viewStartedAt,
-                failureReason: "unsupported_model",
-                failureDetail: "unsupported_model",
-              });
-              return { error: MULTIMODAL_UPGRADE_MESSAGE };
-            }
+              if (!canReturnMultimodalFiles()) {
+                captureFileViewImageUsage({
+                  context,
+                  sandbox,
+                  path,
+                  stage: "initial_inspection",
+                  outcome: "unsupported_model",
+                  durationMs: Date.now() - viewStartedAt,
+                  failureReason: "unsupported_model",
+                  failureDetail: "unsupported_model",
+                });
+                return { error: MULTIMODAL_UPGRADE_MESSAGE };
+              }
 
-            let viewPayload: SandboxViewPayload;
-            try {
-              viewPayload = await readSandboxFileForView(
-                sandbox,
-                path,
-                !!getAuxiliaryVision(),
-              );
-            } catch (error) {
-              const classification = classifyFileViewError(error);
-              captureFileViewImageUsage({
-                context,
-                sandbox,
-                path,
-                stage: "initial_inspection",
-                outcome: "inspection_failed",
-                durationMs: Date.now() - viewStartedAt,
-                failureReason: classification.failureReason,
-                failureDetail: classification.failureDetail,
-                failureCategory: classification.failureCategory,
-                expectedFailure: classification.expectedFailure,
-                imageValidationReason: classification.imageValidationReason,
-                errorName: classification.errorName,
-                errorMessageHash: classification.errorMessageHash,
-              });
-              throw error;
-            }
-
-            const filename = getFilename(path);
-            let previewFiles: ViewPreviewFile[] = [];
-            let previewUploadError: string | undefined;
-            try {
-              const uploadedPreview = await uploadViewPreviewFiles({
-                context,
-                sandbox,
-                sourcePath: path,
-                payload: viewPayload,
-              });
-              previewFiles = uploadedPreview.files;
-              const previewFileId = String(uploadedPreview.files[0].fileId);
-              validateDownloadUrl(uploadedPreview.url);
-              previewUrlCache.set(previewFileId, uploadedPreview.url);
-            } catch (error) {
-              previewUploadError =
-                error instanceof Error ? error.message : String(error);
-              logger.error(
-                "file_view_preview_upload_failed",
-                error instanceof Error ? error : undefined,
-                {
-                  event: "file_view_preview_upload_failed",
-                  service: "chat-handler",
-                  user_id: context.userID,
-                  ...getSandboxLogFields(sandbox),
-                  file_name: filename,
-                  source_path: path,
-                  kind: viewPayload.kind,
-                  media_type: viewPayload.mediaType,
-                  size_bytes: viewPayload.sizeBytes,
-                  error: errorToLog(error),
-                },
-              );
-            }
-
-            let visionDescription: string | undefined;
-            let visionDescriptionError: string | undefined;
-            const auxiliaryVision = getAuxiliaryVision();
-            if (auxiliaryVision) {
+              let viewPayload: SandboxViewPayload;
               try {
-                // A new explicit view may observe changed file contents and is
-                // also the retry boundary after a prior descriptor failure.
-                auxiliaryDescriptionCache.delete(viewPayload.path);
-                visionDescription = await describeViewPayload(
-                  viewPayload,
-                  filename,
-                  auxiliaryVision,
+                viewPayload = await readSandboxFileForView(
+                  sandbox,
+                  path,
+                  !!getAuxiliaryVision(),
                 );
               } catch (error) {
-                if (auxiliaryVision.isAborted?.()) throw error;
-                visionDescriptionError =
-                  "The auxiliary vision model could not inspect this image. Retry the view action.";
+                const classification = classifyFileViewError(error);
+                captureFileViewImageUsage({
+                  context,
+                  sandbox,
+                  path,
+                  stage: "initial_inspection",
+                  outcome: "inspection_failed",
+                  durationMs: Date.now() - viewStartedAt,
+                  failureReason: classification.failureReason,
+                  failureDetail: classification.failureDetail,
+                  failureCategory: classification.failureCategory,
+                  expectedFailure: classification.expectedFailure,
+                  imageValidationReason: classification.imageValidationReason,
+                  errorName: classification.errorName,
+                  errorMessageHash: classification.errorMessageHash,
+                });
+                throw error;
               }
-            }
 
-            return {
-              action: "view",
-              content: `Viewing image file: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).`,
-              path,
-              filename,
-              mediaType: viewPayload.mediaType,
-              sizeBytes: viewPayload.sizeBytes,
-              kind: viewPayload.kind,
-              previewUploadSucceeded: !previewUploadError,
-              previewFiles,
-              ...(visionDescription ? { visionDescription } : {}),
-              ...(visionDescriptionError ? { visionDescriptionError } : {}),
-              ...(previewUploadError
-                ? { previewError: previewUploadError }
-                : {}),
-            } satisfies ViewMetadata;
-          }
+              const filename = getFilename(path);
+              let previewFiles: ViewPreviewFile[] = [];
+              let previewUploadError: string | undefined;
+              try {
+                const uploadedPreview = await uploadViewPreviewFiles({
+                  context,
+                  sandbox,
+                  sourcePath: path,
+                  payload: viewPayload,
+                });
+                previewFiles = uploadedPreview.files;
+                const previewFileId = String(uploadedPreview.files[0].fileId);
+                validateDownloadUrl(uploadedPreview.url);
+                previewUrlCache.set(previewFileId, uploadedPreview.url);
+              } catch (error) {
+                previewUploadError =
+                  error instanceof Error ? error.message : String(error);
+                logger.error(
+                  "file_view_preview_upload_failed",
+                  error instanceof Error ? error : undefined,
+                  {
+                    event: "file_view_preview_upload_failed",
+                    service: "chat-handler",
+                    user_id: context.userID,
+                    ...getSandboxLogFields(sandbox),
+                    file_name: filename,
+                    source_path: path,
+                    kind: viewPayload.kind,
+                    media_type: viewPayload.mediaType,
+                    size_bytes: viewPayload.sizeBytes,
+                    error: errorToLog(error),
+                  },
+                );
+              }
 
-          case "read": {
-            if (isRasterImagePath(path)) {
-              return { error: RASTER_READ_REDIRECT_MESSAGE };
-            }
+              let visionDescription: string | undefined;
+              let visionDescriptionError: string | undefined;
+              const auxiliaryVision = getAuxiliaryVision();
+              if (auxiliaryVision) {
+                try {
+                  // A new explicit view may observe changed file contents and is
+                  // also the retry boundary after a prior descriptor failure.
+                  auxiliaryDescriptionCache.delete(viewPayload.path);
+                  visionDescription = await describeViewPayload(
+                    viewPayload,
+                    filename,
+                    auxiliaryVision,
+                  );
+                } catch (error) {
+                  if (auxiliaryVision.isAborted?.()) throw error;
+                  visionDescriptionError =
+                    "The auxiliary vision model could not inspect this image. Retry the view action.";
+                }
+              }
 
-            const filename = path.split("/").pop() || path;
-            const readPayload = await readSandboxTextFileWithFallback(
-              sandbox,
-              path,
-              range,
-            );
-
-            if (readPayload.imageMediaType) {
-              return { error: RASTER_READ_REDIRECT_MESSAGE };
-            }
-
-            if (readPayload.tooLarge) {
-              const totalLines =
-                readPayload.totalLines > 0
-                  ? `${readPayload.totalLines} lines`
-                  : "line count unavailable";
               return {
-                content: `Text file: ${filename}\nFile is too large to read in full (${formatBytes(readPayload.sizeBytes)}, ${totalLines}). Use the range parameter to read a smaller slice, e.g. range [1, 200].`,
-                originalContent: "",
-              };
+                action: "view",
+                content: `Viewing image file: ${filename} (${viewPayload.mediaType}, ${viewPayload.sizeBytes} bytes).`,
+                path,
+                filename,
+                mediaType: viewPayload.mediaType,
+                sizeBytes: viewPayload.sizeBytes,
+                kind: viewPayload.kind,
+                previewUploadSucceeded: !previewUploadError,
+                previewFiles,
+                ...(visionDescription ? { visionDescription } : {}),
+                ...(visionDescriptionError ? { visionDescriptionError } : {}),
+                ...(previewUploadError
+                  ? { previewError: previewUploadError }
+                  : {}),
+              } satisfies ViewMetadata;
             }
 
-            if (!readPayload.content || readPayload.content.trim() === "") {
-              return { error: "File is empty." };
+            case "read": {
+              if (isRasterImagePath(path)) {
+                return { error: RASTER_READ_REDIRECT_MESSAGE };
+              }
+
+              const filename = path.split("/").pop() || path;
+              const readPayload = await readSandboxTextFileWithFallback(
+                sandbox,
+                path,
+                range,
+              );
+
+              if (readPayload.imageMediaType) {
+                return { error: RASTER_READ_REDIRECT_MESSAGE };
+              }
+
+              if (readPayload.tooLarge) {
+                const totalLines =
+                  readPayload.totalLines > 0
+                    ? `${readPayload.totalLines} lines`
+                    : "line count unavailable";
+                return {
+                  content: `Text file: ${filename}\nFile is too large to read in full (${formatBytes(readPayload.sizeBytes)}, ${totalLines}). Use the range parameter to read a smaller slice, e.g. range [1, 200].`,
+                  originalContent: "",
+                };
+              }
+
+              if (!readPayload.content || readPayload.content.trim() === "") {
+                return { error: "File is empty." };
+              }
+
+              // Return object with raw content for UI and formatted content for model
+              return buildNumberedFileContent({
+                filename,
+                content: readPayload.content,
+                startLineNumber: readPayload.startLine,
+                truncated: readPayload.truncated,
+              });
             }
 
-            // Return object with raw content for UI and formatted content for model
-            return buildNumberedFileContent({
-              filename,
-              content: readPayload.content,
-              startLineNumber: readPayload.startLine,
-              truncated: readPayload.truncated,
-            });
-          }
+            case "write": {
+              if (text === undefined) {
+                return { error: "text is required for write action" };
+              }
 
-          case "write": {
-            if (text === undefined) {
-              return { error: "text is required for write action" };
-            }
-
-            await sandbox.files.write(path, text, {
-              user: "user" as const,
-            });
-
-            return `File written: ${path}`;
-          }
-
-          case "append": {
-            if (text === undefined) {
-              return { error: "text is required for append action" };
-            }
-
-            const existingState = await getSandboxFileState(sandbox, path);
-            if (existingState.kind === "unknown") {
-              return {
-                error: `Cannot append safely because the existing file size could not be determined for ${path}. ${existingState.error}`,
-              };
-            }
-            if (existingState.kind === "not_file") {
-              return {
-                error: `Cannot append to ${path} because it is not a file.`,
-              };
-            }
-            if (
-              existingState.kind === "file" &&
-              existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES
-            ) {
-              await appendSandboxTextFile(sandbox, path, text);
-              return {
-                content: `File appended: ${path}\nExisting file is ${formatBytes(existingState.sizeBytes)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
-              };
-            }
-
-            // Read existing content first
-            let existingContent = "";
-            try {
-              existingContent = await sandbox.files.read(path, {
+              await sandbox.files.write(path, text, {
                 user: "user" as const,
               });
-            } catch {
-              // File doesn't exist, start with empty content
+
+              return `File written: ${path}`;
             }
 
-            // Append directly without adding extra newline - agent controls exact content
-            const appendText = existingContent
-              ? convertToLineEnding(text, detectLineEnding(existingContent))
-              : text;
-            const newContent = existingContent + appendText;
-
-            await sandbox.files.write(path, newContent, {
-              user: "user" as const,
-            });
-
-            // Return both original and modified content for UI diff view in computer sidebar
-            // toModelOutput controls what the model sees (summary only)
-            return {
-              content: `File appended: ${path}`,
-              originalContent: truncateOutput({
-                content: existingContent,
-                mode: "read-file",
-              }),
-              modifiedContent: truncateOutput({
-                content: newContent,
-                mode: "read-file",
-              }),
-            };
-          }
-
-          case "edit": {
-            if (!edits || edits.length === 0) {
-              return { error: "edits array is required for edit action" };
-            }
-
-            const existingState = await getSandboxFileState(sandbox, path);
-            if (existingState.kind === "unknown") {
-              return {
-                error: `Cannot edit ${path} safely because the file size could not be determined. ${existingState.error}`,
-              };
-            }
-            if (existingState.kind === "missing") {
-              return {
-                error: `Cannot edit file ${path} - file is empty or does not exist`,
-              };
-            }
-            if (existingState.kind === "not_file") {
-              return { error: `Cannot edit ${path} because it is not a file.` };
-            }
-            if (existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES) {
-              return {
-                error: `File ${path} is too large for the edit action (${formatBytes(existingState.sizeBytes)}). Use a targeted shell command, restore the file from a clean source, or replace it with the write action instead of loading the whole file into memory.`,
-              };
-            }
-
-            // Read existing content
-            const originalContent = await sandbox.files.read(path, {
-              user: "user" as const,
-            });
-
-            if (!originalContent) {
-              return {
-                error: `Cannot edit file ${path} - file is empty or does not exist`,
-              };
-            }
-
-            // Validate all find strings exist before applying any edits (atomic behavior)
-            const lineEnding = detectLineEnding(originalContent);
-            const normalizedEdits = edits.map((edit) => ({
-              ...edit,
-              find: convertToLineEnding(edit.find, lineEnding),
-              replace: convertToLineEnding(edit.replace, lineEnding),
-            }));
-            const missingFinds: { index: number; find: string }[] = [];
-            for (let i = 0; i < normalizedEdits.length; i++) {
-              if (!originalContent.includes(normalizedEdits[i].find)) {
-                missingFinds.push({ index: i + 1, find: edits[i].find });
+            case "append": {
+              if (text === undefined) {
+                return { error: "text is required for append action" };
               }
+
+              const existingState = await getSandboxFileState(sandbox, path);
+              if (existingState.kind === "unknown") {
+                return {
+                  error: `Cannot append safely because the existing file size could not be determined for ${path}. ${existingState.error}`,
+                };
+              }
+              if (existingState.kind === "not_file") {
+                return {
+                  error: `Cannot append to ${path} because it is not a file.`,
+                };
+              }
+              if (
+                existingState.kind === "file" &&
+                existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES
+              ) {
+                await appendSandboxTextFile(sandbox, path, text);
+                return {
+                  content: `File appended: ${path}\nExisting file is ${formatBytes(existingState.sizeBytes)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
+                };
+              }
+
+              // Read existing content first
+              let existingContent = "";
+              try {
+                existingContent = await sandbox.files.read(path, {
+                  user: "user" as const,
+                });
+              } catch {
+                // File doesn't exist, start with empty content
+              }
+
+              // Append directly without adding extra newline - agent controls exact content
+              const appendText = existingContent
+                ? convertToLineEnding(text, detectLineEnding(existingContent))
+                : text;
+              const newContent = existingContent + appendText;
+
+              await sandbox.files.write(path, newContent, {
+                user: "user" as const,
+              });
+
+              // Return both original and modified content for UI diff view in computer sidebar
+              // toModelOutput controls what the model sees (summary only)
+              return {
+                content: `File appended: ${path}`,
+                originalContent: truncateOutput({
+                  content: existingContent,
+                  mode: "read-file",
+                }),
+                modifiedContent: truncateOutput({
+                  content: newContent,
+                  mode: "read-file",
+                }),
+              };
             }
 
-            if (missingFinds.length > 0) {
-              const details = missingFinds
+            case "edit": {
+              if (!edits || edits.length === 0) {
+                return { error: "edits array is required for edit action" };
+              }
+
+              const existingState = await getSandboxFileState(sandbox, path);
+              if (existingState.kind === "unknown") {
+                return {
+                  error: `Cannot edit ${path} safely because the file size could not be determined. ${existingState.error}`,
+                };
+              }
+              if (existingState.kind === "missing") {
+                return {
+                  error: `Cannot edit file ${path} - file is empty or does not exist`,
+                };
+              }
+              if (existingState.kind === "not_file") {
+                return {
+                  error: `Cannot edit ${path} because it is not a file.`,
+                };
+              }
+              if (existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES) {
+                return {
+                  error: `File ${path} is too large for the edit action (${formatBytes(existingState.sizeBytes)}). Use a targeted shell command, restore the file from a clean source, or replace it with the write action instead of loading the whole file into memory.`,
+                };
+              }
+
+              // Read existing content
+              const originalContent = await sandbox.files.read(path, {
+                user: "user" as const,
+              });
+
+              if (!originalContent) {
+                return {
+                  error: `Cannot edit file ${path} - file is empty or does not exist`,
+                };
+              }
+
+              // Validate all find strings exist before applying any edits (atomic behavior)
+              const lineEnding = detectLineEnding(originalContent);
+              const normalizedEdits = edits.map((edit) => ({
+                ...edit,
+                find: convertToLineEnding(edit.find, lineEnding),
+                replace: convertToLineEnding(edit.replace, lineEnding),
+              }));
+              const missingFinds: { index: number; find: string }[] = [];
+              for (let i = 0; i < normalizedEdits.length; i++) {
+                if (!originalContent.includes(normalizedEdits[i].find)) {
+                  missingFinds.push({ index: i + 1, find: edits[i].find });
+                }
+              }
+
+              if (missingFinds.length > 0) {
+                const details = missingFinds
+                  .map(
+                    (m) =>
+                      `Edit #${m.index}: "${m.find.length > 50 ? m.find.slice(0, 50) + "..." : m.find}"`,
+                  )
+                  .join("\n");
+                return {
+                  error: `Atomic edit failed - the following find string(s) were not found in the file:\n${details}\nNo edits were applied.`,
+                };
+              }
+
+              // Apply edits sequentially (all find strings validated above)
+              let content = originalContent;
+              let totalReplacements = 0;
+
+              for (const edit of normalizedEdits) {
+                const { find, replace, all = false } = edit;
+
+                if (all) {
+                  const count = content.split(find).length - 1;
+                  content = content.split(find).join(replace);
+                  totalReplacements += count;
+                } else {
+                  content = content.replace(find, replace);
+                  totalReplacements += 1;
+                }
+              }
+
+              // Write the modified content back
+              await sandbox.files.write(path, content, {
+                user: "user" as const,
+              });
+
+              // Format content with line numbers for model output (padded format with pipe separator)
+              const lines = normalizeLineEndings(content).split("\n");
+              const numberedLines = lines
                 .map(
-                  (m) =>
-                    `Edit #${m.index}: "${m.find.length > 50 ? m.find.slice(0, 50) + "..." : m.find}"`,
+                  (line, index) =>
+                    `${(index + 1).toString().padStart(6)}|${line}`,
                 )
                 .join("\n");
+
+              // Return full diff data (persisted for UI)
+              // toModelOutput will control what the model sees
               return {
-                error: `Atomic edit failed - the following find string(s) were not found in the file:\n${details}\nNo edits were applied.`,
+                content: truncateOutput({
+                  content: `Multi-edit completed: ${edits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
+                  mode: "read-file",
+                }),
+                originalContent: truncateOutput({
+                  content: originalContent,
+                  mode: "read-file",
+                }),
+                modifiedContent: truncateOutput({
+                  content,
+                  mode: "read-file",
+                }),
               };
             }
 
-            // Apply edits sequentially (all find strings validated above)
-            let content = originalContent;
-            let totalReplacements = 0;
-
-            for (const edit of normalizedEdits) {
-              const { find, replace, all = false } = edit;
-
-              if (all) {
-                const count = content.split(find).length - 1;
-                content = content.split(find).join(replace);
-                totalReplacements += count;
-              } else {
-                content = content.replace(find, replace);
-                totalReplacements += 1;
-              }
-            }
-
-            // Write the modified content back
-            await sandbox.files.write(path, content, {
-              user: "user" as const,
-            });
-
-            // Format content with line numbers for model output (padded format with pipe separator)
-            const lines = normalizeLineEndings(content).split("\n");
-            const numberedLines = lines
-              .map(
-                (line, index) =>
-                  `${(index + 1).toString().padStart(6)}|${line}`,
-              )
-              .join("\n");
-
-            // Return full diff data (persisted for UI)
-            // toModelOutput will control what the model sees
-            return {
-              content: truncateOutput({
-                content: `Multi-edit completed: ${edits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
-                mode: "read-file",
-              }),
-              originalContent: truncateOutput({
-                content: originalContent,
-                mode: "read-file",
-              }),
-              modifiedContent: truncateOutput({
-                content,
-                mode: "read-file",
-              }),
-            };
+            default:
+              return { error: `Unknown action ${action}` };
           }
-
-          default:
-            return { error: `Unknown action ${action}` };
+        } catch (error) {
+          if (context.auxiliaryVision?.isAborted?.()) throw error;
+          return {
+            error: resolveToolErrorMessage(error),
+          };
         }
-      } catch (error) {
-        if (context.auxiliaryVision?.isAborted?.()) throw error;
-        return {
-          error: resolveToolErrorMessage(error),
-        };
-      }
+      };
+      const result = await executeOperation();
+      if (
+        !source ||
+        (typeof result === "object" && result !== null && "error" in result)
+      )
+        return result;
+      return {
+        ...(typeof result === "string" ? { content: result } : result),
+        fileSnapshot: { ...source, capturedAt: Date.now(), path, action },
+      };
     },
     // Control what the model sees (exclude large diff content)
     async toModelOutput({ output }) {

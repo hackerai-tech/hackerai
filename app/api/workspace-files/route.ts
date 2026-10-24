@@ -1,3 +1,5 @@
+import { accessLocalWorkspaceFiles } from "@/lib/sandbox/local-workspace-files";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { NextRequest, NextResponse } from "next/server";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { createRedisClient } from "@/lib/rate-limit/redis";
@@ -91,13 +93,9 @@ export async function POST(req: NextRequest) {
     action = input.action;
     const auth = await authorize(req, input.chatId);
     userId = auth.userId;
-    if (
-      auth.chat.sandbox_type &&
-      auth.chat.sandbox_type !== "e2b" &&
-      auth.chat.sandbox_type !== "cloud"
-    )
-      return json({ state: "unsupported" });
-    if (auth.subscription === "free")
+    const preference = input.environment ?? auth.chat.sandbox_type ?? "e2b";
+    const local = preference !== "e2b" && preference !== "cloud";
+    if (!local && auth.subscription === "free")
       return json({ error: "subscription_required" }, 403);
     if (!["status", "list"].includes(input.action) && !input.sandboxId)
       return json({ error: "invalid_request" }, 400);
@@ -109,13 +107,28 @@ export async function POST(req: NextRequest) {
         [`workspace_files_rate:${userId}`],
         [],
       );
-      if (count > 60) return json({ error: "rate_limited" }, 429);
+      if (count > 120) return json({ error: "rate_limited" }, 429);
     }
-    const result = await accessCloudWorkspaceFiles(
-      userId,
-      getExecutionRegionForVercelRequest(req),
-      input,
-    );
+    const project = local
+      ? await resolveProjectExecutionContext({
+          chat: auth.chat,
+          userId,
+          mode: "agent",
+          sandboxPreference: preference,
+        })
+      : {};
+    const result = local
+      ? await accessLocalWorkspaceFiles(
+          userId,
+          preference,
+          input,
+          project.workingDirectory,
+        )
+      : await accessCloudWorkspaceFiles(
+          userId,
+          getExecutionRegionForVercelRequest(req),
+          input,
+        );
     phLogger.event("workspace_files_operation", {
       userId,
       action,

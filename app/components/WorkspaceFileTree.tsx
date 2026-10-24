@@ -31,6 +31,7 @@ export function canPreviewWorkspaceFile(entry: WorkspaceEntry) {
 
 type TreeProps = {
   initial: WorkspaceListing;
+  rootLabel?: string;
   load: (
     path: string,
     offset: number,
@@ -45,7 +46,12 @@ type TreeProps = {
 export function WorkspaceFileTree(props: TreeProps) {
   return (
     <nav aria-label="Workspace file tree">
-      <Directory {...props} path="" name="/home/user" initial={props.initial} />
+      <Directory
+        {...props}
+        path=""
+        name={props.rootLabel ?? "/home/user"}
+        initial={props.initial}
+      />
     </nav>
   );
 }

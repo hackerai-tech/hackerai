@@ -27,11 +27,13 @@ export default function WorkspaceFilePreview({
   onClose,
   onDownload,
   busy,
+  partial = false,
 }: {
   file: WorkspacePreview;
   onClose: () => void;
   onDownload: () => void;
   busy: boolean;
+  partial?: boolean;
 }) {
   const [source, setSource] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
@@ -117,7 +119,9 @@ export default function WorkspaceFilePreview({
         <Button
           size="icon"
           variant="ghost"
-          aria-label="Download previewed file"
+          aria-label={
+            partial ? "Download captured excerpt" : "Download previewed file"
+          }
           disabled={busy}
           onClick={onDownload}
         >
@@ -194,7 +198,8 @@ export default function WorkspaceFilePreview({
             {table.truncated && (
               <p role="status" className="p-3 text-xs">
                 Table preview limited to 100 rows, 30 columns and 2,000
-                characters per cell. Source and download retain the full file.
+                characters per cell. Source and download retain the{" "}
+                {partial ? "captured excerpt" : "full file"}.
               </p>
             )}
           </>

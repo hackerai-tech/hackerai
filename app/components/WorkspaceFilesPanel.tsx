@@ -1,5 +1,7 @@
 "use client";
 
+import { ChatFilesPanel } from "./ChatFilesPanel";
+import { useGlobalState } from "../contexts/GlobalState";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -48,12 +50,18 @@ const errors: Record<string, string> = {
   subscription_required:
     "A paid plan is required to access the cloud workspace.",
   file_too_large:
-    "This file exceeds the limit for this action. Preview supports 256 KB; download supports 2 MB.",
+    "This file exceeds the limit for this action. Preview supports 256 KB; download supports 50 MB.",
   directory_too_large:
     "This folder has more than 5,000 entries. Open a smaller folder using the Agent.",
   unreadable_path:
     "This path cannot be opened. Links and files outside the workspace are blocked.",
   unavailable: "Workspace Files is currently unavailable.",
+  file_changed:
+    "The file changed during download. Try again after it finishes writing.",
+  local_reader_unavailable:
+    "Local browsing requires Python 3 on this connected Mac or Linux environment.",
+  select_environment:
+    "Select a specific connected computer before browsing files.",
 };
 const sizeLabel = (size: number) =>
   size < 1024
@@ -62,12 +70,14 @@ const sizeLabel = (size: number) =>
       ? `${(size / 1024).toFixed(1)} KB`
       : `${(size / 1048576).toFixed(1)} MB`;
 
-export function WorkspaceFilesPanel({
+export function LiveWorkspaceFilesPanel({
   messages,
   chatId,
+  environment,
 }: {
   messages: any[];
   chatId: string;
+  environment?: string;
 }) {
   const [path, setPath] = useState("");
   const [search, setSearch] = useState("");
@@ -107,6 +117,7 @@ export function WorkspaceFilesPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chatId,
+          environment,
           action,
           sandboxId: sandboxId.current,
           ...values,
@@ -120,7 +131,7 @@ export function WorkspaceFilesPanel({
         );
       return data;
     },
-    [chatId],
+    [chatId, environment],
   );
 
   useEffect(() => {
@@ -187,7 +198,7 @@ export function WorkspaceFilesPanel({
     try {
       const filePath =
         selectedPath ?? (path ? `${path}/${entry.name}` : entry.name);
-      const data = await request(
+      let data = await request(
         download ? "download" : "preview",
         { path: filePath },
         controller.signal,
@@ -198,9 +209,38 @@ export function WorkspaceFilesPanel({
         setListing(null);
         return;
       }
-      const bytes = Uint8Array.from(atob(data.data), (character) =>
-        character.charCodeAt(0),
-      );
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      const expectedSize = data.size;
+      const revision = data.revision;
+      for (;;) {
+        const chunk = Uint8Array.from(atob(data.data), (c) => c.charCodeAt(0));
+        total += chunk.length;
+        if (
+          total > WORKSPACE_DOWNLOAD_LIMIT ||
+          data.size !== expectedSize ||
+          data.revision !== revision
+        )
+          throw new Error(errors.file_changed);
+        chunks.push(chunk);
+        if (!download || data.nextByteOffset == null) break;
+        if (!chunk.length || data.nextByteOffset !== total)
+          throw new Error(errors.file_changed);
+        data = await request(
+          "download",
+          { path: filePath, byteOffset: total, revision },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+      }
+      if (download && total !== expectedSize)
+        throw new Error(errors.file_changed);
+      const bytes = new Uint8Array(total);
+      let position = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, position);
+        position += chunk.length;
+      }
       if (download) {
         if (isTauriEnvironment()) {
           // Existing native Save contract is UTF-8 text only. Do not corrupt binary bytes.
@@ -278,8 +318,9 @@ export function WorkspaceFilesPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 pt-3">
       <div className="text-xs text-muted-foreground">
-        Live cloud workspace · shared across your tasks. Download files you want
-        to keep.
+        {status?.environmentLabel ?? "Workspace"}
+        {status?.root ? ` · ${status.root}` : ""}. Live files can be shared
+        across tasks; download files you want to keep.
       </div>
       {!tree && (
         <div className="flex items-center gap-1 rounded-lg border p-1">
@@ -438,16 +479,22 @@ export function WorkspaceFilesPanel({
             deleted. Start a cloud Agent task to create a workspace. Saved chat
             files remain available below.
           </p>
+        ) : status?.state === "disconnected" ? (
+          <p className="p-5 text-sm text-muted-foreground">
+            This computer is disconnected. Reconnect it to browse live files.
+            Captured files remain available in This chat.
+          </p>
         ) : status?.state === "unsupported" ? (
           <p className="p-5 text-sm text-muted-foreground">
-            This task uses Desktop or Remote Control. Browse its project folder
-            on that computer. Live host browsing is not available here yet;
-            saved chat files remain available below.
+            Live browsing is currently supported on Cloud, macOS and Linux with
+            Python 3. This connection needs a supported file reader. Captured
+            chat files remain available in This chat.
           </p>
         ) : (
           listing &&
           (tree ? (
             <WorkspaceFileTree
+              rootLabel={status?.root ?? "Workspace"}
               key={version}
               initial={listing}
               filter={treeSearch}
@@ -555,7 +602,7 @@ export function WorkspaceFilesPanel({
                           aria-label={`Download ${entry.name}`}
                           title={
                             entry.size > WORKSPACE_DOWNLOAD_LIMIT
-                              ? "Downloads support files up to 2 MB"
+                              ? "Downloads support files up to 50 MB"
                               : "Download file"
                           }
                           disabled={
@@ -613,7 +660,7 @@ export function WorkspaceFilesPanel({
         />
       )}
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>Preview ≤256 KB · Download ≤2 MB</span>
+        <span>Preview ≤256 KB · Download ≤50 MB</span>
         <Button variant="ghost" size="sm" onClick={() => setSavedOpen(true)}>
           Saved chat files ({savedFiles.length})
         </Button>
@@ -624,6 +671,59 @@ export function WorkspaceFilesPanel({
           onOpenChange={setSavedOpen}
           files={savedFiles}
         />
+      )}
+    </div>
+  );
+}
+
+export function WorkspaceFilesPanel({
+  messages,
+  chatId,
+}: {
+  messages: any[];
+  chatId: string;
+}) {
+  const { sandboxPreference } = useGlobalState();
+  const [tab, setTab] = useState<"chat" | "workspace">("chat");
+  useEffect(() => {
+    captureAuthenticatedEvent("workspace_files_viewed", { source: "chat" });
+  }, []);
+  return (
+    <div className="flex min-h-0 flex-1 flex-col pt-3">
+      <div className="flex gap-2" aria-label="File sources">
+        <Button
+          variant={tab === "chat" ? "secondary" : "ghost"}
+          aria-pressed={tab === "chat"}
+          onClick={() => setTab("chat")}
+        >
+          This chat
+        </Button>
+        <Button
+          variant={tab === "workspace" ? "secondary" : "ghost"}
+          aria-pressed={tab === "workspace"}
+          onClick={() => setTab("workspace")}
+        >
+          Workspace
+        </Button>
+      </div>
+      {tab === "chat" ? (
+        <ChatFilesPanel messages={messages} />
+      ) : (
+        <>
+          <p className="py-2 text-xs text-muted-foreground">
+            Live{" "}
+            {sandboxPreference === "e2b" || sandboxPreference === "cloud"
+              ? "Cloud"
+              : "Local / Desktop"}{" "}
+            workspace. These files may change or become unavailable.
+          </p>
+          <LiveWorkspaceFilesPanel
+            key={`${chatId}:${sandboxPreference}`}
+            chatId={chatId}
+            messages={messages}
+            environment={sandboxPreference}
+          />
+        </>
       )}
     </div>
   );

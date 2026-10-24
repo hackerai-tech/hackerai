@@ -39,7 +39,7 @@ describe("workspace reader filesystem boundary", () => {
           ).toString("base64"),
           root,
         ],
-        { encoding: "utf8" },
+        { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 },
       ),
     );
 
@@ -83,6 +83,37 @@ describe("workspace reader filesystem boundary", () => {
     symlinkSync(root, linked);
     root = linked;
     expect(read({})).toEqual({ error: "unreadable_path" });
+  });
+
+  it("downloads larger files in revision-pinned chunks and rejects changes between chunks", () => {
+    const bytes = Buffer.alloc(3 * 1024 * 1024, 42);
+    writeFileSync(join(root, "large.bin"), bytes);
+    const first = read({
+      action: "download",
+      path: "large.bin",
+      limit: bytes.length,
+    });
+    expect(first.nextByteOffset).toBe(1024 * 1024);
+    const second = read({
+      action: "download",
+      path: "large.bin",
+      limit: bytes.length,
+      byteOffset: first.nextByteOffset,
+      revision: first.revision,
+    });
+    expect(Buffer.from(second.data, "base64")).toEqual(
+      bytes.subarray(1024 * 1024, 2 * 1024 * 1024),
+    );
+    writeFileSync(join(root, "large.bin"), Buffer.alloc(bytes.length, 24));
+    expect(
+      read({
+        action: "download",
+        path: "large.bin",
+        limit: bytes.length,
+        byteOffset: first.nextByteOffset,
+        revision: first.revision,
+      }),
+    ).toEqual({ error: "file_changed" });
   });
 
   it("paginates and searches a folder without recursively inspecting children", () => {

@@ -14,7 +14,7 @@ import {
   type WorkspaceRequest,
 } from "./workspace-files";
 
-const listingSchema = z.object({
+export const listingSchema = z.object({
   entries: z
     .array(
       z.object({
@@ -122,6 +122,8 @@ export async function accessCloudWorkspaceFiles(
       "directory_too_large",
       "not_found",
       "unreadable_path",
+      "file_changed",
+      "invalid_request",
     ]);
     const code = String(parsed.error);
     throw new WorkspaceFileError(
@@ -135,6 +137,8 @@ export async function accessCloudWorkspaceFiles(
     return {
       state: "running" as const,
       sandboxId,
+      root: "/home/user",
+      environmentLabel: "Cloud",
       ...listingSchema.parse(parsed),
     };
   const file = z
@@ -147,8 +151,21 @@ export async function accessCloudWorkspaceFiles(
         .number()
         .int()
         .min(0)
-        .max(2 * 1024 * 1024),
+        .max(50 * 1024 * 1024),
+      revision: z.string().regex(/^[a-f0-9]{64}$/),
+      nextByteOffset: z
+        .number()
+        .int()
+        .min(0)
+        .max(50 * 1024 * 1024)
+        .nullable(),
     })
     .parse(parsed);
-  return { state: "running" as const, sandboxId, ...file };
+  return {
+    state: "running" as const,
+    sandboxId,
+    root: "/home/user",
+    environmentLabel: "Cloud",
+    ...file,
+  };
 }

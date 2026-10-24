@@ -66,9 +66,15 @@ import {
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { collectChatFiles } from "@/lib/workspace-preview/chat-files";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
 import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
+
+const CapturedFilePreview = dynamic(
+  () => import("./ChatFilesPanel").then((m) => m.CapturedFilePreview),
+  { ssr: false },
+);
 
 const WorkspaceFilesPanel = dynamic(
   () => import("./WorkspaceFilesPanel").then((m) => m.WorkspaceFilesPanel),
@@ -437,6 +443,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return (live ?? sidebarContent) as typeof sidebarContent;
   }, [sidebarContent, toolExecutions]);
 
+  const capturedFiles = useMemo(() => collectChatFiles(messages), [messages]);
+  const capturedFile =
+    resolvedFile && !resolvedFile.isExecuting && !resolvedFile.error
+      ? capturedFiles.find(
+          (file) => file.toolCallId === resolvedFile.toolCallId,
+        )
+      : undefined;
+
   // Initialize tool count ref on mount
   useEffect(() => {
     if (sidebarOpen && toolExecutions.length > 0) {
@@ -494,7 +508,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   // Reconnect/replay can briefly make the active tool absent from `messages`, so avoid
   // treating the first missing render as a real deletion.
   useEffect(() => {
-    if (!sidebarOpen || !sidebarContent || isSidebarWorkspaceFiles(sidebarContent)) {
+    if (
+      !sidebarOpen ||
+      !sidebarContent ||
+      isSidebarWorkspaceFiles(sidebarContent)
+    ) {
       return;
     }
 
@@ -554,13 +572,15 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
-  const headerTitle = isWorkspaceFiles ? "Files" : isFinding
-    ? "Finding"
-    : isToolError
-      ? "Tool details"
-      : isProxy
-        ? "HackerAI\u2019s Proxy"
-        : "HackerAI\u2019s Computer";
+  const headerTitle = isWorkspaceFiles
+    ? "Files"
+    : isFinding
+      ? "Finding"
+      : isToolError
+        ? "Tool details"
+        : isProxy
+          ? "HackerAI\u2019s Proxy"
+          : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
     setIsExpanded(false);
@@ -704,602 +724,632 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             </div>
 
             {isWorkspaceFiles ? (
-              <WorkspaceFilesPanel chatId={sidebarContent.chatId} key={sidebarContent.toolCallId} messages={messages} />
-            ) : (<>
-            {/* Action Status */}
-            <div className="flex items-center gap-2 mt-2">
-              <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                {icon}
-              </div>
-              <div className="flex-1 flex flex-col gap-1 min-w-0">
-                <div className="text-[12px] text-muted-foreground">
-                  {isToolError ? (
-                    <>
-                      <span className="text-foreground">{toolName}</span> needs
-                      attention
-                    </>
-                  ) : (
-                    <>
-                      HackerAI is using{" "}
-                      <span className="text-foreground">{toolName}</span>
-                    </>
-                  )}
-                </div>
-                <div
-                  title={`${actionText} ${displayTarget}`}
-                  className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                >
-                  {actionText}
-                  <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>{displayTarget}</code>
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {sidebarOpen && browserChatId && (
-              <AgentBrowserPreview
-                onVisibilityChange={setBrowserPreviewVisible}
-                onContinue={onBrowserContinue}
-                chatId={browserChatId}
-                agentId={browserAgentId}
-                liveSelection={isAtLive && isFollowingLive}
-                browserRequested={
-                  !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
-                }
-                runActive={status === "streaming" || status === "submitted"}
-                onJumpToLive={handleJumpToLive}
+              <WorkspaceFilesPanel
+                chatId={sidebarContent.chatId}
+                key={sidebarContent.toolCallId}
+                messages={messages}
               />
-            )}
-
-            {realtimeRecovery && (
-              <div
-                role="alert"
-                className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
-              >
-                <span>Live updates disconnected.</span>
-                <button
-                  type="button"
-                  onClick={realtimeRecovery.onRetry}
-                  className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Reconnect
-                </button>
-              </div>
-            )}
-
-            {/* Content Container */}
-            <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
-              {/* Unified Header */}
-              <div
-                className={`h-[36px] shrink-0 flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)] ${isTerminal && browserPreviewVisible ? "max-sm:h-auto max-sm:min-h-12 max-sm:flex-wrap max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11" : ""}`}
-              >
-                {/* Title - far left */}
-                <div className="flex items-center gap-2">
-                  {isProxy ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Proxy
-                    </div>
-                  ) : isTerminal ? (
-                    <Terminal
-                      size={14}
-                      className="text-muted-foreground flex-shrink-0"
-                    />
-                  ) : isWebSearch ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
-                      Search
-                    </div>
-                  ) : isNotes ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Notes
-                    </div>
-                  ) : isFinding ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Vulnerability report
-                    </div>
-                  ) : isToolError ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Error details
-                    </div>
-                  ) : isSharedFiles ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Shared Files
-                    </div>
-                  ) : isFile && resolvedFile?.action === "searching" ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Search Results
-                    </div>
-                  ) : isFile && resolvedFile ? (
-                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      {resolvedFile.path.split("/").pop() || resolvedFile.path}
-                    </div>
-                  ) : null}
-                </div>
-
-                {/* Action buttons - far right */}
-                <div
-                  className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
-                >
-                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
-                    <ExpandedTerminalButton
-                      key={resolvedTerminal.toolCallId}
-                      terminal={resolvedTerminal}
-                      onExpand={() => setIsFollowingLive(false)}
-                    />
-                  )}
-                  {!isWebSearch &&
-                    !isNotes &&
-                    !isFinding &&
-                    !isToolError &&
-                    !isSharedFiles && (
-                      <CodeActionButtons
-                        content={
-                          isFile && resolvedFile
-                            ? resolvedFile.content
-                            : isTerminal && resolvedTerminal
-                              ? resolvedTerminal.output
-                                ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                                : `$ ${resolvedTerminal.command}`
-                              : isProxy && resolvedProxy
-                                ? resolvedProxy.output
-                                  ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
-                                  : `$ ${resolvedProxy.command}`
-                                : ""
-                        }
-                        filename={
-                          isFile
-                            ? sidebarContent.action === "searching"
-                              ? "search-results.txt"
-                              : sidebarContent.path.split("/").pop() ||
-                                "code.txt"
-                            : "terminal-output.txt"
-                        }
-                        language={
-                          isFile
-                            ? sidebarContent.action === "searching"
-                              ? "text"
-                              : sidebarContent.language ||
-                                getLanguageFromPath(sidebarContent.path)
-                            : "ansi"
-                        }
-                        isWrapped={isWrapped}
-                        onToggleWrap={handleToggleWrap}
-                        variant="sidebar"
-                        // xterm manages its own wrapping; the toggle is a no-op
-                        // for interactive PTY output.
-                        showWrap={
-                          !(
-                            (isTerminal && resolvedTerminal?.rawBytes) ||
-                            (isFile && resolvedFile?.action === "viewing")
-                          )
-                        }
-                      />
-                    )}
-                </div>
-              </div>
-
-              {/* Content */}
-              <div className="flex-1 min-h-0 w-full overflow-hidden bg-background">
-                <div className="flex flex-col min-h-0 h-full relative">
-                  <div className="focus-visible:outline-none flex-1 min-h-0 h-full text-sm flex flex-col py-0 outline-none">
-                    <div
-                      className="font-mono w-full text-xs leading-[18px] flex-1 min-h-0 h-full min-w-0"
-                      style={{
-                        overflowWrap: "break-word",
-                        wordBreak: "break-word",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {isFile && resolvedFile && (
+            ) : (
+              <>
+                {/* Action Status */}
+                <div className="flex items-center gap-2 mt-2">
+                  <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
+                    {icon}
+                  </div>
+                  <div className="flex-1 flex flex-col gap-1 min-w-0">
+                    <div className="text-[12px] text-muted-foreground">
+                      {isToolError ? (
                         <>
-                          {resolvedFile.action === "viewing" ? (
-                            <ViewFileSummary file={resolvedFile} />
-                          ) : (
+                          <span className="text-foreground">{toolName}</span>{" "}
+                          needs attention
+                        </>
+                      ) : (
+                        <>
+                          HackerAI is using{" "}
+                          <span className="text-foreground">{toolName}</span>
+                        </>
+                      )}
+                    </div>
+                    <div
+                      title={`${actionText} ${displayTarget}`}
+                      className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
+                    >
+                      {actionText}
+                      <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
+                        <code>{displayTarget}</code>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {sidebarOpen && browserChatId && (
+                  <AgentBrowserPreview
+                    onVisibilityChange={setBrowserPreviewVisible}
+                    onContinue={onBrowserContinue}
+                    chatId={browserChatId}
+                    agentId={browserAgentId}
+                    liveSelection={isAtLive && isFollowingLive}
+                    browserRequested={
+                      !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
+                    }
+                    runActive={status === "streaming" || status === "submitted"}
+                    onJumpToLive={handleJumpToLive}
+                  />
+                )}
+
+                {realtimeRecovery && (
+                  <div
+                    role="alert"
+                    className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+                  >
+                    <span>Live updates disconnected.</span>
+                    <button
+                      type="button"
+                      onClick={realtimeRecovery.onRetry}
+                      className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Reconnect
+                    </button>
+                  </div>
+                )}
+
+                {/* Content Container */}
+                <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
+                  {/* Unified Header */}
+                  <div
+                    className={`h-[36px] shrink-0 flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)] ${isTerminal && browserPreviewVisible ? "max-sm:h-auto max-sm:min-h-12 max-sm:flex-wrap max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11" : ""}`}
+                  >
+                    {/* Title - far left */}
+                    <div className="flex items-center gap-2">
+                      {isProxy ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Proxy
+                        </div>
+                      ) : isTerminal ? (
+                        <Terminal
+                          size={14}
+                          className="text-muted-foreground flex-shrink-0"
+                        />
+                      ) : isWebSearch ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
+                          Search
+                        </div>
+                      ) : isNotes ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Notes
+                        </div>
+                      ) : isFinding ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Vulnerability report
+                        </div>
+                      ) : isToolError ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Error details
+                        </div>
+                      ) : isSharedFiles ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Shared Files
+                        </div>
+                      ) : isFile && resolvedFile?.action === "searching" ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          Search Results
+                        </div>
+                      ) : isFile && resolvedFile ? (
+                        <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                          {resolvedFile.path.split("/").pop() ||
+                            resolvedFile.path}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {/* Action buttons - far right */}
+                    <div
+                      className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
+                    >
+                      {isTerminal &&
+                        resolvedTerminal &&
+                        browserPreviewVisible && (
+                          <ExpandedTerminalButton
+                            key={resolvedTerminal.toolCallId}
+                            terminal={resolvedTerminal}
+                            onExpand={() => setIsFollowingLive(false)}
+                          />
+                        )}
+                      {!isWebSearch &&
+                        !isNotes &&
+                        !isFinding &&
+                        !isToolError &&
+                        !isSharedFiles &&
+                        !capturedFile && (
+                          <CodeActionButtons
+                            content={
+                              isFile && resolvedFile
+                                ? resolvedFile.content
+                                : isTerminal && resolvedTerminal
+                                  ? resolvedTerminal.output
+                                    ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                                    : `$ ${resolvedTerminal.command}`
+                                  : isProxy && resolvedProxy
+                                    ? resolvedProxy.output
+                                      ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                                      : `$ ${resolvedProxy.command}`
+                                    : ""
+                            }
+                            filename={
+                              isFile
+                                ? sidebarContent.action === "searching"
+                                  ? "search-results.txt"
+                                  : sidebarContent.path.split("/").pop() ||
+                                    "code.txt"
+                                : "terminal-output.txt"
+                            }
+                            language={
+                              isFile
+                                ? sidebarContent.action === "searching"
+                                  ? "text"
+                                  : sidebarContent.language ||
+                                    getLanguageFromPath(sidebarContent.path)
+                                : "ansi"
+                            }
+                            isWrapped={isWrapped}
+                            onToggleWrap={handleToggleWrap}
+                            variant="sidebar"
+                            // xterm manages its own wrapping; the toggle is a no-op
+                            // for interactive PTY output.
+                            showWrap={
+                              !(
+                                (isTerminal && resolvedTerminal?.rawBytes) ||
+                                (isFile && resolvedFile?.action === "viewing")
+                              )
+                            }
+                          />
+                        )}
+                    </div>
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-h-0 w-full overflow-hidden bg-background">
+                    <div className="flex flex-col min-h-0 h-full relative">
+                      <div className="focus-visible:outline-none flex-1 min-h-0 h-full text-sm flex flex-col py-0 outline-none">
+                        <div
+                          className="font-mono w-full text-xs leading-[18px] flex-1 min-h-0 h-full min-w-0"
+                          style={{
+                            overflowWrap: "break-word",
+                            wordBreak: "break-word",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {isFile && resolvedFile && (
                             <>
-                              {/* Show DiffView for editing/appending actions with diff data */}
-                              {(resolvedFile.action === "editing" ||
-                                resolvedFile.action === "appending") &&
-                              resolvedFile.originalContent !== undefined &&
-                              resolvedFile.modifiedContent !== undefined ? (
-                                <DiffView
-                                  originalContent={resolvedFile.originalContent}
-                                  modifiedContent={resolvedFile.modifiedContent}
-                                  language={
-                                    resolvedFile.language ||
-                                    getLanguageFromPath(resolvedFile.path)
-                                  }
-                                  wrap={isWrapped}
+                              {capturedFile ? (
+                                <CapturedFilePreview
+                                  key={capturedFile.id}
+                                  file={capturedFile}
+                                  onClose={closeSidebar}
                                 />
+                              ) : resolvedFile.action === "viewing" ? (
+                                <ViewFileSummary file={resolvedFile} />
                               ) : (
-                                <ComputerCodeBlock
-                                  language={
-                                    resolvedFile.action === "searching"
-                                      ? "text"
-                                      : resolvedFile.language ||
+                                <>
+                                  {/* Show DiffView for editing/appending actions with diff data */}
+                                  {(resolvedFile.action === "editing" ||
+                                    resolvedFile.action === "appending") &&
+                                  resolvedFile.originalContent !== undefined &&
+                                  resolvedFile.modifiedContent !== undefined ? (
+                                    <DiffView
+                                      originalContent={
+                                        resolvedFile.originalContent
+                                      }
+                                      modifiedContent={
+                                        resolvedFile.modifiedContent
+                                      }
+                                      language={
+                                        resolvedFile.language ||
                                         getLanguageFromPath(resolvedFile.path)
-                                  }
-                                  wrap={isWrapped}
-                                  showButtons={false}
-                                >
-                                  {resolvedFile.content}
-                                </ComputerCodeBlock>
+                                      }
+                                      wrap={isWrapped}
+                                    />
+                                  ) : (
+                                    <ComputerCodeBlock
+                                      language={
+                                        resolvedFile.action === "searching"
+                                          ? "text"
+                                          : resolvedFile.language ||
+                                            getLanguageFromPath(
+                                              resolvedFile.path,
+                                            )
+                                      }
+                                      wrap={isWrapped}
+                                      showButtons={false}
+                                    >
+                                      {resolvedFile.content}
+                                    </ComputerCodeBlock>
+                                  )}
+                                </>
                               )}
                             </>
                           )}
-                        </>
-                      )}
-                      {isTerminal && resolvedTerminal && (
-                        <TerminalCodeBlock
-                          command={resolvedTerminal.command}
-                          output={resolvedTerminal.output}
-                          isExecuting={resolvedTerminal.isExecuting}
-                          isBackground={resolvedTerminal.isBackground}
-                          status={
-                            resolvedTerminal.isExecuting ? "streaming" : "ready"
-                          }
-                          variant="sidebar"
-                          wrap={isWrapped}
-                          shellAction={resolvedTerminal.shellAction}
-                          rawBytes={resolvedTerminal.rawBytes}
-                          executionPhase={resolvedTerminal.executionPhase}
-                        />
-                      )}
-                      {isProxy && resolvedProxy && (
-                        <TerminalCodeBlock
-                          command={resolvedProxy.command}
-                          output={resolvedProxy.output}
-                          isExecuting={resolvedProxy.isExecuting}
-                          isBackground={false}
-                          status={
-                            resolvedProxy.isExecuting ? "streaming" : "ready"
-                          }
-                          variant="sidebar"
-                          wrap={isWrapped}
-                        />
-                      )}
-                      {isWebSearch && (
-                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
-                          <div className="flex flex-col px-4 py-3">
-                            {sidebarContent.isSearching ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  Searching...
-                                </div>
+                          {isTerminal && resolvedTerminal && (
+                            <TerminalCodeBlock
+                              command={resolvedTerminal.command}
+                              output={resolvedTerminal.output}
+                              isExecuting={resolvedTerminal.isExecuting}
+                              isBackground={resolvedTerminal.isBackground}
+                              status={
+                                resolvedTerminal.isExecuting
+                                  ? "streaming"
+                                  : "ready"
+                              }
+                              variant="sidebar"
+                              wrap={isWrapped}
+                              shellAction={resolvedTerminal.shellAction}
+                              rawBytes={resolvedTerminal.rawBytes}
+                              executionPhase={resolvedTerminal.executionPhase}
+                            />
+                          )}
+                          {isProxy && resolvedProxy && (
+                            <TerminalCodeBlock
+                              command={resolvedProxy.command}
+                              output={resolvedProxy.output}
+                              isExecuting={resolvedProxy.isExecuting}
+                              isBackground={false}
+                              status={
+                                resolvedProxy.isExecuting
+                                  ? "streaming"
+                                  : "ready"
+                              }
+                              variant="sidebar"
+                              wrap={isWrapped}
+                            />
+                          )}
+                          {isWebSearch && (
+                            <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                              <div className="flex flex-col px-4 py-3">
+                                {sidebarContent.isSearching ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      Searching...
+                                    </div>
+                                  </div>
+                                ) : sidebarContent.results.length === 0 ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      No results found
+                                    </div>
+                                  </div>
+                                ) : (
+                                  sidebarContent.results.map(
+                                    (result, index) => (
+                                      <div
+                                        key={`${result.url}-${index}`}
+                                        className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.results.length - 1 ? "border-b border-border/30" : ""}`}
+                                      >
+                                        <a
+                                          href={result.url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
+                                        >
+                                          <SourceIcon
+                                            url={result.url}
+                                            size={16}
+                                            className="float-left mr-2 mt-0.5 text-muted-foreground"
+                                          />
+                                          {result.title}
+                                        </a>
+                                        {result.content && (
+                                          <div className="text-muted-foreground text-xs mt-0.5 line-clamp-3">
+                                            {result.content}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ),
+                                  )
+                                )}
                               </div>
-                            ) : sidebarContent.results.length === 0 ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  No results found
-                                </div>
-                              </div>
-                            ) : (
-                              sidebarContent.results.map((result, index) => (
-                                <div
-                                  key={`${result.url}-${index}`}
-                                  className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.results.length - 1 ? "border-b border-border/30" : ""}`}
-                                >
-                                  <a
-                                    href={result.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
-                                  >
-                                    <SourceIcon
-                                      url={result.url}
-                                      size={16}
-                                      className="float-left mr-2 mt-0.5 text-muted-foreground"
+                            </div>
+                          )}
+                          {isSharedFiles && (
+                            <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                              <div className="flex flex-col gap-2 px-4 py-3">
+                                {sidebarContent.isExecuting &&
+                                sidebarContent.files.length === 0 ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      Preparing files...
+                                    </div>
+                                  </div>
+                                ) : sidebarContent.files.length === 0 ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      No files shared
+                                    </div>
+                                  </div>
+                                ) : (
+                                  sidebarContent.files.map((file, index) => (
+                                    <FilePartRenderer
+                                      key={file.fileId || `file-${index}`}
+                                      part={{
+                                        fileId: file.fileId as
+                                          Id<"files"> | undefined,
+                                        s3Key: file.s3Key,
+                                        name: file.name,
+                                        filename: file.name,
+                                        mediaType: file.mediaType,
+                                      }}
+                                      partIndex={index}
+                                      messageId={sidebarContent.toolCallId}
+                                      totalFileParts={
+                                        sidebarContent.files.length
+                                      }
                                     />
-                                    {result.title}
-                                  </a>
-                                  {result.content && (
-                                    <div className="text-muted-foreground text-xs mt-0.5 line-clamp-3">
-                                      {result.content}
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {isFinding && (
+                            <FindingDetail
+                              findingId={sidebarContent.findingId}
+                              surface="computer_sidebar"
+                              className="font-sans"
+                            />
+                          )}
+                          {isToolError && (
+                            <ToolErrorDetail content={sidebarContent} />
+                          )}
+                          {isNotes && (
+                            <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                              <div className="flex flex-col px-4 py-3">
+                                {sidebarContent.isExecuting ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      Processing...
                                     </div>
-                                  )}
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      {isSharedFiles && (
-                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
-                          <div className="flex flex-col gap-2 px-4 py-3">
-                            {sidebarContent.isExecuting &&
-                            sidebarContent.files.length === 0 ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  Preparing files...
-                                </div>
-                              </div>
-                            ) : sidebarContent.files.length === 0 ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  No files shared
-                                </div>
-                              </div>
-                            ) : (
-                              sidebarContent.files.map((file, index) => (
-                                <FilePartRenderer
-                                  key={file.fileId || `file-${index}`}
-                                  part={{
-                                    fileId: file.fileId as
-                                      Id<"files"> | undefined,
-                                    s3Key: file.s3Key,
-                                    name: file.name,
-                                    filename: file.name,
-                                    mediaType: file.mediaType,
-                                  }}
-                                  partIndex={index}
-                                  messageId={sidebarContent.toolCallId}
-                                  totalFileParts={sidebarContent.files.length}
-                                />
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      {isFinding && (
-                        <FindingDetail
-                          findingId={sidebarContent.findingId}
-                          surface="computer_sidebar"
-                          className="font-sans"
-                        />
-                      )}
-                      {isToolError && (
-                        <ToolErrorDetail content={sidebarContent} />
-                      )}
-                      {isNotes && (
-                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
-                          <div className="flex flex-col px-4 py-3">
-                            {sidebarContent.isExecuting ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  Processing...
-                                </div>
-                              </div>
-                            ) : sidebarContent.action === "update" &&
-                              sidebarContent.modified ? (
-                              // Update action: show before/after comparison
-                              <div className="space-y-4">
-                                {sidebarContent.original && (
-                                  <div>
-                                    <div className="text-xs text-muted-foreground font-medium mb-2">
-                                      Before
+                                  </div>
+                                ) : sidebarContent.action === "update" &&
+                                  sidebarContent.modified ? (
+                                  // Update action: show before/after comparison
+                                  <div className="space-y-4">
+                                    {sidebarContent.original && (
+                                      <div>
+                                        <div className="text-xs text-muted-foreground font-medium mb-2">
+                                          Before
+                                        </div>
+                                        <div className="bg-muted/30 rounded-md p-3">
+                                          <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-foreground text-sm font-medium">
+                                              {sidebarContent.original.title}
+                                            </span>
+                                            <span
+                                              className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.original.category as NoteCategory)}`}
+                                            >
+                                              {sidebarContent.original.category}
+                                            </span>
+                                          </div>
+                                          <div className="text-muted-foreground text-sm whitespace-pre-wrap">
+                                            {sidebarContent.original.content}
+                                          </div>
+                                          {sidebarContent.original.tags.length >
+                                            0 && (
+                                            <div className="flex gap-1 mt-2 flex-wrap">
+                                              {sidebarContent.original.tags.map(
+                                                (tag) => (
+                                                  <span
+                                                    key={tag}
+                                                    className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                                  >
+                                                    {tag}
+                                                  </span>
+                                                ),
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div>
+                                      <div className="text-xs text-muted-foreground font-medium mb-2">
+                                        After
+                                      </div>
+                                      <div className="bg-muted/30 rounded-md p-3">
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <span className="text-foreground text-sm font-medium">
+                                            {sidebarContent.modified.title}
+                                          </span>
+                                          <span
+                                            className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.modified.category as NoteCategory)}`}
+                                          >
+                                            {sidebarContent.modified.category}
+                                          </span>
+                                        </div>
+                                        <div className="text-muted-foreground text-sm whitespace-pre-wrap">
+                                          {sidebarContent.modified.content}
+                                        </div>
+                                        {sidebarContent.modified.tags.length >
+                                          0 && (
+                                          <div className="flex gap-1 mt-2 flex-wrap">
+                                            {sidebarContent.modified.tags.map(
+                                              (tag) => (
+                                                <span
+                                                  key={tag}
+                                                  className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                                >
+                                                  {tag}
+                                                </span>
+                                              ),
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
-                                    <div className="bg-muted/30 rounded-md p-3">
+                                  </div>
+                                ) : sidebarContent.action === "delete" ? (
+                                  // Delete action: show confirmation
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      Note &quot;{sidebarContent.affectedTitle}
+                                      &quot; deleted
+                                    </div>
+                                  </div>
+                                ) : sidebarContent.notes.length === 0 ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="text-muted-foreground text-sm">
+                                      No notes found
+                                    </div>
+                                  </div>
+                                ) : (
+                                  sidebarContent.notes.map((note, index) => (
+                                    <div
+                                      key={note.note_id}
+                                      className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
+                                    >
                                       <div className="flex items-center gap-2 mb-1">
                                         <span className="text-foreground text-sm font-medium">
-                                          {sidebarContent.original.title}
+                                          {note.title}
                                         </span>
                                         <span
-                                          className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.original.category as NoteCategory)}`}
+                                          className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
                                         >
-                                          {sidebarContent.original.category}
+                                          {note.category}
                                         </span>
                                       </div>
                                       <div className="text-muted-foreground text-sm whitespace-pre-wrap">
-                                        {sidebarContent.original.content}
+                                        {note.content}
                                       </div>
-                                      {sidebarContent.original.tags.length >
-                                        0 && (
+                                      {note.tags.length > 0 && (
                                         <div className="flex gap-1 mt-2 flex-wrap">
-                                          {sidebarContent.original.tags.map(
-                                            (tag) => (
-                                              <span
-                                                key={tag}
-                                                className="text-xs bg-muted px-1.5 py-0.5 rounded"
-                                              >
-                                                {tag}
-                                              </span>
-                                            ),
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                                <div>
-                                  <div className="text-xs text-muted-foreground font-medium mb-2">
-                                    After
-                                  </div>
-                                  <div className="bg-muted/30 rounded-md p-3">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <span className="text-foreground text-sm font-medium">
-                                        {sidebarContent.modified.title}
-                                      </span>
-                                      <span
-                                        className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.modified.category as NoteCategory)}`}
-                                      >
-                                        {sidebarContent.modified.category}
-                                      </span>
-                                    </div>
-                                    <div className="text-muted-foreground text-sm whitespace-pre-wrap">
-                                      {sidebarContent.modified.content}
-                                    </div>
-                                    {sidebarContent.modified.tags.length >
-                                      0 && (
-                                      <div className="flex gap-1 mt-2 flex-wrap">
-                                        {sidebarContent.modified.tags.map(
-                                          (tag) => (
+                                          {note.tags.map((tag) => (
                                             <span
                                               key={tag}
                                               className="text-xs bg-muted px-1.5 py-0.5 rounded"
                                             >
                                               {tag}
                                             </span>
-                                          ),
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            ) : sidebarContent.action === "delete" ? (
-                              // Delete action: show confirmation
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  Note &quot;{sidebarContent.affectedTitle}
-                                  &quot; deleted
-                                </div>
-                              </div>
-                            ) : sidebarContent.notes.length === 0 ? (
-                              <div className="flex items-center justify-center py-8">
-                                <div className="text-muted-foreground text-sm">
-                                  No notes found
-                                </div>
-                              </div>
-                            ) : (
-                              sidebarContent.notes.map((note, index) => (
-                                <div
-                                  key={note.note_id}
-                                  className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
-                                >
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-foreground text-sm font-medium">
-                                      {note.title}
-                                    </span>
-                                    <span
-                                      className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
-                                    >
-                                      {note.category}
-                                    </span>
-                                  </div>
-                                  <div className="text-muted-foreground text-sm whitespace-pre-wrap">
-                                    {note.content}
-                                  </div>
-                                  {note.tags.length > 0 && (
-                                    <div className="flex gap-1 mt-2 flex-wrap">
-                                      {note.tags.map((tag) => (
-                                        <span
-                                          key={tag}
-                                          className="text-xs bg-muted px-1.5 py-0.5 rounded"
-                                        >
-                                          {tag}
-                                        </span>
-                                      ))}
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
-                                  )}
-                                </div>
-                              ))
-                            )}
-                          </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
 
-              {/* Navigation Footer */}
-              <div className="mt-auto flex w-full items-center gap-2 px-4 h-[44px] relative bg-background border-t border-border">
-                <div className="flex items-center" dir="ltr">
-                  <button
-                    type="button"
-                    onClick={handlePrev}
-                    disabled={!canGoPrev}
-                    className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
-                      !canGoPrev
-                        ? "text-muted-foreground/30 cursor-not-allowed"
-                        : "text-muted-foreground hover:text-blue-500"
-                    }`}
-                    aria-label="Previous tool execution"
-                  >
-                    <SkipBack size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleNext}
-                    disabled={!canGoNext}
-                    className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
-                      !canGoNext
-                        ? "text-muted-foreground/30 cursor-not-allowed"
-                        : "text-muted-foreground hover:text-blue-500"
-                    }`}
-                    aria-label="Next tool execution"
-                  >
-                    <SkipForward size={16} />
-                  </button>
-                </div>
-                <div
-                  className="group touch-none group relative hover:z-10 flex h-1 flex-1 min-w-0 cursor-pointer select-none items-center"
-                  onClick={handleSliderClick}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      // Focus the slider handle for keyboard navigation
-                      const handle = e.currentTarget.querySelector(
-                        '[role="slider"]',
-                      ) as HTMLElement;
-                      handle?.focus();
-                    }
-                  }}
-                >
-                  <span className="relative h-full w-full rounded-full bg-muted">
-                    <span
-                      className="absolute h-full rounded-full bg-blue-500"
-                      style={{
-                        left: "0%",
-                        width: `${getProgressPercentage}%`,
-                      }}
-                    ></span>
-                  </span>
-                  {currentIndex >= 0 && (
-                    <span
-                      className="absolute -translate-x-1/2 p-[3px]"
-                      style={{
-                        left: `${getProgressPercentage}%`,
+                  {/* Navigation Footer */}
+                  <div className="mt-auto flex w-full items-center gap-2 px-4 h-[44px] relative bg-background border-t border-border">
+                    <div className="flex items-center" dir="ltr">
+                      <button
+                        type="button"
+                        onClick={handlePrev}
+                        disabled={!canGoPrev}
+                        className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
+                          !canGoPrev
+                            ? "text-muted-foreground/30 cursor-not-allowed"
+                            : "text-muted-foreground hover:text-blue-500"
+                        }`}
+                        aria-label="Previous tool execution"
+                      >
+                        <SkipBack size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleNext}
+                        disabled={!canGoNext}
+                        className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
+                          !canGoNext
+                            ? "text-muted-foreground/30 cursor-not-allowed"
+                            : "text-muted-foreground hover:text-blue-500"
+                        }`}
+                        aria-label="Next tool execution"
+                      >
+                        <SkipForward size={16} />
+                      </button>
+                    </div>
+                    <div
+                      className="group touch-none group relative hover:z-10 flex h-1 flex-1 min-w-0 cursor-pointer select-none items-center"
+                      onClick={handleSliderClick}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          // Focus the slider handle for keyboard navigation
+                          const handle = e.currentTarget.querySelector(
+                            '[role="slider"]',
+                          ) as HTMLElement;
+                          handle?.focus();
+                        }
                       }}
                     >
-                      <span
-                        role="slider"
-                        tabIndex={0}
-                        aria-valuemin={0}
-                        aria-valuemax={maxIndex}
-                        aria-valuenow={currentIndex}
-                        aria-label={`Tool execution ${currentIndex + 1} of ${toolExecutions.length}`}
-                        className="relative block h-[14px] w-[14px] rounded-full bg-blue-500 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border-2 border-background drop-shadow-[0px_1px_4px_rgba(0,0,0,0.06)]"
-                      ></span>
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 text-sm ms-[2px] cursor-default">
-                  <div
-                    className={`h-[8px] w-[8px] rounded-full ${
-                      status === "streaming"
-                        ? "bg-green-500"
-                        : "bg-muted-foreground"
-                    }`}
-                  ></div>
-                  <span
-                    className={
-                      status === "streaming"
-                        ? "text-foreground"
-                        : "text-muted-foreground"
-                    }
-                  >
-                    live
-                  </span>
-                </div>
-                {toolExecutions.length > 0 &&
-                  (!isAtLive || !isFollowingLive) && (
-                    <button
-                      onClick={handleJumpToLive}
-                      className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
-                      style={{ bottom: "calc(100% + 10px)" }}
-                      aria-label="Jump to live"
-                    >
-                      <Play size={16} className="text-foreground" />
-                      <span className="text-foreground text-sm font-medium">
-                        Jump to live
+                      <span className="relative h-full w-full rounded-full bg-muted">
+                        <span
+                          className="absolute h-full rounded-full bg-blue-500"
+                          style={{
+                            left: "0%",
+                            width: `${getProgressPercentage}%`,
+                          }}
+                        ></span>
                       </span>
-                    </button>
-                  )}
-                <div></div>
-              </div>
-            </div>
-            <TodoPanel status={status} placement="sidebar" />
-            </>)}
+                      {currentIndex >= 0 && (
+                        <span
+                          className="absolute -translate-x-1/2 p-[3px]"
+                          style={{
+                            left: `${getProgressPercentage}%`,
+                          }}
+                        >
+                          <span
+                            role="slider"
+                            tabIndex={0}
+                            aria-valuemin={0}
+                            aria-valuemax={maxIndex}
+                            aria-valuenow={currentIndex}
+                            aria-label={`Tool execution ${currentIndex + 1} of ${toolExecutions.length}`}
+                            className="relative block h-[14px] w-[14px] rounded-full bg-blue-500 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border-2 border-background drop-shadow-[0px_1px_4px_rgba(0,0,0,0.06)]"
+                          ></span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 text-sm ms-[2px] cursor-default">
+                      <div
+                        className={`h-[8px] w-[8px] rounded-full ${
+                          status === "streaming"
+                            ? "bg-green-500"
+                            : "bg-muted-foreground"
+                        }`}
+                      ></div>
+                      <span
+                        className={
+                          status === "streaming"
+                            ? "text-foreground"
+                            : "text-muted-foreground"
+                        }
+                      >
+                        live
+                      </span>
+                    </div>
+                    {toolExecutions.length > 0 &&
+                      (!isAtLive || !isFollowingLive) && (
+                        <button
+                          onClick={handleJumpToLive}
+                          className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
+                          style={{ bottom: "calc(100% + 10px)" }}
+                          aria-label="Jump to live"
+                        >
+                          <Play size={16} className="text-foreground" />
+                          <span className="text-foreground text-sm font-medium">
+                            Jump to live
+                          </span>
+                        </button>
+                      )}
+                    <div></div>
+                  </div>
+                </div>
+                <TodoPanel status={status} placement="sidebar" />
+              </>
+            )}
           </div>
         </div>
       </div>

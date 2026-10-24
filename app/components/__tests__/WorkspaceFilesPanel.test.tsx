@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { WorkspaceFilesPanel } from "../WorkspaceFilesPanel";
+import { LiveWorkspaceFilesPanel as WorkspaceFilesPanel } from "../WorkspaceFilesPanel";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 jest.mock("../ComputerCodeBlock", () => ({
