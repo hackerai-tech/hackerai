@@ -1558,15 +1558,17 @@ export async function createAgentStream(
       .map((part) => part.text)
       .join("\n");
     if (!summaryText.trim()) return undefined;
-    const recoveryPrompt =
-      summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
     // This retry bypasses prepareStep and prepareProviderMessages. Re-read
     // private handoff instructions after lossy summarization, then apply the
     // same trusted annotation policy at the provider boundary.
     const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
     rejectedRequestRecoveryMessages = projectHandoffNotes(
-      [{ role: "user", content: recoveryPrompt }],
+      [
+        { role: "user", content: summaryText },
+        { role: "user", content: POST_SUMMARIZATION_CONTINUATION_PROMPT },
+      ],
       handoffNotes,
+      1,
     );
     return preparePlatformAuthorizationForModel(
       rejectedRequestRecoveryMessages,
@@ -2006,8 +2008,11 @@ export async function createAgentStream(
       // Saved handoff notes can change the user's instructions. If the read
       // fails, retry/fail this step rather than act with silently missing context.
       const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
-      const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] =>
-        projectHandoffNotes(messages, handoffNotes);
+      const withHandoffNotes = (
+        messages: ModelMessage[],
+        compactedPrefixLength?: number,
+      ): ModelMessage[] =>
+        projectHandoffNotes(messages, handoffNotes, compactedPrefixLength);
       if (handoffNotes.length && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();
@@ -2267,6 +2272,7 @@ export async function createAgentStream(
               // handoff context again on each step, including after compaction.
               summarizedModelMessages = withHandoffNotes(
                 summarizedModelMessages,
+                1,
               );
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
@@ -2437,7 +2443,10 @@ export async function createAgentStream(
                   lastHistoryResponseCursor =
                     rawModelMessages.length - initialModelMessages.length;
                 }
-                rollingModelMessages = withHandoffNotes(nextBaseMessages);
+                rollingModelMessages = withHandoffNotes(
+                  nextBaseMessages,
+                  compactedModelMessages.length,
+                );
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
                   limitModelImageToolResults(
@@ -2461,7 +2470,10 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  withHandoffNotes(nextBaseMessages),
+                  withHandoffNotes(
+                    nextBaseMessages,
+                    compactedModelMessages.length,
+                  ),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {

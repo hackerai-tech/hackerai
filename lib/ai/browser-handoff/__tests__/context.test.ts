@@ -83,3 +83,27 @@ it("restores compacted notes in order before retained actions without replaying 
     ]).at(-1),
   ).toEqual({ role: "user", content: "Now inspect another page." });
 });
+
+it("reanchors removed notes after a new summary across later cloned step replays", () => {
+  const project = createBrowserHandoffNoteProjector();
+  const notes = [{ id: "1", text: "Use the new account." }];
+  project([{ role: "user", content: "Inspect the old account." }], notes);
+  const compacted: ModelMessage[] = [
+    { role: "user", content: "Summary: old account was open." },
+    { role: "assistant", content: "Retained inspection." },
+    { role: "user", content: "Continue." },
+  ];
+  const expected: ModelMessage[] = [
+    compacted[0],
+    { role: "user", content: notes[0].text },
+    ...compacted.slice(1),
+  ];
+  expect(project(compacted, notes, 1)).toEqual(expected);
+  expect(project(compacted, notes)).toEqual(expected);
+  expect(
+    project(
+      expected.map((message) => ({ ...message })),
+      notes,
+    ),
+  ).toEqual(expected);
+});

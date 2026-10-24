@@ -1070,6 +1070,11 @@ describe("createAgentStream repeated compaction", () => {
           expect(doStream).toHaveBeenCalledTimes(2);
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
           expect(retryText).toContain("HANDOFF: keep my selected account.");
+          expect(
+            retryText.indexOf("Completed inspection found marker ABC"),
+          ).toBeLessThan(
+            retryText.indexOf("HANDOFF: keep my selected account."),
+          );
           expect(retryText).toContain(
             "LATE HANDOFF: preserve this new update.",
           );
@@ -4125,6 +4130,14 @@ describe("createAgentStream repeated compaction", () => {
           toolResults: [{ toolCallId: "read", output: "unchanged" }],
         });
       }
+      mockGetProviderPromptPressure.mockReturnValueOnce(null);
+      const savedTokens = state.lastStepInputTokens;
+      state.lastStepInputTokens = 0;
+      await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Original task" }],
+      });
+      state.lastStepInputTokens = savedTokens;
       const prepared = await stream.prepareStep({
         steps: kind !== "durable" ? [{ toolResults: [] }] : [],
         messages: [{ role: "user", content: "old context ".repeat(4_000) }],
@@ -4134,6 +4147,10 @@ describe("createAgentStream repeated compaction", () => {
       );
       expect(JSON.stringify(prepared.messages)).toContain(
         "HANDOFF: use the account I selected.",
+      );
+      const ordered = JSON.stringify(prepared.messages);
+      expect(ordered.indexOf("Continue the fixture.")).toBeLessThan(
+        ordered.indexOf("HANDOFF: use the account I selected."),
       );
       if (kind !== "durable")
         expect(mockCompactModelMessagesInRun).toHaveBeenCalled();

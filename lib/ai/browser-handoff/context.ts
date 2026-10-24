@@ -2,7 +2,7 @@ import type { ModelMessage } from "ai";
 
 /** Keep private updates at their original position across SDK step replays.
  * prepareStep messages are not retained by the SDK. If compaction removes an
- * anchor, restore its note before retained history, not as a new user turn.
+ * anchor, restore its note after the new summary and before retained history.
  */
 export function createBrowserHandoffNoteProjector() {
   const anchors = new Map<string, string | null>();
@@ -10,6 +10,7 @@ export function createBrowserHandoffNoteProjector() {
   return (
     messages: ModelMessage[],
     notes: Array<{ id: string; text: string }>,
+    compactedPrefixLength?: number,
   ): ModelMessage[] => {
     const result = [...messages];
     let previousNoteEnd = 0;
@@ -21,7 +22,10 @@ export function createBrowserHandoffNoteProjector() {
         previousNoteEnd = retained + 1;
         continue;
       }
-      let index = result.length;
+      let index = Math.max(
+        compactedPrefixLength ?? result.length,
+        previousNoteEnd,
+      );
       if (anchors.has(note.id)) {
         const anchor = anchors.get(note.id);
         const position =
@@ -34,6 +38,13 @@ export function createBrowserHandoffNoteProjector() {
                   (message) => JSON.stringify(message) === anchor,
                 );
         index = position + 1;
+        if (position === -1 && compactedPrefixLength !== undefined) {
+          index = Math.max(compactedPrefixLength, previousNoteEnd);
+          anchors.set(
+            note.id,
+            index ? JSON.stringify(result[index - 1]) : null,
+          );
+        }
         // System messages must remain ahead of restored user context.
         while (result[index]?.role === "system") index++;
         index = Math.max(index, previousNoteEnd);
@@ -46,10 +57,7 @@ export function createBrowserHandoffNoteProjector() {
           continue;
         }
       } else {
-        anchors.set(
-          note.id,
-          result.length ? JSON.stringify(result.at(-1)) : null,
-        );
+        anchors.set(note.id, index ? JSON.stringify(result[index - 1]) : null);
       }
       index = Math.max(index, previousNoteEnd);
       previousNoteEnd = index + 1;
