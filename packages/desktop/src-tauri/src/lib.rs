@@ -1,4 +1,5 @@
 mod platform;
+mod child_environment;
 mod environment_identity;
 mod file_save;
 mod pty;

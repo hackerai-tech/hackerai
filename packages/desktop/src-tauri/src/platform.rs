@@ -173,6 +173,17 @@ pub fn build_command(
         cmd.current_dir(cwd);
     }
 
+    if let Some(libraries) = crate::child_environment::appimage_library_path_override() {
+        match libraries {
+            Some(value) => {
+                cmd.env("LD_LIBRARY_PATH", value);
+            }
+            None => {
+                cmd.env_remove("LD_LIBRARY_PATH");
+            }
+        }
+    }
+
     if let Some(env) = env {
         for (k, v) in env {
             cmd.env(k, v);
