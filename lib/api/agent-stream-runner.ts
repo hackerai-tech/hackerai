@@ -2437,7 +2437,7 @@ export async function createAgentStream(
                   lastHistoryResponseCursor =
                     rawModelMessages.length - initialModelMessages.length;
                 }
-                rollingModelMessages = nextBaseMessages;
+                rollingModelMessages = withHandoffNotes(nextBaseMessages);
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
                   limitModelImageToolResults(

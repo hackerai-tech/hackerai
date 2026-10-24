@@ -6,6 +6,7 @@ import type { ModelMessage } from "ai";
  */
 export function createBrowserHandoffNoteProjector() {
   const anchors = new Map<string, string | null>();
+  const projectedIds = new WeakMap<ModelMessage, string>();
   return (
     messages: ModelMessage[],
     notes: Array<{ id: string; text: string }>,
@@ -14,14 +15,9 @@ export function createBrowserHandoffNoteProjector() {
     let previousNoteEnd = 0;
     for (const note of notes) {
       const retained = result.findIndex(
-        (message) => message.role === "user" && message.content === note.text,
+        (message) => projectedIds.get(message) === note.id,
       );
       if (retained !== -1) {
-        if (!anchors.has(note.id))
-          anchors.set(
-            note.id,
-            retained ? JSON.stringify(result[retained - 1]) : null,
-          );
         previousNoteEnd = retained + 1;
         continue;
       }
@@ -37,6 +33,15 @@ export function createBrowserHandoffNoteProjector() {
         index = position + 1;
         // System messages must remain ahead of restored user context.
         while (result[index]?.role === "system") index++;
+        index = Math.max(index, previousNoteEnd);
+        // Cloned provider messages lose object identity. Only reuse matching
+        // text at this note's recorded position, never arbitrary user history.
+        const existing = result[index];
+        if (existing?.role === "user" && existing.content === note.text) {
+          projectedIds.set(existing, note.id);
+          previousNoteEnd = index + 1;
+          continue;
+        }
       } else {
         anchors.set(
           note.id,
@@ -45,7 +50,9 @@ export function createBrowserHandoffNoteProjector() {
       }
       index = Math.max(index, previousNoteEnd);
       previousNoteEnd = index + 1;
-      result.splice(index, 0, { role: "user", content: note.text });
+      const message: ModelMessage = { role: "user", content: note.text };
+      projectedIds.set(message, note.id);
+      result.splice(index, 0, message);
     }
     return result;
   };

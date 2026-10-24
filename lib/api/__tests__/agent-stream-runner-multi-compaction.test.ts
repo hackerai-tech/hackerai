@@ -4828,6 +4828,71 @@ describe("createAgentStream repeated compaction", () => {
     ).not.toContain("private transcript content");
   });
 
+  it("retains the handoff note when preparing a compacted request falls back", async () => {
+    const summary = uiMessage("summary", "Continue the fixture.");
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Continue the fixture.",
+      runtimeContextTokens: require("@/lib/chat/summarization/constants")
+        .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    const onProviderRequestDiagnostics = jest.fn((event) => {
+      if (event.source === "summarized_prepare_step")
+        throw new Error("diagnostics unavailable");
+    });
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 120_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker: {},
+          onProviderRequestDiagnostics,
+          getBrowserHandoffNotes: async () => [
+            { id: "handoff", text: "HANDOFF: use my selected account." },
+          ],
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[agent-stream] prepareStep error:",
+        expect.objectContaining({ message: "diagnostics unavailable" }),
+      );
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "Continue the fixture.",
+      );
+      expect(
+        JSON.stringify(prepared.messages).match(
+          /HANDOFF: use my selected account\./g,
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(state.providerRecoveryContext)).not.toContain(
+        "HANDOFF:",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("emits retained-message diagnostics on prepare-step fallback", async () => {
     const onProviderRequestDiagnostics = jest.fn();
     const consoleError = jest
