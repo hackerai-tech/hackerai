@@ -686,8 +686,32 @@ mod tests {
         write.join().unwrap();
         let (_, exit_code) = wait_for_exit(&rx);
         assert_ne!(exit_code, 0);
-        assert!(PtyManager::write_input(queued, "late input").is_err());
+        assert!(PtyManager::write_input(queued.clone(), "late input").is_err());
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert!(manager.sessions.lock().unwrap().is_empty());
+
+        // A retained writer cannot deliver input to a replacement session,
+        // even when the caller reuses the same logical session ID.
+        let (channel, rx) = self::channel();
+        manager
+            .create(
+                "queued-input".into(),
+                "stty -echo; printf ready; IFS= read -r line; printf 'received:%s' \"$line\""
+                    .into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        assert!(PtyManager::write_input(queued, "stale input\n").is_err());
+        let writer = manager.input_writer("queued-input").unwrap();
+        PtyManager::write_input(writer, "fresh input\n").unwrap();
+        let (output, exit_code) = wait_for_exit(&rx);
+        assert_eq!(exit_code, 0);
+        assert_eq!(output, "received:fresh input");
         assert!(manager.sessions.lock().unwrap().is_empty());
     }
 
