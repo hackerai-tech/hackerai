@@ -165,49 +165,47 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="relative z-10 order-1 mx-2 min-w-0 shrink-0 text-sm"
+      className="relative z-10 order-1 mx-1 min-w-0 shrink-0 text-sm"
     >
       {goal && (
-        <div className="min-w-0 rounded-t-2xl border border-b-0 bg-muted/50 pb-2 -mb-2">
-          <div className="flex flex-wrap items-center gap-2 p-2">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1 py-1">
             <button
               type="button"
               aria-label={expanded ? "Hide goal details" : "Show goal details"}
               aria-expanded={expanded}
               aria-controls={detailsId}
               onClick={() => setExpanded(!expanded)}
-              className="flex min-w-0 flex-1 basis-full sm:basis-0 items-center gap-2 rounded-md p-1 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
+              className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Target
-                className="size-4 shrink-0 text-muted-foreground"
-                aria-hidden="true"
-              />
-              <span className="min-w-0 flex-1">
-                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <strong role="status" aria-live="polite">
-                    Goal · {stateLabels[goal.state]}
-                  </strong>
-                  <span className="text-xs text-muted-foreground">
-                    {goal.runs}/{goal.maxRuns} runs
-                  </span>
+              <Target className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="font-medium text-foreground/80"
+                >
+                  Goal · {stateLabels[goal.state]}
                 </span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {goal.objective}
+                <span className="mx-1.5" aria-hidden="true">
+                  ·
                 </span>
+                <span>{goal.objective}</span>
               </span>
               <ChevronDown
-                className={`size-4 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+                className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
                 aria-hidden="true"
               />
             </button>
-            <div className="flex w-full flex-wrap justify-end gap-1 empty:hidden sm:w-auto">
+            <div className="flex shrink-0 items-center gap-0.5 text-muted-foreground empty:hidden">
               {active &&
                 ["queued", "running", "needs_approval", "waiting"].includes(
                   goal.state,
                 ) && (
                   <Button
-                    size="sm"
-                    variant="outline"
+                    size="icon-sm"
+                    variant="ghost"
                     disabled={controlling}
                     aria-label="Pause goal"
                     title="Pause goal"
@@ -220,6 +218,9 @@ export function AgentGoalPanel({
                 (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
                 <Button
                   size="sm"
+                  variant="ghost"
+                  className="px-2 text-xs"
+                  aria-label="Resume goal"
                   disabled={
                     busy ||
                     !canResume ||
@@ -230,7 +231,7 @@ export function AgentGoalPanel({
                   }
                   onClick={() => submit()}
                 >
-                  Resume goal
+                  Resume
                 </Button>
               )}
               {resumable &&
@@ -239,7 +240,8 @@ export function AgentGoalPanel({
                 !expanded && (
                   <Button
                     size="sm"
-                    variant="outline"
+                    variant="ghost"
+                    className="px-2 text-xs"
                     onClick={() => setExpanded(true)}
                   >
                     Add runs
@@ -247,7 +249,7 @@ export function AgentGoalPanel({
                 )}
               {goal.state !== "achieved" && (
                 <Button
-                  size="sm"
+                  size="icon-sm"
                   variant="ghost"
                   aria-label="Edit goal"
                   title="Edit goal"
@@ -259,8 +261,8 @@ export function AgentGoalPanel({
               )}
               {goal && (
                 <Button
-                  size="sm"
-                  variant="outline"
+                  size="icon-sm"
+                  variant="ghost"
                   disabled={controlling}
                   aria-label="Delete goal"
                   title="Delete goal"
@@ -274,8 +276,11 @@ export function AgentGoalPanel({
           {expanded && (
             <div
               id={detailsId}
-              className="max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain border-t p-3 break-words [overflow-wrap:anywhere]"
+              className="mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
             >
+              <p className="text-xs text-muted-foreground">
+                {goal.runs}/{goal.maxRuns} runs used
+              </p>
               {resumable && (
                 <div className="space-y-2">
                   {goal.runs >= goal.maxRuns &&
