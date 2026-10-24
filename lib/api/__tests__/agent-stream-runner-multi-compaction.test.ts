@@ -4303,6 +4303,10 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    [
+      "model-deepseek-v4.1-flash-1017-pro",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ],
     ["model-glm-5.3-flash-agent", "model-glm-5.3-flash-agent"],
     ["model-glm-5.3-flash", "model-deepseek-v4-flash-vision"],
     ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-vision"],

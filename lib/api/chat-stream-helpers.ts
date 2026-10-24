@@ -1100,6 +1100,15 @@ export function buildProviderOptions(
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
+  // Only explicit tier requests on the snapshot use this policy. The legacy
+  // vision aliases also serve allowance rescue and retain their own defaults.
+  const isExplicitPaidFlashTier =
+    mode === "agent" &&
+    modelName === DEEPSEEK_1017_MODEL_KEY &&
+    (modelId === DEEPSEEK_1017_SLUG ||
+      modelId === DEEPSEEK_1017_CANONICAL_SLUG) &&
+    (options.selectedModelOverride === "hackerai-standard" ||
+      options.selectedModelOverride === "hackerai-pro");
   const baseProviderRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -1117,8 +1126,13 @@ export function buildProviderOptions(
       }
     : baseProviderRouting;
   // GLM titles need mandatory reasoning, kept low for the small output budget.
-  const reasoning =
-    modelName === DEEPSEEK_1017_MODEL_KEY
+  const reasoning = isExplicitPaidFlashTier
+    ? {
+        enabled: true,
+        effort:
+          options.selectedModelOverride === "hackerai-pro" ? "max" : "high",
+      }
+    : modelName === DEEPSEEK_1017_MODEL_KEY
       ? {
           enabled: true,
           effort:
@@ -1176,7 +1190,12 @@ export function buildProviderOptions(
       ...(userId && { user: userId }),
       ...(isDeepSeekV4 &&
         options.cacheSessionId && { session_id: options.cacheSessionId }),
-      ...(providerRouting && { provider: providerRouting }),
+      ...((providerRouting || isExplicitPaidFlashTier) && {
+        provider: {
+          ...providerRouting,
+          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+        },
+      }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;

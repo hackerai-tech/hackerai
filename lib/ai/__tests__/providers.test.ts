@@ -280,13 +280,21 @@ describe("provider registry", () => {
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
+  it("resolves Standard to the exact native multimodal Flash snapshot", () => {
+    const key = resolveAgentTierToProviderKey("hackerai-standard");
+    expect(myProvider.languageModel(key).modelId).toBe(
+      "deepseek/deepseek-v4.1-flash-1017",
+    );
+    expect(supportsMultimodalToolResults(key)).toBe(true);
+  });
+
   it("resolves Agent Pro to V4.1 Flash with native image support", () => {
     const key = resolveAgentTierToProviderKey("hackerai-pro");
     expect(myProvider.languageModel(key).modelId).toBe(
       "deepseek/deepseek-v4.1-flash-1017",
     );
     expect(supportsMultimodalToolResults(key)).toBe(true);
-    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
+    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash 1017");
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
