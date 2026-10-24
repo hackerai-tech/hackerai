@@ -165,7 +165,7 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="relative z-10 order-1 mx-1 min-w-0 shrink-0 text-sm"
+      className="relative z-10 order-1 mx-1 min-w-0 shrink-0 bg-background text-sm"
     >
       {goal && (
         <div className="min-w-0">
