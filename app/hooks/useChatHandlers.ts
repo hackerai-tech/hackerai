@@ -647,32 +647,6 @@ export const useChatHandlers = ({
     if (!input.trim() && !hasValidFiles) {
       return false;
     }
-    if (
-      !goalCommand &&
-      goalState &&
-      ["queued", "running", "waiting", "needs_approval"].includes(goalState)
-    ) {
-      try {
-        const r = await fetch("/api/agent-goal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chatId, action: "pause" }),
-        });
-        if (!r.ok)
-          throw new Error(
-            "Could not pause the goal before sending your message. Your draft is saved.",
-          );
-        toast.info(
-          "Goal paused for your message. Resume it from the goal panel when ready.",
-        );
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Goal could not pause",
-        );
-        return false;
-      }
-    }
-
     const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
     if (uploadedFiles.length > maxFilesLimit) {
       toast.error("Cannot send files in this mode", {
@@ -701,39 +675,6 @@ export const useChatHandlers = ({
       return false;
     }
 
-    // While an Agent run is starting or streaming, honor the queue behavior.
-    if (status === "streaming" || status === "submitted") {
-      const validFiles = uploadedFiles
-        .filter(isSendableUploadedFile)
-        .map(createFileMessagePartFromUploadedFile)
-        .filter((part): part is NonNullable<typeof part> => part !== null);
-
-      if (queueBehavior === "queue") {
-        // Queue the message - will auto-send after current response completes
-        queueMessage(input, validFiles);
-        captureAuthenticatedEvent("chat_user_submission", {
-          definition_version: 1,
-          mode: currentChatMode,
-          subscription_tier: subscription,
-          queued: true,
-        });
-        clearInput();
-        clearUploadedFiles();
-        return true;
-      } else if (queueBehavior === "stop-and-send") {
-        try {
-          if (!(await stopActiveRunForSteer("stop_and_send"))) return false;
-        } catch (error) {
-          console.error(
-            "Failed to stop the active run before steering:",
-            error,
-          );
-          toast.error("Could not steer the Agent run. Please try again.");
-          return false;
-        }
-        // Continue to send the new message immediately below (don't return)
-      }
-    }
     // Check token limit before sending based on user plan
     const maxTokens = getMaxTokensForSubscription(subscription, {
       mode: currentChatMode,
@@ -773,6 +714,65 @@ export const useChatHandlers = ({
       return false;
     }
     if (sendDisabledReasonRef.current) return false;
+    if (
+      !goalCommand &&
+      goalState &&
+      ["queued", "running", "waiting", "needs_approval"].includes(goalState)
+    ) {
+      try {
+        const r = await fetch("/api/agent-goal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId, action: "pause" }),
+        });
+        if (!r.ok)
+          throw new Error(
+            "Could not pause the goal before sending your message. Your draft is saved.",
+          );
+        toast.info(
+          "Goal paused for your message. Resume it from the goal panel when ready.",
+        );
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Goal could not pause",
+        );
+        return false;
+      }
+    }
+
+    // While an Agent run is starting or streaming, honor the queue behavior.
+    if (status === "streaming" || status === "submitted") {
+      const validFiles = uploadedFiles
+        .filter(isSendableUploadedFile)
+        .map(createFileMessagePartFromUploadedFile)
+        .filter((part): part is NonNullable<typeof part> => part !== null);
+
+      if (queueBehavior === "queue") {
+        // Queue the message - will auto-send after current response completes
+        queueMessage(input, validFiles);
+        captureAuthenticatedEvent("chat_user_submission", {
+          definition_version: 1,
+          mode: currentChatMode,
+          subscription_tier: subscription,
+          queued: true,
+        });
+        clearInput();
+        clearUploadedFiles();
+        return true;
+      } else if (queueBehavior === "stop-and-send") {
+        try {
+          if (!(await stopActiveRunForSteer("stop_and_send"))) return false;
+        } catch (error) {
+          console.error(
+            "Failed to stop the active run before steering:",
+            error,
+          );
+          toast.error("Could not steer the Agent run. Please try again.");
+          return false;
+        }
+        // Continue to send the new message immediately below (don't return)
+      }
+    }
     // Local staging can fail before a task exists. Keep its optimistic message
     // and source paths mounted until the server admits the run.
     if (!isExistingChat && !hasLocalDesktopFiles) {

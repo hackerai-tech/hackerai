@@ -182,6 +182,81 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it("pauses automatic goal work before queueing a valid user message", async () => {
+    mockInput = "Please check this first";
+    mockEmptyQueue = true;
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "running",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as unknown as React.FormEvent),
+      ).toBe(true);
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.objectContaining({
+        body: JSON.stringify({ chatId: "chat-1", action: "pause" }),
+      }),
+    );
+    expect(mockQueueMessage).toHaveBeenCalledWith(mockInput, []);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "streaming"] as const)(
+    "does not pause a goal when an oversized message is rejected while %s",
+    async (status) => {
+      mockInput = "Oversized message";
+      mockEmptyQueue = true;
+      const validation = await import("@/lib/utils/client-token-validation");
+      jest
+        .mocked(validation.getInputTokenLimitStatus)
+        .mockResolvedValueOnce({ exceedsLimit: true, tokenCount: 999999 });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status,
+          goalState: "running",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as unknown as React.FormEvent),
+        ).toBe(false);
+      });
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.anything(),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps the draft when the saved objective exceeds the input budget", async () => {
     mockInput = "/goal resume";
     mockEmptyQueue = true;
