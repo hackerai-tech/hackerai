@@ -53,6 +53,7 @@ export function startDesktopAckTelemetry(context: DesktopAckContext) {
       outcome: result.outcome,
       reason: result.reason,
       ...(result.reason === "stopped" &&
+        result.outcome === "incomplete" &&
         isDesktopAckStopSource(stopSource) && { stopSource }),
       observedFrames: result.observedFrames,
       enqueuedFrames: result.enqueuedFrames,

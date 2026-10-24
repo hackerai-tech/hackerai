@@ -138,6 +138,20 @@ it("attributes only stopped output, preserving an unknown source on older caller
   expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
 });
 
+it.each(["acknowledged", "canceled"] as const)(
+  "does not attribute a contradictory %s stopped result before SDK sanitization",
+  (outcome) => {
+    capture.mockReset();
+    startDesktopAckTelemetry({
+      connectionId: "connection",
+      commandId: "command",
+    })({ ...result, outcome, reason: "stopped" }, "bridge_stop");
+    expect(capture.mock.calls.at(-1)![0].properties).not.toHaveProperty(
+      "stopSource",
+    );
+  },
+);
+
 it.each(["bridge_stop", "session_replaced", "PRIVATE", null, {}])(
   "filters an enriched stop source after SDK registration: %p",
   (stopSource) => {
