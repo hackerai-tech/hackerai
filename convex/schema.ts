@@ -621,6 +621,7 @@ export default defineSchema({
     .index("by_s3_key", ["s3_key"]),
 
   task_outcome_surveys: defineTable(taskOutcomeFields)
+    .index("by_survey_kind_and_selected_at", ["survey_kind", "selected_at"])
     .index("by_user_id", ["user_id"])
     .index("by_user_id_and_last_interaction_at", [
       "user_id",
