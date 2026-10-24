@@ -436,7 +436,6 @@ export function AgentGoalPanel({
             sideOffset={12}
             collisionPadding={12}
             aria-label="Goal controls"
-            onOpenAutoFocus={(event) => event.preventDefault()}
             onCloseAutoFocus={(event) => {
               if (openingEditor.current) event.preventDefault();
               openingEditor.current = false;

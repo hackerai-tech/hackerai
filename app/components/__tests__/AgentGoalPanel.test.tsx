@@ -427,7 +427,7 @@ describe("goal controls", () => {
     await act(async () => finish());
   });
 
-  it("dismisses the mobile popover with Escape and restores focus to its pill", async () => {
+  it("focuses mobile controls on opening and restores the pill on Escape", async () => {
     mockIsMobile = true;
     setMockQueryResult({ ...goal, state: "paused", maxRuns: 3 });
     render(
@@ -444,6 +444,9 @@ describe("goal controls", () => {
     const trigger = screen.getByRole("button", { name: "Show goal controls" });
     trigger.focus();
     fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Details" })).toHaveFocus(),
+    );
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Goal controls" }), {
       key: "Escape",
     });
