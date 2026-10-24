@@ -762,7 +762,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
               {/* Unified Header */}
               <div
-                className={`h-[36px] shrink-0 flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)] ${isTerminal && browserPreviewVisible ? "max-sm:min-h-12 max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11" : ""}`}
+                className={`h-[36px] shrink-0 flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)] ${isTerminal && browserPreviewVisible ? "max-sm:h-auto max-sm:min-h-12 max-sm:flex-wrap max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11" : ""}`}
               >
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
@@ -807,7 +807,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                <div className="flex items-center">
+                <div
+                  className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
+                >
                   {isTerminal && resolvedTerminal && browserPreviewVisible && (
                     <ExpandedTerminalButton
                       key={resolvedTerminal.toolCallId}
