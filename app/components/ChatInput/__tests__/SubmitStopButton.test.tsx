@@ -87,6 +87,31 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(await screen.findByText("Messages loading")).toBeInTheDocument();
   });
 
+  it.each([
+    { isOnline: false },
+    { isUploadingFiles: true },
+    { sendDisabledReason: "Wait for the attachment to finish removing." },
+    { status: "submitted" as const },
+  ])(
+    "keeps Stop available when a goal follow-up is blocked by %j",
+    (blocked) => {
+      render(
+        <TooltipProvider>
+          <SubmitStopButton
+            {...defaultProps}
+            chatMode="agent"
+            isGenerating
+            allowSendWhileGenerating
+            status="streaming"
+            {...blocked}
+          />
+        </TooltipProvider>,
+      );
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+      expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+    },
+  );
+
   it("uses the default submit treatment for paid Agent mode", () => {
     const button = renderButton("agent", true);
 

@@ -903,6 +903,39 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnSubmit).not.toHaveBeenCalled();
     });
 
+    it.each(["ready", "streaming"] as const)(
+      "allows clicking Send beside Stop during an active goal with %s stream status",
+      (status) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status={status}
+              hasActiveGoalRun
+            />
+          </TestWrapper>,
+        );
+        expect(screen.queryByLabelText("Send message")).not.toBeInTheDocument();
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Please check the saved result" },
+        });
+        expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+        fireEvent.click(screen.getByLabelText("Send message"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.any(Object),
+          undefined,
+        );
+        expect(mockOnStop).not.toHaveBeenCalled();
+      },
+    );
+
     it("hides a stale stop action after an Agent run is known to be terminal", () => {
       render(
         <TestWrapper>

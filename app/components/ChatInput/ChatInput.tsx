@@ -1091,6 +1091,7 @@ const ChatInputContent = ({
                 compactAgentControls={compactAgentControls}
                 onAttachClick={handleAttachClick}
                 isGenerating={isGenerating}
+                allowSendWhileGenerating={hasActiveGoalRun}
                 hideStop={hideStop}
                 onStop={() => void handleAgentStop()}
                 onSubmit={handleSubmit}
