@@ -19,6 +19,7 @@ import {
   usePaginatedQuery,
   useMutation,
   useConvexAuth,
+  useConvex,
 } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
@@ -556,6 +557,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const convex = useConvex();
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
@@ -1002,6 +1004,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               ) {
                 queuedAdmissionRef.current(request.chatId, queuedMessageId);
               }
+              // Only expose the saved-task route after attachment staging and
+              // user-message persistence have succeeded.
+              if (
+                finalizeNewChatRoute({
+                  chatId: activeChatIdRef.current,
+                  isAbort: false,
+                  isExistingChat: isExistingChatRef.current,
+                })
+              ) {
+                removeDraft("new");
+                setIsExistingChat(true);
+              }
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
                 agentLongRunCorrelationRef.current = {
@@ -1279,8 +1293,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort }) => {
-      performanceTracker.setOutcome(isAbort ? "aborted" : "completed");
+    onFinish: ({ isAbort, isError }) => {
+      performanceTracker.setOutcome(
+        isError ? "error" : isAbort ? "aborted" : "completed",
+      );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1295,6 +1311,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         finalizeNewChatRoute({
           chatId,
           isAbort,
+          isError,
           isExistingChat: isExistingChatRef.current,
         })
       ) {
@@ -2332,6 +2349,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     regenerate,
     setMessages,
     isExistingChat,
+    isUserMessagePersisted: (messageId) =>
+      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,

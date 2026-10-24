@@ -55,7 +55,7 @@ const { CompactionModelPolicy } =
   require("../compaction-policy") as typeof import("../compaction-policy");
 const { AGENT_SUMMARIZATION_PROMPT, ASK_SUMMARIZATION_PROMPT } =
   require("../prompts") as typeof import("../prompts");
-const { checkAndSummarizeIfNeeded } =
+const { checkAndSummarizeIfNeeded, compactModelMessagesInRun } =
   require("../index") as typeof import("../index");
 
 const jsonCheckpoint = (mode: "ask" | "agent", body: string) =>
@@ -145,6 +145,14 @@ describe("startup compaction through the real AI SDK", () => {
     models.set("model-glm-5.3-flash", primary);
     models.set("model-deepseek-v4-flash-vision-pro", fallback);
     models.set("model-glm-5.3", finalFallback);
+    models.set(
+      "model-deepseek-v4.1-flash-1017-pro",
+      new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw new DOMException("Synthetic DeepSeek timeout", "TimeoutError");
+        },
+      }),
+    );
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
 
@@ -336,10 +344,29 @@ describe("startup compaction through the real AI SDK", () => {
     },
   );
 
-  it.each(["ask", "agent"] as const)(
-    "sends enforced JSON and a reasoning-plus-text budget over the %s provider adapter",
-    async (mode) => {
-      mockFlag.mockResolvedValue(true);
+  it.each([
+    { mode: "ask", expandedAgentContext: false, flagEnabled: true },
+    { mode: "agent", expandedAgentContext: false, flagEnabled: true },
+    { mode: "agent", expandedAgentContext: true, flagEnabled: false },
+    { mode: "agent", expandedAgentContext: true, flagEnabled: null },
+  ] as const)(
+    "sends enforced JSON and a reasoning-plus-text budget over the $mode adapter (expanded=$expandedAgentContext, flag=$flagEnabled)",
+    async ({ mode, expandedAgentContext, flagEnabled }) => {
+      mockFlag.mockResolvedValue(flagEnabled);
+      const large = new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw flagEnabled === null
+            ? new DOMException("Synthetic Large v2 timeout", "TimeoutError")
+            : new Error("Synthetic Large v2 provider failure");
+        },
+      });
+      models.set("model-abliterated-large-v2", large);
+      const recoveryKey = expandedAgentContext
+        ? "model-deepseek-v4.1-flash-1017-pro"
+        : "model-glm-5.3-flash";
+      const recoverySlug = expandedAgentContext
+        ? "deepseek/deepseek-v4.1-flash-1017"
+        : "z-ai/glm-5.3-flash";
       const EdgeResponse =
         require("next/dist/compiled/@edge-runtime/primitives/fetch").Response;
       const payloads: Record<string, any>[] = [];
@@ -351,7 +378,7 @@ describe("startup compaction through the real AI SDK", () => {
             JSON.stringify({
               id: "gen-structured-fixture",
               created: 0,
-              model: "z-ai/glm-5.3-flash",
+              model: recoverySlug,
               provider: "Fixture",
               choices: [
                 {
@@ -377,8 +404,8 @@ describe("startup compaction through the real AI SDK", () => {
             { headers: { "content-type": "application/json" } },
           );
         },
-      }).chat("z-ai/glm-5.3-flash");
-      models.set("model-glm-5.3-flash", model);
+      }).chat(recoverySlug);
+      models.set(recoveryKey, model);
       const discarded = jest.fn();
       const result = await checkAndSummarizeIfNeeded({
         uiMessages: messages,
@@ -395,6 +422,7 @@ describe("startup compaction through the real AI SDK", () => {
           subscription: "pro",
           baselineModel: "agent-model",
           platformAuthorized: false,
+          expandedAgentContext,
           onDiscardedUsage: discarded,
         }),
         providerPromptPressure: {
@@ -413,13 +441,17 @@ describe("startup compaction through the real AI SDK", () => {
       expect(discarded).not.toHaveBeenCalled();
       expect(saveSummary).toHaveBeenCalledTimes(1);
       expect(payloads).toHaveLength(1);
+      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
       expect(payloads[0]).toMatchObject({
+        model: recoverySlug,
         max_tokens: 16384,
         reasoning: { enabled: true, effort: "low" },
         provider: {
           require_parameters: true,
-          order: ["baseten"],
-          ignore: ["modal"],
+          ...(!expandedAgentContext && {
+            order: ["baseten"],
+            ignore: ["modal"],
+          }),
           sort: "latency",
           data_collection: "deny",
         },
@@ -437,18 +469,108 @@ describe("startup compaction through the real AI SDK", () => {
           },
         },
       });
+      if (expandedAgentContext) {
+        expect(payloads[0].provider).not.toHaveProperty("order");
+        expect(payloads[0]).not.toHaveProperty("models");
+        expect(recordEvent).toHaveBeenCalledWith(
+          "compaction_model_finished",
+          expect.objectContaining({
+            served_model: recoveryKey,
+            attempt_count: 2,
+          }),
+        );
+      }
       expect(
         payloads[0].response_format.json_schema.schema.required,
       ).toHaveLength(mode === "agent" ? 10 : 7);
       expect(payloads[0].messages.at(-1).content).toContain(
         "Return only a JSON object",
       );
+      if (expandedAgentContext) {
+        large.doGenerate = async () => ({
+          ...summary(),
+          content: [{ type: "reasoning", text: "Synthetic private reasoning" }],
+          usage: {
+            ...summary().usage,
+            outputTokens: { total: 4460, text: 0, reasoning: 4460 },
+          },
+        });
+        const history = [
+          {
+            role: "user" as const,
+            content:
+              "Scope fixture.test only; session term_17, PID 73142 running. ".repeat(
+                300,
+              ),
+          },
+        ];
+        const original = JSON.stringify(history);
+        const rolling = await compactModelMessagesInRun({
+          modelMessages: history,
+          transcriptModelMessages: history,
+          subscription: "pro",
+          languageModel: model,
+          mode: "agent",
+          writer,
+          chatId: "synthetic-rolling-wire",
+          maxTokens: 484_000,
+          compactionIndex: 1,
+          hasExistingSummary: true,
+          compactionPolicy: new CompactionModelPolicy({
+            userId: "synthetic",
+            runId: "synthetic",
+            chatId: "synthetic-rolling-wire",
+            mode: "agent",
+            subscription: "pro",
+            baselineModel: "agent-model",
+            platformAuthorized: false,
+            expandedAgentContext: true,
+            onDiscardedUsage: discarded,
+          }),
+        });
+        expect(rolling?.summaryText).toContain("PID 73142 still running");
+        expect(rolling?.summaryText).not.toContain(
+          "Synthetic private reasoning",
+        );
+        expect(discarded).toHaveBeenCalledTimes(1);
+        expect(discarded).toHaveBeenCalledWith(
+          expect.objectContaining({ outputTokens: 4460 }),
+        );
+        expect(JSON.stringify(history)).toBe(original);
+        expect(saveSummary).toHaveBeenCalledTimes(1); // Rolling checkpoints stay request-local.
+        expect(payloads).toHaveLength(2);
+        expect(recordEvent).toHaveBeenCalledWith(
+          "compaction_model_finished",
+          expect.objectContaining({
+            persistence: "run_scoped",
+            outcome: "completed",
+            fallback_used: true,
+          }),
+        );
+      }
     },
   );
 
-  it.each([74_000, 76_000])(
-    "preserves a long GLM checkpoint but starts recovery at 75 seconds (%i ms)",
-    async (completionMs) => {
+  it.each([
+    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 74_000 },
+    { modelKey: "model-glm-5.3-flash", deadline: 75_000, completionMs: 76_000 },
+    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 90_000 },
+    { modelKey: "model-abliterated", deadline: 120_000, completionMs: 121_000 },
+    {
+      modelKey: "model-abliterated-large-v2",
+      deadline: 120_000,
+      completionMs: 119_000,
+    },
+    {
+      modelKey: "model-abliterated-large-v2",
+      deadline: 120_000,
+      completionMs: 121_000,
+    },
+  ])(
+    "lets $modelKey finish within $deadline ms and recovers beyond it (completion=$completionMs)",
+    async ({ modelKey, deadline, completionMs }) => {
+      const isGlm = modelKey === "model-glm-5.3-flash";
+      const expandedAgentContext = modelKey === "model-abliterated-large-v2";
       jest.useFakeTimers();
       // Node's native AbortSignal.timeout bypasses Jest's clock. Preserve its
       // contract while allowing the real SDK's deadline to advance virtually.
@@ -464,31 +586,29 @@ describe("startup compaction through the real AI SDK", () => {
           return controller.signal;
         });
       try {
-        mockFlag.mockResolvedValue(true);
+        mockFlag.mockResolvedValue(isGlm);
         const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
           "\nScope fixture.test only; PID 73142 still running.\n",
         );
-        const valid = () => ({
+        const valid = (structured: boolean) => ({
           ...summary(),
-          content: [{ type: "text" as const, text: checkpoint }],
+          content: [
+            {
+              type: "text" as const,
+              text: structured
+                ? jsonCheckpoint(
+                    "agent",
+                    "Scope fixture.test only; PID 73142 still running.",
+                  )
+                : checkpoint,
+            },
+          ],
         });
-        const glm = new MockLanguageModelV3({
+        const timedModel = new MockLanguageModelV3({
           doGenerate: ({ abortSignal }) =>
             new Promise((resolve, reject) => {
               const timer = setTimeout(
-                () =>
-                  resolve({
-                    ...summary(),
-                    content: [
-                      {
-                        type: "text",
-                        text: jsonCheckpoint(
-                          "agent",
-                          "Scope fixture.test only; PID 73142 still running.",
-                        ),
-                      },
-                    ],
-                  }),
+                () => resolve(valid(isGlm)),
                 completionMs,
               );
               abortSignal?.addEventListener(
@@ -502,10 +622,17 @@ describe("startup compaction through the real AI SDK", () => {
             }),
         });
         const recovery = new MockLanguageModelV3({
-          doGenerate: async () => valid(),
+          doGenerate: async () => valid(expandedAgentContext),
         });
-        models.set("model-glm-5.3-flash", glm);
-        models.set("model-abliterated", recovery);
+        models.set(modelKey, timedModel);
+        models.set(
+          isGlm
+            ? "model-abliterated"
+            : expandedAgentContext
+              ? "model-deepseek-v4.1-flash-1017-pro"
+              : "model-glm-5.3-flash",
+          recovery,
+        );
         const pending = checkAndSummarizeIfNeeded({
           uiMessages: messages,
           subscription: "pro",
@@ -521,6 +648,7 @@ describe("startup compaction through the real AI SDK", () => {
             subscription: "pro",
             baselineModel: "agent-model",
             platformAuthorized: false,
+            expandedAgentContext,
             onDiscardedUsage: jest.fn(),
           }),
           providerPromptPressure: {
@@ -534,21 +662,17 @@ describe("startup compaction through the real AI SDK", () => {
         await jest.advanceTimersByTimeAsync(completionMs);
         expect((await pending).summaryText).toContain("73142 still running");
         expect(saveSummary).toHaveBeenCalledTimes(1);
-        expect(glm.doGenerateCalls[0].providerOptions).toMatchObject({
-          openrouter: {
-            provider: { sort: "latency", data_collection: "deny" },
-          },
-        });
+        expect(timedModel.doGenerateCalls).toHaveLength(1);
         expect(recovery.doGenerateCalls).toHaveLength(
-          completionMs > 75_000 ? 1 : 0,
+          completionMs > deadline ? 1 : 0,
         );
-        if (completionMs > 75_000) {
+        if (completionMs > deadline) {
           expect(recordEvent).toHaveBeenCalledWith(
             "compaction_model_attempt_finished",
             expect.objectContaining({
               failure_reason: "timeout",
-              served_model: "model-glm-5.3-flash",
-              duration_ms: 75_000,
+              served_model: modelKey,
+              duration_ms: deadline,
             }),
           );
         }
@@ -559,10 +683,26 @@ describe("startup compaction through the real AI SDK", () => {
     },
   );
 
-  it.each(["reasoning", "malformed", "missing", "blank", "truncated"] as const)(
-    "recovers %s output without saving it or losing its billable usage",
-    async (kind) => {
-      mockFlag.mockResolvedValue(true);
+  it.each(
+    (
+      ["reasoning", "malformed", "missing", "blank", "truncated"] as const
+    ).flatMap((kind) =>
+      [false, true].map((expandedAgentContext) => ({
+        kind,
+        expandedAgentContext,
+      })),
+    ),
+  )(
+    "rejects $kind output without saving it or losing usage (expanded=$expandedAgentContext)",
+    async ({ kind, expandedAgentContext }) => {
+      mockFlag.mockResolvedValue(!expandedAgentContext);
+      const large = new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw new Error("Synthetic Large v2 failure");
+        },
+      });
+      models.set("model-abliterated-large-v2", large);
+      const original = JSON.stringify(messages);
       const fields = JSON.parse(
         jsonCheckpoint("agent", "Synthetic private incomplete checkpoint"),
       );
@@ -627,6 +767,7 @@ describe("startup compaction through the real AI SDK", () => {
           subscription: "pro",
           baselineModel: "agent-model",
           platformAuthorized: false,
+          expandedAgentContext,
           onDiscardedUsage: discarded,
         }),
         providerPromptPressure: {
@@ -637,7 +778,7 @@ describe("startup compaction through the real AI SDK", () => {
           summarizationMaxTokensOverride: 128000,
         },
       });
-      expect(result.needsSummarization).toBe(true);
+      expect(result.needsSummarization).toBe(!expandedAgentContext);
       expect(discarded).toHaveBeenCalledTimes(1);
       expect(recordEvent).toHaveBeenCalledWith(
         "compaction_model_attempt_finished",
@@ -657,11 +798,15 @@ describe("startup compaction through the real AI SDK", () => {
       expect(JSON.stringify(recordEvent.mock.calls)).not.toMatch(
         /Synthetic private reasoning|Never send to analytics/,
       );
-      expect(saveSummary).toHaveBeenCalledTimes(1);
+      expect(saveSummary).toHaveBeenCalledTimes(expandedAgentContext ? 0 : 1);
+      expect(JSON.stringify(messages)).toBe(original);
+      expect(large.doGenerateCalls).toHaveLength(expandedAgentContext ? 1 : 0);
+      expect(glm.doGenerateCalls).toHaveLength(1);
       expect(JSON.stringify(saveSummary.mock.calls)).not.toContain(
         "Synthetic private",
       );
-      expect(result.summaryText).toContain("Scope fixture.test.");
+      if (!expandedAgentContext)
+        expect(result.summaryText).toContain("Scope fixture.test.");
     },
   );
 

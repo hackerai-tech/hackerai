@@ -1396,6 +1396,25 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("does not turn an attachment admission error into a saved-task route on finish", () => {
+      window.history.replaceState({}, "", "/");
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onError: (error: Error) => void;
+        onFinish: (result: { isAbort: boolean; isError: boolean }) => void;
+      };
+      act(() => {
+        options.onError(new Error("Failed to prepare local attachments"));
+        options.onFinish({ isAbort: false, isError: true });
+      });
+      expect(window.location.pathname).toBe("/");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+    });
+
     it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
       render(
         <TestWrapper>

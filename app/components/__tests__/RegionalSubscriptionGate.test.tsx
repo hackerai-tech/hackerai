@@ -65,7 +65,6 @@ describe("subscription before task presentation", () => {
             ? price
             : {
                 assignment: { variant: "test", country: "IN" },
-                paywallVariant: "test",
               },
         ),
       ),
@@ -77,7 +76,7 @@ describe("subscription before task presentation", () => {
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     await screen.findByText("$29");
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Get Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Subscribe to Pro" }));
     expect(mockUpgrade).toHaveBeenCalledWith(
       "pro-monthly-plan",
       undefined,
@@ -92,70 +91,7 @@ describe("subscription before task presentation", () => {
       expect.objectContaining({
         regional_subscription_variant: "test",
         exposure_surface: "composer",
-        paywall_version: 2,
-        "$feature/regional-paywall-v2": "test",
       }),
-    );
-  });
-
-  it.each(["control", null, "invalid"])(
-    "keeps the old paid offer for presentation %s",
-    async (paywallVariant) => {
-      mockFetch.mockImplementation((url: string) =>
-        Promise.resolve(
-          response(
-            url.includes("pro-monthly")
-              ? price
-              : {
-                  assignment: { variant: "test", country: "IN" },
-                  paywallVariant,
-                },
-          ),
-        ),
-      );
-      render(view());
-      await screen.findByText("$29");
-      expect(screen.getByText("Choose a subscription to start")).toBeVisible();
-      expect(screen.queryByText("Send task")).not.toBeInTheDocument();
-      expect(
-        screen.queryByText("See an example workflow"),
-      ).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Subscribe to Pro" }));
-      expect(mockUpgrade).toHaveBeenCalledWith(
-        "pro-monthly-plan",
-        undefined,
-        undefined,
-        "free",
-        expect.objectContaining({ reason: "subscription_required" }),
-      );
-      const exposure = mockCapture.mock.calls.find(
-        ([event]) => event === "regional_subscription_first_exposed",
-      )[1];
-      expect(exposure.paywall_version).toBe(1);
-      if (paywallVariant === "control")
-        expect(exposure["$feature/regional-paywall-v2"]).toBe("control");
-      else expect(exposure).not.toHaveProperty("$feature/regional-paywall-v2");
-    },
-  );
-
-  it("shows a static example without sending a task or opening checkout", async () => {
-    render(view());
-    await screen.findByText("$29");
-    const callsBefore = mockFetch.mock.calls.length;
-    const example = screen
-      .getByText("See an example workflow")
-      .closest("details")!;
-    example.open = true;
-    fireEvent(example, new Event("toggle"));
-    expect(
-      screen.getByText("Illustrative example. No task is running."),
-    ).toBeVisible();
-    expect(mockFetch).toHaveBeenCalledTimes(callsBefore);
-    expect(mockUpgrade).not.toHaveBeenCalled();
-    expect(screen.queryByText("Send task")).not.toBeInTheDocument();
-    expect(mockCapture).toHaveBeenCalledWith(
-      "regional_subscription_paywall_action",
-      expect.objectContaining({ action: "view_example", paywall_version: 2 }),
     );
   });
 
@@ -188,7 +124,6 @@ describe("subscription before task presentation", () => {
               ? { ...price, ...invalidPrice }
               : {
                   assignment: { variant: "test", country: "IN" },
-                  paywallVariant: "test",
                 },
           ),
         ),
@@ -196,7 +131,7 @@ describe("subscription before task presentation", () => {
       render(view());
       await screen.findByText("Retry pricing");
       expect(
-        screen.queryByRole("button", { name: "Get Pro" }),
+        screen.queryByRole("button", { name: "Subscribe to Pro" }),
       ).not.toBeInTheDocument();
       expect(mockUpgrade).not.toHaveBeenCalled();
       expect(mockCapture).not.toHaveBeenCalled();
@@ -213,12 +148,13 @@ describe("subscription before task presentation", () => {
         : Promise.resolve(
             response({
               assignment: { variant: "test", country: "IN" },
-              paywallVariant: "test",
             }),
           ),
     );
     render(view());
-    const checkout = await screen.findByRole("button", { name: "Get Pro" });
+    const checkout = await screen.findByRole("button", {
+      name: "Subscribe to Pro",
+    });
     expect(checkout).toBeDisabled();
     fireEvent.click(checkout);
     expect(mockUpgrade).not.toHaveBeenCalled();
@@ -258,7 +194,6 @@ describe("subscription before task presentation", () => {
       resolveOldAccount(
         response({
           assignment: { variant: "test", country: "IN" },
-          paywallVariant: "test",
         }),
       ),
     );
@@ -282,13 +217,14 @@ describe("subscription before task presentation", () => {
           : Promise.resolve(
               response({
                 assignment: { variant: "test", country: "IN" },
-                paywallVariant: "test",
               }),
             ),
       );
       render(view());
       await act(async () => {});
-      expect(screen.getByRole("button", { name: "Get Pro" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Subscribe to Pro" }),
+      ).toBeDisabled();
       await act(async () => {
         jest.advanceTimersByTime(10_000);
       });
@@ -299,7 +235,9 @@ describe("subscription before task presentation", () => {
       mockFetch.mockResolvedValue(response(price));
       fireEvent.click(screen.getByRole("button", { name: "Retry pricing" }));
       await act(async () => {});
-      expect(screen.getByRole("button", { name: "Get Pro" })).toBeEnabled();
+      expect(
+        screen.getByRole("button", { name: "Subscribe to Pro" }),
+      ).toBeEnabled();
     } finally {
       jest.useRealTimers();
     }
@@ -333,7 +271,7 @@ describe("subscription before task presentation", () => {
     mockSubscription = "pro";
     rerender(view());
     expect(screen.getByText("Send task")).toBeVisible();
-    expect(screen.queryByText("Get Pro")).not.toBeInTheDocument();
+    expect(screen.queryByText("Subscribe to Pro")).not.toBeInTheDocument();
   });
 
   it("keeps active task controls available", () => {

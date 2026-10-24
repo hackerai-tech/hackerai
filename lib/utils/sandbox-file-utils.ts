@@ -1,6 +1,12 @@
 import "server-only";
 
-import { isCloudAcquisitionBudgetSpent } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
+import {
+  CloudAcquisitionBudgetExhaustedError,
+  CloudAcquisitionTimeoutError,
+  isCloudAcquisitionBudgetSpent,
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 
 import {
   checkAttachmentReadiness,
@@ -84,6 +90,7 @@ type SandboxUploadFailureDetail = {
   readinessProbeReason?: SandboxReadinessFailureReason;
   sandboxProvider?: "e2b";
   errorName?: string;
+  acquisitionStage?: CloudAcquisitionStage;
   errorCode?: string;
   errorHttpStatus?: number;
   errorRequestId?: string;
@@ -1191,6 +1198,13 @@ const summarizeSandboxUploadFailure = (
     ACQUISITION_ERROR_NAMES.has(error.name)
       ? error.name
       : undefined;
+  const acquisitionError =
+    error instanceof CloudAcquisitionBudgetExhaustedError ? error.cause : error;
+  const acquisitionStage =
+    phase === "acquisition" &&
+    acquisitionError instanceof CloudAcquisitionTimeoutError
+      ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1214,6 +1228,7 @@ const summarizeSandboxUploadFailure = (
     ...(errorName && {
       errorName,
     }),
+    ...(acquisitionStage && { acquisitionStage }),
   };
 
   if (file.kind === "url") {
@@ -1491,10 +1506,17 @@ export const getSandboxUploadFailureMetadata = (
       ? `${failure.error.slice(0, MAX_UPLOAD_FAILURE_CAUSE_LENGTH)}...`
       : failure.error
     : undefined;
+  const acquisitionStage =
+    failure?.phase === "acquisition"
+      ? parseCloudAcquisitionStage(failure.acquisitionStage)
+      : undefined;
 
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
+    ...(acquisitionStage
+      ? { upload_failure_acquisition_stage: acquisitionStage }
+      : {}),
     ...(failure?.readinessProbeReason
       ? { upload_failure_readiness_probe_reason: failure.readinessProbeReason }
       : {}),

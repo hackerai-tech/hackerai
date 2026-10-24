@@ -24,6 +24,7 @@ import {
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -39,8 +40,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
- *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
- *   Paid plans only use Agent mode. Max uses GLM 5.3.
+ *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
+ *   reasoning; explicit Pro uses max reasoning, including images.
+ *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
+ *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
@@ -64,8 +67,8 @@ export function selectModel(
     subscription,
     options,
   );
-  // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
-  // it before the legacy media promotions so every paid plan keeps this route.
+  // Resolve explicit Standard before legacy media promotions so text, images
+  // and PDFs retain the same native DeepSeek snapshot on every paid plan.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {
     return resolveAgentTierToProviderKey(allowedSelectedModel);
   }
@@ -79,7 +82,7 @@ export function selectModel(
   const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-pro") {
-    return "model-deepseek-v4-flash-vision-pro";
+    return resolveAgentTierToProviderKey(allowedSelectedModel);
   }
   // Direct image routes retain Standard vision reasoning for Auto.
   const isAutoSelection =
@@ -113,11 +116,9 @@ export function selectModel(
     return autoModel;
   }
 
-  // GLM 5.3 is the Max text model. Keep image requests on the existing
-  // multimodal route because the retired experiment intentionally excluded
-  // image inputs.
+  // The exact snapshot key applies Max reasoning in buildProviderOptions.
   if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
-    return "model-grok-4.6";
+    return DEEPSEEK_1017_MODEL_KEY;
   }
 
   const providerKey = resolveAgentTierToProviderKey(allowedSelectedModel);

@@ -57,6 +57,31 @@ without a metric exporter.
 Regular connection, readiness, cancellation and timeout failure diagnostics
 remain available in Vercel and Trigger logs.
 
+## Desktop command receiver lifecycle
+
+Isolated Desktop command receivers emit content-free JSON records named
+`desktop_command_receiver` to their server logs. Join `command_id` and
+`trigger_run_id` to the sender's command-start and settlement events, and resolve
+worker/build identity from the enclosing run. Ask receivers can lack a Trigger
+run ID. These records do not include command text, output, paths, credentials,
+or raw exception messages.
+
+Each receiver emits at most 12 lifecycle transitions and one cleanup record.
+The final record retains cumulative ACK/resume attempts, cursor publication
+failures, suppressed transitions, subscription generation, received/published
+sequence cursors, terminal type and cancellation confirmation. Routine prefix
+ACKs update counters without emitting individual records. Repeated failures can
+exhaust the transition budget; use final counters rather than interpreting the
+remaining sequence as a complete trace.
+
+`cursor_published` means the broker accepted an ACK/resume publication, not that
+the native sender received it. `terminal_ack_published` cleanup therefore needs
+a matching sender settlement to establish terminal receipt. `cancel_confirmed`
+means the remote cancellation response was affirmative, not that every output
+frame was delivered. A missing cleanup record remains unknown, including worker
+termination or lost log export. These diagnostics do not prove durable output
+persistence, task success, or summary fidelity.
+
 ## Operation channel compatibility
 
 Clients advertising `operationChannels` accept an `operationChannel: true`

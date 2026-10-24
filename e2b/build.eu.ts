@@ -27,6 +27,7 @@ async function main() {
   await Template.build(template, templateName, {
     apiKey,
     domain: process.env.E2B_EU_DOMAIN?.trim() || EU_DOMAIN,
+    skipCache: true,
     cpuCount: 4,
     memoryMB: 4096,
     onBuildLogs: defaultBuildLogger(),

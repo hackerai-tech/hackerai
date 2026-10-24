@@ -18,6 +18,7 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
+import recoverCanceledRenewal from "@/lib/actions/recover-canceled-renewal";
 import type { SubscriptionTier } from "@/types";
 
 type Props = {
@@ -35,6 +36,7 @@ export function BillingRecoveryPanel({
 }: Props) {
   const [opening, setOpening] = useState<"invoice" | "card" | null>(null);
   const [checking, setChecking] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [message, setMessage] = useState("");
   const mounted = useRef(true);
   useEffect(() => {
@@ -95,7 +97,7 @@ export function BillingRecoveryPanel({
       : null;
 
   const open = async (action: "invoice" | "card") => {
-    if (opening || checking) return;
+    if (opening || checking || recovering) return;
     setOpening(action);
     setMessage("");
     try {
@@ -135,7 +137,7 @@ export function BillingRecoveryPanel({
   };
 
   const check = async () => {
-    if (checking || opening) return;
+    if (checking || opening || recovering) return;
     setChecking(true);
     setMessage("");
     try {
@@ -180,6 +182,36 @@ export function BillingRecoveryPanel({
     }
   };
 
+  const startFresh = async () => {
+    if (opening || checking || recovering) return;
+    setRecovering(true);
+    setMessage("");
+    try {
+      const ready = await recoverCanceledRenewal();
+      const next = await onCheck();
+      if (!mounted.current) return;
+      if (
+        !ready ||
+        !next ||
+        next.checkoutRequiresReview ||
+        next.hasActiveSubscription
+      ) {
+        setMessage(
+          "This payment still needs billing review. No new subscription was started. Use Get billing help.",
+        );
+        return;
+      }
+      toast.success("You can now choose a plan and subscribe again.");
+    } catch {
+      if (mounted.current)
+        setMessage(
+          "We couldn't prepare your new subscription. Check payment status or try again.",
+        );
+    } finally {
+      if (mounted.current) setRecovering(false);
+    }
+  };
+
   return (
     <section
       aria-label="Subscription payment recovery"
@@ -206,7 +238,7 @@ export function BillingRecoveryPanel({
             {review
               ? status.billingReviewUnavailable
                 ? "Your previous subscription has ended, but we couldn’t check its payment history. Review billing or try again before subscribing."
-                : "An unresolved payment from your previous subscription needs review before you can subscribe again. Paying an old invoice won’t restart that subscription."
+                : "Start fresh to clear an eligible unpaid renewal, then choose a new plan. This won’t charge the old invoice. Paying an old invoice won’t restart that subscription."
               : authentication
                 ? "Your bank needs you to confirm this payment. Complete verification securely with Stripe."
                 : recovery
@@ -224,6 +256,15 @@ export function BillingRecoveryPanel({
         </div>
       )}
       <div className="mt-4 flex flex-wrap gap-2">
+        {review && !status.billingReviewUnavailable && (
+          <Button
+            size="sm"
+            disabled={!!opening || checking || recovering}
+            onClick={() => void startFresh()}
+          >
+            {recovering ? "Preparing…" : "Start fresh"}
+          </Button>
+        )}
         {review ? (
           <Button asChild size="sm">
             <a href="mailto:contact@hackerai.co?subject=Subscription%20billing%20help">
@@ -235,7 +276,7 @@ export function BillingRecoveryPanel({
           status.renewalInvoicePayable && (
             <Button
               size="sm"
-              disabled={!!opening || checking}
+              disabled={!!opening || checking || recovering}
               onClick={() => void open("invoice")}
             >
               {opening === "invoice" ? (
@@ -257,7 +298,7 @@ export function BillingRecoveryPanel({
         <Button
           size="sm"
           variant="outline"
-          disabled={!!opening || checking}
+          disabled={!!opening || checking || recovering}
           onClick={() => void open("card")}
         >
           {opening === "card" ? (
@@ -274,7 +315,7 @@ export function BillingRecoveryPanel({
         <Button
           size="sm"
           variant="ghost"
-          disabled={!!opening || checking}
+          disabled={!!opening || checking || recovering}
           onClick={() => void check()}
         >
           {checking ? "Checking…" : "Check payment status"}

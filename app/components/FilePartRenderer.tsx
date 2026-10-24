@@ -12,6 +12,7 @@ import { useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
+import { LocalFilePreviewCard } from "./LocalFilePreviewCard";
 import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
@@ -319,13 +320,8 @@ const FilePartRendererComponent = ({
 
       if (part.storage === "local-desktop") {
         return (
-          <FilePreviewCard
-            partId={partId}
-            icon={<File className="h-6 w-6 text-white" />}
+          <LocalFilePreviewCard
             fileName={part.name || part.filename || "Local file"}
-            subtitle="Local-only attachment"
-            url={undefined}
-            fileId={undefined}
           />
         );
       }

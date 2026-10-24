@@ -12,6 +12,8 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
+import { recoverCrashedAgentRun } from "./agent-crash-recovery";
+
 const TERMINAL_STATUSES = new Set([
   "COMPLETED",
   "CANCELED",
@@ -91,10 +93,12 @@ export const createAgentResumeGet =
       }
 
       let runStatus: string | undefined;
+      let runMetadata: unknown;
       try {
         stage = "retrieve_trigger_run";
         const run = await runs.retrieve(runId);
         runStatus = run.status;
+        runMetadata = run.metadata;
       } catch (err) {
         // Only treat a 404 as "run gone" so we self-heal the stored id.
         // Re-throw transient errors (network, 5xx) to leave the mapping intact.
@@ -106,18 +110,43 @@ export const createAgentResumeGet =
       }
 
       if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
+        if (runStatus === "CRASHED") {
+          stage = "recover_crashed_trigger_run";
+          const outcome = await recoverCrashedAgentRun({
+            chatId,
+            userId,
+            runId,
+            metadata: runMetadata,
+          });
+          if (outcome === "stale")
+            return new NextResponse(null, { status: 409 });
+        }
         stage = "clear_terminal_trigger_run";
         await closeAgentApprovalSession(
           approvalSessionId,
           "agent-run-terminal",
         );
-        await setActiveTriggerRun({
+        const detached = await setActiveTriggerRun({
           chatId,
           triggerRunId: null,
           approvalSessionId: null,
           expectedRunId: runId,
+          ...(runStatus === "CRASHED" ? { recoveredCrash: true } : {}),
           clearApprovalPending: true,
         });
+        if (detached === "stale") {
+          // Stop may already have cleared this run while resume was retrieving
+          // its terminal status. There is nothing to resume in that case; keep
+          // a real replacement run distinct from successful cancellation.
+          stage = "reconcile_terminal_trigger_run";
+          const latestChat = await getChatById({ id: chatId });
+          if (!latestChat || latestChat.user_id !== userId) {
+            return new NextResponse("Forbidden", { status: 403 });
+          }
+          return new NextResponse(null, {
+            status: latestChat.active_trigger_run_id ? 409 : 204,
+          });
+        }
         return new NextResponse(null, { status: 204 });
       }
 

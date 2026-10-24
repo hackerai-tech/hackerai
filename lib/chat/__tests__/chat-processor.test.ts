@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import {
   limitImageParts,
   selectModel,
@@ -215,7 +216,7 @@ describe("selectModel", () => {
   );
 
   describe.each(paidPlans)("%s Agent routing", (subscription) => {
-    it("uses native GLM Flash for Standard and DeepSeek V4.1 Flash for Pro with all attachments", () => {
+    it("uses native DeepSeek Flash for Standard and Pro with all attachments", () => {
       for (const [hasImage, hasPdf] of attachments) {
         for (const options of [
           {},
@@ -231,7 +232,7 @@ describe("selectModel", () => {
               hasPdf,
               options,
             ),
-          ).toBe("model-glm-5.3-flash-agent");
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
           expect(
             selectModel(
               "agent",
@@ -241,7 +242,7 @@ describe("selectModel", () => {
               hasPdf,
               options,
             ),
-          ).toBe("model-deepseek-v4-flash-vision-pro");
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
         }
       }
     });
@@ -300,9 +301,9 @@ describe("selectModel", () => {
               ),
             ).toBe(
               !maxAllowed
-                ? "model-deepseek-v4-flash-vision-pro"
+                ? DEEPSEEK_1017_MODEL_KEY
                 : hasImage
-                  ? "model-grok-4.6"
+                  ? DEEPSEEK_1017_MODEL_KEY
                   : "model-glm-5.3",
             );
           }
@@ -321,7 +322,7 @@ describe("selectModel", () => {
           ).toBe(
             subscription === "ultra" || extraUsageAvailable
               ? "model-glm-5.3"
-              : "model-deepseek-v4-flash-vision-pro",
+              : DEEPSEEK_1017_MODEL_KEY,
           );
         }
       }

@@ -11,6 +11,16 @@ const isVercelProduction = process.env.VERCEL_ENV === "production";
 const posthogSourceMapsEnabled =
   isVercelProduction && hasPostHogSourceMapConfig;
 
+// Freeze a public commit into the client bundle so SDK-only error stacks can
+// identify their own build even after a newer deployment becomes current.
+const buildCommit = (
+  process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA
+)?.trim();
+const publicBuildCommit =
+  buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
+    ? buildCommit.toLowerCase()
+    : "";
+
 if (
   (hasPostHogSourceMapApiKey || hasPostHogSourceMapProjectId) &&
   !hasPostHogSourceMapConfig
@@ -22,6 +32,9 @@ if (
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  env: {
+    NEXT_PUBLIC_HACKERAI_BUILD_COMMIT: publicBuildCommit,
+  },
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {
     // Pull request CI runs pnpm typecheck while the preview builds in parallel.

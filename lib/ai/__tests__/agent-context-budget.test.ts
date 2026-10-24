@@ -70,3 +70,10 @@ it("uses the exact 1M Large v2 capacity rather than the base model limit", () =>
   expect(budget).toBe(484_000);
   expect(getSummarizationThresholdTokens(budget)).toBe(464_000);
 });
+
+it("uses Flash's verified capacity only when context expansion is enabled", () => {
+  const flash = { ...route, modelId: "abliterated-model-large-flash" };
+  expect(getAgentContextBudget(flash)).toBe(508_288);
+  expect(getAgentContextBudget({ ...flash, enabled: false })).toBe(200_000);
+  expect(getAgentContextBudget({ ...flash, mode: "ask" })).toBe(200_000);
+});

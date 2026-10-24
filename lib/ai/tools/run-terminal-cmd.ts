@@ -73,7 +73,10 @@ import {
   getAgentAutoReviewInspectionKind,
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
-import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  isLocalCommandRelayUnsubscribedError,
+  isLocalCommandDispatchError,
+} from "./utils/local-sandbox-errors";
 import {
   createTerminalRecordStore,
   terminalSandboxInstance,
@@ -862,6 +865,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               pid?: number;
             }> | null = null;
             let resumableTimeoutObserved = false;
+            let commandDispatchAttempted = false;
 
             const forgetUnexposedCommandSession = async () => {
               if (!commandSession || commandSessionExposed) return;
@@ -1225,12 +1229,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             );
 
             const retryOptions = {
+              // Retry local commands only with explicit pre-publication evidence.
+              // Unclassified failures remain ambiguous and must never replay.
               maxRetries: 6,
               baseDelayMs: 500,
               jitterMs: 50,
               signal: abortSignal,
               isPermanentError: (error: unknown) =>
-                resolved || isPermanentError(error),
+                resolved ||
+                (isCentrifugoSandbox(sandboxInstance) &&
+                  (!isLocalCommandDispatchError(error) ||
+                    error.dispatched ||
+                    !error.retryable)) ||
+                isPermanentError(error),
               // Retry logs are too noisy - they're expected behavior
               logger: () => {},
             };
@@ -1243,6 +1254,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
 
+              commandDispatchAttempted = true;
               if (is_background) {
                 return retryWithBackoff(async () => {
                   const result = await sandboxInstance.commands.run(
@@ -1445,6 +1457,41 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
                         error: error.message,
+                      },
+                    });
+                  } else if (
+                    commandDispatchAttempted &&
+                    (!isLocalCommandDispatchError(error) || error.dispatched) &&
+                    isCentrifugoSandbox(sandboxInstance) &&
+                    !isLocalCommandRelayUnsubscribedError(error)
+                  ) {
+                    let output =
+                      handler?.getResult(processId ?? undefined).output || "";
+                    const processStarted = output ? true : undefined;
+                    if (handler) {
+                      const saveMsg = await saveTruncatedOutput({
+                        handler,
+                        sandbox: sandboxInstance,
+                        terminalWriter: async (message) => {
+                          try {
+                            await createTerminalWriter(message);
+                          } catch {
+                            // The tool result below still carries the save status
+                            // when the live notification stream has closed.
+                          }
+                        },
+                        scopeId: chatId,
+                        telemetry: buildTerminalOutputPersistenceTelemetry(),
+                      });
+                      if (saveMsg) output = saveMsg + "\n" + output;
+                    }
+                    resolve({
+                      result: {
+                        status: "failed",
+                        processStarted,
+                        exitCode: null,
+                        output,
+                        error: `Local command outcome is unknown: ${resolveToolErrorMessage(error)}. Do not rerun this command automatically; it may already have executed.`,
                       },
                     });
                   } else {

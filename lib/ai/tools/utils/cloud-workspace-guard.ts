@@ -34,12 +34,46 @@ export type RecoveryState = {
 };
 type WorkspaceState = RecoveredWorkspace | CleanupState | RecoveryState;
 
+const cleanupClaimFailureReasons = [
+  "unknown",
+  "state_unavailable",
+  "cleanup_blocked",
+  "recovery_pending",
+  "store_unavailable",
+  "claim_conflict",
+  "store_error",
+] as const;
+type CleanupClaimFailureReason = (typeof cleanupClaimFailureReasons)[number];
+
 export class CloudWorkspaceUnavailableError extends Error {
-  constructor() {
+  #cleanupClaimFailureReason: CleanupClaimFailureReason;
+
+  constructor(reason: CleanupClaimFailureReason = "unknown") {
     super(
       "Cloud workspace needs recovery. Please retry later. Your existing workspace has been preserved.",
     );
     this.name = "CloudWorkspaceUnavailableError";
+    // Closed metadata only; keep the error's existing enumerable shape.
+    this.#cleanupClaimFailureReason = cleanupClaimFailureReasons.includes(
+      reason,
+    )
+      ? reason
+      : "unknown";
+  }
+
+  get cleanupClaimFailureReason(): CleanupClaimFailureReason {
+    return this.#cleanupClaimFailureReason;
+  }
+
+  static getCleanupClaimFailureReason(
+    error: unknown,
+  ): CleanupClaimFailureReason {
+    // Read only constructor-validated metadata, never an arbitrary error getter.
+    return typeof error === "object" &&
+      error !== null &&
+      #cleanupClaimFailureReason in error
+      ? error.#cleanupClaimFailureReason
+      : "unknown";
   }
 }
 
@@ -100,7 +134,7 @@ export async function readCloudWorkspaceState(
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
-      throw new CloudWorkspaceUnavailableError();
+      throw new CloudWorkspaceUnavailableError("store_unavailable");
     return null;
   }
   try {
@@ -122,7 +156,8 @@ export async function readCloudWorkspaceState(
     // Unknown legacy provider records and malformed records stay fenced.
     throw new CloudWorkspaceUnavailableError();
   } catch {
-    throw new CloudWorkspaceUnavailableError();
+    // A failed read and an invalid persisted record both remain fenced.
+    throw new CloudWorkspaceUnavailableError("state_unavailable");
   }
 }
 
@@ -324,7 +359,7 @@ export async function claimCloudWorkspaceCleanup(
     observed.phase !== "e2b" &&
     !(permanent && observed.phase === "deleted")
   )
-    throw new CloudWorkspaceUnavailableError();
+    throw new CloudWorkspaceUnavailableError("cleanup_blocked");
   const migration =
     observed?.phase === "e2b"
       ? observed
@@ -334,11 +369,11 @@ export async function claimCloudWorkspaceCleanup(
   // Unresolved recovery may involve files outside E2B. Do not claim complete
   // account cleanup or remove its persistent record without operator recovery.
   if (migration?.recoveryPending !== undefined)
-    throw new CloudWorkspaceUnavailableError();
+    throw new CloudWorkspaceUnavailableError("recovery_pending");
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
-      throw new CloudWorkspaceUnavailableError();
+      throw new CloudWorkspaceUnavailableError("store_unavailable");
     return { migration: null, finish: async (_success: boolean) => {} };
   }
   const state: CleanupState = {
@@ -348,10 +383,11 @@ export async function claimCloudWorkspaceCleanup(
     ...(migration && { migration }),
   };
   const serialized = JSON.stringify(state);
+  let claimed;
   try {
     // Compare the complete record by value: formatting is not ownership, and
     // a concurrent recovery-field update must also invalidate this snapshot.
-    const claimed = await redis.eval(
+    claimed = await redis.eval(
       `local function equal(a, b)
         if type(a) ~= type(b) then return false end
         if type(a) ~= 'table' then return a == b end
@@ -371,10 +407,10 @@ export async function claimCloudWorkspaceCleanup(
       [keyFor(userId)],
       [observed ? JSON.stringify(observed) : "", serialized],
     );
-    if (claimed !== 1) throw new CloudWorkspaceUnavailableError();
   } catch {
-    throw new CloudWorkspaceUnavailableError();
+    throw new CloudWorkspaceUnavailableError("store_error");
   }
+  if (claimed !== 1) throw new CloudWorkspaceUnavailableError("claim_conflict");
   return {
     migration: migration ?? null,
     finish: async (success: boolean) => {

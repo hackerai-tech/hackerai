@@ -231,9 +231,14 @@ describe("captureToolCalls", () => {
 });
 
 describe("captureAgentRun", () => {
-  it.each(["control", "test"] as const)(
-    "attributes the normal run outcome to context %s",
-    (variant) => {
+  it.each(
+    (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
+      (flag) =>
+        (["control", "test"] as const).map((variant) => ({ flag, variant })),
+    ),
+  )(
+    "attributes the normal run outcome to $flag $variant",
+    ({ flag, variant }) => {
       const capture = jest.fn();
       captureAgentCompletionAnalytics({
         posthog: { capture } as any,
@@ -250,15 +255,24 @@ describe("captureAgentRun", () => {
         configuredModelId: "z-ai/glm-5.3",
         abliteratedProviderSummary: undefined,
         agentModelContextVariant: variant,
+        agentModelContextFlag: flag,
       });
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "hackerai-agent_run",
           properties: expect.objectContaining({
-            "$feature/agent_model_context_v1": variant,
+            [`$feature/${flag}`]: variant,
           }),
         }),
       );
+      const outcome = capture.mock.calls.find(
+        ([event]) => event.event === "hackerai-agent_run",
+      )![0];
+      const other =
+        flag === "agent_pro_context_v1"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      expect(outcome.properties[`$feature/${other}`]).toBeUndefined();
     },
   );
 
@@ -1309,12 +1323,12 @@ describe("captureUsageCost", () => {
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
         usage_economics_version: 2,
-        usage_pricing_version: "request-1.20-extra-1.20-v2",
-        request_usage_multiplier: 1.2,
-        included_usage_multiplier: 1.2,
-        extra_usage_multiplier: 1.2,
+        usage_pricing_version: "request-1.30-extra-1.30-v2",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.3,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.8,
+        effective_extra_usage_multiplier: 1.95,
         included_usage_value_dollars: 0.1,
         extra_usage_charge_dollars: 0.48,
         covered_usage_value_dollars: 0.58,
@@ -1458,12 +1472,12 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        usage_pricing_version: "request-1.20-extra-1.20-v2",
-        request_usage_multiplier: 1.2,
-        included_usage_multiplier: 1.2,
-        extra_usage_multiplier: 1.2,
+        usage_pricing_version: "request-1.30-extra-1.30-v2",
+        request_usage_multiplier: 1.3,
+        included_usage_multiplier: 1.3,
+        extra_usage_multiplier: 1.3,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 1.8,
+        effective_extra_usage_multiplier: 1.95,
         settlement_capture_reason: "anomaly",
         settlement_run_sampled:
           isUsageSettlementSuccessSampled("settlement_123"),
@@ -2143,6 +2157,38 @@ describe("createChatLogger ChatSDKError metadata", () => {
       logSpy.mockRestore();
     }
   });
+
+  it.each([
+    ["acquisition", "connect", "connect"],
+    ["acquisition", "PRIVATE_STAGE_CANARY", undefined],
+    ["transfer", "connect", undefined],
+  ])(
+    "bounds cloud stage in compact diagnostics %p/%p",
+    (phase, stage, expected) => {
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        createChatLogger({
+          chatId: "chat-opaque",
+          endpoint: "/api/agent",
+        }).emitChatError(
+          new ChatSDKError("bad_request:sandbox", "Upload failed", {
+            upload_failure_kind: "url",
+            upload_failure_phase: phase,
+            upload_failure_acquisition_stage: stage,
+          }),
+        );
+        const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+        expect(wideEvent.error.metadata.upload_failure_acquisition_stage).toBe(
+          expected,
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "PRIVATE_STAGE_CANARY",
+        );
+      } finally {
+        logSpy.mockRestore();
+      }
+    },
+  );
 
   it("marks transient sandbox upload failures retriable", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});

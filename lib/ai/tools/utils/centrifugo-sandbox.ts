@@ -1,5 +1,12 @@
+import {
+  createReceiverDiagnostics,
+  type ReceiverCleanupReason,
+} from "@/lib/centrifugo/receiver-diagnostics";
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
-import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
+import {
+  dispatchIsolatedOperation,
+  RelayOperationReadinessTimeout,
+} from "@/lib/centrifugo/dispatch-operation";
 import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
@@ -11,6 +18,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxConnectionChannel,
+  DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type CommandResponseMessage,
   type CommandMessage,
   type FileRequestMessage,
@@ -26,6 +34,7 @@ import {
   recordRelayReceivedBytes,
 } from "@/lib/centrifugo/traffic";
 import {
+  isCentrifugoPublishTimeout,
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
@@ -33,9 +42,15 @@ import {
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
-import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalCommandDispatchError,
+  LocalFileRequestError,
+  isLocalCommandRelayUnsubscribedError,
+} from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
+  "command_output_unavailable",
   "command",
   "command_cancel",
   "command_cancel_result",
@@ -46,6 +61,8 @@ const VALID_MESSAGE_TYPES = new Set([
 ]);
 
 const IGNORED_MESSAGE_TYPES = new Set([
+  "command_output_ack",
+  "command_output_resume",
   "file_stat",
   "file_read",
   "file_write",
@@ -72,6 +89,7 @@ const SETUP_COMMAND_TIMEOUT_MS = 30000;
 const SETUP_COMMAND_MAX_ATTEMPTS = 2;
 const SETUP_COMMAND_RETRY_DELAY_MS = 500;
 const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
+const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
@@ -169,6 +187,12 @@ export function parseSandboxMessage(
     return null;
   }
 
+  if (
+    msg.outputProtocol !== undefined &&
+    (msg.outputProtocol !== "ack-v1" || msg.sequence === undefined)
+  )
+    return null;
+
   switch (msg.type) {
     case "exit":
       if (typeof msg.exitCode !== "number") {
@@ -183,6 +207,7 @@ export function parseSandboxMessage(
         return null;
       }
       break;
+    case "command_output_unavailable":
     case "error":
       if (typeof msg.message !== "string") {
         console.warn("Invalid error message: missing message field", msg);
@@ -431,7 +456,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
-      throw new Error("Native desktop file relay is not available.");
+      throw new LocalFileRequestError(
+        "unavailable",
+        "Native desktop file relay is not available.",
+      );
     }
 
     const requestId = crypto.randomUUID();
@@ -460,7 +488,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let trafficMetricRecorded = false;
       const reassembler = new CentrifugoMessageReassembler();
 
-      const onAbort = () => fail(new Error("Desktop file request aborted"));
+      const onAbort = () =>
+        fail(
+          new LocalFileRequestError("aborted", "Desktop file request aborted"),
+        );
       const cleanup = () => {
         if (!trafficMetricRecorded) {
           trafficMetricRecorded = true;
@@ -510,7 +541,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
       timeoutId = setTimeout(() => {
         fail(
-          new Error(
+          new LocalFileRequestError(
+            "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -537,7 +569,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         }
 
         if (message.type === "file_error") {
-          fail(new Error(message.message));
+          fail(new LocalFileRequestError("native_error", message.message));
           return;
         }
         if (!expectedTypes.has(message.type)) {
@@ -551,7 +583,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription.on("error", (ctx) => {
         fail(
-          new Error(
+          new LocalFileRequestError(
+            "subscription_error",
             `Centrifugo file subscription error: ${ctx.error?.message ?? "unknown"}`,
           ),
         );
@@ -575,7 +608,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               )
             ) {
               fail(
-                new Error(
+                new LocalFileRequestError(
+                  "relay_unsubscribed",
                   `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the file relay. Reconnect the Desktop app, wait until it is ready, then try again.`,
                 ),
               );
@@ -621,7 +655,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
           } catch (error) {
             fail(
-              new Error(
+              new LocalFileRequestError(
+                error instanceof RelayOperationReadinessTimeout
+                  ? "readiness_timeout"
+                  : isLocalCommandRelayUnsubscribedError(error)
+                    ? "relay_unsubscribed"
+                    : "dispatch_error",
                 `Failed to publish desktop file request: ${
                   error instanceof Error ? error.message : String(error)
                 }`,
@@ -658,8 +697,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       pid?: number;
     }> => {
       if (opts?.stdin !== undefined && !this.supportsCommandStdin()) {
-        throw new Error(
-          "Command stdin requires an updated HackerAI local client",
+        throw new LocalCommandDispatchError(
+          new Error("Command stdin requires an updated HackerAI local client"),
+          false,
         );
       }
       const commandId = crypto.randomUUID();
@@ -677,9 +717,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             this.connectionInfo.connectionId,
           );
 
-      // Generate short-lived JWT for this subscription (30s + command timeout)
-      const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
-      const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+      // Desktop retains output across relay outages after native execution ends.
+      // Keep the receiver and its token alive for that bounded delivery window;
+      // this does not extend native execution or change CLI command deadlines.
+      const maxWaitTime =
+        timeout +
+        5000 +
+        (this.connectionInfo.isDesktop ? DESKTOP_COMMAND_DELIVERY_GRACE_MS : 0);
+      const tokenExpSeconds = Math.ceil(maxWaitTime / 1000) + 30;
+      const token = await generateCentrifugoToken(
+        this.userId,
+        tokenExpSeconds,
+      ).catch((error: unknown) => {
+        throw new LocalCommandDispatchError(error, false);
+      });
 
       // Create a centrifuge client for this command
       const client = new Centrifuge(this.config.wsUrl, {
@@ -687,12 +738,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       });
       this.activeClients.push(client);
 
-      const result = await new Promise<CommandResult>((resolve, reject) => {
+      const result = await new Promise<CommandResult>((resolve, fail) => {
+        let commandPublicationStarted = false;
+        const reject = (error: unknown, retryable = false) =>
+          fail(
+            isLocalCommandRelayUnsubscribedError(error)
+              ? error
+              : new LocalCommandDispatchError(
+                  error,
+                  commandPublicationStarted,
+                  retryable && !commandPublicationStarted,
+                ),
+          );
         let stdout = "";
         let stderr = "";
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
         let cancelAckTimeoutId: NodeJS.Timeout | undefined;
+        let cancelRetryTimeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
         let commandPublishInFlight = false;
@@ -704,11 +767,78 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
         let lastStreamSequence = -1;
+        let streamInterrupted = false;
+        let streamRecoveryIncomplete = false;
+        let receivedUnsequencedOutput = false;
+        let acknowledgedOutput = false;
+        let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
+        let terminalReceived = false;
+        let terminalCursorPublished = false;
+        let terminalReceivedDuringCancellation = false;
+        let completeTerminal: (() => void) | undefined;
+        const diagnostics = createReceiverDiagnostics(
+          {
+            commandId,
+            triggerRunId: this.triggerRunId,
+            enabled: isolated && this.connectionInfo.isDesktop === true,
+          },
+          () => ({
+            sequence: lastStreamSequence,
+            terminalReceived,
+            cancelRequested,
+            dispatched: commandPublicationStarted,
+          }),
+        );
+        diagnostics.start();
+        const sendOutputCursor = async (
+          type: "command_output_ack" | "command_output_resume",
+        ) => {
+          if (!subscription || settled || !acknowledgedOutput) return;
+          // A preceding output ACK may complete after terminal receipt. Only
+          // a successfully published terminal cursor can release its receiver.
+          const sequence = lastStreamSequence;
+          diagnostics.cursorAttempt(type === "command_output_resume");
+          try {
+            await subscription.publish({
+              type,
+              commandId,
+              sequence,
+              targetConnectionId: this.connectionInfo.connectionId,
+            });
+            diagnostics.cursorResult(
+              type === "command_output_resume",
+              sequence,
+              true,
+            );
+            if (
+              !settled &&
+              terminalReceived &&
+              sequence === lastStreamSequence
+            ) {
+              terminalCursorPublished = true;
+              completeTerminal?.();
+            }
+          } catch (error: unknown) {
+            diagnostics.cursorResult(
+              type === "command_output_resume",
+              sequence,
+              false,
+              isCentrifugoPublishTimeout(error),
+            );
+            // Keep the receiver until sender replay, reconnect, cancellation,
+            // or the existing deadline; never redispatch the command.
+          }
+        };
+        const acknowledgeOutput = () => {
+          if (acknowledgementTimer !== undefined) return;
+          acknowledgementTimer = setTimeout(() => {
+            acknowledgementTimer = undefined;
+            void sendOutputCursor("command_output_ack");
+          }, 25);
+        };
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
-
-        const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
         // Timing diagnostics — track which phase we reached before timeout
         const t0 = Date.now();
@@ -717,7 +847,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tPublished = 0;
         let tFirstMessage = 0;
 
-        const cleanup = () => {
+        const cleanup = (reason: ReceiverCleanupReason) => {
+          diagnostics.finish(reason);
+          clearTimeout(acknowledgementTimer);
+          // Every terminal path must release Stop callers before clearing the
+          // cancellation timers. Confirmed cancellation resolves true first.
+          resolveCancelAttempt?.(false);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
+
           if (!trafficMetricRecorded) {
             trafficMetricRecorded = true;
             recordRelayReceivedBytes(
@@ -736,6 +874,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
           }
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (subscription) {
             try {
               subscription.unsubscribe();
@@ -762,7 +902,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           resolveCancelAttempt = null;
           cancelAttemptPromise = null;
           settled = true;
-          cleanup();
+          cleanup("canceled");
           resolve({
             stdout,
             stderr,
@@ -771,6 +911,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         };
 
         const failCancellation = (message: string) => {
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (cancelAckTimeoutId) {
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
@@ -780,17 +922,29 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           cancelAttemptPromise = null;
           cancelRequested = false;
           cancelPublishStarted = false;
+          if (terminalReceivedDuringCancellation) {
+            // A later ACK must not turn a failed/timed-out Stop into success.
+            completeTerminal = () => {
+              if (settled) return;
+              settled = true;
+              cleanup("cancel_failed");
+              reject(new Error(message));
+            };
+          }
 
           if (cancelTriggeredBySignal && !settled) {
             settled = true;
-            cleanup();
+            cleanup("cancel_failed");
             reject(new Error(message));
           }
         };
 
         const publishCancel = () => {
           if (settled) return;
-          cancelRequested = true;
+          if (!cancelRequested) {
+            cancelRequested = true;
+            diagnostics.transition("cancel_requested");
+          }
           if (!publishedCommand || !subscription) {
             if (commandPublishInFlight) return;
             resolveCanceled();
@@ -807,19 +961,35 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
           }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
-          subscription
-            .publish({
-              type: "command_cancel",
-              commandId,
-              targetConnectionId: this.connectionInfo.connectionId,
-            })
-            .catch(() => {
-              if (cancelAttemptPromise === attempt) {
-                failCancellation(
-                  "Failed to publish local command cancellation.",
-                );
-              }
-            });
+          let retried = false;
+          const sendCancel = (retry: boolean) => {
+            subscription!
+              .publish({
+                type: "command_cancel",
+                commandId,
+                targetConnectionId: this.connectionInfo.connectionId,
+              })
+              .catch((error: unknown) => {
+                if (cancelAttemptPromise === attempt && (retry || !retried)) {
+                  // A missing RPC ACK does not prove the control was rejected.
+                  // Leave the bounded resend/acknowledgement deadline in charge.
+                  if (isCentrifugoPublishTimeout(error)) return;
+                  failCancellation(
+                    "Failed to publish local command cancellation.",
+                  );
+                }
+              });
+          };
+          // Stop is idempotent for this exact command/connection. Resend once
+          // if no terminal response arrives, even if the first RPC is stalled.
+          // Never replay the command or extend the acknowledgement deadline.
+          cancelRetryTimeoutId = setTimeout(() => {
+            cancelRetryTimeoutId = undefined;
+            if (settled || cancelAttemptPromise !== attempt) return;
+            retried = true;
+            sendCancel(true);
+          }, COMMAND_CANCEL_RETRY_MS);
+          sendCancel(false);
         };
 
         const requestCancellation = (
@@ -852,7 +1022,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         timeoutId = setTimeout(() => {
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("deadline");
             const phases = [
               `connected: ${tConnected ? `${tConnected - t0}ms` : "no"}`,
               `subscribed: ${tSubscribed ? `${tSubscribed - t0}ms` : "no"}`,
@@ -864,6 +1034,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 `Command timeout after ${maxWaitTime}ms [${phases}]` +
                   ` connectionId=${this.connectionInfo.connectionId}`,
               ),
+              true,
             );
           }
         }, maxWaitTime);
@@ -901,16 +1072,54 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
+          if (message.type === "command_output_unavailable") {
+            settled = true;
+            cleanup("output_unavailable");
+            reject(new Error(message.message));
+            return;
+          }
           if (message.type === "command" || message.type === "command_cancel") {
             return;
           }
 
+          if (
+            message.type !== "command_cancel_result" &&
+            message.outputProtocol === "ack-v1" &&
+            isolated &&
+            this.connectionInfo.isDesktop
+          )
+            acknowledgedOutput = true;
           const sequence = "sequence" in message ? message.sequence : undefined;
+          if (
+            acknowledgedOutput &&
+            message.type === "error" &&
+            sequence === undefined
+          ) {
+            settled = true;
+            cleanup("unsequenced_error");
+            reject(new Error(message.message));
+            return;
+          }
+
+          if (terminalReceived && message.type !== "command_cancel_result") {
+            if (acknowledgedOutput && sequence === lastStreamSequence)
+              acknowledgeOutput();
+            return;
+          }
+
           if (sequence !== undefined) {
-            if (sequence <= lastStreamSequence) return;
+            if (sequence <= lastStreamSequence) {
+              if (acknowledgedOutput) acknowledgeOutput();
+              return;
+            }
+            if (sequence !== lastStreamSequence + 1 && acknowledgedOutput) {
+              diagnostics.transition("sequence_gap");
+              void sendOutputCursor("command_output_resume");
+              return;
+            }
             if (sequence !== lastStreamSequence + 1) {
               settled = true;
-              cleanup();
+              cleanup("sequence_gap");
               console.error(
                 JSON.stringify({
                   timestamp: new Date().toISOString(),
@@ -934,33 +1143,93 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
             lastStreamSequence = sequence;
           }
+          if (acknowledgedOutput && sequence !== undefined) acknowledgeOutput();
           if (!tFirstMessage) tFirstMessage = Date.now();
+
+          if (
+            !cancelRequested &&
+            (message.type === "exit" || message.type === "error") &&
+            streamRecoveryIncomplete &&
+            (sequence === undefined || receivedUnsequencedOutput)
+          ) {
+            settled = true;
+            cleanup("recovery_incomplete");
+            reject(
+              new Error(
+                "Local command output completeness is unknown after an unrecovered relay interruption.",
+              ),
+            );
+            return;
+          }
 
           switch (message.type) {
             case "stdout":
+              receivedUnsequencedOutput ||= sequence === undefined;
               stdout += message.data;
               opts?.onStdout?.(message.data);
               break;
             case "stderr":
+              receivedUnsequencedOutput ||= sequence === undefined;
               stderr += message.data;
               opts?.onStderr?.(message.data);
               break;
             case "exit":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr,
-                exitCode: message.exitCode,
-                pid: message.pid,
-              });
+              if (terminalReceived) break;
+              terminalReceived = true;
+              diagnostics.terminal(message.type);
+              completeTerminal = () => {
+                if (settled) return;
+                settled = true;
+                cleanup(
+                  terminalCursorPublished
+                    ? "terminal_ack_published"
+                    : "legacy_terminal",
+                );
+                resolve({
+                  stdout,
+                  stderr,
+                  exitCode: message.exitCode,
+                  pid: message.pid,
+                });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
             case "command_cancel_result":
               if (!cancelRequested) break;
+              diagnostics.cancelResult(message.canceled);
+              if (terminalReceivedDuringCancellation && acknowledgedOutput) {
+                // A cancel reply does not acknowledge the sequenced terminal.
+                // Preserve receiver ownership until its ACK or the existing deadline.
+                if (!message.canceled) {
+                  completeTerminal = () => {
+                    const reason =
+                      "Local command cancellation was not confirmed.";
+                    failCancellation(reason);
+                    if (!settled) {
+                      settled = true;
+                      cleanup("cancel_failed");
+                      reject(new Error(reason));
+                    }
+                  };
+                }
+                break;
+              }
               if (message.canceled) {
                 resolveCanceled();
               } else {
@@ -971,7 +1240,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "error":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               console.warn(
@@ -986,41 +1265,95 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   message: message.message,
                 }),
               );
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr: stderr
-                  ? `${stderr}\n${message.message}`
-                  : message.message,
-                exitCode: -1,
-              });
+              if (terminalReceived) break;
+              terminalReceived = true;
+              diagnostics.terminal(message.type);
+              completeTerminal = () => {
+                if (settled) return;
+                settled = true;
+                cleanup(
+                  terminalCursorPublished
+                    ? "terminal_ack_published"
+                    : "legacy_terminal",
+                );
+                resolve({
+                  stdout,
+                  stderr: stderr
+                    ? `${stderr}\n${message.message}`
+                    : message.message,
+                  exitCode: -1,
+                });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
           }
         });
 
         subscription.on("error", (ctx) => {
+          // Centrifuge resubscribes after temporary subscription failures. Keep
+          // the same command and its output until recovery or the existing deadline.
+          if (
+            commandDispatchStarted &&
+            ctx.type === "subscribe" &&
+            (ctx.error.code < 100 ||
+              ("temporary" in ctx.error && ctx.error.temporary === true))
+          ) {
+            diagnostics.transition("subscription_retry");
+            return;
+          }
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("subscription_error");
             reject(
               new Error(
                 `Centrifugo subscription error: ${ctx.error?.message ?? "unknown"}`,
               ),
+              ctx.type === "subscribe" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true)),
             );
           }
+        });
+
+        subscription.on("unsubscribed", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup("unsubscribed");
+          reject(
+            new Error(
+              `Centrifugo subscription terminally unsubscribed: ${ctx.reason}`,
+            ),
+          );
         });
 
         // Wait for subscription to be fully established before publishing command.
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
-        subscription.on("subscribed", () => {
+        subscription.on("subscribing", () => {
+          diagnostics.transition("subscribing");
+          if (publishedCommand || commandPublishInFlight)
+            streamInterrupted = true;
+        });
+        subscription.on("subscribed", (ctx) => {
           if (settled) return;
+          diagnostics.subscribed(ctx?.recovered === true);
+
+          if (commandDispatchStarted && streamInterrupted) {
+            // Legacy clients do not sequence chunks. Unless broker recovery
+            // succeeded, their next exit cannot prove all output was received.
+            streamRecoveryIncomplete ||= ctx?.recovered !== true;
+            streamInterrupted = false;
+          }
 
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the
           // second event arrives before the first presence check completes.
-          if (commandDispatchStarted) return;
+          if (commandDispatchStarted) {
+            void sendOutputCursor("command_output_resume");
+            return;
+          }
           commandDispatchStarted = true;
           tSubscribed = Date.now();
 
@@ -1036,7 +1369,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               ) {
                 if (settled) return;
                 settled = true;
-                cleanup();
+                cleanup("presence_missing");
                 reject(
                   new LocalCommandRelayUnsubscribedError(
                     this.connectionInfo.connectionId,
@@ -1079,8 +1412,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               chatId: this.chatId,
               triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
+              ...(isolated && this.connectionInfo.isDesktop
+                ? { outputProtocol: "ack-v1" as const }
+                : {}),
             };
 
+            if (!isolated) commandPublicationStarted = true;
             commandPublishInFlight = true;
 
             (async () => {
@@ -1092,6 +1429,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   commandMessage as unknown as Record<string, unknown>,
                   () => !settled,
                   subscription!,
+                  () => {
+                    commandPublicationStarted = true;
+                  },
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
@@ -1115,6 +1455,22 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               })
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
+                if (
+                  !settled &&
+                  isolated &&
+                  this.connectionInfo.isDesktop &&
+                  commandPublicationStarted &&
+                  (err instanceof RelayOperationReadinessTimeout ||
+                    isCentrifugoPublishTimeout(err))
+                ) {
+                  // A lost publish/readiness reply does not prove the command
+                  // failed to execute. Keep its original receiver and deadline;
+                  // never resend execution. Stop must still target this command.
+                  publishedCommand = true;
+                  diagnostics.transition("dispatch_uncertain");
+                  if (cancelRequested || opts?.signal?.aborted) publishCancel();
+                  return;
+                }
                 if (cancelRequested || opts?.signal?.aborted) {
                   failCancellation(
                     "Command publication failed while cancellation was pending.",
@@ -1122,7 +1478,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 }
                 if (!settled) {
                   settled = true;
-                  cleanup();
+                  cleanup("dispatch_failed");
+                  if (
+                    !commandPublicationStarted &&
+                    isLocalCommandRelayUnsubscribedError(err)
+                  ) {
+                    reject(err);
+                    return;
+                  }
                   reject(
                     new Error(
                       `Failed to publish command: ${
@@ -1144,23 +1507,44 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             if (!settled) {
               commandPublishInFlight = false;
               settled = true;
-              cleanup();
+              cleanup("dispatch_failed");
               reject(err instanceof Error ? err : new Error(String(err)));
             }
           });
         });
 
-        subscription.subscribe();
-        client.connect();
+        client.on("disconnected", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup("disconnected");
+          reject(
+            new Error(
+              `Centrifugo client terminally disconnected: ${ctx.reason}`,
+            ),
+          );
+        });
 
         client.on("connected", () => {
+          diagnostics.transition("connected");
           tConnected = Date.now();
         });
 
         client.on("error", (ctx) => {
+          // A failed reconnect attempt is not a command failure. Centrifuge
+          // owns transport retries; never replace an already dispatched command.
+          if (
+            commandDispatchStarted &&
+            (ctx.type === "transport" ||
+              (ctx.type === "connect" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true))))
+          ) {
+            diagnostics.transition("client_retry");
+            return;
+          }
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("client_error");
             const msg = ctx.error?.message ?? "unknown";
             const isConnectionLimit =
               msg.includes("connection limit") || ctx.error?.code === 4503;
@@ -1170,9 +1554,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
                   : `Centrifugo client error: ${msg}`,
               ),
+              isConnectionLimit ||
+                ctx.type === "transport" ||
+                (ctx.type === "connect" &&
+                  (ctx.error.code < 100 ||
+                    ("temporary" in ctx.error &&
+                      ctx.error.temporary === true))),
             );
           }
         });
+
+        subscription.subscribe();
+        client.connect();
       });
 
       return result;
@@ -1277,7 +1670,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
    * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
-  private async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
+  async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
     const declaredPlatform = this.connectionInfo.osInfo?.platform;

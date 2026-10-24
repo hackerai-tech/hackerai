@@ -1,6 +1,8 @@
 type Properties = Record<string, unknown>;
 type RelayEvent =
-  "desktop_bridge_relay_error" | "desktop_bridge_relay_state_changed";
+  | "desktop_bridge_relay_error"
+  | "desktop_bridge_relay_state_changed"
+  | "desktop_bridge_recovery_scheduled";
 type Bucket = {
   event: RelayEvent;
   properties: Properties;
@@ -20,6 +22,7 @@ const MAX_SIGNATURES = 32;
 export class DesktopRelayTelemetry {
   private buckets = new Map<string, Bucket>();
   private windowStartedAt = 0;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly capture: (
@@ -40,6 +43,8 @@ export class DesktopRelayTelemetry {
       properties.code,
       properties.transport,
       properties.recovered,
+      event === "desktop_bridge_recovery_scheduled" ? properties.reason : null,
+      event === "desktop_bridge_recovery_scheduled" ? properties.attempt : null,
     ]);
     const bucket = this.buckets.get(key);
     if (bucket) {
@@ -56,6 +61,9 @@ export class DesktopRelayTelemetry {
       if (oldest !== undefined) this.buckets.delete(oldest);
     }
     if (this.buckets.size === 0) this.windowStartedAt = now;
+    // The owner can retain this buffer across bridge replacement. Flush even
+    // when callbacks stop, rather than waiting for another connection failure.
+    this.scheduleFlush();
     const nextBucket: Bucket = {
       event,
       properties,
@@ -68,12 +76,20 @@ export class DesktopRelayTelemetry {
     this.capturePending(nextBucket);
   }
 
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flush();
+    }, WINDOW_MS);
+  }
+
   private capturePending(bucket: Bucket): boolean {
     try {
       if (
         !this.capture(bucket.event, {
           ...bucket.properties,
-          telemetry_version: 1,
+          telemetry_version: 2,
           telemetry_occurrences: bucket.pending,
           telemetry_summary: bucket.firstCaptured,
           telemetry_window_started_at: new Date(bucket.firstSeen).toISOString(),
@@ -90,10 +106,20 @@ export class DesktopRelayTelemetry {
   }
 
   flush(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
     for (const [key, bucket] of this.buckets) {
       if (bucket.pending === 0 || this.capturePending(bucket)) {
         this.buckets.delete(key);
       }
     }
+    if (this.buckets.size > 0) this.scheduleFlush();
+  }
+
+  reset(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    this.buckets.clear();
+    this.windowStartedAt = 0;
   }
 }

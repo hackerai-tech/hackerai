@@ -5,7 +5,7 @@ import {
   type ProviderRecoveryContext,
 } from "@/lib/chat/provider-recovery-context";
 import {
-  AGENT_MODEL_CONTEXT_FLAG,
+  getAgentModelContextFlag,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
@@ -323,6 +323,10 @@ export const resolveAgentModelForImageToolResults = (
 ): string => {
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
+  }
+  // Promote only the Max text route; preserve explicit recovery models.
+  if (selectedModelOverride === "hackerai-max") {
+    return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
   }
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.
@@ -1036,11 +1040,17 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
-  let activeContextBudget = ctx.ctxMaxTokens;
-  const maxContextEnabled =
+  // Free Ask hides its usage meter with a zero display budget. Compaction still
+  // needs the existing subscription budget to retain source history.
+  let activeContextBudget =
+    ctx.ctxMaxTokens > 0
+      ? ctx.ctxMaxTokens
+      : getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode });
+  const contextFlag = getAgentModelContextFlag(ctx.selectedModelOverride);
+  const expandedContextEnabled =
     ctx.mode === "agent" &&
     ctx.agentModelContextEnabled &&
-    ctx.selectedModelOverride === "hackerai-max";
+    contextFlag !== undefined;
   let activeModelInputTokens = 0;
   let lastPreparedInputEstimate = 0;
   let lastCompletedResponseMessages: ModelMessage[] = [];
@@ -1294,9 +1304,9 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
-    // Keep the three-step treatment schedule, but do not shrink long Max
-    // history just to fit the base Abliteration model's smaller window.
-    return maxContextEnabled &&
+    // Preserve the expanded-context alias and its existing recovery policy.
+    // Both Abliteration aliases now execute the multimodal Large Flash model.
+    return expandedContextEnabled &&
       effectiveModel === ABLITERATION_MODEL_KEY &&
       activeModelInputTokens >
         getSummarizationThresholdTokens(
@@ -1324,7 +1334,7 @@ export async function createAgentStream(
     lastRequestedSlug = languageModel.modelId;
     if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
       activeContextBudget = getAgentContextBudget({
-        enabled: maxContextEnabled,
+        enabled: expandedContextEnabled,
         mode: ctx.mode,
         subscription: ctx.subscription,
         modelId: languageModel.modelId,
@@ -1405,9 +1415,7 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages, {
-          force: effectiveModelName === ABLITERATION_LARGE_V2_MODEL_KEY,
-        })
+      ? await preprocessAbliterationImages(toolCallRepair.messages)
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
@@ -1465,6 +1473,17 @@ export async function createAgentStream(
       ctx.agentModelContextEnabled &&
       lastPreparedInputEstimate > activeContextBudget
     ) {
+      console.warn(
+        JSON.stringify({
+          event: "agent_context_budget_exceeded",
+          chat_id: ctx.chatId,
+          model: effectiveModelName,
+          estimated_input_tokens: lastPreparedInputEstimate,
+          previous_provider_input_tokens: state.lastStepInputTokens,
+          max_tokens: activeContextBudget,
+          compaction_attempt_count: compactionAttemptCount,
+        }),
+      );
       throw new AgentContextBudgetError(
         "Conversation could not be compacted to fit the selected model. Please retry.",
       );
@@ -1684,7 +1703,7 @@ export async function createAgentStream(
       : undefined;
   if (recoveredContext) initialSerializedMessages = recoveredContext;
   else state.providerRecoveryContext = undefined;
-  if (maxContextEnabled) {
+  if (expandedContextEnabled) {
     activeModelInputTokens =
       estimateSummaryInputTokens(initialSerializedMessages) +
       ctx.systemPromptTokens;
@@ -1838,8 +1857,9 @@ export async function createAgentStream(
       mode: ctx.mode,
       subscription: ctx.subscription,
       baselineModel: modelName,
+      selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
-      expandedMaxContext: maxContextEnabled,
+      expandedAgentContext: expandedContextEnabled,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -1946,6 +1966,7 @@ export async function createAgentStream(
       if (
         !abortSignal.aborted &&
         !state.agentContextBudgetExposed &&
+        contextFlag !== undefined &&
         ctx.mode === "agent" &&
         (ctx.agentModelContextVariant !== undefined ||
           (ctx.agentModelContextEnabled &&
@@ -1957,11 +1978,10 @@ export async function createAgentStream(
           userId: ctx.userId,
           chat_id: ctx.chatId,
           run_id: ctx.triggerRunId,
-          flag_key: AGENT_MODEL_CONTEXT_FLAG,
+          flag_key: contextFlag,
           ...(ctx.agentModelContextVariant && {
             experiment_variant: ctx.agentModelContextVariant,
-            [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]:
-              ctx.agentModelContextVariant,
+            [`$feature/${contextFlag}`]: ctx.agentModelContextVariant,
           }),
           model: model.modelId,
           context_max_tokens: activeContextBudget,
@@ -2026,7 +2046,7 @@ export async function createAgentStream(
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
-      if (maxContextEnabled) {
+      if (expandedContextEnabled) {
         activeModelInputTokens =
           estimateSummaryInputTokens(rollingModelMessages) +
           ctx.systemPromptTokens +
@@ -2137,6 +2157,10 @@ export async function createAgentStream(
                 ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
+              preparedInputTokens:
+                ctx.mode === "agent" && ctx.agentModelContextEnabled
+                  ? lastPreparedInputEstimate
+                  : undefined,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(

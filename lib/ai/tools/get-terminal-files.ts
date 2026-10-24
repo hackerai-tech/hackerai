@@ -1,12 +1,17 @@
 import { tool } from "ai";
-import type { SandboxType, ToolContext } from "@/types";
+import type { AnySandbox, SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
+import { logger } from "@/lib/logger";
 import {
   uploadSandboxFileToConvex,
   type GeneratedFileUploadPhase,
+  type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
-import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import {
+  getSandboxLogFields,
+  isCentrifugoSandbox,
+} from "./utils/sandbox-types";
 import { waitForForegroundCommands } from "./utils/foreground-commands";
 import {
   getSandboxWithFallbackGuard,
@@ -30,6 +35,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
       let relayRecoverySucceeded = false;
       let streamNotificationFailures = 0;
       let foregroundCommandsWaited = 0;
+      const observedSandboxTypes = new Set<
+        "cloud" | "desktop" | "remote-connection"
+      >();
+      const observeSandboxType = (sandbox: AnySandbox) => {
+        try {
+          const type = getSandboxLogFields(sandbox).sandbox_type;
+          switch (type) {
+            case "cloud":
+            case "desktop":
+            case "remote-connection":
+              observedSandboxTypes.add(type);
+          }
+        } catch {
+          // Optional identity observation must not fail a delivery.
+        }
+      };
       type FailurePhase =
         | GeneratedFileUploadPhase
         | "sandbox_setup"
@@ -38,15 +59,54 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | "finalization"
         | "unknown";
       let currentPhase: FailurePhase = "sandbox_setup";
+      let setupStage:
+        | "initial_acquisition"
+        | "foreground_wait"
+        | "reacquisition"
+        | "path_preparation"
+        | null = "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      type MetadataFailureReason =
+        `native_${NativeStatFailureReason}` | "unclassified";
+      let currentMetadataFailureReason: MetadataFailureReason = "unclassified";
+      const nativeMetadataFailureCounts: Partial<
+        Record<Exclude<MetadataFailureReason, "unclassified">, number>
+      > = {};
+      const observeNativeStatFailure = (reason: NativeStatFailureReason) => {
+        // Keep even malformed adapter/test values out of analytics.
+        switch (reason) {
+          case "stat_failed":
+          case "file_missing":
+          case "not_regular_file":
+          case "invalid_file_size":
+            currentMetadataFailureReason = `native_${reason}`;
+            break;
+          default:
+            currentMetadataFailureReason = "unclassified";
+        }
+      };
       const countFailure = (phase: FailurePhase, count = 1) => {
         if (count > 0) {
           failurePhaseCounts[phase] = (failurePhaseCounts[phase] ?? 0) + count;
         }
       };
+      const countMetadataFailure = (
+        phase: FailurePhase,
+        reason: MetadataFailureReason,
+      ) => {
+        if (phase === "file_metadata" && reason !== "unclassified") {
+          nativeMetadataFailureCounts[reason] =
+            (nativeMetadataFailureCounts[reason] ?? 0) + 1;
+        }
+      };
       const recordOutcome = (delivered: number, failed: number) => {
         try {
+          const knownMetadataFailures = Object.values(
+            nativeMetadataFailureCounts,
+          ).reduce((total, count) => total + count, 0);
+          const unclassifiedMetadataFailures =
+            (failurePhaseCounts.file_metadata ?? 0) - knownMetadataFailures;
           phLogger.event("agent_file_delivery_completed", {
             userId: context.userID,
             chat_id: context.chatId,
@@ -58,9 +118,20 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             failed_file_count: failed,
             file_delivery_diagnostic_version: 1,
             failure_phase_counts: failurePhaseCounts,
+            metadata_failure_diagnostic_version: 1,
+            metadata_failure_reason_counts: {
+              ...nativeMetadataFailureCounts,
+              ...(unclassifiedMetadataFailures > 0 && {
+                unclassified: unclassifiedMetadataFailures,
+              }),
+            },
             relay_recovery_attempted: relayRecoveryAttempted,
             relay_recovery_succeeded: relayRecoverySucceeded,
             sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
+            // Manager state can change while an earlier adapter is still used.
+            // These are acquired candidates, not per-file execution attribution.
+            observed_sandbox_type_version: 1,
+            observed_sandbox_types: [...observedSandboxTypes],
           });
         } catch {
           // Analytics cannot turn a stored artifact into a failed delivery.
@@ -70,21 +141,27 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
+        observeSandboxType(sandbox);
 
         // SDK tool calls in one model step execute concurrently. A file may
         // still be being created by another foreground call in this context.
         // Acquire first so immediately scheduled sibling calls can register.
+        setupStage = "foreground_wait";
         foregroundCommandsWaited = await waitForForegroundCommands(
           context,
           abortSignal,
         );
         // A pending command can recover/reconnect the selected sandbox.
         if (foregroundCommandsWaited > 0) {
+          setupStage = "reacquisition";
           ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
+          observeSandboxType(sandbox);
         }
+        setupStage = null;
         currentPhase = "unknown";
 
         const uploadWithRelayRecovery = async (filePath: string) => {
+          currentMetadataFailureReason = "unclassified";
           try {
             return await uploadSandboxFileToConvex({
               sandbox,
@@ -94,6 +171,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onPhase: (phase) => {
                 currentPhase = phase;
               },
+              onNativeStatFailure: observeNativeStatFailure,
             });
           } catch (error) {
             if (
@@ -112,6 +190,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             );
             const { sandbox: recoveredSandbox } =
               await getSandboxWithFallbackGuard({ sandboxManager });
+            observeSandboxType(recoveredSandbox);
             if (!isCentrifugoSandbox(recoveredSandbox)) {
               throw new Error(
                 "The selected local sandbox changed during file recovery. Reconnect it and try again.",
@@ -121,6 +200,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             relayRecoverySucceeded = true;
             // Relay presence rejected the first command before publication.
             // The manager only selects a live successor on the same machine.
+            currentMetadataFailureReason = "unclassified";
             return uploadSandboxFileToConvex({
               sandbox,
               userId: context.userID,
@@ -129,6 +209,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onPhase: (phase) => {
                 currentPhase = phase;
               },
+              onNativeStatFailure: observeNativeStatFailure,
             });
           }
         };
@@ -147,6 +228,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
 
         for (let i = 0; i < files.length; i++) {
           currentPhase = "sandbox_setup";
+          setupStage = "path_preparation";
           const originalPath = files[i];
           const pathsToTry: string[] = [];
 
@@ -167,9 +249,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             pathsToTry.push(originalPath);
           }
 
+          setupStage = null;
           let fileProcessed = false;
           let lastError: string | null = null;
           let lastFailurePhase: FailurePhase = "unknown";
+          let lastMetadataFailureReason: MetadataFailureReason = "unclassified";
 
           for (const filePath of pathsToTry) {
             // Check if this specific file is being written to by a background process
@@ -255,6 +339,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
               lastFailurePhase = currentPhase;
+              lastMetadataFailureReason = currentMetadataFailureReason;
               // Continue to try next path
             }
           }
@@ -264,6 +349,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             // Count the terminal outcome once per requested file, after all
             // candidate paths/recovery. Successful alternate paths add no failure.
             countFailure(lastFailurePhase);
+            countMetadataFailure(lastFailurePhase, lastMetadataFailureReason);
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,
@@ -292,6 +378,21 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           failedFiles: blockedFiles,
         };
       } catch (error) {
+        if (setupStage !== null) {
+          try {
+            // Record the interrupted step, not a guessed cause. Errors and file
+            // paths can contain private content; cancellation is presence only.
+            logger.warn("agent_file_delivery_setup_failed", {
+              setup_stage: setupStage,
+              abort_signal_aborted: abortSignal?.aborted ?? false,
+              chat_id: context.chatId.slice(0, 128),
+              trigger_run_id: context.triggerRunId?.slice(0, 128) ?? null,
+              requested_file_count: files.length,
+            });
+          } catch {
+            // Diagnostics must preserve the original failed-batch result.
+          }
+        }
         const errorMsg = resolveToolErrorMessage(error);
         // The existing outer error returns the whole batch as failed. Retain
         // observed failures; stored files whose results were discarded have no

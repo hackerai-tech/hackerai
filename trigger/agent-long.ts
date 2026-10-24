@@ -2,7 +2,10 @@ import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-con
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
+import {
+  getAgentModelContextVariant,
+  getAgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -124,6 +127,10 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import {
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
   saveMessage,
   updateChat,
@@ -600,6 +607,7 @@ type AgentLongErrorSummary = {
   actualSandbox?: string;
   uploadFailureKind?: string;
   uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
+  uploadFailureAcquisitionStage?: CloudAcquisitionStage;
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -803,6 +811,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_reason",
       ),
+      uploadFailureAcquisitionStage:
+        uploadFailurePhase === "acquisition"
+          ? parseCloudAcquisitionStage(
+              errorMetadata?.upload_failure_acquisition_stage,
+            )
+          : undefined,
       uploadFailureCause: getStringMetadata(
         errorMetadata,
         "upload_failure_cause",
@@ -1049,6 +1063,11 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
   if (summary.uploadFailurePhase)
     metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
+  if (summary.uploadFailureAcquisitionStage)
+    metadata.set(
+      "uploadFailureAcquisitionStage",
+      summary.uploadFailureAcquisitionStage,
+    );
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
@@ -1930,7 +1949,10 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
       );
-      runReporting.setAgentModelContextVariant(agentModelContextVariant);
+      runReporting.setAgentModelContextVariant(
+        agentModelContextVariant,
+        getAgentModelContextFlag(selectedModelOverride),
+      );
       const agentModelContextEnabled = agentModelContextVariant === "test";
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
@@ -3903,12 +3925,14 @@ export const agentLongTask = task({
               const providerError = terminalError
                 ? wrapProviderTerminalError(terminalError, {
                     model: terminalRequestedModelSlug,
-                    openRouterMetadata: state.openRouterMetadata,
+                    openRouterMetadata: state.providerErrorMetadata,
                   })
                 : lastProviderRecoveryError;
 
               return {
-                upstreamProvider: state.openRouterMetadata.provider_name,
+                upstreamProvider: terminalError
+                  ? state.providerErrorMetadata?.provider_name
+                  : state.openRouterMetadata.provider_name,
                 providerErrorProvider: providerError?.provider,
                 providerErrorCategory: providerError?.category,
                 providerErrorStatusCode: providerError?.statusCode,
@@ -3932,7 +3956,7 @@ export const agentLongTask = task({
             }) => {
               const failure = wrapProviderTerminalError(state.providerError, {
                 model: trackedProvider.languageModel(failedModel).modelId,
-                openRouterMetadata: state.openRouterMetadata,
+                openRouterMetadata: state.providerErrorMetadata,
               });
               providerRecoveryAttempts += 1;
               providerRecoveryModels.push(retryModel);
@@ -4593,7 +4617,7 @@ export const agentLongTask = task({
                           state.providerError,
                           {
                             model: selectedModel,
-                            openRouterMetadata: state.openRouterMetadata,
+                            openRouterMetadata: state.providerErrorMetadata,
                           },
                         );
                         triggerLogger.info("Provider recovery decision", {
@@ -4617,9 +4641,8 @@ export const agentLongTask = task({
                           status_code: failure.statusCode,
                           configured_model: selectedModel,
                           served_model:
-                            state.openRouterMetadata
-                              ?.openrouter_selected_model ??
-                            state.responseModel,
+                            state.providerErrorMetadata
+                              ?.openrouter_selected_model,
                           provider: failure.provider,
                           provider_request_id: failure.openrouterRequestId,
                           provider_generation_id:
@@ -5570,7 +5593,7 @@ export const agentLongTask = task({
         }
         throw wrapProviderTerminalError(terminalStreamError, {
           model: terminalRequestedModelSlug,
-          openRouterMetadata: terminalAgentState?.openRouterMetadata,
+          openRouterMetadata: terminalAgentState?.providerErrorMetadata,
         });
       }
 
