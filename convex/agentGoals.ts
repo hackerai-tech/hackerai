@@ -10,6 +10,7 @@ import {
 } from "./lib/goalValidators";
 import {
   isGoalEvidencePart,
+  mergeGoalEvidence,
   serializeGoalEvidence,
   resolveGoalOutcome,
   validGoalStart,
@@ -515,9 +516,7 @@ export const finish = mutation({
             message?.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
         )
         .map((e) => ({ ...e, messageId: args.messageId ?? args.runId })) ?? [];
-    const evidence = goal.evidence
-      .filter((e) => !verified.some((n) => n.criterion === e.criterion))
-      .concat(verified);
+    const evidence = mergeGoalEvidence(goal.evidence, verified);
     const progressed =
       verified.length > 0 ||
       (message?.chat_id === args.chatId &&

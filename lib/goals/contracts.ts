@@ -24,6 +24,21 @@ export type GoalEvidence = {
   toolCallId: string;
   explanation: string;
 };
+/** Keep earlier stages of a criterion; a new tool result does not replace its history. */
+export function mergeGoalEvidence<
+  T extends Pick<GoalEvidence, "criterion" | "runId" | "toolCallId">,
+>(prior: T[], current: T[]): T[] {
+  const distinct = new Map<string, T>();
+  for (const proof of [...prior, ...current]) {
+    distinct.set(
+      JSON.stringify([proof.criterion, proof.runId, proof.toolCallId]),
+      proof,
+    );
+  }
+  // Admission permits at most eight proofs per slice and eight total slices.
+  return [...distinct.values()].slice(-GOAL_MAX_RUNS * 8);
+}
+
 export type GoalCheckpoint = {
   outcome: "continue" | "achieved" | "needs_input" | "blocked" | "wait";
   progress: string;

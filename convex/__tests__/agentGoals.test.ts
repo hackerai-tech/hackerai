@@ -481,3 +481,29 @@ describe("editing and deleting an active goal", () => {
     ).rejects.toThrow();
   });
 });
+
+it("retains distinct proofs across slices for one multi-stage criterion", async () => {
+  const db = database();
+  await invoke(start, db.ctx, startArgs);
+  for (const [index, runId] of ["r1", "r2"].entries()) {
+    await invoke(claimRun, db.ctx, { ...owner, generation: index + 1, runId });
+    await db.message(runId, [result]);
+    await invoke(checkpoint, db.ctx, {
+      ...owner,
+      runId,
+      checkpoint: {
+        outcome: "continue",
+        progress: "Stage verified",
+        evidence: [{ ...proof, runId }],
+      },
+    });
+    await invoke(finish, db.ctx, { ...terminal, runId });
+    db.chat().active_trigger_run_id = undefined;
+  }
+  expect(db.goal().evidence.map((e: { runId: string }) => e.runId)).toEqual([
+    "r1",
+    "r2",
+  ]);
+  const evidence = await invoke(evidenceForBackend, db.ctx, owner);
+  expect(evidence.map((e: { runId: string }) => e.runId)).toEqual(["r1", "r2"]);
+});

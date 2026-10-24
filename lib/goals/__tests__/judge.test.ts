@@ -136,3 +136,26 @@ describe("independent goal completion check", () => {
     );
   });
 });
+
+it("retains earlier-stage evidence for the same criterion when judging a later run", async () => {
+  jest.clearAllMocks();
+  mockPriorEvidence.mockResolvedValue([
+    {
+      criterion: 0,
+      runId: "earlier",
+      toolCallId: "prepare",
+      explanation: "Prepared marker",
+      result: "Stage one verified",
+    },
+  ]);
+  generate.mockResolvedValue({
+    output: { verdict: "done", reason: "Both stages verified" },
+    usage: {},
+  });
+  await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+  const evidence = JSON.parse(generate.mock.calls[0][0].prompt).evidence;
+  expect(evidence.map((e: { runId: string }) => e.runId)).toEqual([
+    "earlier",
+    "r1",
+  ]);
+});

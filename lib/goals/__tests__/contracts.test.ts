@@ -1,5 +1,6 @@
 import {
   isGoalEvidencePart,
+  mergeGoalEvidence,
   resolveGoalOutcome,
   validGoalStart,
   verificationGatePassed,
@@ -190,4 +191,21 @@ it("accepts the full objective limit without truncating it into a criterion", ()
   expect(() =>
     parseGoalCommand(`/goal Fix\ncriterion: ${"x".repeat(1001)}`),
   ).toThrow();
+});
+
+it("deduplicates proof identity while bounding cumulative verifier input", () => {
+  const original = {
+    criterion: 0,
+    runId: "r1",
+    toolCallId: "cmd",
+    explanation: "Earlier",
+  };
+  const updated = { ...original, explanation: "Updated explanation" };
+  expect(mergeGoalEvidence([original], [updated])).toEqual([updated]);
+  const proofs = Array.from({ length: 64 }, (_, i) => ({
+    ...original,
+    toolCallId: `tool-${i}`,
+  }));
+  expect(mergeGoalEvidence(proofs, [updated])).toHaveLength(64);
+  expect(mergeGoalEvidence(proofs, [updated])).toContainEqual(updated);
 });
