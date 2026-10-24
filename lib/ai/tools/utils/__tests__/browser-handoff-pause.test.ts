@@ -7,13 +7,8 @@ import {
 
 const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
-const mockHandoffFlag = jest.fn();
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockQuery, mutation: mockMutation }),
-}));
-jest.mock("@/lib/posthog/server", () => ({
-  getPostHogBooleanFlagDecisionForUser: (...args: unknown[]) =>
-    mockHandoffFlag(...args),
 }));
 
 async function owner(agentId = "parent") {
@@ -36,7 +31,6 @@ beforeEach(() => {
   jest.useFakeTimers();
   mockQuery.mockReset();
   mockMutation.mockReset().mockResolvedValue(true);
-  mockHandoffFlag.mockReset().mockResolvedValue(true);
 });
 afterEach(() => jest.useRealTimers());
 
@@ -152,10 +146,8 @@ it("rejects a dedicated wait without a current browser owner", async () => {
   expect(mockMutation).not.toHaveBeenCalled();
 });
 
-it("reports unavailable instead of asking to reopen a browser when handoff is disabled", async () => {
-  mockHandoffFlag.mockResolvedValue(false);
-  const { sessions } = await owner();
-  mockMutation.mockClear();
+it("rejects handoff without an owning run scope", async () => {
+  const sessions = new BrowserSessions();
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     "Browser handoff is unavailable for this run.",
   );
@@ -163,8 +155,7 @@ it("reports unavailable instead of asking to reopen a browser when handoff is di
   expect(mockMutation).not.toHaveBeenCalled();
 });
 
-it("Stop interrupts a pending handoff flag lookup without registering a wait", async () => {
-  mockHandoffFlag.mockReturnValue(new Promise(() => {}));
+it("rejects an already stopped handoff without registering a wait", async () => {
   const sessions = new BrowserSessions({
     userId: "owner",
     chatId: "chat",
@@ -173,9 +164,9 @@ it("Stop interrupts a pending handoff flag lookup without registering a wait", a
     serviceKey: "test-key",
   });
   const stop = new AbortController();
+  stop.abort(new Error("Stopped by user"));
   const pending = sessions.waitForHumanHandoff(stop.signal);
   const rejected = expect(pending).rejects.toThrow("Stopped by user");
-  stop.abort(new Error("Stopped by user"));
   await rejected;
   expect(mockQuery).not.toHaveBeenCalled();
   expect(mockMutation).not.toHaveBeenCalled();
