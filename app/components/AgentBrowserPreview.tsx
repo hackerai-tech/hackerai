@@ -4,6 +4,7 @@ import {
   Maximize2,
   MousePointerClick,
   RefreshCw,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -14,6 +15,7 @@ import {
 } from "react";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -561,7 +563,7 @@ export function AgentBrowserPreview({
 
   // Layout follows the visible area, including keyboard occlusion and rotation.
   useEffect(() => {
-    if (!fullScreen) return;
+    if (!fullScreen && !exitOpen) return;
     setTouchDevice(
       window.matchMedia?.("(any-pointer: coarse)").matches ?? false,
     );
@@ -583,7 +585,7 @@ export function AgentBrowserPreview({
       window.visualViewport?.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("scroll", measure);
     };
-  }, [fullScreen]);
+  }, [fullScreen, exitOpen]);
 
   // Keep this viewport on resume: the Agent must inspect the layout the user
   // just edited, taking a fresh snapshot instead of reusing old coordinates.
@@ -1191,7 +1193,21 @@ export function AgentBrowserPreview({
         }}
       >
         <DialogContent
-          className="grid max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto sm:max-w-lg"
+          showCloseButton={false}
+          className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg"
+          style={
+            visibleViewport
+              ? {
+                  maxHeight: Math.max(0, visibleViewport.height - 32),
+                  maxWidth: Math.min(
+                    512,
+                    Math.max(0, visibleViewport.width - 32),
+                  ),
+                  top: visibleViewport.top + visibleViewport.height / 2,
+                  left: visibleViewport.left + visibleViewport.width / 2,
+                }
+              : undefined
+          }
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             // This dialog has no Radix trigger. Restore remote keyboard input
@@ -1212,54 +1228,70 @@ export function AgentBrowserPreview({
             if (busy) event.preventDefault();
           }}
         >
-          <DialogTitle className="pr-6 text-xl">
-            Tell HackerAI what you did
-          </DialogTitle>
-          <DialogDescription>
-            Add an optional note, such as “I signed in,” to help HackerAI
-            continue. You can also continue without a note.
-          </DialogDescription>
-          <textarea
-            aria-label="What did you do? (optional)"
-            placeholder="e.g. I've signed in…"
-            value={note}
-            onChange={(event) => {
-              const value = event.target.value;
-              setNote(value);
-              // Keep unsent context through reconnect/remount, scoped to this
-              // browser session and tab. Never persist the control grant.
-              try {
-                if (noteStorageKey) {
-                  if (value) sessionStorage.setItem(noteStorageKey, value);
-                  else sessionStorage.removeItem(noteStorageKey);
+          <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 sm:px-6">
+            <DialogTitle className="text-xl">
+              Tell HackerAI what you did
+            </DialogTitle>
+            <DialogClose asChild>
+              <button
+                type="button"
+                aria-label="Close"
+                disabled={busy}
+                className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              >
+                <X size={18} aria-hidden />
+              </button>
+            </DialogClose>
+          </div>
+          <div className="min-h-0 overflow-y-auto px-4 pt-2 pb-4 sm:px-6 space-y-4">
+            <DialogDescription>
+              Add an optional note, such as “I signed in,” to help HackerAI
+              continue. You can also continue without a note.
+            </DialogDescription>
+            <textarea
+              aria-label="What did you do? (optional)"
+              placeholder="e.g. I've signed in…"
+              value={note}
+              onChange={(event) => {
+                const value = event.target.value;
+                setNote(value);
+                // Keep unsent context through reconnect/remount, scoped to this
+                // browser session and tab. Never persist the control grant.
+                try {
+                  if (noteStorageKey) {
+                    if (value) sessionStorage.setItem(noteStorageKey, value);
+                    else sessionStorage.removeItem(noteStorageKey);
+                  }
+                } catch {
+                  // Typing and continuing still work when browser storage is blocked.
                 }
-              } catch {
-                // Typing and continuing still work when browser storage is blocked.
-              }
-            }}
-            maxLength={4000}
-            disabled={busy || exitRetryAvailable}
-            className="h-24 min-h-20 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          {!session && (
-            <p className="text-sm text-muted-foreground">
-              This run has ended. Continue will start a new Agent turn with your
-              saved context.
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <button
-            type="button"
-            disabled={!canResume || busy}
-            onClick={() => void resumeAgent()}
-            className="justify-self-end rounded-xl bg-foreground px-5 py-3 font-medium text-background hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {busy ? "Continuing…" : "Send and continue"}
-          </button>
+              }}
+              maxLength={4000}
+              disabled={busy || exitRetryAvailable}
+              className="h-24 min-h-20 w-full resize-y rounded-xl border border-input bg-muted/40 p-3 text-base sm:text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            {!session && (
+              <p className="text-sm text-muted-foreground">
+                This run has ended. Continue will start a new Agent turn with
+                your saved context.
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 justify-end border-t px-4 py-3 sm:px-6">
+            <button
+              type="button"
+              disabled={!canResume || busy}
+              onClick={() => void resumeAgent()}
+              className="justify-self-end rounded-xl bg-foreground px-5 py-3 font-medium text-background hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy ? "Continuing…" : "Send and continue"}
+            </button>
+          </div>
         </DialogContent>
       </Dialog>
     </>
