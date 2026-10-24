@@ -1075,7 +1075,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
-      handoffEnabledForRun: jest.fn(async () => false),
+      hasHandoffScope: jest.fn(() => false),
     } as unknown as NonNullable<ToolContext["browserSessions"]>;
     const tool = createRunTerminalCmd(context);
 
@@ -1129,9 +1129,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
 
-    (
-      context.browserSessions.handoffEnabledForRun as jest.Mock
-    ).mockResolvedValue(true);
+    (context.browserSessions.hasHandoffScope as jest.Mock).mockReturnValue(
+      true,
+    );
     const gated = await runTool(tool, {
       command: "echo gated",
       brief: "check shell gate",

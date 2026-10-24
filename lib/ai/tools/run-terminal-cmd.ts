@@ -254,7 +254,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     const gateOnly =
       !!context.browserSessions &&
       !required &&
-      (await context.browserSessions.handoffEnabledForRun());
+      context.browserSessions.hasHandoffScope();
     if (!env && !required && !gateOnly) return undefined;
     let sessionEnv: Record<string, string> | undefined;
     try {
