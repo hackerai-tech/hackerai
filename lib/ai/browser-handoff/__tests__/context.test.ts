@@ -1,37 +1,45 @@
 import type { ModelMessage } from "ai";
 import { createBrowserHandoffNoteProjector } from "../context";
 
-it("keeps a new handoff at its own position even when earlier user text matches", () => {
-  const project = createBrowserHandoffNoteProjector();
-  const original: ModelMessage[] = [
-    { role: "user", content: "Signed in." },
-    { role: "assistant", content: "Opened another account." },
-  ];
-  const notes = [{ id: "first", text: "Signed in." }];
-  const first = project(original, notes);
-  expect(first).toEqual([...original, { role: "user", content: "Signed in." }]);
-  expect(
-    project(
-      first.map((message) => ({ ...message })),
-      notes,
-    ),
-  ).toEqual(first);
-  const later = [
-    ...first,
-    { role: "assistant", content: "Opened a new page." } as ModelMessage,
-  ];
-  const second = project(later, [
-    ...notes,
-    { id: "second", text: "Signed in." },
-  ]);
-  expect(second).toEqual([...later, { role: "user", content: "Signed in." }]);
-  expect(
-    project(
-      second.map((message) => ({ ...message })),
-      [...notes, { id: "second", text: "Signed in." }],
-    ),
-  ).toEqual(second);
-});
+it.each([true, false])(
+  "keeps matching handoff text distinct with an intervening response: %s",
+  (interveningResponse) => {
+    const project = createBrowserHandoffNoteProjector();
+    const original: ModelMessage[] = [
+      { role: "user", content: "Signed in." },
+      { role: "assistant", content: "Opened another account." },
+    ];
+    const notes = [{ id: "first", text: "Signed in." }];
+    const first = project(original, notes);
+    expect(first).toEqual([
+      ...original,
+      { role: "user", content: "Signed in." },
+    ]);
+    expect(
+      project(
+        first.map((message) => ({ ...message })),
+        notes,
+      ),
+    ).toEqual(first);
+    const later = [
+      ...first,
+      ...(interveningResponse
+        ? [{ role: "assistant", content: "Opened a new page." } as ModelMessage]
+        : []),
+    ];
+    const second = project(later, [
+      ...notes,
+      { id: "second", text: "Signed in." },
+    ]);
+    expect(second).toEqual([...later, { role: "user", content: "Signed in." }]);
+    expect(
+      project(
+        second.map((message) => ({ ...message })),
+        [...notes, { id: "second", text: "Signed in." }],
+      ),
+    ).toEqual(second);
+  },
+);
 
 it("keeps takeover updates before subsequent responses when SDK input omits them", () => {
   const project = createBrowserHandoffNoteProjector();

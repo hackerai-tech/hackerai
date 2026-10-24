@@ -27,9 +27,12 @@ export function createBrowserHandoffNoteProjector() {
         const position =
           anchor == null
             ? -1
-            : result.findLastIndex(
-                (message) => JSON.stringify(message) === anchor,
-              );
+            : previousNoteEnd > 0 &&
+                JSON.stringify(result[previousNoteEnd - 1]) === anchor
+              ? previousNoteEnd - 1
+              : result.findLastIndex(
+                  (message) => JSON.stringify(message) === anchor,
+                );
         index = position + 1;
         // System messages must remain ahead of restored user context.
         while (result[index]?.role === "system") index++;
