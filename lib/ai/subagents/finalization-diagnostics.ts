@@ -1,7 +1,8 @@
 import { getSubagentRecoveryErrorDiagnostics } from "./runtime-recovery";
 
 type FinalizationOperation = "result_submission" | "stream_completion";
-type FinalizationOutcome = "updated" | "pending_messages" | "stale";
+type FinalizationOutcome =
+  "updated" | "pending_messages" | "pending_browser_handoff" | "stale";
 
 /** Attribute ambiguous finalization writes without retrying or retaining results. */
 export function createSubagentFinalizationDiagnostics(

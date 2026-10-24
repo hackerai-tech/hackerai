@@ -26,6 +26,7 @@ import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ComposerOverlay } from "./ComposerOverlay";
+import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -642,7 +643,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         ),
       );
 
+    const hasNestedDialogFocus = () => {
+      const focused = document.activeElement;
+      return (
+        focused instanceof HTMLElement &&
+        !dialog.contains(focused) &&
+        !!focused.closest('[role="dialog"]')
+      );
+    };
+
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Takeover and its exit prompt render in portals above this dialog.
+      if (hasNestedDialogFocus()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         closeSidebar();
@@ -670,7 +682,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const focusTimeout = window.setTimeout(() => {
-      (getFocusableElements()[0] ?? dialog).focus();
+      if (!hasNestedDialogFocus())
+        (getFocusableElements()[0] ?? dialog).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
@@ -678,7 +691,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       window.clearTimeout(focusTimeout);
       document.removeEventListener("keydown", handleKeyDown);
       const previousFocus = computerDialogPreviousFocusRef.current;
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (previousFocus?.isConnected && !hasNestedDialogFocus())
+        previousFocus.focus();
     };
   }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
 
@@ -910,6 +924,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const browserHandoffAdmissionRef = useRef<{
+    chatId: string;
+    id: string;
+    resolve: () => void;
+  } | null>(null);
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
@@ -1371,8 +1390,81 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setDelivery: setQueuedMessageDelivery,
     });
   useLayoutEffect(() => {
-    queuedAdmissionRef.current = acceptQueuedMessage;
+    queuedAdmissionRef.current = (admittedChatId, id) => {
+      acceptQueuedMessage(admittedChatId, id);
+      const pending = browserHandoffAdmissionRef.current;
+      if (pending?.chatId === admittedChatId && pending.id === id)
+        pending.resolve();
+    };
   }, [acceptQueuedMessage]);
+
+  const continueBrowserHandoff = useCallback(
+    async (message: { id: string; text: string }) => {
+      if (browserHandoffAdmissionRef.current)
+        throw new Error("A continuation is already starting.");
+      if (computerSendDisabledReasonRef.current)
+        throw new Error(computerSendDisabledReasonRef.current);
+      // Keep the private saved note immutable; this is only a restart signal.
+      const continuationId = `${message.id}-continue`;
+      let accepted = false;
+      const admitted = new Promise<void>((resolve) => {
+        browserHandoffAdmissionRef.current = {
+          chatId,
+          id: continuationId,
+          resolve: () => {
+            accepted = true;
+            resolve();
+          },
+        };
+      });
+      try {
+        hasManuallyStoppedRef.current = false;
+        setChatMode("agent");
+        chatModeRef.current = "agent";
+        const existing = messagesRef.current.some(
+          (item) => item.id === continuationId,
+        );
+        const sending = sendMessage(
+          {
+            id: continuationId,
+            role: "user",
+            metadata: { isAutoContinue: true },
+            parts: [{ type: "text", text: "Continue after browser takeover." }],
+            ...(existing ? { messageId: continuationId } : {}),
+          },
+          {
+            body: {
+              mode: "agent",
+              isAutoContinue: true,
+              todos: todosRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+              agentPermissionMode: agentPermissionModeRef.current,
+              selectedModel: requestSelectedModelRef.current,
+            },
+          },
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted)
+          throw new Error(
+            "Your note is saved, but the Agent could not start. Try Send and continue again.",
+          );
+      } finally {
+        browserHandoffAdmissionRef.current = null;
+      }
+    },
+    [
+      chatId,
+      sendMessage,
+      setChatMode,
+      chatModeRef,
+      sandboxPreferenceRef,
+      computerSendDisabledReasonRef,
+      messagesRef,
+      todosRef,
+      agentPermissionModeRef,
+      requestSelectedModelRef,
+    ],
+  );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -2584,6 +2676,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
+                  {showChatLayout && (
+                    <BrowserHandoffEntry chatId={chatId} messages={messages} />
+                  )}
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}
@@ -2609,20 +2704,44 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             </div>
           </div>
 
-          {/* Desktop Computer Sidebar */}
-          {!computerSidebarOverlay && (
+          {/* Keep the controller mounted when switching between split and overlay. */}
+          <div
+            ref={computerDialogRef}
+            className={
+              computerSidebarOverlay
+                ? sidebarOpen
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  : "hidden"
+                : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
+            }
+            role={computerSidebarOverlay && sidebarOpen ? "dialog" : undefined}
+            aria-modal={
+              computerSidebarOverlay && sidebarOpen ? true : undefined
+            }
+            aria-label={
+              computerSidebarOverlay && sidebarOpen
+                ? "HackerAI’s Computer"
+                : undefined
+            }
+            tabIndex={computerSidebarOverlay ? -1 : undefined}
+            data-layout={computerSidebarOverlay ? "overlay" : "split"}
+            data-testid="computer-sidebar-container"
+          >
             <div
-              className={`min-w-0 transition-[width] duration-300 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
-              }`}
-              data-layout="split"
-              data-testid="computer-sidebar-container"
+              className={
+                computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
+              }
             >
               {sidebarOpen && (
-                <ComputerSidebar messages={messages} status={status} />
+                <ComputerSidebar
+                  onBrowserContinue={continueBrowserHandoff}
+                  chatId={chatId}
+                  messages={messages}
+                  status={status}
+                />
               )}
             </div>
-          )}
+          </div>
 
           {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
           <DragDropOverlay
@@ -2630,24 +2749,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             isDragOver={isDragOver}
           />
         </div>
-
-        {/* Computer overlay for mobile and narrow desktop workspaces. */}
-        {computerSidebarOverlay && sidebarOpen && (
-          <div
-            ref={computerDialogRef}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label="HackerAI’s Computer"
-            tabIndex={-1}
-            data-layout="overlay"
-            data-testid="computer-sidebar-container"
-          >
-            <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
-            </div>
-          </div>
-        )}
       </div>
     </>
   );

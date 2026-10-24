@@ -130,6 +130,7 @@ RUN apt-get update && \
     tmux \
     chromium \
     fonts-liberation \
+    fonts-noto-cjk \
     # Forensics
     binwalk \
     foremost \
