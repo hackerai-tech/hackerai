@@ -345,6 +345,8 @@ const ChatInputContent = ({
     [activeToolApprovalRequest, storedApprovalRequest],
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const submissionPendingRef = useRef(false);
+  const [submissionPending, setSubmissionPending] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
@@ -777,6 +779,7 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
+    (submissionPending ? "Sending message…" : undefined) ??
     (uploadedFiles.some((file) => file.removing)
       ? "Wait for the attachment to finish removing."
       : undefined) ??
@@ -824,6 +827,7 @@ const ChatInputContent = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submissionPendingRef.current) return;
     if (showGoalSuggestion) {
       selectGoal();
       return;
@@ -842,27 +846,34 @@ const ChatInputContent = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
-      isSubmittingAttachmentsRef.current =
-        clearDraftOnSubmit && uploadedFiles.length > 0;
-      const accepted = await onSubmit(
-        e,
-        goalMode ? `/goal start ${input}` : undefined,
-      );
-      if (accepted === false) {
-        isSubmittingAttachmentsRef.current = false;
-        return;
-      }
-      setGoalMode(false);
-      if (clearDraftOnSubmit) {
-        uploadedFilesRef.current = [];
-        removeDraft(draftId);
-        if (draftId === "new" && chatId) {
-          removeDraft(chatId);
-        }
-        if (draftId !== "new") {
+      submissionPendingRef.current = true;
+      setSubmissionPending(true);
+      try {
+        isSubmittingAttachmentsRef.current =
+          clearDraftOnSubmit && uploadedFiles.length > 0;
+        const accepted = await onSubmit(
+          e,
+          goalMode ? `/goal start ${input}` : undefined,
+        );
+        if (accepted === false) {
           isSubmittingAttachmentsRef.current = false;
+          return;
         }
-        setTimeout(() => setInput(""), 0);
+        setGoalMode(false);
+        if (clearDraftOnSubmit) {
+          uploadedFilesRef.current = [];
+          removeDraft(draftId);
+          if (draftId === "new" && chatId) {
+            removeDraft(chatId);
+          }
+          if (draftId !== "new") {
+            isSubmittingAttachmentsRef.current = false;
+          }
+          setTimeout(() => setInput(""), 0);
+        }
+      } finally {
+        submissionPendingRef.current = false;
+        setSubmissionPending(false);
       }
     }
   };

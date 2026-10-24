@@ -936,6 +936,50 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it.each([true, false])(
+      "prevents overlapping goal follow-ups and releases the guard after acceptance=%s",
+      async (accepted) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        let settle!: (value: boolean) => void;
+        mockOnSubmit.mockReturnValueOnce(
+          new Promise<boolean>((resolve) => {
+            settle = resolve;
+          }),
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="streaming"
+              hasActiveGoalRun
+            />
+          </TestWrapper>,
+        );
+        const input = screen.getByRole("textbox");
+        fireEvent.change(input, { target: { value: "First follow-up" } });
+        fireEvent.click(screen.getByLabelText("Send message"));
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+        fireEvent.click(screen.getByLabelText("Send message"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+        expect(screen.getByLabelText("Send message")).toBeDisabled();
+        expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+        await act(async () => settle(accepted));
+        if (accepted) {
+          await waitFor(() => expect(input).toHaveValue(""));
+        } else {
+          expect(input).toHaveValue("First follow-up");
+        }
+        fireEvent.change(input, { target: { value: "Next follow-up" } });
+        fireEvent.click(screen.getByLabelText("Send message"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(2);
+      },
+    );
+
     it("hides a stale stop action after an Agent run is known to be terminal", () => {
       render(
         <TestWrapper>
