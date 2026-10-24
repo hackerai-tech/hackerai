@@ -45,6 +45,7 @@ import { validateDownloadUrl } from "./path-validation";
 import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
+  LocalFileRequestError,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
 
@@ -455,7 +456,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
-      throw new Error("Native desktop file relay is not available.");
+      throw new LocalFileRequestError(
+        "unavailable",
+        "Native desktop file relay is not available.",
+      );
     }
 
     const requestId = crypto.randomUUID();
@@ -484,7 +488,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let trafficMetricRecorded = false;
       const reassembler = new CentrifugoMessageReassembler();
 
-      const onAbort = () => fail(new Error("Desktop file request aborted"));
+      const onAbort = () =>
+        fail(
+          new LocalFileRequestError("aborted", "Desktop file request aborted"),
+        );
       const cleanup = () => {
         if (!trafficMetricRecorded) {
           trafficMetricRecorded = true;
@@ -534,7 +541,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
       timeoutId = setTimeout(() => {
         fail(
-          new Error(
+          new LocalFileRequestError(
+            "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -561,7 +569,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         }
 
         if (message.type === "file_error") {
-          fail(new Error(message.message));
+          fail(new LocalFileRequestError("native_error", message.message));
           return;
         }
         if (!expectedTypes.has(message.type)) {
@@ -575,7 +583,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription.on("error", (ctx) => {
         fail(
-          new Error(
+          new LocalFileRequestError(
+            "subscription_error",
             `Centrifugo file subscription error: ${ctx.error?.message ?? "unknown"}`,
           ),
         );
@@ -599,7 +608,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               )
             ) {
               fail(
-                new Error(
+                new LocalFileRequestError(
+                  "relay_unsubscribed",
                   `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the file relay. Reconnect the Desktop app, wait until it is ready, then try again.`,
                 ),
               );
@@ -645,7 +655,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
           } catch (error) {
             fail(
-              new Error(
+              new LocalFileRequestError(
+                error instanceof RelayOperationReadinessTimeout
+                  ? "readiness_timeout"
+                  : isLocalCommandRelayUnsubscribedError(error)
+                    ? "relay_unsubscribed"
+                    : "dispatch_error",
                 `Failed to publish desktop file request: ${
                   error instanceof Error ? error.message : String(error)
                 }`,

@@ -10,6 +10,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
+import { LocalFileRequestError } from "../local-sandbox-errors";
 import {
   MAX_FILE_SIZE_BYTES,
   MAX_GENERATED_FILE_SIZE_BYTES,
@@ -443,8 +444,60 @@ describe("uploadSandboxFileToConvex", () => {
           service: "chat-handler",
           sandbox_type: "desktop",
           failure_reason: "stat_failed",
+          native_stat_error_category: "unknown",
         });
       }
+    },
+  );
+
+  test.each([
+    "unavailable",
+    "aborted",
+    "timeout",
+    "native_error",
+    "subscription_error",
+    "relay_unsubscribed",
+    "readiness_timeout",
+    "dispatch_error",
+    "PRIVATE-invalid-category",
+  ] as const)(
+    "records only a bounded native stat category (%s) and preserves the error",
+    async (failure) => {
+      const sandbox = {
+        ...makeSandbox(42),
+        supportsNativeFileRelay: () => true,
+      };
+      const error = Object.freeze(
+        new LocalFileRequestError(
+          failure as any,
+          "PRIVATE-error-with-path-and-url",
+        ),
+      );
+      Object.assign(sandbox.files, {
+        stat: jest.fn().mockRejectedValue(error),
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/PRIVATE-path/report.zip",
+        }),
+      ).rejects.toBe(error);
+      const records = consoleWarnSpy.mock.calls.map(([entry]) =>
+        JSON.parse(entry),
+      );
+      expect(records).toEqual([
+        expect.objectContaining({
+          failure_reason: "stat_failed",
+          native_stat_error_category:
+            failure === "PRIVATE-invalid-category" ? "unknown" : failure,
+        }),
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE");
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
     },
   );
 

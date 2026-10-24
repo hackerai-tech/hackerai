@@ -18,6 +18,7 @@ import {
   type S3StorageRegion,
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
+import { getLocalFileRequestFailure } from "./local-sandbox-errors";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
@@ -194,6 +195,9 @@ async function getSandboxFileSize(
           service: "chat-handler",
           ...getSandboxLogFields(sandbox),
           failure_reason: failureReason,
+          ...(failureReason === "stat_failed" && {
+            native_stat_error_category: getLocalFileRequestFailure(error),
+          }),
         });
       } catch {
         // Diagnostics must preserve the original metadata failure.
