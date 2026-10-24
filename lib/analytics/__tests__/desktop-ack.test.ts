@@ -4,6 +4,7 @@ import {
   getIdentifiedAnalyticsUserId,
 } from "../client";
 import type { AcknowledgedCommandSettlement } from "@/lib/centrifugo/acknowledged-command-output";
+import { sanitizeDesktopAckEvent } from "../desktop-ack-privacy";
 
 jest.mock("../client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
@@ -102,4 +103,79 @@ it("contains analytics capture errors", () => {
       commandId: "command",
     })(result),
   ).not.toThrow();
+});
+
+it("attributes only stopped output, preserving an unknown source on older callers", () => {
+  capture.mockReset();
+  for (const [reason, source, expected] of [
+    ["stopped", "session_replaced", "session_replaced"],
+    ["stopped", undefined, undefined],
+    ["stopped", "PRIVATE", undefined],
+    ["terminal_ack", "bridge_stop", undefined],
+    ["canceled", "unauthenticated", undefined],
+  ] as const) {
+    const settle = startDesktopAckTelemetry({
+      connectionId: "connection",
+      commandId: `command-${capture.mock.calls.length}`,
+    });
+    settle(
+      {
+        ...result,
+        reason,
+        outcome:
+          reason === "stopped"
+            ? "incomplete"
+            : reason === "canceled"
+              ? "canceled"
+              : "acknowledged",
+      },
+      source as never,
+    );
+    const properties = capture.mock.calls.at(-1)![0].properties;
+    if (expected) expect(properties).toHaveProperty("stopSource", expected);
+    else expect(properties).not.toHaveProperty("stopSource");
+  }
+  expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each(["bridge_stop", "session_replaced", "PRIVATE", null, {}])(
+  "filters an enriched stop source after SDK registration: %p",
+  (stopSource) => {
+    const sanitized = sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: {
+        reason: "stopped",
+        outcome: "incomplete",
+        stopSource,
+        command: "PRIVATE",
+        $current_url: "PRIVATE",
+      },
+      $set: { content: "PRIVATE" },
+    });
+    expect(sanitized.properties).toEqual(
+      stopSource === "bridge_stop" || stopSource === "session_replaced"
+        ? { reason: "stopped", outcome: "incomplete", stopSource }
+        : { reason: "stopped", outcome: "incomplete" },
+    );
+    expect(JSON.stringify(sanitized)).not.toContain("PRIVATE");
+    expect(
+      sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_started",
+        properties: { stopSource: "bridge_stop" },
+      }).properties,
+    ).toEqual({});
+  },
+);
+
+it("does not let registered properties attribute a successful final to bridge shutdown", () => {
+  expect(
+    sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: {
+        outcome: "acknowledged",
+        reason: "terminal_ack",
+        stopSource: "bridge_stop",
+      },
+    }).properties,
+  ).toEqual({ outcome: "acknowledged", reason: "terminal_ack" });
 });

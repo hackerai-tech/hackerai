@@ -3,6 +3,10 @@ import {
   getIdentifiedAnalyticsUserId,
 } from "./client";
 import type { AcknowledgedCommandSettlement } from "../centrifugo/acknowledged-command-output";
+import {
+  isDesktopAckStopSource,
+  type DesktopAckStopSource,
+} from "./desktop-ack-privacy";
 
 interface DesktopAckContext {
   connectionId: string | null;
@@ -38,13 +42,18 @@ export function startDesktopAckTelemetry(context: DesktopAckContext) {
   };
   capture("desktop_ack_command_started", properties);
   let settled = false;
-  return (result: Readonly<AcknowledgedCommandSettlement>) => {
+  return (
+    result: Readonly<AcknowledgedCommandSettlement>,
+    stopSource?: DesktopAckStopSource,
+  ) => {
     if (settled) return;
     settled = true;
     capture("desktop_ack_command_settled", {
       ...properties,
       outcome: result.outcome,
       reason: result.reason,
+      ...(result.reason === "stopped" &&
+        isDesktopAckStopSource(stopSource) && { stopSource }),
       observedFrames: result.observedFrames,
       enqueuedFrames: result.enqueuedFrames,
       acknowledgedFrames: result.acknowledgedFrames,

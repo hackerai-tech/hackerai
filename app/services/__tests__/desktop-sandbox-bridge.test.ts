@@ -10,6 +10,7 @@ import {
   captureQueuedAuthenticatedEvent,
 } from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -3092,6 +3093,110 @@ describe("desktop lifecycle recovery", () => {
     },
   );
 });
+
+it.each([
+  "bridge_stop",
+  "transport_disconnected",
+  "connection_inactive",
+  "session_replaced",
+  "unauthenticated",
+] as const)(
+  "records the pending-output stop source without changing shutdown: %s",
+  async (source) => {
+    jest.useFakeTimers();
+    const spies = ["warn", "error", "info"].map((method) =>
+      jest.spyOn(console, method as "warn").mockImplementation(() => {}),
+    );
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    let executions = 0;
+    const native = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "execute_stream_command") {
+        executions++;
+        capturedChannel!.onmessage!({ type: "stdout", data: "PRIVATE" });
+        capturedChannel!.onmessage!({ type: "exit", exitCode: 0 });
+        return;
+      }
+      return native(cmd, args);
+    };
+    try {
+      await bridge.start();
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "pending-stop-source",
+          command: "PRIVATE",
+          timeout: 120_000,
+          outputProtocol: "ack-v1",
+          operationChannel: true,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(executions).toBe(1);
+      if (source === "bridge_stop") await bridge.stop();
+      else if (source === "transport_disconnected") {
+        getClientHandler("disconnected")({
+          code: 1,
+          reason: "transport closed",
+        });
+      } else {
+        config.heartbeatDesktop.mockResolvedValue({ success: false });
+        if (source === "unauthenticated") {
+          config.heartbeatDesktop.mockRejectedValue({
+            data: { code: "UNAUTHORIZED" },
+          });
+        } else {
+          config.refreshCentrifugoTokenDesktop.mockResolvedValue({
+            ok: false,
+            reason: "connection_inactive",
+            disconnectReason:
+              source === "session_replaced"
+                ? "desktop_kicked_by_new_session"
+                : "presence_sweep",
+          } as never);
+        }
+        await jest.advanceTimersByTimeAsync(
+          LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+        );
+      }
+      await jest.advanceTimersByTimeAsync(0);
+      await bridge.stop();
+      const finals = jest
+        .mocked(captureQueuedAuthenticatedEvent)
+        .mock.calls.filter(
+          ([event]) => event.event === "desktop_ack_command_settled",
+        );
+      expect(finals).toHaveLength(1);
+      expect(finals[0][0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+        stopSource: source,
+        terminalAcknowledged: false,
+        pendingFrames: 2,
+        acknowledgedFrames: 0,
+      });
+      expect(JSON.stringify(finals)).not.toContain("PRIVATE");
+      expect(executions).toBe(1);
+      expect(bridge.getConnectionId()).toBeNull();
+      if (source === "session_replaced" || source === "connection_inactive") {
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_bridge_relay_state_changed",
+          expect.objectContaining({
+            reason: "heartbeat_connection_inactive",
+            terminationReason: source,
+          }),
+        );
+      }
+    } finally {
+      await bridge.stop();
+      mockInvokeHandler = native;
+      spies.forEach((spy) => spy.mockRestore());
+      jest.useRealTimers();
+    }
+  },
+);
 
 it.each(["ack", "cancel"])(
   "keeps native exit available until %s and never reexecutes",
