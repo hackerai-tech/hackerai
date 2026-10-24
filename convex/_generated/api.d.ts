@@ -13,6 +13,7 @@ import type * as cloudNetwork from "../cloudNetwork.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as agentGoals from "../agentGoals.js";
+import type * as browserHandoffs from "../browserHandoffs.js";
 import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
@@ -88,6 +89,7 @@ declare const fullApi: ApiFromModules<{
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
   agentGoals: typeof agentGoals;
+  browserHandoffs: typeof browserHandoffs;
   cancellationReasons: typeof cancellationReasons;
   chatStreams: typeof chatStreams;
   chats: typeof chats;

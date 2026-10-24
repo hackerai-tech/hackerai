@@ -1,12 +1,13 @@
 // Runs inside the cloud sandbox. No authentication data or encryption keys are
 // embedded in this program, its arguments, or its output.
 export const BROWSER_SESSION_PROGRAM = String.raw`
-import os, pathlib, shutil, stat, subprocess, sys, time
+import fcntl, os, pathlib, shutil, stat, subprocess, sys, time
 
 action, directory = sys.argv[1:3]
 root = pathlib.Path(directory)
 if root.parent != pathlib.Path('/dev/shm') or not root.name.startswith('hackerai-browser-'):
     raise RuntimeError('Invalid browser session directory')
+shim_root = pathlib.Path('/tmp') / root.name
 
 def validate():
     info = root.lstat()
@@ -14,26 +15,31 @@ def validate():
         raise RuntimeError('Invalid browser session owner')
 
 def cleanup():
-    if not root.exists():
-        return
     try:
-        validate()
-    except FileNotFoundError:
-        return
-    env = dict(os.environ, AGENT_BROWSER_SOCKET_DIR=str(root / 'sockets'),
-               AGENT_BROWSER_CONFIG=str(root / 'config.json'))
-    for name in ('AGENT_BROWSER_SESSION_NAME', 'AGENT_BROWSER_PROFILE', 'AGENT_BROWSER_STATE'):
-        env.pop(name, None)
-    try:
-        subprocess.run(['agent-browser', 'close', '--all'], env=env,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=15, check=True)
+        if root.exists():
+            try:
+                validate()
+            except FileNotFoundError:
+                return
+            env = dict(os.environ, AGENT_BROWSER_SOCKET_DIR=str(root / 'sockets'),
+                       AGENT_BROWSER_CONFIG=str(root / 'config.json'))
+            for name in ('AGENT_BROWSER_SESSION_NAME', 'AGENT_BROWSER_PROFILE', 'AGENT_BROWSER_STATE'):
+                env.pop(name, None)
+            try:
+                subprocess.run(['agent-browser', 'close', '--all'], env=env,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=15, check=True)
+            finally:
+                # Erase checkpoints even if Chrome or its daemon is unresponsive.
+                try:
+                    shutil.rmtree(root)
+                except FileNotFoundError:
+                    pass  # Completion and the expiry watchdog can race.
     finally:
-        # Erase checkpoints even if Chrome or its daemon is unresponsive.
-        try:
-            shutil.rmtree(root)
-        except FileNotFoundError:
-            pass  # Completion and the expiry watchdog can race.
+        if shim_root.exists():
+            info = shim_root.lstat()
+            if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid():
+                shutil.rmtree(shim_root)
 
 if action == 'prepare':
     os.umask(0o077)
@@ -41,6 +47,83 @@ if action == 'prepare':
     (root / 'sockets').mkdir(mode=0o700)
     (root / 'state').mkdir(mode=0o700)
     (root / 'config.json').write_text('{}')
+    if len(sys.argv) > 5 and sys.argv[5] == 'gate':
+        real = shutil.which('agent-browser')
+        if not real:
+            raise RuntimeError('agent-browser unavailable')
+        shim_root.mkdir(mode=0o700)
+        gate_bin = shim_root / 'bin'
+        gate_bin.mkdir(mode=0o700)
+        # The wrapper holds the same flock for the entire CLI lifetime. The
+        # server can only create the paused marker after the current command
+        # exits; subsequent CLI invocations wait until explicit resume.
+        wrapper = '''#!/usr/bin/env python3
+import fcntl, os, pathlib, sys, time
+root = pathlib.Path(%r)
+fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+while (root / 'paused').exists():
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    time.sleep(0.2)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+name = os.environ.get('AGENT_BROWSER_SESSION', 'default')
+for i, arg in enumerate(sys.argv[1:]):
+    if arg == '--session' and i + 2 < len(sys.argv):
+        name = sys.argv[i + 2]
+    elif arg.startswith('--session='):
+        name = arg.split('=', 1)[1]
+if not name or len(name) > 80 or '/' in name or '\\x00' in name:
+    raise RuntimeError('Invalid browser session name')
+(root / 'active-session').write_text(name)
+verify = root / 'verify-required'
+if verify.exists():
+    args = sys.argv[1:]
+    command = None
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+        elif arg == '--session':
+            skip_next = True
+        elif arg.startswith('--session=') or arg.startswith('-'):
+            continue
+        else:
+            command = arg
+            break
+    if command != 'snapshot':
+        print('Browser handoff resumed; this command was not executed. The browser is still open and user input is preserved. Run agent-browser snapshot -i first in this same session, without prepending get url or open. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
+        sys.exit(75)
+    result = __import__('subprocess').run([%r, *args], close_fds=True)
+    if result.returncode == 0:
+        verify.unlink(missing_ok=True)
+    sys.exit(result.returncode)
+sys.exit(__import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True).returncode)
+''' % (str(root), real, real)
+        path = gate_bin / 'agent-browser'
+        path.write_text(wrapper)
+        path.chmod(0o700)
+        # Bash commands can call the real CLI by absolute path and skip PATH.
+        # Guard each command in the E2B shell, including nested Bash scripts.
+        # The wrapper remains the serialized gate for ordinary CLI calls.
+        guard = '''_hackerai_browser_guard() {
+  case "$1" in
+    *agent-browser*)
+      if [[ "$1" =~ (^|[[:space:]])/[^[:space:]]*/agent-browser([[:space:]]|$) ]]; then
+        printf 'Use agent-browser from PATH so human handoff remains enforced.\\n' >&2
+        exit 75
+      fi
+      while [[ -e %s ]]; do sleep 0.2; done
+      ;;
+  esac
+}
+trap '_hackerai_browser_guard "$BASH_COMMAND"' DEBUG
+''' % str(root / 'paused')
+        guard_path = shim_root / 'guard.sh'
+        guard_path.write_text(guard)
+        guard_path.chmod(0o700)
+        subprocess.run([str(path), '--version'], env=os.environ,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=True)
     try:
         # Survives worker termination; stops promptly after ordinary cleanup.
         subprocess.Popen([sys.executable, '-c', sys.argv[4], 'expire', directory, sys.argv[3]],
@@ -49,7 +132,10 @@ if action == 'prepare':
                          close_fds=True)
     except BaseException:
         shutil.rmtree(root)
+        shutil.rmtree(shim_root, ignore_errors=True)
         raise
+    if len(sys.argv) > 5 and sys.argv[5] == 'gate':
+        print(os.environ.get('PATH', ''))
 elif action == 'expire':
     deadline = float(sys.argv[3])
     while root.exists() and time.time() < deadline:
@@ -57,6 +143,28 @@ elif action == 'expire':
     cleanup()
 elif action == 'cleanup':
     cleanup()
+elif action in ('pause', 'resume'):
+    validate()
+    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if action == 'pause':
+            deadline = time.monotonic() + 8
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('Browser command is busy')
+                    time.sleep(0.1)
+            (root / 'paused').touch(mode=0o600)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            (root / 'verify-required').touch(mode=0o600)
+            (root / 'paused').unlink(missing_ok=True)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 else:
     raise RuntimeError('Unknown browser session action')
 `;
@@ -65,13 +173,15 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
-  action: "prepare" | "cleanup",
+  action: "prepare" | "cleanup" | "pause" | "resume",
   directory: string,
   expiresAt: number,
+  gate = false,
 ): string {
   const args = [BROWSER_SESSION_PROGRAM, action, directory];
   if (action === "prepare") {
     args.push(String(expiresAt / 1000), BROWSER_SESSION_PROGRAM);
+    if (gate) args.push("gate");
   }
   return `python3 -c ${args.map(quote).join(" ")}`;
 }

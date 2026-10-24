@@ -17,6 +17,7 @@ import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/sum
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
+const mockLimitModelImageToolResults = jest.fn();
 const mockSummaryGenerateText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
@@ -115,11 +116,8 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     messages,
     prunedCount: 0,
   }),
-  limitModelImageToolResults: (messages: ModelMessage[]) => ({
-    messages,
-    totalImageCount: 0,
-    elidedImageCount: 0,
-  }),
+  limitModelImageToolResults: (...args: unknown[]) =>
+    mockLimitModelImageToolResults(...args),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: (error: unknown) =>
@@ -163,7 +161,6 @@ jest.mock("@/lib/utils/error-utils", () => ({
   ...jest.requireActual("@/lib/utils/error-utils"),
   classifyProviderOverflowError: () => null,
   isProviderContentBlockedFinishReasonError: () => false,
-  isProviderContentFilterFinishReason: () => false,
 }));
 
 const {
@@ -850,6 +847,13 @@ describe("createAgentStream repeated compaction", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLimitModelImageToolResults.mockImplementation(
+      (messages: ModelMessage[]) => ({
+        messages,
+        totalImageCount: 0,
+        elidedImageCount: 0,
+      }),
+    );
     mockPruneToolOutputs
       .mockReset()
       .mockImplementation((messages) => ({ messages, prunedCount: 0 }));
@@ -1022,11 +1026,26 @@ describe("createAgentStream repeated compaction", () => {
           doGenerate: jest.fn(),
           doStream,
         };
+        let handoffReadCount = 0;
         const stream = (await createAgentStream(
           modelName,
           createTestStreamContext({
             mode,
             platformAuthorized: authorized,
+            getBrowserHandoffNotes: async () => [
+              {
+                id: "handoff-recovery",
+                text: "HANDOFF: keep my selected account.",
+              },
+              ...(++handoffReadCount > 1
+                ? [
+                    {
+                      id: "handoff-late",
+                      text: "LATE HANDOFF: preserve this new update.",
+                    },
+                  ]
+                : []),
+            ],
             trackedProvider: { languageModel: () => model },
             usageTracker: {},
             summarizationTracker: tracker,
@@ -1050,6 +1069,15 @@ describe("createAgentStream repeated compaction", () => {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
+          expect(retryText).toContain("HANDOFF: keep my selected account.");
+          expect(
+            retryText.indexOf("Completed inspection found marker ABC"),
+          ).toBeLessThan(
+            retryText.indexOf("HANDOFF: keep my selected account."),
+          );
+          expect(retryText).toContain(
+            "LATE HANDOFF: preserve this new update.",
+          );
           if (authorized && modelName !== "model-abliterated") {
             expect(retryText).toContain(PLATFORM_AUTHORIZATION_ANNOTATION);
           } else {
@@ -1076,6 +1104,12 @@ describe("createAgentStream repeated compaction", () => {
           expect(content).toContain("Completed inspection found marker ABC");
           expect(content).toContain("new verification after recovery");
           expect(content).not.toContain("old evidence old evidence");
+          expect(
+            content.match(/HANDOFF: keep my selected account./g),
+          ).toHaveLength(1);
+          expect(
+            content.match(/LATE HANDOFF: preserve this new update./g),
+          ).toHaveLength(1);
         }
         expect(state.finalMessages).toEqual([saved]);
         expect(state.sourceUiMessages).toEqual([saved]);
@@ -1778,6 +1812,233 @@ describe("createAgentStream repeated compaction", () => {
       }
     },
   );
+
+  it("holds the model boundary until takeover exits, then loads the new private note", async () => {
+    let resume!: (waited: boolean) => void;
+    const gate = new Promise<boolean>((resolve) => {
+      resume = resolve;
+    });
+    const getBrowserHandoffNotes = jest.fn(async () => [
+      { id: "new-note", text: "I signed in. Inspect the page." },
+    ]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        waitForBrowserHandoff: () => gate,
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    const pending = stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect" }],
+    });
+    await Promise.resolve();
+    expect(getBrowserHandoffNotes).not.toHaveBeenCalled();
+    resume(true);
+    expect(JSON.stringify((await pending).messages)).toContain(
+      "I signed in. Inspect the page.",
+    );
+  });
+
+  it("holds normal finalization during takeover and propagates cancellation", async () => {
+    let cancel!: (error: Error) => void;
+    const gate = new Promise<boolean>((_, reject) => {
+      cancel = reject;
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        waitForBrowserHandoff: () => gate,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const complete = jest.fn();
+    const pending = stream.onFinish({ finishReason: "stop" }).then(complete);
+    const rejected = expect(pending).rejects.toThrow("Stopped");
+    await Promise.resolve();
+    expect(complete).not.toHaveBeenCalled();
+    cancel(new Error("Stopped"));
+    await rejected;
+  });
+
+  it.each(["error", "content-filter"])(
+    "preserves provider %s when cancellation interrupts the handoff wait",
+    async (finishReason) => {
+      const controller = new AbortController();
+      let cancel!: (error: Error) => void;
+      const gate = new Promise<boolean>((_, reject) => {
+        cancel = reject;
+      });
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          waitForBrowserHandoff: () => gate,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const pending = stream.onFinish({ finishReason });
+      const rejected = expect(pending).rejects.toThrow("Stopped");
+      await Promise.resolve();
+      controller.abort();
+      cancel(new Error("Stopped"));
+      await rejected;
+      expect(state.providerTerminalFinishReasonBeforeAbort).toBe(finishReason);
+    },
+  );
+
+  it("delivers a saved handoff note to the next model request without replacing the task", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the form")],
+      { usedTokens: 1000, maxTokens: 128000 },
+    );
+    const getBrowserHandoffNotes = jest.fn().mockResolvedValue([
+      {
+        id: "handoff-1",
+        text: "I selected the XSS lab. Continue from here.",
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const result = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect the form" }],
+    });
+    expect(result.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "Inspect the form" }),
+        expect.objectContaining({
+          role: "user",
+          content: "I selected the XSS lab. Continue from here.",
+        }),
+      ]),
+    );
+    expect(getBrowserHandoffNotes).toHaveBeenCalledTimes(1);
+    // The SDK rebuilds each step from original inputs plus responses. It does
+    // not retain messages returned by prepareStep.
+    const completed = {
+      role: "assistant",
+      content: "Read the form and closed it.",
+    };
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [{ role: "user", content: "Inspect the form" }, completed],
+    });
+    expect(next.messages.at(-1)).toEqual(completed);
+    expect(next.messages).toContainEqual({
+      role: "user",
+      content: "I selected the XSS lab. Continue from here.",
+    });
+  });
+
+  it("keeps a handoff note after its screenshot when older images are elided", async () => {
+    mockLimitModelImageToolResults.mockImplementation(
+      jest.requireActual("@/lib/chat/compaction/prune-tool-outputs")
+        .limitModelImageToolResults,
+    );
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const note = { id: "handoff", text: "Use my selected form." };
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes: async () => [note],
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const screenshot = (id: number): ModelMessage => ({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: `image-${id}`,
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "image-data", data: "test", mediaType: "image/png" },
+            ],
+          },
+        },
+      ],
+    });
+    const initial: ModelMessage[] = [
+      { role: "user", content: "Inspect" },
+      screenshot(0),
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [...initial, screenshot(1), screenshot(2), screenshot(3)],
+    });
+    expect(next.messages[0]).toEqual(initial[0]);
+    expect(next.messages[1].content[0].output.value[0].type).toBe("text");
+    expect(next.messages[2]).toEqual({ role: "user", content: note.text });
+    expect(next.messages[3]).toEqual(screenshot(1));
+  });
+
+  it("does not continue without handoff context when its lookup fails", async () => {
+    const unavailable = new Error("Handoff context temporarily unavailable");
+    const getBrowserHandoffNotes = jest
+      .fn()
+      .mockRejectedValueOnce(unavailable)
+      .mockResolvedValueOnce([
+        { id: "handoff", text: "Use my selected account." },
+      ]);
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = {
+      steps: [],
+      messages: [{ role: "user", content: "Inspect" }],
+    };
+    await expect(stream.prepareStep(step)).rejects.toBe(unavailable);
+    const retried = await stream.prepareStep(step);
+    expect(JSON.stringify(retried.messages)).toContain(
+      "Use my selected account.",
+    );
+  });
 
   it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
     const cloudNetworkPrompt = jest
@@ -3803,13 +4064,13 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it.each(["durable", "rolling"])(
-    "keeps recovery in %s compaction requests",
+  it.each(["durable", "rolling", "rolling-empty-tail"])(
+    "keeps recovery and handoff context in %s compaction requests",
     async (kind) => {
       const summary = uiMessage("summary", "Continue the fixture.");
       const tracker = {
-        hasSummarized: kind === "rolling",
-        summarizationCount: kind === "rolling" ? 1 : 0,
+        hasSummarized: kind !== "durable",
+        summarizationCount: kind !== "durable" ? 1 : 0,
         recordSummarization() {
           this.hasSummarized = true;
           this.summarizationCount++;
@@ -3823,9 +4084,14 @@ describe("createAgentStream repeated compaction", () => {
       mockCompactModelMessagesInRun.mockResolvedValue({
         summaryMessage: summary,
         summaryText: "Continue the fixture.",
+        runtimeContextTokens:
+          kind === "rolling-empty-tail"
+            ? require("@/lib/chat/summarization/constants")
+                .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS
+            : 0,
         summarizationUsage: { inputTokens: 10, outputTokens: 2 },
       });
-      if (kind === "rolling")
+      if (kind !== "durable")
         mockGetProviderPromptPressure.mockReturnValue({
           reason: "serialized_message_bytes",
           reasons: [],
@@ -3841,6 +4107,9 @@ describe("createAgentStream repeated compaction", () => {
           tools: { file: {} },
           summarizationTracker: tracker,
           onAgentGuardrail,
+          getBrowserHandoffNotes: async () => [
+            { id: "handoff", text: "HANDOFF: use the account I selected." },
+          ],
           usageTracker: {
             setAuthoritativeModelCostForStep: jest.fn(),
             computeCostDollars: () => 0,
@@ -3861,14 +4130,29 @@ describe("createAgentStream repeated compaction", () => {
           toolResults: [{ toolCallId: "read", output: "unchanged" }],
         });
       }
+      mockGetProviderPromptPressure.mockReturnValueOnce(null);
+      const savedTokens = state.lastStepInputTokens;
+      state.lastStepInputTokens = 0;
+      await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Original task" }],
+      });
+      state.lastStepInputTokens = savedTokens;
       const prepared = await stream.prepareStep({
-        steps: kind === "rolling" ? [{ toolResults: [] }] : [],
+        steps: kind !== "durable" ? [{ toolResults: [] }] : [],
         messages: [{ role: "user", content: "old context ".repeat(4_000) }],
       });
       expect(JSON.stringify(prepared.messages)).toContain(
         "[REPEATED TOOL RESULTS]",
       );
-      if (kind === "rolling")
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "HANDOFF: use the account I selected.",
+      );
+      const ordered = JSON.stringify(prepared.messages);
+      expect(ordered.indexOf("Continue the fixture.")).toBeLessThan(
+        ordered.indexOf("HANDOFF: use the account I selected."),
+      );
+      if (kind !== "durable")
         expect(mockCompactModelMessagesInRun).toHaveBeenCalled();
       else expect(mockRunSummarizationStep).toHaveBeenCalled();
       stream.experimental_onStepStart({ model: { modelId: "test-model" } });
@@ -3876,6 +4160,12 @@ describe("createAgentStream repeated compaction", () => {
       expect(onAgentGuardrail).toHaveBeenLastCalledWith(
         expect.objectContaining({ action: "nudge" }),
       );
+      const next = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(JSON.stringify(next.messages).match(/HANDOFF:/g)).toHaveLength(1);
     },
   );
 
@@ -4553,6 +4843,71 @@ describe("createAgentStream repeated compaction", () => {
     expect(
       JSON.stringify(onProviderRequestDiagnostics.mock.calls),
     ).not.toContain("private transcript content");
+  });
+
+  it("retains the handoff note when preparing a compacted request falls back", async () => {
+    const summary = uiMessage("summary", "Continue the fixture.");
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Continue the fixture.",
+      runtimeContextTokens: require("@/lib/chat/summarization/constants")
+        .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    const onProviderRequestDiagnostics = jest.fn((event) => {
+      if (event.source === "summarized_prepare_step")
+        throw new Error("diagnostics unavailable");
+    });
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 120_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker: {},
+          onProviderRequestDiagnostics,
+          getBrowserHandoffNotes: async () => [
+            { id: "handoff", text: "HANDOFF: use my selected account." },
+          ],
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[agent-stream] prepareStep error:",
+        expect.objectContaining({ message: "diagnostics unavailable" }),
+      );
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "Continue the fixture.",
+      );
+      expect(
+        JSON.stringify(prepared.messages).match(
+          /HANDOFF: use my selected account\./g,
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(state.providerRecoveryContext)).not.toContain(
+        "HANDOFF:",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("emits retained-message diagnostics on prepare-step fallback", async () => {

@@ -972,10 +972,12 @@ export const markFinalizingForBackend = mutation({
     serviceKey: v.string(),
     subagentId: v.string(),
     triggerRunId: v.string(),
+    modelHandoffNoteIds: v.optional(v.array(v.string())),
   },
   returns: v.union(
     v.literal("updated"),
     v.literal("pending_messages"),
+    v.literal("pending_browser_handoff"),
     v.literal("stale"),
   ),
   handler: async (ctx, args) => {
@@ -998,6 +1000,26 @@ export const markFinalizingForBackend = mutation({
       )
       .first();
     if (pendingMessage) return "pending_messages" as const;
+    // Serialize result acceptance with takeover. Once finalizing commits,
+    // browserHandoffs rejects new claims because the child is no longer running.
+    const handoff = await ctx.db
+      .query("browser_handoffs")
+      .withIndex("by_chat_and_agent", (q) =>
+        q.eq("chat_id", row.chat_id).eq("agent_id", row.subagent_id),
+      )
+      .order("desc")
+      .first();
+    if (
+      handoff?.user_id === row.user_id &&
+      handoff.run_id === args.triggerRunId &&
+      handoff.expires_at > Date.now() &&
+      (!["agent", "closed"].includes(handoff.state) ||
+        (args.modelHandoffNoteIds !== undefined &&
+          (handoff.exit_note_ids ?? []).some(
+            (id) => !args.modelHandoffNoteIds?.includes(id),
+          )))
+    )
+      return "pending_browser_handoff" as const;
     await ctx.db.patch(row._id, {
       status: "finalizing",
       updated_at: Date.now(),
