@@ -37,7 +37,10 @@ async function main() {
   }
   if (!process.env.ABLITERATION_API_KEY || !process.env.OPENROUTER_API_KEY)
     throw Error("Development provider configuration is incomplete");
-  const { myProvider } = await import("../lib/ai/providers");
+  const { myProvider, resolveAgentTierToProviderKey } =
+    await import("../lib/ai/providers");
+  const { buildProviderOptions, getFallbackSlugs } =
+    await import("../lib/api/chat-stream-helpers");
   const { estimateSummaryInputTokens } =
     await import("../lib/chat/summarization/helpers");
   const { compactModelMessagesInRun } =
@@ -48,8 +51,6 @@ async function main() {
     MAX_CONTEXT_COMPACTION_POLICY_VERSION,
     PRO_CONTEXT_COMPACTION_POLICY_VERSION,
   } = await import("../lib/chat/summarization/compaction-policy");
-  const modelKey = "model-abliterated";
-  const model = myProvider.languageModel(modelKey);
   const system =
     "You are a security assistant working on an offline synthetic fixture. Preserve scope, corrections, evidence status and existing running work. Do not invent completion or execute anything.";
   const rows: unknown[] = [];
@@ -67,7 +68,7 @@ async function main() {
         chatId: null,
         mode: "agent",
         subscription: "pro",
-        baselineModel: modelKey,
+        baselineModel: resolveAgentTierToProviderKey(tier),
         platformAuthorized: true,
         onDiscardedUsage: () => {},
       });
@@ -99,6 +100,18 @@ async function main() {
   }
   for (const fixture of fixtures)
     for (const tier of ["hackerai-pro", "hackerai-max"] as const) {
+      const modelKey = resolveAgentTierToProviderKey(tier);
+      const model = myProvider.languageModel(modelKey);
+      const fallbackModels = getFallbackSlugs(modelKey, "agent", {
+        selectedModelOverride: tier,
+      });
+      const providerOptions = buildProviderOptions(
+        true,
+        undefined,
+        modelKey,
+        "agent",
+        { selectedModelOverride: tier, requestedModelSlug: model.modelId },
+      );
       // Alternate order across fixture/tier to reduce systematic cache/time bias.
       const variants =
         fixture.id.includes("17") === (tier === "hackerai-pro")
@@ -112,6 +125,7 @@ async function main() {
           mode: "agent",
           subscription: "pro",
           modelId: model.modelId,
+          fallbackModelIds: fallbackModels,
         });
         const base = {
           fixture: fixture.id,
@@ -120,7 +134,9 @@ async function main() {
             .digest("hex"),
           tier,
           variant,
+          variantOrder: variants.join(">"),
           model: model.modelId,
+          fallbackModels,
           maxTokens,
         };
         try {
@@ -160,10 +176,10 @@ async function main() {
             model,
             system,
             messages: [...rolling, { role: "user", content: fixture.question }],
-            maxOutputTokens: 1024,
+            maxOutputTokens: 8192,
             maxRetries: 0,
             timeout: 120_000,
-            providerOptions: { abliteration: { reasoningEffort: "low" } },
+            providerOptions,
           });
           const score = scoreContextAccuracy(result.text, fixture.expected);
           rows.push({
@@ -173,6 +189,7 @@ async function main() {
             durationMs: Date.now() - started,
             score,
             inputTokens: result.usage.inputTokens ?? null,
+            servedModel: result.response.modelId ?? null,
           });
         } catch (error) {
           rows.push({

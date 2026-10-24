@@ -4187,6 +4187,7 @@ export const agentLongTask = task({
                 await saveMessage({
                   chatId,
                   userId,
+                  triggerRunId: ctx.run.id,
                   message: processed,
                   extraFileIds: newFileIds,
                   usage: state.streamUsage,
@@ -4843,6 +4844,7 @@ export const agentLongTask = task({
                             await saveMessage({
                               chatId,
                               userId,
+                              triggerRunId: ctx.run.id,
                               message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
@@ -5017,6 +5019,7 @@ export const agentLongTask = task({
                                       await saveMessage({
                                         chatId,
                                         userId,
+                                        triggerRunId: ctx.run.id,
                                         message,
                                         extraFileIds: preservedFileIds,
                                         model:
@@ -5400,6 +5403,10 @@ export const agentLongTask = task({
                           await saveMessage({
                             chatId,
                             userId,
+                            triggerRunId:
+                              processed.role === "assistant"
+                                ? ctx.run.id
+                                : undefined,
                             message: processed,
                             extraFileIds: newFileIds,
                             model: state.responseModel || configuredModelId,
