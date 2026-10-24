@@ -3926,7 +3926,9 @@ export const agentLongTask = task({
                 : lastProviderRecoveryError;
 
               return {
-                upstreamProvider: state.openRouterMetadata.provider_name,
+                upstreamProvider: terminalError
+                  ? state.providerErrorMetadata?.provider_name
+                  : state.openRouterMetadata.provider_name,
                 providerErrorProvider: providerError?.provider,
                 providerErrorCategory: providerError?.category,
                 providerErrorStatusCode: providerError?.statusCode,

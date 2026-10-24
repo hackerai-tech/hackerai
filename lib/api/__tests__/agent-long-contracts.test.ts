@@ -1630,6 +1630,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /served_model:\s*state\.providerErrorMetadata\s*\?\.openrouter_selected_model,/,
     );
     expect(recoveryDecision).not.toContain("state.responseModel");
+    expect(taskSrc).toMatch(
+      /upstreamProvider: terminalError\s*\? state\.providerErrorMetadata\?\.provider_name\s*: state\.openRouterMetadata\.provider_name,/,
+    );
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
