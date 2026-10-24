@@ -22,7 +22,11 @@ jest.mock("@/lib/rate-limit", () => ({
   calculateRawModelUsageCostDollars: () => 0.006,
 }));
 import { generateText } from "ai";
-import { buildGoalCompletionEvidence, judgeGoalCompletion } from "../judge";
+import {
+  buildGoalCompletionEvidence,
+  judgeGoalCompletion,
+  retainGoalRunMessages,
+} from "../judge";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { UIMessage } from "ai";
 const mockPriorEvidence = jest.fn();
@@ -230,4 +234,43 @@ describe("provider retry evidence", () => {
       ).gatePassed,
     ).toBe(true);
   });
+});
+
+it("retains original and intermediate results across separate finish callbacks", () => {
+  const ids = new Set(["r1", "retry-first", "retry-final"]);
+  let retained = retainGoalRunMessages([], messages, ids);
+  retained = retainGoalRunMessages(
+    retained,
+    [{ ...messages[0], id: "retry-first" }],
+    ids,
+  );
+  retained = retainGoalRunMessages(
+    retained,
+    [{ id: "retry-final", role: "assistant", parts: [] }],
+    ids,
+  );
+  expect(retained.map((m) => m.id)).toEqual([
+    "r1",
+    "retry-first",
+    "retry-final",
+  ]);
+  expect(
+    buildGoalCompletionEvidence(goal, retained, "r1", "retry-final", [...ids])
+      .proofs,
+  ).toHaveLength(1);
+  const updated = {
+    ...messages[0],
+    parts: [{ type: "text", text: "updated snapshot" }],
+  } as UIMessage;
+  retained = retainGoalRunMessages(
+    retained,
+    [
+      updated,
+      { ...messages[0], id: "unrelated" },
+      { ...messages[0], id: "user", role: "user" } as UIMessage,
+    ],
+    ids,
+  );
+  expect(retained).toHaveLength(3);
+  expect(retained.find((m) => m.id === "r1")).toEqual(updated);
 });

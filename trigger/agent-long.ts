@@ -1,5 +1,5 @@
 import { goalExecutionInstructions } from "@/lib/goals/commands";
-import { judgeGoalCompletion } from "@/lib/goals/judge";
+import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
 import type { GoalJudgment } from "@/lib/goals/contracts";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
@@ -4227,7 +4227,11 @@ export const agentLongTask = task({
               retryMessageId: string;
               retryStartTime: number;
             }) => {
-              goalFinalMessages = retryMessages;
+              goalFinalMessages = retainGoalRunMessages(
+                goalFinalMessages,
+                retryMessages,
+                goalRunMessageIds,
+              );
               goalFinalMessageId = retryMessageId;
               const lastRetryAssistant = retryMessages.findLast(
                 (message) => message.role === "assistant",
@@ -4601,7 +4605,11 @@ export const agentLongTask = task({
                     messages: finishedMessages,
                     isAborted,
                   }) => {
-                    goalFinalMessages = finishedMessages;
+                    goalFinalMessages = retainGoalRunMessages(
+                      goalFinalMessages,
+                      finishedMessages,
+                      goalRunMessageIds,
+                    );
                     let retryScheduled = false;
                     try {
                       // Retry once with a different model for content filters,

@@ -19,6 +19,20 @@ import {
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
 
+/** Retain only this run's assistant snapshots across separate stream callbacks. */
+export function retainGoalRunMessages(
+  previous: UIMessage[],
+  incoming: UIMessage[],
+  runMessageIds: ReadonlySet<string>,
+): UIMessage[] {
+  const snapshots = new Map<string, UIMessage>();
+  for (const message of [...previous, ...incoming]) {
+    if (message.role === "assistant" && runMessageIds.has(message.id))
+      snapshots.set(message.id, message);
+  }
+  return [...snapshots.values()];
+}
+
 export function buildGoalCompletionEvidence(
   goal: Doc<"agent_goals">,
   messages: UIMessage[],
