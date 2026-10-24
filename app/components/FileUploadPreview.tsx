@@ -349,7 +349,7 @@ export const FileUploadPreview = ({
               return (
                 <div
                   key={`${filePreview.file.name}-${index}`}
-                  className="group text-token-text-primary relative inline-block text-sm"
+                  className="group text-token-text-primary relative inline-block max-w-full shrink-0 text-sm"
                   data-testid="attached-file"
                 >
                   <div
@@ -378,7 +378,7 @@ export const FileUploadPreview = ({
                         </div>
                       ) : isGeneratedPastedText ? (
                         <div
-                          className="relative w-72 p-2"
+                          className="relative w-72 max-w-full p-2"
                           title={`Text · ${formatFileSize(filePreview.file.size)}`}
                         >
                           <button
@@ -483,7 +483,7 @@ export const FileUploadPreview = ({
                             </div>
                           </div>
                         ) : (
-                          <div className="p-2 w-80">
+                          <div className="p-2 w-80 max-w-full">
                             <div className="flex flex-row items-center gap-2">
                               <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center bg-red-500">
                                 <X className="h-6 w-6 text-white" />
@@ -534,7 +534,7 @@ export const FileUploadPreview = ({
                               uploadedFile?.localPath,
                             )
                           }
-                          className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                          className="w-80 max-w-full p-2 pr-8 text-left transition-colors hover:bg-accent"
                           aria-label={`View ${filePreview.file.name}`}
                         >
                           <div className="flex flex-row items-center gap-2">
