@@ -270,6 +270,48 @@ describe("CentrifugoSandbox", () => {
     expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("does not report a terminal ACK for an unsequenced exit after ACK output", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const pending = sandbox.commands.run("once");
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    reply.emit("publication", {
+      data: {
+        type: "stdout",
+        commandId: FIXED_UUID,
+        sequence: 0,
+        outputProtocol: "ack-v1",
+        data: "prefix",
+      },
+    });
+    await jest.advanceTimersByTimeAsync(50);
+    reply.emit("publication", {
+      data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+    });
+    await expect(pending).resolves.toMatchObject({
+      stdout: "prefix",
+      exitCode: 0,
+    });
+    expect(receiverRecords().at(-1)).toMatchObject({
+      phase: "cleanup",
+      reason: "legacy_terminal",
+      terminal_received: true,
+    });
+  });
+
   it.each(["exit", "error"] as const)(
     "retains the receiver after rejected terminal %s ACKs until sender replay succeeds",
     async (terminalType) => {
@@ -354,6 +396,9 @@ describe("CentrifugoSandbox", () => {
         last_published_sequence: 1,
         cursor_publish_failures: 2,
       });
+      expect(
+        logs.find((record) => record.phase === "terminal_received"),
+      ).toMatchObject({ terminal_received: true, terminal_type: terminalType });
       expect(JSON.stringify(logs)).not.toMatch(
         /retained output|execution failed|one execution|transient ACK publish rejection/,
       );
@@ -410,6 +455,9 @@ describe("CentrifugoSandbox", () => {
       });
       const canceled = cancel();
       await jest.advanceTimersByTimeAsync(0);
+      expect(
+        receiverRecords().find((record) => record.phase === "cancel_requested"),
+      ).toMatchObject({ cancel_requested: true });
       sender.append(
         terminalType === "exit"
           ? { type: "exit", exitCode: 130 }

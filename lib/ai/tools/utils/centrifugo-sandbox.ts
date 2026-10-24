@@ -755,6 +755,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let acknowledgedOutput = false;
         let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
         let terminalReceived = false;
+        let terminalCursorPublished = false;
         let terminalReceivedDuringCancellation = false;
         let completeTerminal: (() => void) | undefined;
         const diagnostics = createReceiverDiagnostics(
@@ -791,8 +792,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               sequence,
               true,
             );
-            if (!settled && terminalReceived && sequence === lastStreamSequence)
+            if (
+              !settled &&
+              terminalReceived &&
+              sequence === lastStreamSequence
+            ) {
+              terminalCursorPublished = true;
               completeTerminal?.();
+            }
           } catch (error: unknown) {
             diagnostics.cursorResult(
               type === "command_output_resume",
@@ -916,8 +923,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         const publishCancel = () => {
           if (settled) return;
-          if (!cancelRequested) diagnostics.transition("cancel_requested");
-          cancelRequested = true;
+          if (!cancelRequested) {
+            cancelRequested = true;
+            diagnostics.transition("cancel_requested");
+          }
           if (!publishedCommand || !subscription) {
             if (commandPublishInFlight) return;
             resolveCanceled();
@@ -1135,12 +1144,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             return;
           }
 
-          if (
-            !terminalReceived &&
-            (message.type === "exit" || message.type === "error")
-          )
-            diagnostics.terminal(message.type);
-
           switch (message.type) {
             case "stdout":
               receivedUnsequencedOutput ||= sequence === undefined;
@@ -1156,7 +1159,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               if (cancelRequested) {
                 // A terminal can race the cancel result (including native Stop).
                 // Retain the receiver for its sequenced ACK just as on completion.
-                terminalReceived = true;
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
                 terminalReceivedDuringCancellation = true;
                 completeTerminal = resolveCanceled;
                 if (acknowledgedOutput && sequence !== undefined)
@@ -1166,11 +1172,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               }
               if (terminalReceived) break;
               terminalReceived = true;
+              diagnostics.terminal(message.type);
               completeTerminal = () => {
                 if (settled) return;
                 settled = true;
                 cleanup(
-                  acknowledgedOutput
+                  terminalCursorPublished
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
@@ -1217,7 +1224,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               if (cancelRequested) {
                 // A terminal can race the cancel result (including native Stop).
                 // Retain the receiver for its sequenced ACK just as on completion.
-                terminalReceived = true;
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
                 terminalReceivedDuringCancellation = true;
                 completeTerminal = resolveCanceled;
                 if (acknowledgedOutput && sequence !== undefined)
@@ -1239,11 +1249,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               );
               if (terminalReceived) break;
               terminalReceived = true;
+              diagnostics.terminal(message.type);
               completeTerminal = () => {
                 if (settled) return;
                 settled = true;
                 cleanup(
-                  acknowledgedOutput
+                  terminalCursorPublished
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
