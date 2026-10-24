@@ -12,7 +12,16 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { ChevronDown, Target, Pause, Trash2, Pencil } from "lucide-react";
+import {
+  ChevronDown,
+  Target,
+  Pause,
+  CirclePause,
+  CirclePlay,
+  Maximize,
+  Trash2,
+  Pencil,
+} from "lucide-react";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { GOAL_MAX_RUNS, type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
@@ -177,10 +186,23 @@ export function AgentGoalPanel({
       setSubmitting(false);
     }
   }
+  const deleteAction = (
+    <Button
+      size={isMobile ? "icon" : "icon-sm"}
+      variant="ghost"
+      disabled={controlling}
+      aria-label="Delete goal"
+      title="Delete goal"
+      onClick={() => control("clear")}
+    >
+      <Trash2 className="size-4" />
+    </Button>
+  );
   const actions = (
     <div
       className={`flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground empty:hidden ${isMobile ? "[&_button]:min-h-11 [&_button]:min-w-11" : ""}`}
     >
+      {!isMobile && deleteAction}
       {active &&
         ["queued", "running", "needs_approval", "waiting"].includes(
           goal.state,
@@ -193,14 +215,19 @@ export function AgentGoalPanel({
             title="Pause goal"
             onClick={() => control("pause")}
           >
-            <Pause className="size-4" />
+            {isMobile ? (
+              <Pause className="size-4" />
+            ) : (
+              <CirclePause className="size-4" />
+            )}
           </Button>
         )}
       {(canResume || (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
         <Button
-          size="sm"
+          size={isMobile ? "sm" : "icon-sm"}
           variant="ghost"
-          className="px-2 text-xs"
+          className={isMobile ? "px-2 text-xs" : undefined}
+          title="Resume goal"
           aria-label="Resume goal"
           disabled={
             busy ||
@@ -212,7 +239,7 @@ export function AgentGoalPanel({
           }
           onClick={() => submit()}
         >
-          Resume
+          {isMobile ? "Resume" : <CirclePlay className="size-4" />}
         </Button>
       )}
       {resumable &&
@@ -242,21 +269,14 @@ export function AgentGoalPanel({
             openSidebar({ kind: "goal", chatId });
           }}
         >
-          <Pencil className="size-4" />
+          {isMobile ? (
+            <Pencil className="size-4" />
+          ) : (
+            <Maximize className="size-4" />
+          )}
         </Button>
       )}
-      {goal && (
-        <Button
-          size={isMobile ? "icon" : "icon-sm"}
-          variant="ghost"
-          disabled={controlling}
-          aria-label="Delete goal"
-          title="Delete goal"
-          onClick={() => control("clear")}
-        >
-          <Trash2 className="size-4" />
-        </Button>
-      )}
+      {isMobile && deleteAction}
     </div>
   );
   const details = (
@@ -391,15 +411,15 @@ export function AgentGoalPanel({
       </details>
     </div>
   );
+  const goalLabel =
+    goal.state === "running"
+      ? "Pursuing goal"
+      : goal.state === "achieved"
+        ? "Goal achieved"
+        : ["paused", "queued", "canceled", "blocked"].includes(goal.state)
+          ? `${stateLabels[goal.state]} goal`
+          : stateLabels[goal.state];
   if (isMobile) {
-    const mobileLabel =
-      goal.state === "running"
-        ? "Pursuing goal"
-        : goal.state === "achieved"
-          ? "Goal achieved"
-          : ["paused", "queued", "canceled", "blocked"].includes(goal.state)
-            ? `${stateLabels[goal.state]} goal`
-            : stateLabels[goal.state];
     return (
       <section
         aria-label="Agent goal"
@@ -421,7 +441,7 @@ export function AgentGoalPanel({
                 aria-live="polite"
                 className="min-w-0 truncate"
               >
-                {mobileLabel}
+                {goalLabel}
               </span>
               {goal.startedAt !== undefined && (
                 <GoalElapsedTime
@@ -470,44 +490,42 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="relative z-10 order-1 mx-1 min-w-0 shrink-0 bg-background text-sm"
+      className="relative z-0 order-1 mx-3 -mb-5 min-w-0 shrink-0 text-sm"
     >
-      {goal && (
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-1 py-1">
-            <button
-              type="button"
-              aria-label={expanded ? "Hide goal details" : "Show goal details"}
-              aria-expanded={expanded}
-              aria-controls={detailsId}
-              onClick={() => setExpanded(!expanded)}
-              title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
-              className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      {expanded && details}
+      <div className="rounded-t-[22px] border border-black/8 bg-muted px-2 pb-5 dark:border-border">
+        <div className="flex min-h-12 min-w-0 items-center gap-2">
+          <button
+            type="button"
+            aria-label={expanded ? "Hide goal details" : "Show goal details"}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            onClick={() => setExpanded(!expanded)}
+            title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
+            className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Target className="size-4 shrink-0" aria-hidden="true" />
+            <span
+              role="status"
+              aria-live="polite"
+              className="shrink-0 font-medium text-foreground"
             >
-              <Target className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="font-medium text-foreground/80"
-                >
-                  Goal · {stateLabels[goal.state]}
-                </span>
-                <span className="mx-1.5" aria-hidden="true">
-                  ·
-                </span>
-                <span>{goal.objective}</span>
-              </span>
-              <ChevronDown
-                className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-                aria-hidden="true"
-              />
-            </button>
-            {actions}
-          </div>
-          {expanded && details}
+              {goalLabel}
+            </span>
+            <span className="min-w-0 truncate">{goal.objective}</span>
+            {goal.startedAt !== undefined && (
+              <>
+                <span aria-hidden="true">·</span>
+                <GoalElapsedTime
+                  startedAt={goal.startedAt}
+                  achievedAt={goal.achievedAt}
+                />
+              </>
+            )}
+          </button>
+          {actions}
         </div>
-      )}
+      </div>
     </section>
   );
 }

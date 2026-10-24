@@ -229,7 +229,7 @@ describe("goal controls", () => {
         settings={settings}
       />,
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Completed");
+    expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
     expect(screen.queryByText("Completion verified")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
     expect(screen.getByText("Completion verified")).toBeVisible();
@@ -458,28 +458,33 @@ describe("goal controls", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("shows the saved completion duration instead of continuing the timer", async () => {
-    mockIsMobile = true;
-    setMockQueryResult({
-      ...goal,
-      state: "achieved",
-      startedAt: 1000,
-      achievedAt: 66000,
-    });
-    render(
-      <AgentGoalPanel
-        chatId="chat"
-        exists
-        eligible
-        idle
-        send={jest.fn()}
-        settings={settings}
-      />,
-    );
-    await act(async () => {});
-    expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
-    expect(
-      screen.getByLabelText("Elapsed time 1m 5s, including pauses and waiting"),
-    ).toBeVisible();
-  });
+  it.each([false, true])(
+    "shows the saved completion duration instead of continuing the timer (mobile: %s)",
+    async (isMobile) => {
+      mockIsMobile = isMobile;
+      setMockQueryResult({
+        ...goal,
+        state: "achieved",
+        startedAt: 1000,
+        achievedAt: 66000,
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+        />,
+      );
+      await act(async () => {});
+      expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+      expect(
+        screen.getByLabelText(
+          "Elapsed time 1m 5s, including pauses and waiting",
+        ),
+      ).toBeVisible();
+    },
+  );
 });
