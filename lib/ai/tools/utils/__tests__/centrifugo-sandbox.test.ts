@@ -168,6 +168,164 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  it.each(["readiness reply lost", "publish reply lost"])(
+    "receives late Desktop output after %s without executing again",
+    async (failure) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const stdout = jest.fn();
+      const result = sandbox.commands
+        .run("one execution", { timeoutMs: 10_000, onStdout: stdout })
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      if (failure === "publish reply lost")
+        control.publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(6000);
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 5000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+      );
+      reply.publish.mockImplementation(async (message) => {
+        if (message.type === "command_output_ack")
+          sender.acknowledge(message.sequence);
+      });
+      sender.append({ type: "stdout", data: "retained output" });
+      sender.append({ type: "exit", exitCode: 0 });
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(result).resolves.toMatchObject({
+        stdout: "retained output",
+        exitCode: 0,
+      });
+      await expect(sender.delivered).resolves.toBeUndefined();
+      expect(stdout.mock.calls).toEqual([["retained output"]]);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("keeps uncertain Desktop dispatch bounded and non-retryable when no output arrives", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const result = sandbox.commands
+      .run("once", { timeoutMs: 10_000 })
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(6000);
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(39_000);
+    await expect(result).resolves.toMatchObject({
+      dispatched: true,
+      retryable: false,
+    });
+    expect((await result).message).toContain("Command timeout after 45000ms");
+    expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
+    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the original Desktop command after its readiness reply is lost", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: { commands: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    let cancel!: () => Promise<boolean>;
+    const result = sandbox.commands.run("once", {
+      onCancelReady: (fn) => {
+        cancel = fn;
+      },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(6000);
+    const canceled = cancel();
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "command_cancel",
+        commandId: FIXED_UUID,
+      }),
+    );
+    reply.emit("publication", {
+      data: {
+        type: "command_cancel_result",
+        commandId: FIXED_UUID,
+        canceled: true,
+      },
+    });
+    await expect(canceled).resolves.toBe(true);
+    await expect(result).resolves.toMatchObject({ exitCode: 130 });
+    expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it.each(["setup timeout", "publish denied"])(
+    "does not retain a Desktop receiver for %s",
+    async (failure) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const result = sandbox.commands.run("once").catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      if (failure === "setup timeout")
+        control.ready.mockRejectedValueOnce({ code: 1, message: "timeout" });
+      else
+        control.publish.mockRejectedValueOnce({
+          code: 103,
+          message: "permission denied",
+        });
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(result).resolves.toMatchObject({
+        dispatched: failure === "publish denied",
+        retryable: false,
+      });
+      expect(control.publish).toHaveBeenCalledTimes(
+        failure === "publish denied" ? 1 : 0,
+      );
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it("preserves an unknown outcome when Desktop exhausts its retained output", async () => {
     const sandbox = new CentrifugoSandbox(
       "user-1",
