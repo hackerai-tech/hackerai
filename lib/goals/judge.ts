@@ -24,11 +24,20 @@ export function buildGoalCompletionEvidence(
   messages: UIMessage[],
   runId: string,
   messageId = runId,
+  runMessageIds: readonly string[] = [runId, messageId],
 ) {
   const current = messages.find((m) => m.id === messageId)?.parts ?? [];
+  // Provider recovery can keep completed tools on an earlier response from
+  // this run. Historical chat messages are not fresh evidence for this slice.
+  const eligibleIds = new Set(runMessageIds);
+  const executed = messages
+    .filter(
+      (message) => message.role === "assistant" && eligibleIds.has(message.id),
+    )
+    .flatMap((message) => message.parts ?? []);
   const entries = goal.checkpoint?.evidence ?? [];
   const proofs = entries.flatMap((e) => {
-    const p = current.find((p) => isGoalEvidencePart(p, e.toolCallId));
+    const p = executed.find((p) => isGoalEvidencePart(p, e.toolCallId));
     return p
       ? [
           {
@@ -55,6 +64,7 @@ export async function judgeGoalCompletion(
   runId: string,
   onCost: (cost: number) => void,
   messageId = runId,
+  runMessageIds: readonly string[] = [runId, messageId],
 ): Promise<GoalJudgment | undefined> {
   if (goal.checkpoint?.outcome !== "achieved") return;
   try {
@@ -63,6 +73,7 @@ export async function judgeGoalCompletion(
       messages,
       runId,
       messageId,
+      runMessageIds,
     );
     if (!gatePassed)
       return {

@@ -1964,6 +1964,7 @@ export const agentLongTask = task({
     let goalJudgment: GoalJudgment | undefined;
     let goalFinalMessages: UIMessage[] = [];
     let goalFinalMessageId = ctx.run.id;
+    const goalRunMessageIds = new Set([ctx.run.id]);
     let goalJudgePromise: Promise<void> | undefined;
     let goalClaimed = false;
     let goalFailed = false;
@@ -3386,6 +3387,7 @@ export const agentLongTask = task({
                           chatLogger?.getBuilder().addToolCost(cost);
                         },
                         goalFinalMessageId,
+                        [...goalRunMessageIds],
                       );
                   })();
                   // Goal storage/verifier outages must never skip settlement of
@@ -4873,6 +4875,7 @@ export const agentLongTask = task({
                       }
 
                       const retryMessageId = generateId();
+                      goalRunMessageIds.add(retryMessageId);
                       if (
                         shouldAttemptProviderRetry &&
                         !visionSummaryRecoveryFailure &&
@@ -5239,6 +5242,7 @@ export const agentLongTask = task({
                                     preFallbackCacheWrite =
                                       usageTracker.cacheWriteTokens;
                                     const finalRetryMessageId = generateId();
+                                    goalRunMessageIds.add(finalRetryMessageId);
                                     abliteratedTelemetry?.setMessageId(
                                       finalRetryMessageId,
                                     );

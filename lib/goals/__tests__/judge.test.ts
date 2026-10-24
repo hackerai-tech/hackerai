@@ -22,7 +22,7 @@ jest.mock("@/lib/rate-limit", () => ({
   calculateRawModelUsageCostDollars: () => 0.006,
 }));
 import { generateText } from "ai";
-import { judgeGoalCompletion } from "../judge";
+import { buildGoalCompletionEvidence, judgeGoalCompletion } from "../judge";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { UIMessage } from "ai";
 const mockPriorEvidence = jest.fn();
@@ -158,4 +158,76 @@ it("retains earlier-stage evidence for the same criterion when judging a later r
     "earlier",
     "r1",
   ]);
+});
+
+describe("provider retry evidence", () => {
+  const final = {
+    id: "retry-final",
+    role: "assistant",
+    parts: [],
+  } as UIMessage;
+
+  it("retains executed evidence on the original response after retry", () => {
+    const result = buildGoalCompletionEvidence(
+      goal,
+      [...messages, final],
+      "r1",
+      final.id,
+    );
+    expect(result.proofs).toHaveLength(1);
+    expect(result.proofs[0].result).toContain("marker exists");
+    expect(result.proofs[0].runId).toBe("r1");
+  });
+
+  it("includes an explicitly registered intermediate retry response", () => {
+    const result = buildGoalCompletionEvidence(
+      goal,
+      [{ ...messages[0], id: "retry-first" }, final],
+      "r1",
+      final.id,
+      ["r1", "retry-first", final.id],
+    );
+    expect(result.proofs).toHaveLength(1);
+  });
+
+  it("rejects unrelated history, user parts and failed tool results", () => {
+    const unrelated = { ...messages[0], id: "old-run" };
+    const user = { ...messages[0], role: "user" } as UIMessage;
+    const failed = {
+      ...messages[0],
+      parts: [
+        {
+          ...messages[0].parts[0],
+          state: "output-error",
+          errorText: "Unknown outcome",
+        },
+      ],
+    } as UIMessage;
+    for (const source of [unrelated, user, failed]) {
+      expect(
+        buildGoalCompletionEvidence(goal, [source, final], "r1", final.id)
+          .proofs,
+      ).toEqual([]);
+    }
+  });
+
+  it("requires the verification command in the final response", () => {
+    const withGate = { ...goal, verificationCommand: "test -f marker" };
+    const result = buildGoalCompletionEvidence(
+      withGate,
+      [...messages, final],
+      "r1",
+      final.id,
+    );
+    expect(result.proofs).toHaveLength(1);
+    expect(result.gatePassed).toBe(false);
+    expect(
+      buildGoalCompletionEvidence(
+        withGate,
+        [...messages, { ...final, parts: messages[0].parts }],
+        "r1",
+        final.id,
+      ).gatePassed,
+    ).toBe(true);
+  });
 });
