@@ -2,7 +2,7 @@ import { generateText, Output, type UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { myProvider, resolveAgentTierToProviderKey } from "@/lib/ai/providers";
+import { myProvider } from "@/lib/ai/providers";
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { isAgentAutoReviewFilesystemDeletionCommand } from "@/lib/chat/agent-auto-review-evidence";
@@ -28,8 +28,8 @@ const CONVERSATION_CONTEXT_SEPARATOR =
   "\n\n--- next retained conversation item ---\n\n";
 const USER_CONTEXT_TRUNCATION_TAG = "user_content_truncated";
 export const AGENT_AUTO_REVIEW_TIMEOUT_MS = 15_000;
-export const AGENT_AUTO_REVIEW_MODEL =
-  resolveAgentTierToProviderKey("hackerai-standard");
+// Approval decisions have their own model policy, independent of user tiers.
+export const AGENT_AUTO_REVIEW_MODEL = "model-glm-5.3-flash-agent";
 export const AGENT_AUTO_REVIEW_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },

@@ -1,7 +1,6 @@
 import type { UIMessage } from "ai";
 
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
-import { resolveAgentTierToProviderKey } from "@/lib/ai/providers";
 import {
   AGENT_AUTO_REVIEW_MODEL,
   AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
@@ -73,14 +72,14 @@ const authorizationContext = {
 };
 
 describe("Agent Auto review", () => {
-  it("uses the shared Standard route with reasoning disabled", () => {
-    const standardModel = resolveAgentTierToProviderKey("hackerai-standard");
+  it("keeps approval review on GLM Flash independently of user tiers", () => {
+    const reviewModel = "model-glm-5.3-flash-agent";
 
-    expect(AGENT_AUTO_REVIEW_MODEL).toBe(standardModel);
+    expect(AGENT_AUTO_REVIEW_MODEL).toBe(reviewModel);
     expect(AGENT_AUTO_REVIEW_PROVIDER_OPTIONS).toEqual({
       openrouter: {
         reasoning: { enabled: false },
-        models: getFallbackSlugs(standardModel, "agent"),
+        models: getFallbackSlugs(reviewModel, "agent"),
         usage: { include: true },
       },
     });

@@ -1568,3 +1568,77 @@ describe("Agent Max explicit provider recovery", () => {
     });
   });
 });
+
+describe("explicit paid Flash tier reasoning", () => {
+  const routes = [
+    DEEPSEEK_1017_MODEL_KEY,
+    "model-deepseek-v4-flash-vision-pro",
+  ];
+
+  it.each(routes)(
+    "uses the explicit tier rather than shared alias %s",
+    (model) => {
+      for (const [selection, effort] of [
+        ["hackerai-standard", "high"],
+        ["hackerai-pro", "max"],
+      ] as const) {
+        const options = buildProviderOptions(true, "user", model, "agent", {
+          selectedModelOverride: selection,
+          // A stale lower override must not silently erase the selected tier.
+          reasoningOverride: { enabled: true, effort: "low" },
+          ignoredProviderSlugs: ["together"],
+          hasPdfAttachments: true,
+        }).openrouter;
+        expect(options.reasoning).toEqual({ enabled: true, effort });
+        expect(options.provider).toEqual({
+          require_parameters: true,
+          ignore: ["together"],
+        });
+        expect(options.plugins).toEqual([
+          { id: "file-parser", pdf: { engine: "mistral-ocr" } },
+        ]);
+        expect(options.models).toEqual(
+          getFallbackSlugs(model, "agent", {
+            selectedModelOverride: selection,
+          }),
+        );
+      }
+    },
+  );
+
+  it.each([undefined, "auto"] as const)(
+    "preserves Auto %s on the shared Pro alias",
+    (selection) => {
+      const options = buildProviderOptions(
+        true,
+        "user",
+        "model-deepseek-v4-flash-vision-pro",
+        "agent",
+        {
+          selectedModelOverride: selection,
+        },
+      ).openrouter;
+      expect(options.reasoning).toEqual({ enabled: true, effort: "high" });
+      expect(options.provider).toBeUndefined();
+    },
+  );
+
+  it("keeps Free Ask low and preserves recovery models' own policies", () => {
+    expect(
+      buildProviderOptions(true, "user", DEEPSEEK_1017_MODEL_KEY, "ask", {
+        selectedModelOverride: "hackerai-pro",
+        isFreeAskRequest: true,
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "low" });
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3-flash", "agent", {
+        selectedModelOverride: "hackerai-pro",
+      }).openrouter.reasoning,
+    ).toBeUndefined();
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3", "agent", {
+        selectedModelOverride: "hackerai-pro",
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "high" });
+  });
+});

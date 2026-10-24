@@ -216,7 +216,7 @@ describe("selectModel", () => {
   );
 
   describe.each(paidPlans)("%s Agent routing", (subscription) => {
-    it("uses native GLM Flash for Standard and DeepSeek V4.1 Flash for Pro with all attachments", () => {
+    it("uses native DeepSeek Flash for Standard and Pro with all attachments", () => {
       for (const [hasImage, hasPdf] of attachments) {
         for (const options of [
           {},
@@ -232,7 +232,7 @@ describe("selectModel", () => {
               hasPdf,
               options,
             ),
-          ).toBe("model-glm-5.3-flash-agent");
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
           expect(
             selectModel(
               "agent",

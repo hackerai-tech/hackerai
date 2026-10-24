@@ -40,7 +40,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
- *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
+ *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
+ *   reasoning; explicit Pro uses max reasoning, including images.
  *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
  *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
@@ -66,8 +67,8 @@ export function selectModel(
     subscription,
     options,
   );
-  // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
-  // it before the legacy media promotions so every paid plan keeps this route.
+  // Resolve explicit Standard before legacy media promotions so text, images
+  // and PDFs retain the same native DeepSeek snapshot on every paid plan.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {
     return resolveAgentTierToProviderKey(allowedSelectedModel);
   }

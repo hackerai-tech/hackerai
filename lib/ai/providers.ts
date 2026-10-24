@@ -1490,7 +1490,7 @@ export function resolveAgentTierToProviderKey(
     case "auto":
       return null;
     case "hackerai-standard":
-      return "model-glm-5.3-flash-agent";
+      return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-pro":
       return "model-deepseek-v4-flash-vision-pro";
     case "hackerai-max":
