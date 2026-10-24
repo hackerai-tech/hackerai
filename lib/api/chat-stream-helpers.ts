@@ -1100,10 +1100,11 @@ export function buildProviderOptions(
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
-  // Tier effort applies only to the active Flash snapshot. Auto shares Pro's
-  // registry alias, so the explicit selection (not the alias) owns the policy.
+  // Only explicit tier requests on the snapshot use this policy. The legacy
+  // vision aliases also serve allowance rescue and retain their own defaults.
   const isExplicitPaidFlashTier =
     mode === "agent" &&
+    modelName === DEEPSEEK_1017_MODEL_KEY &&
     (modelId === DEEPSEEK_1017_SLUG ||
       modelId === DEEPSEEK_1017_CANONICAL_SLUG) &&
     (options.selectedModelOverride === "hackerai-standard" ||

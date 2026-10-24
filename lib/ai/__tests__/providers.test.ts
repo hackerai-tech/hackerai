@@ -294,7 +294,7 @@ describe("provider registry", () => {
       "deepseek/deepseek-v4.1-flash-1017",
     );
     expect(supportsMultimodalToolResults(key)).toBe(true);
-    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
+    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash 1017");
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {

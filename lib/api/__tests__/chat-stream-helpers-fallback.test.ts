@@ -1570,10 +1570,7 @@ describe("Agent Max explicit provider recovery", () => {
 });
 
 describe("explicit paid Flash tier reasoning", () => {
-  const routes = [
-    DEEPSEEK_1017_MODEL_KEY,
-    "model-deepseek-v4-flash-vision-pro",
-  ];
+  const routes = [DEEPSEEK_1017_MODEL_KEY];
 
   it.each(routes)(
     "uses the explicit tier rather than shared alias %s",
@@ -1622,6 +1619,20 @@ describe("explicit paid Flash tier reasoning", () => {
       expect(options.provider).toBeUndefined();
     },
   );
+
+  it("preserves high reasoning for allowance rescue on the legacy Pro alias", () => {
+    const options = buildProviderOptions(
+      true,
+      "user",
+      "model-deepseek-v4-flash-vision-pro",
+      "agent",
+      {
+        selectedModelOverride: "hackerai-pro",
+      },
+    ).openrouter;
+    expect(options.reasoning).toEqual({ enabled: true, effort: "high" });
+    expect(options.provider).toBeUndefined();
+  });
 
   it("keeps Free Ask low and preserves recovery models' own policies", () => {
     expect(

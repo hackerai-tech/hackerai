@@ -242,7 +242,7 @@ describe("selectModel", () => {
               hasPdf,
               options,
             ),
-          ).toBe("model-deepseek-v4-flash-vision-pro");
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
         }
       }
     });
@@ -301,7 +301,7 @@ describe("selectModel", () => {
               ),
             ).toBe(
               !maxAllowed
-                ? "model-deepseek-v4-flash-vision-pro"
+                ? DEEPSEEK_1017_MODEL_KEY
                 : hasImage
                   ? DEEPSEEK_1017_MODEL_KEY
                   : "model-glm-5.3",
@@ -322,7 +322,7 @@ describe("selectModel", () => {
           ).toBe(
             subscription === "ultra" || extraUsageAvailable
               ? "model-glm-5.3"
-              : "model-deepseek-v4-flash-vision-pro",
+              : DEEPSEEK_1017_MODEL_KEY,
           );
         }
       }

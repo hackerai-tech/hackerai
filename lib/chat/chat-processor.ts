@@ -82,7 +82,7 @@ export function selectModel(
   const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-pro") {
-    return "model-deepseek-v4-flash-vision-pro";
+    return resolveAgentTierToProviderKey(allowedSelectedModel);
   }
   // Direct image routes retain Standard vision reasoning for Auto.
   const isAutoSelection =
