@@ -60,6 +60,7 @@ import {
 } from "@/lib/chat/agent-long-transport";
 import {
   areMessagesEquivalentForConvexSync,
+  mergePersistedGoalMessages,
   arePersistedMessagesAtLeastAsComplete,
 } from "@/lib/chat/message-reconciliation";
 import {
@@ -688,6 +689,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
 
+    const wasGoalEditor = !!dialog.querySelector(
+      '[aria-label="Goal objective"]',
+    );
     const focusTimeout = window.setTimeout(() => {
       (getFocusableElements()[0] ?? dialog).focus();
     }, 0);
@@ -697,7 +701,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       window.clearTimeout(focusTimeout);
       document.removeEventListener("keydown", handleKeyDown);
       const previousFocus = computerDialogPreviousFocusRef.current;
-      if (previousFocus?.isConnected) previousFocus.focus();
+      if (previousFocus?.isConnected && !dialog.contains(previousFocus))
+        previousFocus.focus();
+      else if (wasGoalEditor)
+        document
+          .querySelector<HTMLButtonElement>('[aria-label="Edit goal"]')
+          ?.focus();
     };
   }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
 
@@ -2089,7 +2098,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
     // up, Convex will push the full set and the normal sync below will apply.
-    if (uiMessages.length < current.length) {
+    if (uiMessages.length < current.length && !persistedGoal) {
       return;
     }
 
@@ -2120,13 +2129,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // final save. Never replace more complete local text or tool progress with a
     // stale persisted snapshot; the later Convex update will rerun the effect.
     if (!arePersistedMessagesAtLeastAsComplete(current, uiMessages)) {
+      if (persistedGoal && isExistingChat) {
+        const merged = mergePersistedGoalMessages(current, uiMessages);
+        if (!areMessagesEquivalentForConvexSync(current, merged))
+          setMessages(merged);
+      }
       return;
     }
 
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
+  }, [
+    paginatedMessageResults,
+    setMessages,
+    isExistingChat,
+    chatId,
+    status,
+    persistedGoal,
+  ]);
 
   // Keep the latest visible user turn anchored while its response streams.
   // Auto-continue prompts are hidden from the timeline and must not replace

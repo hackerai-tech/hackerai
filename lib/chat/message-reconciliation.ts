@@ -143,3 +143,27 @@ export const arePersistedMessagesAtLeastAsComplete = (
     );
   });
 };
+
+// Preserve local content when an older persisted part is less complete, while
+// allowing independent saved goal messages and receipts to become visible.
+export function mergePersistedGoalMessages<T extends ReconciledMessage>(
+  current: readonly T[],
+  persisted: readonly T[],
+): T[] {
+  if (arePersistedMessagesAtLeastAsComplete(current, persisted))
+    return [...persisted];
+  const savedById = new Map(persisted.map((message) => [message.id, message]));
+  const currentIds = new Set(current.map((message) => message.id));
+  return [
+    ...current.map((message) => {
+      const saved = savedById.get(message.id);
+      if (!saved || saved.role !== message.role || !saved.metadata?.goal)
+        return message;
+      return {
+        ...message,
+        metadata: { ...message.metadata, goal: saved.metadata.goal },
+      };
+    }),
+    ...persisted.filter((message) => !currentIds.has(message.id)),
+  ];
+}
