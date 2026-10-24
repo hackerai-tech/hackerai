@@ -7,6 +7,10 @@ import { OperationChannelRouter } from "@/packages/local/src/operation-channels"
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { startDesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
+import {
+  isDesktopAckStopSource,
+  type DesktopAckStopSource,
+} from "@/lib/analytics/desktop-ack-privacy";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
@@ -298,6 +302,7 @@ export class DesktopSandboxBridge {
     ReturnType<typeof setTimeout>
   >();
   private isStoppingOrStopped = true;
+  private commandOutputStopSource: DesktopAckStopSource = "command_cleanup";
   private startupGeneration = 0;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
@@ -385,12 +390,14 @@ export class DesktopSandboxBridge {
           this.startupGeneration !== generation
         )
           return;
+        const reason = state.ok
+          ? "connection_inactive"
+          : terminationReason(state);
         this.logRelayState("disconnected", {
           reason: "heartbeat_connection_inactive",
+          ...(isDesktopAckStopSource(reason) && { terminationReason: reason }),
         });
-        this.terminateClient(
-          state.ok ? "connection_inactive" : terminationReason(state),
-        );
+        this.terminateClient(reason);
         return;
       }
       if (this.consecutiveHeartbeatFailures > 0) {
@@ -481,6 +488,7 @@ export class DesktopSandboxBridge {
 
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
+    this.commandOutputStopSource = reason;
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
     this.acknowledgedOutputs.clear();
@@ -526,6 +534,7 @@ export class DesktopSandboxBridge {
     const wasStopped = () =>
       this.isStoppingOrStopped || generation !== this.startupGeneration;
     this.isStoppingOrStopped = false;
+    this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
@@ -1014,7 +1023,7 @@ export class DesktopSandboxBridge {
         !this.isStoppingOrStopped &&
         this.operationRouter === router &&
         this.connectionId === connectionId,
-      onSettled,
+      (settlement) => onSettled(settlement, this.commandOutputStopSource),
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
@@ -2372,6 +2381,7 @@ export class DesktopSandboxBridge {
 
   async stop(): Promise<void> {
     this.startupGeneration += 1;
+    this.commandOutputStopSource = "bridge_stop";
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
     this.acknowledgedOutputs.clear();

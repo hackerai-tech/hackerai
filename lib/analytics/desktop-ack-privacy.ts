@@ -1,3 +1,22 @@
+const STOP_SOURCES = [
+  "bridge_stop",
+  "command_cleanup",
+  "unauthenticated",
+  "connection_not_found",
+  "ownership_mismatch",
+  "session_replaced",
+  "connection_inactive",
+  "transport_disconnected",
+] as const;
+
+export type DesktopAckStopSource = (typeof STOP_SOURCES)[number];
+
+export function isDesktopAckStopSource(
+  value: unknown,
+): value is DesktopAckStopSource {
+  return STOP_SOURCES.some((source) => source === value);
+}
+
 // PostHog enriches captures with URL, attribution and registered properties.
 // Filter at before_send, after that enrichment, as well as at capture time.
 const ALLOWED_PROPERTIES = new Set([
@@ -18,6 +37,7 @@ const ALLOWED_PROPERTIES = new Set([
   "hackerai_frontend_build_commit",
   "outcome",
   "reason",
+  "stopSource",
   "observedFrames",
   "enqueuedFrames",
   "acknowledgedFrames",
@@ -48,8 +68,14 @@ export function sanitizeDesktopAckEvent<
     return event;
   if (event.properties) {
     event.properties = Object.fromEntries(
-      Object.entries(event.properties).filter(([key]) =>
-        ALLOWED_PROPERTIES.has(key),
+      Object.entries(event.properties).filter(
+        ([key, value]) =>
+          ALLOWED_PROPERTIES.has(key) &&
+          (key !== "stopSource" ||
+            (event.event === "desktop_ack_command_settled" &&
+              event.properties?.reason === "stopped" &&
+              event.properties?.outcome === "incomplete" &&
+              isDesktopAckStopSource(value))),
       ),
     );
   }
