@@ -3921,12 +3921,14 @@ export const agentLongTask = task({
               const providerError = terminalError
                 ? wrapProviderTerminalError(terminalError, {
                     model: terminalRequestedModelSlug,
-                    openRouterMetadata: state.openRouterMetadata,
+                    openRouterMetadata: state.providerErrorMetadata,
                   })
                 : lastProviderRecoveryError;
 
               return {
-                upstreamProvider: state.openRouterMetadata.provider_name,
+                upstreamProvider: terminalError
+                  ? state.providerErrorMetadata?.provider_name
+                  : state.openRouterMetadata.provider_name,
                 providerErrorProvider: providerError?.provider,
                 providerErrorCategory: providerError?.category,
                 providerErrorStatusCode: providerError?.statusCode,
@@ -3950,7 +3952,7 @@ export const agentLongTask = task({
             }) => {
               const failure = wrapProviderTerminalError(state.providerError, {
                 model: trackedProvider.languageModel(failedModel).modelId,
-                openRouterMetadata: state.openRouterMetadata,
+                openRouterMetadata: state.providerErrorMetadata,
               });
               providerRecoveryAttempts += 1;
               providerRecoveryModels.push(retryModel);
@@ -4611,7 +4613,7 @@ export const agentLongTask = task({
                           state.providerError,
                           {
                             model: selectedModel,
-                            openRouterMetadata: state.openRouterMetadata,
+                            openRouterMetadata: state.providerErrorMetadata,
                           },
                         );
                         triggerLogger.info("Provider recovery decision", {
@@ -4635,9 +4637,8 @@ export const agentLongTask = task({
                           status_code: failure.statusCode,
                           configured_model: selectedModel,
                           served_model:
-                            state.openRouterMetadata
-                              ?.openrouter_selected_model ??
-                            state.responseModel,
+                            state.providerErrorMetadata
+                              ?.openrouter_selected_model,
                           provider: failure.provider,
                           provider_request_id: failure.openrouterRequestId,
                           provider_generation_id:
@@ -5588,7 +5589,7 @@ export const agentLongTask = task({
         }
         throw wrapProviderTerminalError(terminalStreamError, {
           model: terminalRequestedModelSlug,
-          openRouterMetadata: terminalAgentState?.openRouterMetadata,
+          openRouterMetadata: terminalAgentState?.providerErrorMetadata,
         });
       }
 
