@@ -479,6 +479,12 @@ export const createAgentTriggerPost =
     const routeStartedAt = Date.now();
     let stage = "parse_request";
     let initialPersistenceStep: InitialChatPersistenceStep | undefined;
+    let desktopAttachmentStep:
+      | "sandbox_context"
+      | "acquire_sandbox"
+      | "upload_files"
+      | "close_sandbox"
+      | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -506,6 +512,9 @@ export const createAgentTriggerPost =
           stage,
           ...(stage === "persist_user_message" && initialPersistenceStep
             ? { initial_persistence_step: initialPersistenceStep }
+            : {}),
+          ...(stage === "prepare_desktop_attachments" && desktopAttachmentStep
+            ? { desktop_attachment_step: desktopAttachmentStep }
             : {}),
           elapsed_ms: Date.now() - routeStartedAt,
         }),
@@ -670,6 +679,7 @@ export const createAgentTriggerPost =
             null,
             subscription,
           );
+          desktopAttachmentStep = "sandbox_context";
           await sandboxManager.getSandboxContextForPrompt();
           assertLocalSandboxFallbackAllowed({
             fallbackInfo: sandboxManager.consumeFallbackInfo(),
@@ -679,14 +689,17 @@ export const createAgentTriggerPost =
           let stagedSandbox: any = null;
           let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
           try {
+            desktopAttachmentStep = "upload_files";
             uploadResult = await uploadSandboxFiles(
               sandboxFiles,
               async () => {
+                desktopAttachmentStep = "acquire_sandbox";
                 const { sandbox } = await getSandboxWithFallbackGuard({
                   sandboxManager,
                   requireLocalSandbox: true,
                 });
                 stagedSandbox = sandbox;
+                desktopAttachmentStep = "upload_files";
                 return sandbox;
               },
               {
@@ -700,6 +713,7 @@ export const createAgentTriggerPost =
               },
             );
           } finally {
+            desktopAttachmentStep = "close_sandbox";
             await stagedSandbox?.close?.().catch(() => {});
           }
           if (uploadResult.failedCount > 0) {
@@ -707,7 +721,7 @@ export const createAgentTriggerPost =
               uploadResult.failedCount === 1 ? "attachment" : "attachments";
             throw new ChatSDKError(
               "bad_request:api",
-              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Reconnect this computer and retry the message. If the file was moved or deleted, reattach it.`,
             );
           }
           preparedMessages = rewriteSandboxFilePathsInMessages(
@@ -728,6 +742,7 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        sandboxType: sandboxPreference ?? "e2b",
         onPersistenceStep: (step) => {
           initialPersistenceStep = step;
         },
@@ -1016,7 +1031,7 @@ export const createAgentTriggerPost =
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
-        context: { ...diagnosticContext, stage },
+        context: { ...diagnosticContext, stage, initialPersistenceStep },
       });
     } finally {
       clearInterval(slowRequestInterval);

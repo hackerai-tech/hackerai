@@ -62,19 +62,32 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     stripe_customer_id: stripeCustomerId,
   };
 
-  let subscriptions: Awaited<ReturnType<typeof stripe.subscriptions.list>>;
+  const subscriptions: Awaited<
+    ReturnType<typeof stripe.subscriptions.list>
+  >["data"] = [];
   try {
-    subscriptions = await stripe.subscriptions.list({
-      customer: stripeCustomerId,
-      status: "all",
-      limit: 10,
-      expand: [
-        "data.items.data.price",
-        "data.schedule",
-        "data.latest_invoice",
-        "data.latest_invoice.payments",
-      ],
-    });
+    let startingAfter: string | undefined;
+    // Use the same bounded complete history as canceled-renewal recovery.
+    for (let page = 0; page < 10; page += 1) {
+      const history = await stripe.subscriptions.list({
+        customer: stripeCustomerId,
+        status: "all",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+        expand: [
+          "data.items.data.price",
+          "data.schedule",
+          "data.latest_invoice",
+          "data.latest_invoice.payments",
+        ],
+      });
+      subscriptions.push(...history.data);
+      if (!history.has_more) break;
+      startingAfter = history.data.at(-1)?.id;
+      if (!startingAfter || page === 9) {
+        throw new Error("Unable to determine a single current subscription");
+      }
+    }
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
       event: "billing_subscription_status_action_failed",
@@ -85,13 +98,13 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   }
-  const currentSubscriptions = subscriptions.data.filter(
+  const currentSubscriptions = subscriptions.filter(
     hasCurrentSubscriptionStatus,
   );
   // A customer can temporarily retain overlapping subscriptions after checkout
   // or migration. Never choose a card-recovery target from ambiguous or partial
   // history; both Account settings and blocked chat must request billing review.
-  if (subscriptions.has_more || currentSubscriptions.length > 1) {
+  if (currentSubscriptions.length > 1) {
     throw new Error("Unable to determine a single current subscription");
   }
   const currentSubscription = currentSubscriptions[0];

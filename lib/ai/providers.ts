@@ -7,9 +7,8 @@ import { customProvider } from "ai";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
   abliteration,
-  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_FLASH_MODEL_ID,
   ABLITERATION_LARGE_V2_MODEL_KEY,
-  ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
 } from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
@@ -1247,8 +1246,8 @@ export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-// Preserve the internal vision route keys while upgrading the provider model.
-export const DEEPSEEK_V4_FLASH_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
+// Preserve persisted route keys while pinning every Flash route to this snapshot.
+export const DEEPSEEK_V4_FLASH_VISION_SLUG = DEEPSEEK_1017_SLUG;
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // MiniMax is deliberately isolated to the final text-summary recovery. Normal
 // image turns route the original pixels through GLM Flash and then DeepSeek
@@ -1320,9 +1319,9 @@ const buildProviderMap = (
 
 const baseProviders: ReturnType<typeof buildProviderMap> = {
   ...buildProviderMap(openrouter),
-  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_MODEL_ID),
+  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
   [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
-    ABLITERATION_LARGE_V2_MODEL_ID,
+    ABLITERATION_LARGE_FLASH_MODEL_ID,
   ),
 };
 
@@ -1352,8 +1351,9 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
-  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model",
-  [ABLITERATION_LARGE_V2_MODEL_KEY]: "Abliteration abliterated-model-large-v2",
+  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
+  [ABLITERATION_LARGE_V2_MODEL_KEY]:
+    "Abliteration abliterated-model-large-flash",
   "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
@@ -1460,7 +1460,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-deepseek-v4-flash-vision-pro" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||
-    normalized === DEEPSEEK_V4_FLASH_VISION_SLUG ||
+    normalized === "deepseek/deepseek-v4.1-flash" ||
     normalized === "deepseek/deepseek-v4.1-flash-20260910" ||
     isKimiModel(normalized) ||
     isGrokModel(normalized) ||
@@ -1490,9 +1490,9 @@ export function resolveAgentTierToProviderKey(
     case "auto":
       return null;
     case "hackerai-standard":
-      return "model-glm-5.3-flash-agent";
+      return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-pro":
-      return "model-deepseek-v4-flash-vision-pro";
+      return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
       return "model-glm-5.3";
   }

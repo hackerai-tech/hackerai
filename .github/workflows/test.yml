@@ -16,7 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [20.x]
+        node-version: [22.23.4]
 
     steps:
       - name: Checkout code
@@ -36,8 +36,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test pip bootstrap integrity
+        run: python3 -B -m unittest discover -s docker -p 'test_pip_bootstrap.py' -v
+
       - name: Type check
         run: pnpm typecheck
+
+      - name: Test Linux AppImage child library isolation
+        run: |
+          rustc --edition 2021 --test packages/desktop/src-tauri/src/child_environment.rs -o "$RUNNER_TEMP/appimage-child-environment-tests"
+          "$RUNNER_TEMP/appimage-child-environment-tests"
 
       - name: Verify paid usage transactions against Redis
         run: |

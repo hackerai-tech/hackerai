@@ -9,22 +9,24 @@ jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockNetworkQuery }),
 }));
 
-jest.mock("../run-terminal-cmd", () => ({ createRunTerminalCmd: jest.fn() }));
+jest.mock("../run-terminal-cmd", () => ({
+  createRunTerminalCmd: jest.fn(() => ({})),
+}));
 jest.mock("../interact-terminal-session", () => ({
-  createInteractTerminalSession: jest.fn(),
+  createInteractTerminalSession: jest.fn(() => ({})),
 }));
 jest.mock("../get-terminal-files", () => ({
-  createGetTerminalFiles: jest.fn(),
+  createGetTerminalFiles: jest.fn(() => ({})),
 }));
-jest.mock("../file", () => ({ createFile: jest.fn() }));
-jest.mock("../web-search", () => ({ createWebSearch: jest.fn() }));
-jest.mock("../open-url", () => ({ createOpenUrlTool: jest.fn() }));
-jest.mock("../todo-write", () => ({ createTodoWrite: jest.fn() }));
+jest.mock("../file", () => ({ createFile: jest.fn(() => ({})) }));
+jest.mock("../web-search", () => ({ createWebSearch: jest.fn(() => ({})) }));
+jest.mock("../open-url", () => ({ createOpenUrlTool: jest.fn(() => ({})) }));
+jest.mock("../todo-write", () => ({ createTodoWrite: jest.fn(() => ({})) }));
 jest.mock("../notes", () => ({
-  createCreateNote: jest.fn(),
-  createListNotes: jest.fn(),
-  createUpdateNote: jest.fn(),
-  createDeleteNote: jest.fn(),
+  createCreateNote: jest.fn(() => ({})),
+  createListNotes: jest.fn(() => ({})),
+  createUpdateNote: jest.fn(() => ({})),
+  createDeleteNote: jest.fn(() => ({})),
 }));
 
 jest.mock("../utils/hybrid-sandbox-manager", () => ({

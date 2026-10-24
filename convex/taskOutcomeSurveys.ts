@@ -1,9 +1,13 @@
 import { v, ConvexError } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { type MutationCtx, mutation, query } from "./lib/serviceFunctions";
+import type { QueryCtx } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
   experimentTaskOutcomeContext,
+  contextTaskOutcomeContext,
   taskOutcomeAnswer,
   taskOutcomeContext,
   taskOutcomeDocument,
@@ -21,6 +25,12 @@ import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "../lib/experiments/abliteration-keys";
+import {
+  AGENT_CONTEXT_FEEDBACK_HISTORY_LIMIT,
+  AGENT_CONTEXT_FEEDBACK_MIN_CHARS,
+  AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION,
+  contextFeedbackSourceChars,
+} from "../lib/feedback/agent-context";
 
 // One transaction owns request deduplication and the cooldown across cohorts.
 async function canReserve(
@@ -50,6 +60,137 @@ async function canReserve(
     return false;
   return true;
 }
+
+export const reserveContext = mutation({
+  args: {
+    serviceKey: v.string(),
+    user_id: v.string(),
+    ...contextTaskOutcomeContext,
+  },
+  returns: v.union(taskOutcomeDocument, v.null()),
+  handler: async (ctx, { serviceKey, ...args }) => {
+    validateServiceKey(serviceKey);
+    if (
+      !["pro", "pro-plus", "ultra", "team"].includes(args.subscription_tier) ||
+      args.message_id !== args.request_id ||
+      !args.trigger_run_id ||
+      (args.selected_model_override === "hackerai-max"
+        ? args.experiment_key !== "agent_model_context_v1"
+        : args.experiment_key !== "agent_pro_context_v1")
+    )
+      return null;
+    const now = Date.now();
+    if (!(await canReserve(ctx, args, now))) return null;
+    const enrolled = await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_user_id_and_experiment_key_and_feedback_phase", (q) =>
+        q
+          .eq("user_id", args.user_id)
+          .eq("experiment_key", args.experiment_key)
+          .eq("feedback_phase", args.feedback_phase),
+      )
+      .first();
+    if (enrolled) return null;
+    // Read the same bounded original rows for both variants, before history
+    // loading/compaction and generation. No success or compaction requirement.
+    const history = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chat_id))
+      .order("desc")
+      .take(AGENT_CONTEXT_FEEDBACK_HISTORY_LIMIT);
+    const chars = contextFeedbackSourceChars(
+      history,
+      args.user_id,
+      args.message_id,
+    );
+    if (chars < AGENT_CONTEXT_FEEDBACK_MIN_CHARS) return null;
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chat_id))
+      .unique();
+    const id = await ctx.db.insert("task_outcome_surveys", {
+      ...args,
+      experiment_request_id: args.trigger_run_id,
+      source_history_chars: chars,
+      source_has_prior_summary: Boolean(chat?.latest_summary_id),
+      selected_at: now,
+      last_interaction_at: now,
+      expires_at: now + TASK_OUTCOME_EXPIRY_MS,
+    });
+    return await ctx.db.get(id);
+  },
+});
+
+async function hasContextResult(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"task_outcome_surveys">,
+) {
+  if (row.survey_kind !== "agent_context") return true;
+  const message = await ctx.db
+    .query("messages")
+    .withIndex("by_message_id", (q) => q.eq("id", row.message_id))
+    .unique();
+  return Boolean(
+    message &&
+    message.user_id === row.user_id &&
+    message.chat_id === row.chat_id &&
+    message.role === "assistant" &&
+    !message.is_hidden &&
+    message.trigger_run_id === row.trigger_run_id &&
+    message.finish_reason &&
+    message.parts.some(
+      (part) =>
+        part?.type === "text" &&
+        typeof part.text === "string" &&
+        part.text.trim(),
+    ),
+  );
+}
+
+// Durable denominator for internal readouts, including missing capture/view/
+// answer events. This endpoint never reads message contents or billing tables.
+export const listContextForReadout = query({
+  args: {
+    serviceKey: v.string(),
+    from_at: v.number(),
+    to_at: v.number(),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: v.object({
+    page: v.array(taskOutcomeDocument),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    splitCursor: v.optional(v.union(v.string(), v.null())),
+    pageStatus: v.optional(
+      v.union(
+        v.literal("SplitRecommended"),
+        v.literal("SplitRequired"),
+        v.null(),
+      ),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (
+      !Number.isFinite(args.from_at) ||
+      !Number.isFinite(args.to_at) ||
+      args.to_at <= args.from_at ||
+      args.paginationOpts.numItems < 1 ||
+      args.paginationOpts.numItems > 100
+    )
+      throw new ConvexError("Invalid readout window or page size");
+    return await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_survey_kind_and_selected_at", (q) =>
+        q
+          .eq("survey_kind", "agent_context")
+          .gte("selected_at", args.from_at)
+          .lt("selected_at", args.to_at),
+      )
+      .order("asc")
+      .paginate(args.paginationOpts);
+  },
+});
 
 export const reserveExperiment = mutation({
   args: {
@@ -204,7 +345,13 @@ export const linkMessage = mutation({
 });
 
 export const getForMessage = query({
-  args: { chat_id: v.string(), message_id: v.string() },
+  args: {
+    chat_id: v.string(),
+    message_id: v.string(),
+    context_feedback_version: v.optional(
+      v.literal(AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION),
+    ),
+  },
   returns: v.union(taskOutcomeDocument, v.null()),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
@@ -223,6 +370,12 @@ export const getForMessage = query({
       row.answered_at
     )
       return null;
+    if (
+      row.survey_kind === "agent_context" &&
+      args.context_feedback_version !== AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION
+    )
+      return null;
+    if (!(await hasContextResult(ctx, row))) return null;
     return row;
   },
 });
@@ -230,6 +383,9 @@ export const getForMessage = query({
 export const record = mutation({
   args: {
     id: v.id("task_outcome_surveys"),
+    context_feedback_version: v.optional(
+      v.literal(AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION),
+    ),
     action: v.union(
       v.literal("shown"),
       v.literal("viewed"),
@@ -246,6 +402,11 @@ export const record = mutation({
     const row = await ctx.db.get(args.id);
     if (!user || !row || row.user_id !== user.subject)
       throw new ConvexError("Not authorized");
+    if (
+      row.survey_kind === "agent_context" &&
+      args.context_feedback_version !== AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION
+    )
+      return null;
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
@@ -261,6 +422,7 @@ export const record = mutation({
     if (args.action === "shown") {
       // Return null on another tab/device's claim, so only one surface asks.
       if (row.shown_at || row.answered_at) return null;
+      if (!(await hasContextResult(ctx, row))) return null;
       await ctx.db.patch(row._id, { shown_at: now, last_interaction_at: now });
     } else if (args.action === "viewed") {
       if (!row.shown_at) return null;
@@ -289,7 +451,7 @@ export const record = mutation({
       )
         return null;
       if (row.reason) return row.reason === args.reason ? row : null;
-      await ctx.db.patch(row._id, { reason: args.reason });
+      await ctx.db.patch(row._id, { reason: args.reason, reason_at: now });
     }
     return await ctx.db.get(row._id);
   },

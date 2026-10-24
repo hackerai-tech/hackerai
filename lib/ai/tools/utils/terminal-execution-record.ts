@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
 import { localEnvironmentIdentity } from "@/lib/sandbox/environment";
-import { asCommonSandbox, isCentrifugoSandbox } from "./sandbox-types";
+import {
+  asCommonSandbox,
+  getSandboxArtifactDirectory,
+  isCentrifugoSandbox,
+} from "./sandbox-types";
 import {
   listOwnerOnlyPosixFiles,
   readOwnerOnlyPosixFile,
@@ -55,8 +59,10 @@ export function createTerminalRecordStore(
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
-  const base = isCentrifugoSandbox(sandbox) ? "/tmp" : "/home/user";
-  const root = `${base}/terminal_execution_records`;
+  const root = getSandboxArtifactDirectory(
+    sandbox,
+    "terminal_execution_records",
+  );
   const directory = `${root}/${scope}`;
   const files = asCommonSandbox(sandbox).files;
   const ownerOnlyPosix = usesOwnerOnlyPosixFileTransport(sandbox);

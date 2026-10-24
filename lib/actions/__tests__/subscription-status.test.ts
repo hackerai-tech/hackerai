@@ -33,6 +33,7 @@ jest.mock("@/lib/posthog/server", () => ({
 describe("getSubscriptionCancellationStatusAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockListSubscriptions.mockReset();
     mockCanceledRenewalAtRisk.mockResolvedValue(false as never);
     mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_123",
@@ -49,6 +50,50 @@ describe("getSubscriptionCancellationStatusAction", () => {
       cancelAtPeriodEnd: false,
     });
     expect(mockListSubscriptions).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a recovered customer with more than ten historical subscriptions", async () => {
+    const history = Array.from({ length: 11 }, (_, i) => ({
+      id: `sub_${i}`,
+      status: "canceled",
+    }));
+    mockListSubscriptions.mockImplementation(
+      async ({ limit }: { limit: number }) =>
+        ({
+          data: history.slice(0, limit),
+          has_more: history.length > limit,
+        }) as never,
+    );
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).resolves.toMatchObject({
+      hasActiveSubscription: false,
+      checkoutRequiresReview: false,
+    });
+  });
+
+  it("includes a current subscription beyond the first history page", async () => {
+    mockListSubscriptions
+      .mockResolvedValueOnce({
+        data: Array.from({ length: 100 }, (_, i) => ({
+          id: `sub_old_${i}`,
+          status: "canceled",
+        })),
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [
+          { id: "sub_current", status: "active", cancel_at_period_end: false },
+        ],
+        has_more: false,
+      } as never);
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).resolves.toMatchObject({
+      hasActiveSubscription: true,
+      subscriptionStatus: "active",
+    });
+    expect(mockListSubscriptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ starting_after: "sub_old_99" }),
+    );
   });
 
   it("returns scheduled cancellation status for active subscriptions", async () => {
@@ -96,7 +141,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
     expect(mockListSubscriptions).toHaveBeenCalledWith({
       customer: "cus_123",
       status: "all",
-      limit: 10,
+      limit: 100,
       expand: [
         "data.items.data.price",
         "data.schedule",

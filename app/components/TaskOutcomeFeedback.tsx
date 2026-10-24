@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { Check, Minus, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
@@ -8,6 +8,7 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
+import { AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION } from "@/lib/feedback/agent-context";
 import {
   PAID_TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
@@ -18,11 +19,16 @@ import {
 
 type Survey = Doc<"task_outcome_surveys">;
 function captureSurvey(event: string, row: Survey) {
+  const commit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
   captureQueuedAuthenticatedEvent({
     event: `task_outcome_survey_${event}`,
     properties: {
       ...taskOutcomeProperties(row),
       survey_ui_version: 4,
+      ...(row.survey_kind === "agent_context" &&
+        /^[a-f0-9]{40}$/i.test(commit ?? "") && {
+          hackerai_frontend_build_commit: commit,
+        }),
     },
     dedupeKey: `${row._id}:${event}`,
   });
@@ -38,15 +44,29 @@ export function TaskOutcomeFeedback({
   const { isAuthenticated } = useConvexAuth();
   const survey = useQuery(
     api.taskOutcomeSurveys.getForMessage,
-    isAuthenticated ? { chat_id: chatId, message_id: messageId } : "skip",
+    isAuthenticated
+      ? {
+          chat_id: chatId,
+          message_id: messageId,
+          context_feedback_version: AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION,
+        }
+      : "skip",
   );
   const record = useMutation(api.taskOutcomeSurveys.record);
+  const recordCompatible = useCallback(
+    (args: Parameters<typeof record>[0]) =>
+      record({
+        ...args,
+        context_feedback_version: AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION,
+      }),
+    [record],
+  );
   if (!isAuthenticated) return null;
   return (
     <TaskOutcomeFeedbackPrompt
       key={messageId}
       survey={survey}
-      record={record}
+      record={recordCompatible}
     />
   );
 }

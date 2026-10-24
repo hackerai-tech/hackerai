@@ -1609,6 +1609,32 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(directThrowIdx);
   });
 
+  test("provider failure envelopes never enrich an error from completed-call state", () => {
+    const envelopeCalls = [
+      ...taskSrc.matchAll(/wrapProviderTerminalError\([\s\S]*?\}\s*\)/g),
+    ];
+    expect(envelopeCalls).toHaveLength(4);
+    for (const [call] of envelopeCalls) {
+      expect(call).toMatch(
+        /openRouterMetadata:\s*(?:state\.|terminalAgentState\?\.)providerErrorMetadata/,
+      );
+    }
+    const recoveryDecision = taskSrc.slice(
+      taskSrc.indexOf('triggerLogger.info("Provider recovery decision"'),
+      taskSrc.indexOf(
+        "const retryMessageId = generateId()",
+        taskSrc.indexOf('triggerLogger.info("Provider recovery decision"'),
+      ),
+    );
+    expect(recoveryDecision).toMatch(
+      /served_model:\s*state\.providerErrorMetadata\s*\?\.openrouter_selected_model,/,
+    );
+    expect(recoveryDecision).not.toContain("state.responseModel");
+    expect(taskSrc).toMatch(
+      /upstreamProvider: terminalError\s*\? state\.providerErrorMetadata\?\.provider_name\s*: state\.openRouterMetadata\.provider_name,/,
+    );
+  });
+
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const terminalErrorIdx = taskSrc.indexOf(

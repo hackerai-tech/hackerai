@@ -2,7 +2,10 @@ import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-con
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { getAgentModelContextVariant } from "@/lib/experiments/agent-model-context";
+import {
+  getAgentModelContextVariant,
+  getAgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -18,6 +21,7 @@ import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
+import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
@@ -124,6 +128,10 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import {
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
   saveMessage,
   updateChat,
@@ -600,6 +608,7 @@ type AgentLongErrorSummary = {
   actualSandbox?: string;
   uploadFailureKind?: string;
   uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
+  uploadFailureAcquisitionStage?: CloudAcquisitionStage;
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -803,6 +812,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_reason",
       ),
+      uploadFailureAcquisitionStage:
+        uploadFailurePhase === "acquisition"
+          ? parseCloudAcquisitionStage(
+              errorMetadata?.upload_failure_acquisition_stage,
+            )
+          : undefined,
       uploadFailureCause: getStringMetadata(
         errorMetadata,
         "upload_failure_cause",
@@ -1049,6 +1064,11 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
   if (summary.uploadFailurePhase)
     metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
+  if (summary.uploadFailureAcquisitionStage)
+    metadata.set(
+      "uploadFailureAcquisitionStage",
+      summary.uploadFailureAcquisitionStage,
+    );
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
@@ -1930,8 +1950,23 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
       );
-      runReporting.setAgentModelContextVariant(agentModelContextVariant);
+      runReporting.setAgentModelContextVariant(
+        agentModelContextVariant,
+        getAgentModelContextFlag(selectedModelOverride),
+      );
       const agentModelContextEnabled = agentModelContextVariant === "test";
+      const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
+        posthog,
+        userId,
+        chatId,
+        messageId: assistantMessageId,
+        triggerRunId: ctx.run.id,
+        mode,
+        subscription,
+        selectedModelOverride,
+        variant: agentModelContextVariant,
+        release: ctx.deployment?.version ?? "unknown",
+      });
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
         getMessagesByChatId({
@@ -2096,17 +2131,19 @@ export const agentLongTask = task({
           })
         : undefined;
 
-      const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
-        assignment: abliteratedExperiment,
-        selectedModelOverride,
-        release: ctx.deployment?.version,
-        posthog,
-        userId,
-        chatId,
-        messageId: assistantMessageId,
-        mode,
-        subscription,
-      });
+      const taskOutcomeSurvey =
+        contextTaskOutcomeSurvey ??
+        (await selectTaskOutcomeSurvey({
+          assignment: abliteratedExperiment,
+          selectedModelOverride,
+          release: ctx.deployment?.version,
+          posthog,
+          userId,
+          chatId,
+          messageId: assistantMessageId,
+          mode,
+          subscription,
+        }));
 
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
@@ -2798,6 +2835,8 @@ export const agentLongTask = task({
               cleanupBrowserSessions: cleanupToolBrowsers,
               setCurrentModelName,
               getToolsForModel,
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -3710,6 +3749,8 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
@@ -3899,12 +3940,14 @@ export const agentLongTask = task({
               const providerError = terminalError
                 ? wrapProviderTerminalError(terminalError, {
                     model: terminalRequestedModelSlug,
-                    openRouterMetadata: state.openRouterMetadata,
+                    openRouterMetadata: state.providerErrorMetadata,
                   })
                 : lastProviderRecoveryError;
 
               return {
-                upstreamProvider: state.openRouterMetadata.provider_name,
+                upstreamProvider: terminalError
+                  ? state.providerErrorMetadata?.provider_name
+                  : state.openRouterMetadata.provider_name,
                 providerErrorProvider: providerError?.provider,
                 providerErrorCategory: providerError?.category,
                 providerErrorStatusCode: providerError?.statusCode,
@@ -3928,7 +3971,7 @@ export const agentLongTask = task({
             }) => {
               const failure = wrapProviderTerminalError(state.providerError, {
                 model: trackedProvider.languageModel(failedModel).modelId,
-                openRouterMetadata: state.openRouterMetadata,
+                openRouterMetadata: state.providerErrorMetadata,
               });
               providerRecoveryAttempts += 1;
               providerRecoveryModels.push(retryModel);
@@ -4148,6 +4191,7 @@ export const agentLongTask = task({
                 await saveMessage({
                   chatId,
                   userId,
+                  triggerRunId: ctx.run.id,
                   message: processed,
                   extraFileIds: newFileIds,
                   usage: state.streamUsage,
@@ -4589,7 +4633,7 @@ export const agentLongTask = task({
                           state.providerError,
                           {
                             model: selectedModel,
-                            openRouterMetadata: state.openRouterMetadata,
+                            openRouterMetadata: state.providerErrorMetadata,
                           },
                         );
                         triggerLogger.info("Provider recovery decision", {
@@ -4613,9 +4657,8 @@ export const agentLongTask = task({
                           status_code: failure.statusCode,
                           configured_model: selectedModel,
                           served_model:
-                            state.openRouterMetadata
-                              ?.openrouter_selected_model ??
-                            state.responseModel,
+                            state.providerErrorMetadata
+                              ?.openrouter_selected_model,
                           provider: failure.provider,
                           provider_request_id: failure.openrouterRequestId,
                           provider_generation_id:
@@ -4805,6 +4848,7 @@ export const agentLongTask = task({
                             await saveMessage({
                               chatId,
                               userId,
+                              triggerRunId: ctx.run.id,
                               message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
@@ -4979,6 +5023,7 @@ export const agentLongTask = task({
                                       await saveMessage({
                                         chatId,
                                         userId,
+                                        triggerRunId: ctx.run.id,
                                         message,
                                         extraFileIds: preservedFileIds,
                                         model:
@@ -5362,6 +5407,10 @@ export const agentLongTask = task({
                           await saveMessage({
                             chatId,
                             userId,
+                            triggerRunId:
+                              processed.role === "assistant"
+                                ? ctx.run.id
+                                : undefined,
                             message: processed,
                             extraFileIds: newFileIds,
                             model: state.responseModel || configuredModelId,
@@ -5566,7 +5615,7 @@ export const agentLongTask = task({
         }
         throw wrapProviderTerminalError(terminalStreamError, {
           model: terminalRequestedModelSlug,
-          openRouterMetadata: terminalAgentState?.openRouterMetadata,
+          openRouterMetadata: terminalAgentState?.providerErrorMetadata,
         });
       }
 

@@ -5,7 +5,7 @@ export const POINTS_PER_DOLLAR = 10_000;
  * Request usage pricing multiplier applied to raw provider and tool cost before
  * deducting points from either included allowance or Extra Usage.
  */
-export const NORMAL_USAGE_MULTIPLIER = 1.2;
+export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
 /**
  * Both balances share the request multiplier. Keep the separate analytics name

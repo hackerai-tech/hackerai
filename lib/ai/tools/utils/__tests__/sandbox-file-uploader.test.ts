@@ -10,6 +10,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
+import { LocalFileRequestError } from "../local-sandbox-errors";
 import {
   MAX_FILE_SIZE_BYTES,
   MAX_GENERATED_FILE_SIZE_BYTES,
@@ -33,6 +34,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
   return {
     ...(e2b ? {} : { sandboxKind: "centrifugo" as const }),
     isWindows: jest.fn(() => windows),
+    detectShell: jest.fn(async () => (windows ? "cmd" : "bash")),
     commands: {
       run: jest.fn(async (command: string) => {
         if (command.includes("stat -Lc%s")) {
@@ -350,6 +352,7 @@ describe("uploadSandboxFileToConvex", () => {
   ])(
     "rejects native preflight %j before upload",
     async (metadata, message, reason) => {
+      const observed = jest.fn();
       const sandbox = {
         ...makeSandbox(42, false, true),
         supportsNativeFileRelay: () => true,
@@ -363,8 +366,15 @@ describe("uploadSandboxFileToConvex", () => {
           sandbox: sandbox as any,
           userId: "u1",
           fullPath: "C:\\repo\\report.zip",
+          onNativeStatFailure: observed,
         }),
       ).rejects.toThrow(message);
+      if (reason) {
+        expect(observed).toHaveBeenCalledTimes(1);
+        expect(observed).toHaveBeenCalledWith(reason);
+      } else {
+        expect(observed).not.toHaveBeenCalled();
+      }
 
       expect(sandbox.commands.run).not.toHaveBeenCalled();
       expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
@@ -434,8 +444,127 @@ describe("uploadSandboxFileToConvex", () => {
           service: "chat-handler",
           sandbox_type: "desktop",
           failure_reason: "stat_failed",
+          native_stat_error_category: "unknown",
         });
       }
+    },
+  );
+
+  test.each([
+    "unavailable",
+    "aborted",
+    "timeout",
+    "native_error",
+    "subscription_error",
+    "relay_unsubscribed",
+    "readiness_timeout",
+    "dispatch_error",
+    "PRIVATE-invalid-category",
+  ] as const)(
+    "records only a bounded native stat category (%s) and preserves the error",
+    async (failure) => {
+      const sandbox = {
+        ...makeSandbox(42),
+        supportsNativeFileRelay: () => true,
+      };
+      const error = Object.freeze(
+        new LocalFileRequestError(
+          failure as any,
+          "PRIVATE-error-with-path-and-url",
+        ),
+      );
+      Object.assign(sandbox.files, {
+        stat: jest.fn().mockRejectedValue(error),
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/PRIVATE-path/report.zip",
+        }),
+      ).rejects.toBe(error);
+      const records = consoleWarnSpy.mock.calls.map(([entry]) =>
+        JSON.parse(entry),
+      );
+      expect(records).toEqual([
+        expect.objectContaining({
+          failure_reason: "stat_failed",
+          native_stat_error_category:
+            failure === "PRIVATE-invalid-category" ? "unknown" : failure,
+        }),
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE");
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["throw", "reject"])(
+    "preserves a frozen native stat error when its observer fails (%s)",
+    async (mode) => {
+      const sandbox = {
+        ...makeSandbox(42),
+        supportsNativeFileRelay: () => true,
+      };
+      const original = Object.freeze(new Error("PRIVATE stat error"));
+      Object.assign(sandbox.files, {
+        stat: jest.fn().mockRejectedValue(original),
+      });
+      const observed = jest.fn(() => {
+        if (mode === "throw") throw new Error("observer unavailable");
+        return Promise.reject(new Error("observer unavailable"));
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/private/report.zip",
+          onNativeStatFailure: observed,
+        }),
+      ).rejects.toBe(original);
+      await Promise.resolve();
+      expect(observed).toHaveBeenCalledTimes(1);
+      expect(observed).toHaveBeenCalledWith("stat_failed");
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([true, false])(
+    "preserves a Windows native upload failure without a POSIX fallback (fallback would succeed: %s)",
+    async (fallbackWouldSucceed) => {
+      const nativeError = new Error("Native upload connection closed");
+      const sandbox = {
+        ...makeSandbox(1234, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      sandbox.files = {
+        ...sandbox.files,
+        stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+      } as typeof sandbox.files;
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(nativeError);
+      sandbox.commands.run.mockResolvedValue({
+        stdout: "",
+        stderr: fallbackWouldSucceed ? "" : "curl is not recognized",
+        exitCode: fallbackWouldSucceed ? 0 : 1,
+      });
+      const onPhase = jest.fn();
+
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\project\\report.txt",
+          onPhase,
+        }),
+      ).rejects.toBe(nativeError);
+      expect(onPhase).toHaveBeenLastCalledWith("transfer");
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
     },
   );
 
@@ -534,7 +663,7 @@ describe("uploadSandboxFileToConvex", () => {
             exitCode: 1,
           };
         }
-        if (command.startsWith("setlocal EnableDelayedExpansion && for %I")) {
+        if (command.startsWith("cmd /d /v:on /s /c")) {
           return { stdout: "4321", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "unexpected command", exitCode: 1 };
@@ -548,8 +677,8 @@ describe("uploadSandboxFileToConvex", () => {
     });
 
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
-      2,
-      'setlocal EnableDelayedExpansion && for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI',
+      1,
+      'cmd /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
       expect.objectContaining({
         displayName: "",
         envVars: expect.objectContaining({
@@ -563,6 +692,55 @@ describe("uploadSandboxFileToConvex", () => {
       "application/octet-stream",
       "u1",
       4321,
+    );
+  });
+
+  test("detects cmd before choosing metadata for a relay without platform info", async () => {
+    const sandbox = makeSandbox(0, false, false);
+    sandbox.detectShell.mockImplementation(async () => {
+      // The real adapter's cached cmd result also makes isWindows() true.
+      sandbox.isWindows.mockReturnValue(true);
+      return "cmd";
+    });
+    sandbox.commands.run.mockImplementation(async (command) =>
+      command.startsWith("cmd /d /v:on /s /c")
+        ? { stdout: "4321", stderr: "", exitCode: 0 }
+        : { stdout: "", stderr: "POSIX syntax is unavailable", exitCode: 1 },
+    );
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "C:\\owned\\report.txt",
+    });
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.txt",
+      "application/octet-stream",
+      "u1",
+      4321,
+    );
+  });
+
+  test("keeps POSIX metadata commands for Git Bash on Windows", async () => {
+    const sandbox = makeSandbox(321, false, true);
+    sandbox.detectShell.mockResolvedValue("bash");
+    await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: "/c/owned/report.txt",
+    });
+    expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+      "report.txt",
+      "application/octet-stream",
+      "u1",
+      321,
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("stat -Lc%s"),
+      expect.any(Object),
+    );
+    expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("cmd /d"),
+      expect.any(Object),
     );
   });
 
@@ -590,7 +768,7 @@ describe("uploadSandboxFileToConvex", () => {
       }),
     ).rejects.toThrow(/unsupported character/);
 
-    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
     expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 

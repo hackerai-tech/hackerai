@@ -1,3 +1,5 @@
+import { verifySubagentResultAfterHandoff } from "@/lib/ai/subagents/result-handoff";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
@@ -757,6 +759,7 @@ export const subagentTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            let modelHandoffNoteIds: string[] = [];
             const acceptResult = async (input: unknown) => {
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
@@ -777,19 +780,31 @@ export const subagentTask = task({
                 };
               }
               runtimeStage = "evidence_verification";
-              const evidence = await verifyResultEvidence({
-                result: parsed,
-                sandbox,
-                expectedSandboxIdentity: row.sandbox_identity,
+              const evidence = await verifySubagentResultAfterHandoff({
+                verify: () =>
+                  verifyResultEvidence({
+                    result: parsed,
+                    sandbox,
+                    expectedSandboxIdentity: row.sandbox_identity,
+                    signal: activeAbort.signal,
+                    authorize: assertRuntimeAuthorized,
+                  }),
+                getNotes: getBrowserHandoffNotes,
+                waitForControl: waitForBrowserHandoff,
                 signal: activeAbort.signal,
-                authorize: assertRuntimeAuthorized,
+                modelNoteIds: modelHandoffNoteIds,
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
               const finalizing = await observeFinalization(
                 "result_submission",
                 Boolean(resultValue),
-                () => markSubagentFinalizing(row.subagent_id, ctx.run.id),
+                () =>
+                  markSubagentFinalizing(
+                    row.subagent_id,
+                    ctx.run.id,
+                    modelHandoffNoteIds,
+                  ),
               );
               if (finalizing === "pending_messages") {
                 deferredForParentUpdate = true;
@@ -797,6 +812,13 @@ export const subagentTask = task({
                   accepted: false,
                   error:
                     "A parent update arrived before completion. Read it, account for it, and then submit the final result again.",
+                };
+              }
+              if (finalizing === "pending_browser_handoff") {
+                return {
+                  accepted: false,
+                  error:
+                    "Browser takeover began before completion. Wait for the user to continue, then read the handoff context and take a fresh snapshot before submitting the result again.",
                 };
               }
               if (finalizing !== "updated") {
@@ -1057,6 +1079,8 @@ export const subagentTask = task({
               cloudNetworkPrompt,
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               ensureSandbox,
               setCurrentModelName,
             } = createTools(
@@ -1091,6 +1115,7 @@ export const subagentTask = task({
                   ...allowedToolNames,
                   profile.finalResultTool.name,
                 ],
+                browserAgentId: row.subagent_id,
                 signal: activeAbort.signal,
                 additionalTools: () => ({
                   search_skills: createSearchSkillsTool(),
@@ -1219,6 +1244,7 @@ export const subagentTask = task({
               { role: "user", content: prompt },
             ];
             const parentUpdates = new Map<string, ModelMessage>();
+            const projectHandoffNotes = createBrowserHandoffNoteProjector();
             const beginStructuredResultRecovery = async (
               reason: "missing_result" | "reserved_step_budget",
             ): Promise<boolean> => {
@@ -1352,6 +1378,7 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
                   if (freeDailySettlement) {
@@ -1470,8 +1497,13 @@ export const subagentTask = task({
                     );
                   }
                   const serializedMessages = JSON.stringify(messages);
+                  const handoffNotes = await getBrowserHandoffNotes();
+                  modelHandoffNoteIds = handoffNotes.map(({ id }) => id);
                   const messagesWithUpdates = [
-                    ...(messages as ModelMessage[]),
+                    ...projectHandoffNotes(
+                      messages as ModelMessage[],
+                      handoffNotes,
+                    ),
                     ...(deadlineMessage ? [deadlineMessage] : []),
                     ...Array.from(parentUpdates.entries()).flatMap(
                       ([messageId, updateMessage]) =>
@@ -1497,6 +1529,11 @@ export const subagentTask = task({
                 },
                 onError: ({ error }) => {
                   attemptError = error;
+                },
+                onFinish: async () => {
+                  // Accepted results already waited before ending ownership.
+                  if (!resultValue && !activeAbort.signal.aborted)
+                    await waitForBrowserHandoff(activeAbort.signal);
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
                   stepCount += 1;

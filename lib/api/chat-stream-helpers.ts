@@ -33,7 +33,6 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
-  DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
   GLM_5_3_SLUG,
   GROK_4_5_SLUG,
@@ -449,6 +448,7 @@ export async function runSummarizationStep(options: {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   providerInputTokens?: number;
+  preparedInputTokens?: number;
   chatSystemPrompt: string;
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
@@ -479,6 +479,7 @@ export async function runSummarizationStep(options: {
     ensureSandbox: options.ensureSandbox,
     systemPromptTokens: options.systemPromptTokens,
     providerInputTokens: options.providerInputTokens ?? 0,
+    preparedInputTokens: options.preparedInputTokens,
     chatSystemPrompt: options.chatSystemPrompt,
     tools: options.tools,
     providerOptions: options.providerOptions,
@@ -714,6 +715,8 @@ export function isAutoModelSelectionForRetry({
   return (
     !selectedModelOverride ||
     selectedModelOverride === "auto" ||
+    (selectedModelOverride === "hackerai-max" &&
+      selectedModel === DEEPSEEK_1017_MODEL_KEY) ||
     AUTO_MODEL_KEYS.has(selectedModel) ||
     EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
   );
@@ -990,7 +993,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
-  [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
+  // Keep historical responses separate from the active 1017 snapshot above.
+  "deepseek/deepseek-v4.1-flash": "model-deepseek-v4-flash-vision",
   "deepseek/deepseek-v4.1-flash-20260910": "model-deepseek-v4-flash-vision",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
@@ -1096,6 +1100,15 @@ export function buildProviderOptions(
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
+  // Only explicit tier requests on the snapshot use this policy. The legacy
+  // vision aliases also serve allowance rescue and retain their own defaults.
+  const isExplicitPaidFlashTier =
+    mode === "agent" &&
+    modelName === DEEPSEEK_1017_MODEL_KEY &&
+    (modelId === DEEPSEEK_1017_SLUG ||
+      modelId === DEEPSEEK_1017_CANONICAL_SLUG) &&
+    (options.selectedModelOverride === "hackerai-standard" ||
+      options.selectedModelOverride === "hackerai-pro");
   const baseProviderRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -1113,8 +1126,13 @@ export function buildProviderOptions(
       }
     : baseProviderRouting;
   // GLM titles need mandatory reasoning, kept low for the small output budget.
-  const reasoning =
-    modelName === DEEPSEEK_1017_MODEL_KEY
+  const reasoning = isExplicitPaidFlashTier
+    ? {
+        enabled: true,
+        effort:
+          options.selectedModelOverride === "hackerai-pro" ? "max" : "high",
+      }
+    : modelName === DEEPSEEK_1017_MODEL_KEY
       ? {
           enabled: true,
           effort:
@@ -1172,7 +1190,12 @@ export function buildProviderOptions(
       ...(userId && { user: userId }),
       ...(isDeepSeekV4 &&
         options.cacheSessionId && { session_id: options.cacheSessionId }),
-      ...(providerRouting && { provider: providerRouting }),
+      ...((providerRouting || isExplicitPaidFlashTier) && {
+        provider: {
+          ...providerRouting,
+          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+        },
+      }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;

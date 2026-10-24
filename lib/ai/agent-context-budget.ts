@@ -12,9 +12,10 @@ export const MAX_AGENT_CONTEXT_TOKENS = Math.floor(
 // Verified against https://openrouter.ai/api/v1/models on 2026-10-18.
 // Use the smaller advertised top_provider.context_length where it differs.
 // Exact IDs deliberately fail closed for new models and custom endpoints.
-// Base Abliteration stays on the legacy budget: its 262,144-token capacity
-// does not inherit Large v2's 1,000,000-token limit (docs.abliteration.ai/models).
+// Abliteration capacities verified at docs.abliteration.ai/models (2026-10-23).
+// Old raw IDs retain their limits; active registry aliases execute Large Flash.
 const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
+  "abliterated-model-large-flash": 1_048_576,
   "abliterated-model-large-v2": 1_000_000,
   "deepseek/deepseek-v4.1-flash": 1_048_576,
   "deepseek/deepseek-v4.1-flash-1017": 1_048_576,

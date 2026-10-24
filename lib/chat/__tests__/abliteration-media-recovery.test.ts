@@ -104,7 +104,7 @@ const setup = () => {
   const model = {
     specificationVersion: "v3",
     provider: "test",
-    modelId: "abliterated-model",
+    modelId: "abliterated-model-large-flash",
     supportedUrls: {},
     doStream,
     doGenerate: jest.fn(),
@@ -128,7 +128,7 @@ it.each([
   };
   await wrapped.doStream(params);
 
-  expect(wrapped.modelId).toBe("abliterated-model");
+  expect(wrapped.modelId).toBe("abliterated-model-large-flash");
   expect(doStream).toHaveBeenCalledTimes(2);
   expect(doStream.mock.calls[0][0].prompt).toBe(original);
   const recovered = doStream.mock.calls[1][0];
@@ -346,13 +346,13 @@ it("completes through the real OpenAI-compatible adapter after HTTP 413", async 
           { status: 413, headers: { "content-type": "application/json" } },
         );
       return new Response(
-        'data: {"id":"test","model":"abliterated-model","choices":[{"index":0,"delta":{"content":"Recovered answer"},"finish_reason":null}]}\n\ndata: {"id":"test","model":"abliterated-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        'data: {"id":"test","model":"abliterated-model-large-flash","choices":[{"index":0,"delta":{"content":"Recovered answer"},"finish_reason":null}]}\n\ndata: {"id":"test","model":"abliterated-model-large-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
         { headers: { "content-type": "text/event-stream" } },
       );
     },
   });
   const result = streamText({
-    model: wrap(provider("abliterated-model")),
+    model: wrap(provider("abliterated-model-large-flash")),
     maxRetries: 0,
     messages: [
       {
@@ -371,8 +371,8 @@ it("completes through the real OpenAI-compatible adapter after HTTP 413", async 
   expect(await result.text).toBe("Recovered answer");
   expect(bodies).toHaveLength(2);
   expect(bodies.map((b) => b.model)).toEqual([
-    "abliterated-model",
-    "abliterated-model",
+    "abliterated-model-large-flash",
+    "abliterated-model-large-flash",
   ]);
   expect(bodies[0].messages[0].content).toEqual(
     expect.arrayContaining([expect.objectContaining({ type: "image_url" })]),

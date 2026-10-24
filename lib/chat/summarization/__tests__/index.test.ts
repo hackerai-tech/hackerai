@@ -171,7 +171,7 @@ describe("default compaction policy pipeline", () => {
       expect(mockGenerateText.mock.calls[0][0]).toMatchObject({
         model: { modelId: "model-abliterated" },
         maxRetries: 0,
-        timeout: 60000,
+        timeout: 120000,
         maxOutputTokens: 8192,
         providerOptions: { abliteration: { reasoningEffort: "low" } },
       });
@@ -183,7 +183,7 @@ describe("default compaction policy pipeline", () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
       policy: "max_large_v2_context_v1",
     });
     mockGenerateText
@@ -203,7 +203,10 @@ describe("default compaction policy pipeline", () => {
     expect((await compact()).needsSummarization).toBe(true);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    ).toEqual([
+      "model-abliterated-large-v2",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ]);
     expect(mockGenerateText.mock.calls[0][0].providerOptions).toEqual({
       abliteration: { reasoningEffort: "low" },
     });
@@ -213,18 +216,146 @@ describe("default compaction policy pipeline", () => {
       expect(tokens).toBeLessThan(490_000);
     }
   });
-  it("does not shrink Max source through an unverified fallback when both large summarizers fail", async () => {
+  it("keeps expanded input through the bounded large-context recovery chain", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
       fallbackModel: "model-glm-5.3-flash",
-      expandedMaxContext: true,
+      expandedAgentContext: true,
       policy: "max_large_v2_context_v1",
     });
-    mockGenerateText.mockRejectedValue(new Error("Provider unavailable"));
+    mockGenerateText.mockRejectedValue(
+      Object.assign(new Error("Provider unavailable"), { statusCode: 503 }),
+    );
     expect((await compact()).needsSummarization).toBe(false);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-abliterated-large-v2", "model-glm-5.3-flash"]);
+    ).toEqual([
+      "model-abliterated-large-v2",
+      "model-deepseek-v4.1-flash-1017-pro",
+      "model-glm-5.3-flash",
+    ]);
+    expect(mockGenerateText.mock.calls[2][0].messages).toEqual(
+      mockGenerateText.mock.calls[1][0].messages,
+    );
+  });
+  it.each([
+    ["timeout", new DOMException("deadline", "TimeoutError")],
+    [
+      "HTTP 400",
+      Object.assign(new Error("provider rejected"), { statusCode: 400 }),
+    ],
+  ])(
+    "recovers a Large v2 rejection and DeepSeek %s through an intact GLM checkpoint",
+    async (_reason, deepSeekError) => {
+      resolve.mockResolvedValue({
+        model: "model-abliterated-large-v2",
+        fallbackModel: "model-glm-5.3-flash",
+        expandedAgentContext: true,
+        policy: "max_large_v2_context_v1",
+      });
+      mockGenerateText
+        .mockRejectedValueOnce(
+          Object.assign(new Error("provider rejected"), { statusCode: 400 }),
+        )
+        .mockRejectedValueOnce(deepSeekError)
+        .mockResolvedValueOnce({
+          text: JSON.stringify(
+            Object.fromEntries(
+              AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.map((heading) => [
+                heading.slice(3),
+                "Completed A. Resume existing session synthetic_42; do not repeat A.",
+              ]),
+            ),
+          ),
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 20 },
+        });
+      const result = await compact();
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summaryText).toContain("synthetic_42");
+      const recovery = mockGenerateText.mock.calls[2][0];
+      expect(recovery.model.modelId).toBe("model-glm-5.3-flash");
+      expect(recovery.messages).toEqual(
+        mockGenerateText.mock.calls[1][0].messages,
+      );
+      expect(
+        mockGenerateText.mock.calls[1][0].providerOptions.openrouter.provider,
+      ).not.toHaveProperty("order");
+      expect(recovery.providerOptions.openrouter).not.toHaveProperty("models");
+      expect(recovery).toMatchObject({
+        maxRetries: 0,
+        timeout: 75000,
+        maxOutputTokens: 16384,
+      });
+      expect(finish).toHaveBeenCalledWith("completed", "model-glm-5.3-flash");
+    },
+  );
+  it("does not start GLM after cancellation during DeepSeek fallback", async () => {
+    resolve.mockResolvedValue({
+      model: "model-abliterated-large-v2",
+      fallbackModel: "model-glm-5.3-flash",
+      expandedAgentContext: true,
+      policy: "max_large_v2_context_v1",
+    });
+    const controller = new AbortController();
+    mockGenerateText
+      .mockRejectedValueOnce(new Error("primary rejected"))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        throw new DOMException("canceled", "AbortError");
+      });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledWith("aborted", undefined);
+  });
+  it("repairs oversized Abliteration summary batches without dropping or executing tool history", async () => {
+    const calls = Array.from({ length: 369 }, (_, i) => ({
+      type: "tool-call" as const,
+      toolCallId: `c${i}`,
+      toolName: "fixture",
+      input: { i },
+    }));
+    const results = calls.map((c) => ({
+      type: "tool-result" as const,
+      toolCallId: c.toolCallId,
+      toolName: c.toolName,
+      output: { type: "text" as const, value: `completed ${c.toolCallId}` },
+    }));
+    const messages: ModelMessage[] = [
+      { role: "user", content: "Continue pending work" },
+      { role: "assistant", content: calls },
+      { role: "tool", content: results },
+    ];
+    const original = JSON.parse(JSON.stringify(messages));
+    mockGenerateText.mockResolvedValueOnce({
+      text: summary,
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 20 },
+    });
+    await generateSummaryText(
+      [],
+      { modelId: "abliterated-model-large-v2" } as unknown as LanguageModel,
+      "agent",
+      "",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      messages,
+      484000,
+    );
+    const sent = mockGenerateText.mock.calls[0][0].messages as ModelMessage[];
+    const assistantBatches = sent.filter((m) => m.role === "assistant");
+    expect(
+      assistantBatches.map((m) =>
+        Array.isArray(m.content) ? m.content.length : 0,
+      ),
+    ).toEqual([128, 128, 113]);
+    expect(
+      sent.filter((m) => m.role === "tool").flatMap((m) => m.content),
+    ).toEqual(results);
+    expect(assistantBatches.flatMap((m) => m.content)).toEqual(calls);
+    expect(messages).toEqual(original);
   });
   it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
     mockGenerateText
@@ -671,7 +802,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     async (fits) => {
       const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
       const warmModel = {
-        modelId: "deepseek/deepseek-v4.1-flash",
+        modelId: "deepseek/deepseek-v4.1-flash-1017",
       } as LanguageModel;
       const onUsed = jest.fn();
       const messages: ModelMessage[] = [
@@ -726,7 +857,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       const controller = new AbortController();
       const onDiscardedUsage = jest.fn();
       const warmModel = {
-        modelId: "deepseek/deepseek-v4.1-flash",
+        modelId: "deepseek/deepseek-v4.1-flash-1017",
       } as LanguageModel;
       mockGenerateText
         .mockImplementationOnce(async () => {
@@ -779,7 +910,7 @@ describe("checkAndSummarizeIfNeeded", () => {
             expect.objectContaining({
               inputTokens: 100,
               outputTokens: 10,
-              model: "deepseek/deepseek-v4.1-flash",
+              model: "deepseek/deepseek-v4.1-flash-1017",
             }),
           );
         } else expect(onDiscardedUsage).not.toHaveBeenCalled();
@@ -1174,6 +1305,61 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizationAttempted).toBe(false);
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(fourMessages);
+  });
+
+  it.each(["retained-tail", "summarizable-head"])(
+    "compacts oversized prepared history despite smaller UI usage with %s",
+    async (projection) => {
+      const messages =
+        projection === "retained-tail"
+          ? fourMessages
+          : Array.from({ length: 4 }, (_, index) =>
+              createMessageWithTokens(
+                `prepared-${index}`,
+                index % 2 ? "assistant" : "user",
+                10_000,
+              ),
+            );
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join("\n(none)\n"),
+      });
+
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: messages,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: "prepared-pressure",
+        providerInputTokens: 1_000,
+        preparedInputTokens: 110_000,
+        maxTokensOverride: 100_000,
+      });
+
+      expect(result.summarizationAttempted).toBe(true);
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summarizedMessages).not.toBe(messages);
+      expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("preserves history when prepared-input pressure cannot be compacted", async () => {
+    mockGenerateText.mockRejectedValue(new Error("Summary unavailable"));
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "prepared-pressure-failure",
+      preparedInputTokens: 110_000,
+      maxTokensOverride: 100_000,
+    });
+    expect(result.summarizationAttempted).toBe(true);
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summarizedMessages).toBe(fourMessages);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
   it("should summarize below-token prompts when provider pressure is high", async () => {

@@ -151,6 +151,33 @@ const makeCtx = ({
 };
 
 describe("saveChat", () => {
+  it.each(["desktop", "desktop-environment:test", "e2b"])(
+    "stores %s before a worker can start",
+    async (sandboxType) => {
+      const { saveChat } = await import("../chats");
+      const { ctx, insert } = makeCtx({});
+      await saveChat.handler(ctx, { ...saveChatArgs, sandboxType });
+      expect(insert).toHaveBeenCalledWith(
+        "chats",
+        expect.objectContaining({ sandbox_type: sandboxType }),
+      );
+    },
+  );
+
+  it("does not overwrite the existing task environment on an idempotent creation retry", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, insert, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        user_id: "user-1",
+        sandbox_type: "desktop",
+      },
+    });
+    await saveChat.handler(ctx, { ...saveChatArgs, sandboxType: "e2b" });
+    expect(insert).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("rejects chat creation after account deletion starts", async () => {
     const { saveChat } = await import("../chats");
     const { ctx, insert } = makeCtx({ deletionFenced: true });

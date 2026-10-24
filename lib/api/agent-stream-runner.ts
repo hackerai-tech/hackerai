@@ -2,13 +2,14 @@ import {
   resolvePrivateSkillTools,
   PRIVATE_SKILL_DISCOVERY,
 } from "@/lib/user-skills/runtime";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
   restoreProviderRecoveryContext,
   type ProviderRecoveryContext,
 } from "@/lib/chat/provider-recovery-context";
 import {
-  AGENT_MODEL_CONTEXT_FLAG,
+  getAgentModelContextFlag,
   type AgentModelContextVariant,
 } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
@@ -326,6 +327,10 @@ export const resolveAgentModelForImageToolResults = (
 ): string => {
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
+  }
+  // Promote only the Max text route; preserve explicit recovery models.
+  if (selectedModelOverride === "hackerai-max") {
+    return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
   }
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.
@@ -762,6 +767,8 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
+  getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
@@ -1051,11 +1058,17 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
-  let activeContextBudget = ctx.ctxMaxTokens;
-  const maxContextEnabled =
+  // Free Ask hides its usage meter with a zero display budget. Compaction still
+  // needs the existing subscription budget to retain source history.
+  let activeContextBudget =
+    ctx.ctxMaxTokens > 0
+      ? ctx.ctxMaxTokens
+      : getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode });
+  const contextFlag = getAgentModelContextFlag(ctx.selectedModelOverride);
+  const expandedContextEnabled =
     ctx.mode === "agent" &&
     ctx.agentModelContextEnabled &&
-    ctx.selectedModelOverride === "hackerai-max";
+    contextFlag !== undefined;
   let activeModelInputTokens = 0;
   let lastPreparedInputEstimate = 0;
   let lastCompletedResponseMessages: ModelMessage[] = [];
@@ -1309,9 +1322,9 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
-    // Keep the three-step treatment schedule, but do not shrink long Max
-    // history just to fit the base Abliteration model's smaller window.
-    return maxContextEnabled &&
+    // Preserve the expanded-context alias and its existing recovery policy.
+    // Both Abliteration aliases now execute the multimodal Large Flash model.
+    return expandedContextEnabled &&
       effectiveModel === ABLITERATION_MODEL_KEY &&
       activeModelInputTokens >
         getSummarizationThresholdTokens(
@@ -1339,7 +1352,7 @@ export async function createAgentStream(
     lastRequestedSlug = languageModel.modelId;
     if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
       activeContextBudget = getAgentContextBudget({
-        enabled: maxContextEnabled,
+        enabled: expandedContextEnabled,
         mode: ctx.mode,
         subscription: ctx.subscription,
         modelId: languageModel.modelId,
@@ -1420,9 +1433,7 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages, {
-          force: effectiveModelName === ABLITERATION_LARGE_V2_MODEL_KEY,
-        })
+      ? await preprocessAbliterationImages(toolCallRepair.messages)
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
@@ -1480,6 +1491,17 @@ export async function createAgentStream(
       ctx.agentModelContextEnabled &&
       lastPreparedInputEstimate > activeContextBudget
     ) {
+      console.warn(
+        JSON.stringify({
+          event: "agent_context_budget_exceeded",
+          chat_id: ctx.chatId,
+          model: effectiveModelName,
+          estimated_input_tokens: lastPreparedInputEstimate,
+          previous_provider_input_tokens: state.lastStepInputTokens,
+          max_tokens: activeContextBudget,
+          compaction_attempt_count: compactionAttemptCount,
+        }),
+      );
       throw new AgentContextBudgetError(
         "Conversation could not be compacted to fit the selected model. Please retry.",
       );
@@ -1494,6 +1516,7 @@ export async function createAgentStream(
         stepIndex: number;
       }
     | undefined;
+  let rejectedRequestRecoveryMessages: ModelMessage[] | undefined;
   const compactRejectedRequest = async (): Promise<string | undefined> => {
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
@@ -1553,18 +1576,25 @@ export async function createAgentStream(
       .map((part) => part.text)
       .join("\n");
     if (!summaryText.trim()) return undefined;
-    const recoveryPrompt =
-      summaryText + "\n\n" + POST_SUMMARIZATION_CONTINUATION_PROMPT;
-    // The immediate retry bypasses prepareProviderMessages. Apply the same
-    // trusted annotation policy to both the retry and its rolling checkpoint.
-    const [annotatedMessage] = preparePlatformAuthorizationForModel(
-      [{ role: "user", content: recoveryPrompt }],
+    // This retry bypasses prepareStep and prepareProviderMessages. Re-read
+    // private handoff instructions after lossy summarization, then apply the
+    // same trusted annotation policy at the provider boundary.
+    const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+    rejectedRequestRecoveryMessages = projectHandoffNotes(
+      [
+        { role: "user", content: summaryText },
+        { role: "user", content: POST_SUMMARIZATION_CONTINUATION_PROMPT },
+      ],
+      handoffNotes,
+      1,
+    );
+    return preparePlatformAuthorizationForModel(
+      rejectedRequestRecoveryMessages,
       hasPlatformAnnotationContext(),
       activeStepModelName,
-    );
-    return typeof annotatedMessage?.content === "string"
-      ? annotatedMessage.content
-      : recoveryPrompt;
+    )
+      .map((message) => message.content)
+      .join("\n\n");
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
@@ -1573,7 +1603,11 @@ export async function createAgentStream(
     historyEnabled = false;
     historyReplay.reset();
     rollingContextCheckpoint = {
-      baseMessages: [{ role: "user", content: summary }],
+      // Keep notes as separate messages so subsequent projection recognizes
+      // them and does not inject the same private update twice.
+      baseMessages: rejectedRequestRecoveryMessages ?? [
+        { role: "user", content: summary },
+      ],
       rawMessageCursor: rejectedRequestSource.rawMessages.length,
     };
     saveProviderRecoveryContext(
@@ -1689,7 +1723,7 @@ export async function createAgentStream(
       : undefined;
   if (recoveredContext) initialSerializedMessages = recoveredContext;
   else state.providerRecoveryContext = undefined;
-  if (maxContextEnabled) {
+  if (expandedContextEnabled) {
     activeModelInputTokens =
       estimateSummaryInputTokens(initialSerializedMessages) +
       ctx.systemPromptTokens;
@@ -1843,8 +1877,9 @@ export async function createAgentStream(
       mode: ctx.mode,
       subscription: ctx.subscription,
       baselineModel: modelName,
+      selectedModel: ctx.selectedModelOverride,
       platformAuthorized: ctx.platformAuthorized,
-      expandedMaxContext: maxContextEnabled,
+      expandedAgentContext: expandedContextEnabled,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,
@@ -1914,6 +1949,7 @@ export async function createAgentStream(
       refund: () => ctx.usageRefundTracker.refund(),
     });
 
+  const projectHandoffNotes = createBrowserHandoffNoteProjector();
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
     // copy of every provider request; response messages still drive persistence.
@@ -1950,6 +1986,7 @@ export async function createAgentStream(
       if (
         !abortSignal.aborted &&
         !state.agentContextBudgetExposed &&
+        contextFlag !== undefined &&
         ctx.mode === "agent" &&
         (ctx.agentModelContextVariant !== undefined ||
           (ctx.agentModelContextEnabled &&
@@ -1961,11 +1998,10 @@ export async function createAgentStream(
           userId: ctx.userId,
           chat_id: ctx.chatId,
           run_id: ctx.triggerRunId,
-          flag_key: AGENT_MODEL_CONTEXT_FLAG,
+          flag_key: contextFlag,
           ...(ctx.agentModelContextVariant && {
             experiment_variant: ctx.agentModelContextVariant,
-            [`$feature/${AGENT_MODEL_CONTEXT_FLAG}`]:
-              ctx.agentModelContextVariant,
+            [`$feature/${contextFlag}`]: ctx.agentModelContextVariant,
           }),
           model: model.modelId,
           context_max_tokens: activeContextBudget,
@@ -1983,9 +2019,22 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      await ctx.waitForBrowserHandoff?.(abortSignal);
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      // Saved handoff notes can change the user's instructions. If the read
+      // fails, retry/fail this step rather than act with silently missing context.
+      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      const withHandoffNotes = (
+        messages: ModelMessage[],
+        compactedPrefixLength?: number,
+      ): ModelMessage[] =>
+        projectHandoffNotes(messages, handoffNotes, compactedPrefixLength);
+      if (handoffNotes.length && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
       const nextNetworkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
       if (nextNetworkSection !== networkSection && historyEnabled) {
         historyEnabled = false;
@@ -2014,11 +2063,13 @@ export async function createAgentStream(
       let rollingModelMessages = historyEnabled
         ? historyReplay.project(rawModelMessages)
         : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      // Anchor private notes before image elision changes prior tool messages.
+      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       if (!historyEnabled)
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
-      if (maxContextEnabled) {
+      if (expandedContextEnabled) {
         activeModelInputTokens =
           estimateSummaryInputTokens(rollingModelMessages) +
           ctx.systemPromptTokens +
@@ -2139,6 +2190,10 @@ export async function createAgentStream(
                 ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
+              preparedInputTokens:
+                ctx.mode === "agent" && ctx.agentModelContextEnabled
+                  ? lastPreparedInputEstimate
+                  : undefined,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(
@@ -2241,6 +2296,12 @@ export async function createAgentStream(
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
               }
+              // Keep notes out of the durable checkpoint; fetch the current
+              // handoff context again on each step, including after compaction.
+              summarizedModelMessages = withHandoffNotes(
+                summarizedModelMessages,
+                1,
+              );
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
@@ -2408,7 +2469,10 @@ export async function createAgentStream(
                   lastHistoryResponseCursor =
                     rawModelMessages.length - initialModelMessages.length;
                 }
-                rollingModelMessages = nextBaseMessages;
+                rollingModelMessages = withHandoffNotes(
+                  nextBaseMessages,
+                  compactedModelMessages.length,
+                );
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
                   limitModelImageToolResults(
@@ -2432,7 +2496,10 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  nextBaseMessages,
+                  withHandoffNotes(
+                    nextBaseMessages,
+                    compactedModelMessages.length,
+                  ),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {
@@ -2981,7 +3048,10 @@ export async function createAgentStream(
           isProviderContentFilterFinishReason(finishResult.finishReason))
           ? finishResult.finishReason
           : undefined;
+      // A final response can arrive while the user is taking control. Hold normal
+      // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
+      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (

@@ -79,14 +79,144 @@ describe("get_terminal_files", () => {
     jest.clearAllMocks();
   });
 
+  it("retains the acquired Desktop type when manager state changes before a failed delivery", async () => {
+    const context = makeContext();
+    const desktop = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({
+        isDesktop: true,
+        name: "PRIVATE connection",
+      }),
+    };
+    jest
+      .mocked(context.sandboxManager.getSandbox)
+      .mockResolvedValue({ sandbox: desktop } as never);
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
+    mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+      args.onPhase?.("file_metadata");
+      args.onNativeStatFailure?.("stat_failed");
+      throw new Error("PRIVATE file failure");
+    });
+
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["/PRIVATE/file"],
+    });
+    expect(result).toMatchObject({
+      files: [],
+      failedFiles: [{ path: "/PRIVATE/file" }],
+    });
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledWith(
+      expect.objectContaining({ sandbox: desktop }),
+    );
+    const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
+    expect(fields).toMatchObject({
+      sandbox_type: "cloud",
+      observed_sandbox_type_version: 1,
+      observed_sandbox_types: ["desktop"],
+      failed_file_count: 1,
+      failure_phase_counts: { file_metadata: 1 },
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  });
+
+  it("keeps a stored file successful when adapter observation throws", async () => {
+    const context = makeContext();
+    jest.mocked(context.sandboxManager.getSandbox).mockResolvedValue({
+      sandbox: {
+        sandboxKind: "centrifugo",
+        getConnectionInfo: () => {
+          throw new Error("PRIVATE identity failure");
+        },
+      },
+    } as never);
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "stored-file" as never,
+      url: "https://files.example/private",
+      tokens: 0,
+      name: "private.txt",
+      mediaType: "text/plain",
+      sizeBytes: 1,
+    });
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["/private.txt"],
+    });
+    expect(result).toMatchObject({
+      files: [{ path: "/private.txt" }],
+      failedFiles: [],
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        delivered_file_count: 1,
+        observed_sandbox_types: [],
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain("PRIVATE");
+  });
+
+  it("observes the adapter reacquired after a foreground command finishes", async () => {
+    const context = makeContext();
+    const desktop = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+    };
+    const getSandbox = jest.mocked(context.sandboxManager.getSandbox);
+    getSandbox
+      .mockResolvedValueOnce({ sandbox: { id: "cloud" } } as never)
+      .mockResolvedValueOnce({ sandbox: desktop } as never);
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "stored-file" as never,
+      url: "https://files.example/private",
+      tokens: 0,
+      name: "private.txt",
+      mediaType: "text/plain",
+      sizeBytes: 1,
+    });
+    let finish!: () => void;
+    const command = trackForegroundCommand(
+      context,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    try {
+      const delivery = runTool(createGetTerminalFiles(context), {
+        files: ["/private.txt"],
+      });
+      await getSandbox.mock.results[0].value;
+      expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+      finish();
+      expect(await delivery).toMatchObject({ failedFiles: [] });
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledWith(
+        expect.objectContaining({ sandbox: desktop }),
+      );
+      expect(phLogger.event).toHaveBeenLastCalledWith(
+        "agent_file_delivery_completed",
+        expect.objectContaining({
+          observed_sandbox_types: ["cloud", "desktop"],
+        }),
+      );
+    } finally {
+      finish();
+      await command;
+    }
+  });
+
   it("counts final failed files by phase without counting recovered candidate paths", async () => {
     const privateMessage = "private-target-and-signed-upload-url";
     mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
       if (args.fullPath === "/home/user/recovered.txt") {
+        args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
         throw new Error(privateMessage);
       }
       if (args.fullPath.endsWith("missing.txt")) {
+        args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
         throw new Error(privateMessage);
       }
@@ -104,6 +234,9 @@ describe("get_terminal_files", () => {
       };
     });
     const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
     const result = await runTool(createGetTerminalFiles(context), {
       files: ["recovered.txt", "missing.txt", "/failed-upload.txt"],
     });
@@ -119,9 +252,48 @@ describe("get_terminal_files", () => {
       failed_file_count: 2,
       file_delivery_diagnostic_version: 1,
       failure_phase_counts: { file_metadata: 1, transfer: 1 },
+      metadata_failure_diagnostic_version: 1,
+      metadata_failure_reason_counts: { native_file_missing: 1 },
     });
     expect(JSON.stringify(fields)).not.toMatch(
       /private-target|signed-upload|missing\.txt|failed-upload\.txt|recovered\.txt/,
+    );
+  });
+
+  it("counts only the final metadata reason and bounds invalid observer values", async () => {
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
+    mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+      args.onPhase?.("file_metadata");
+      const reason =
+        args.fullPath === "/home/user/report.txt"
+          ? "file_missing"
+          : args.fullPath === "report.txt"
+            ? "stat_failed"
+            : "PRIVATE signed-url/path";
+      (args.onNativeStatFailure as ((value: string) => void) | undefined)?.(
+        reason,
+      );
+      throw new Error("PRIVATE file error");
+    });
+    await runTool(createGetTerminalFiles(context), {
+      files: ["report.txt", "/other.txt"],
+    });
+    const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
+    expect(fields).toMatchObject({
+      failed_file_count: 2,
+      failure_phase_counts: { file_metadata: 2 },
+      metadata_failure_diagnostic_version: 1,
+      metadata_failure_reason_counts: {
+        native_stat_failed: 1,
+        unclassified: 1,
+      },
+    });
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(fields)).not.toMatch(
+      /PRIVATE|report|other|signed-url|path/,
     );
   });
 
@@ -139,6 +311,7 @@ describe("get_terminal_files", () => {
       expect.objectContaining({
         failed_file_count: 2,
         failure_phase_counts: { sandbox_setup: 2 },
+        observed_sandbox_types: [],
       }),
     );
   });
@@ -692,11 +865,60 @@ describe("get_terminal_files", () => {
         relay_recovery_attempted: true,
         relay_recovery_succeeded: true,
         delivered_file_count: 1,
+        metadata_failure_reason_counts: {},
+        observed_sandbox_types: ["remote-connection"],
       }),
     );
   });
-  it("does not retry local files on a cloud sandbox after relay recovery", async () => {
+  it("does not carry a native metadata reason across a relay recovery attempt", async () => {
     const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
+    const replacement = {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "new",
+    };
+    const base = makeContext();
+    const recoverLocalConnection = jest.fn(async () => ({
+      sandbox: replacement,
+    }));
+    const context = makeContext({
+      sandboxManager: {
+        ...base.sandboxManager,
+        getSandbox: jest
+          .fn()
+          .mockResolvedValueOnce({ sandbox: stale })
+          .mockResolvedValueOnce({ sandbox: replacement }),
+        recoverLocalConnection,
+      },
+    });
+    mockUploadSandboxFileToConvex
+      .mockImplementationOnce(async (args) => {
+        args.onPhase?.("file_metadata");
+        args.onNativeStatFailure?.("stat_failed");
+        throw new LocalCommandRelayUnsubscribedError("old");
+      })
+      .mockImplementationOnce(async (args) => {
+        args.onPhase?.("file_metadata");
+        throw new Error("PRIVATE unclassified metadata failure");
+      });
+    await runTool(createGetTerminalFiles(context), { files: ["/report.txt"] });
+    expect(recoverLocalConnection).toHaveBeenCalledTimes(1);
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(2);
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        failed_file_count: 1,
+        failure_phase_counts: { file_metadata: 1 },
+        metadata_failure_reason_counts: { unclassified: 1 },
+      }),
+    );
+  });
+
+  it("does not retry local files on a cloud sandbox after relay recovery", async () => {
+    const stale = {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "old",
+      getConnectionInfo: () => ({ isDesktop: true }),
+    };
     const cloud = { id: "cloud" };
     const base = makeContext();
     const context = makeContext({
@@ -719,5 +941,13 @@ describe("get_terminal_files", () => {
       "selected local sandbox changed",
     );
     expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        observed_sandbox_types: ["desktop", "cloud"],
+        failed_file_count: 1,
+        relay_recovery_succeeded: false,
+      }),
+    );
   });
 });

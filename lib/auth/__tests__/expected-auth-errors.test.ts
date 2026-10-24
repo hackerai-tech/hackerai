@@ -6,9 +6,27 @@ import {
   isInvalidRefreshTokenError,
   isInvalidCodeVerifierError,
   isUnverifiedSignInSessionError,
+  isUnauthenticatedConvexError,
 } from "../expected-auth-errors";
 
 describe("expected auth errors", () => {
+  it("classifies only the structured Convex unauthorized code as terminal", () => {
+    expect(
+      isUnauthenticatedConvexError({ data: { code: "UNAUTHORIZED" } }),
+    ).toBe(true);
+    for (const error of [
+      null,
+      "UNAUTHORIZED",
+      new Error("UNAUTHORIZED"),
+      { code: "UNAUTHORIZED" },
+      { data: "UNAUTHORIZED" },
+      { data: { message: "UNAUTHORIZED" } },
+      { data: { code: "CONNECTION_INACTIVE" } },
+    ]) {
+      expect(isUnauthenticatedConvexError(error)).toBe(false);
+    }
+  });
+
   it("recovers only an exact terminal invalid refresh token and keeps it out of ended-session filtering", () => {
     const cause = {
       status: 400,

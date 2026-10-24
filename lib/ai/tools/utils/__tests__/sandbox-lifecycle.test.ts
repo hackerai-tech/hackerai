@@ -446,6 +446,8 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(result.sandbox).toBe(connectedSandbox);
     expect(sandboxApi.connect).toHaveBeenCalledWith("sandbox-1", {
       timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+      requestTimeoutMs: 90_000,
+      retries: 0,
     });
     expect(setSandbox).toHaveBeenCalledWith(connectedSandbox);
   });

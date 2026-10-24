@@ -59,6 +59,100 @@ describe("getProviderDisconnectIgnoredSlugs", () => {
 });
 
 describe("wrapProviderTerminalError", () => {
+  it("does not attach a completed provider's identifiers to a new rejection", () => {
+    const cause = Object.assign(new Error("Provider returned error"), {
+      statusCode: 400,
+      data: {
+        error: {
+          code: 400,
+          metadata: { provider_name: "Z.AI", raw: "private failure detail" },
+        },
+      },
+    });
+    const previous = Object.freeze({
+      provider_name: "Fireworks",
+      openrouter_selected_model: "previous/model",
+      openrouter_generation_id: "gen-previous",
+      openrouter_request_id: "request-previous",
+      openrouter_upstream_id: "upstream-previous",
+    });
+
+    const error = wrapProviderTerminalError(cause, {
+      model: "configured-model",
+      openRouterMetadata: previous,
+    });
+
+    expect(error).toMatchObject({
+      provider: "Z.AI",
+      model: "configured-model",
+      category: "provider_4xx",
+      statusCode: 400,
+      cause,
+    });
+    expect(error.openrouterGenerationId).toBeUndefined();
+    expect(error.openrouterRequestId).toBeUndefined();
+    expect(error.openrouterUpstreamId).toBeUndefined();
+    expect(error.message).toBe(
+      "Provider terminal error category=provider_4xx status=400",
+    );
+    expect(JSON.stringify(error)).not.toContain("private failure detail");
+    expect(wrapProviderTerminalError(error, {})).toBe(error);
+  });
+
+  it.each([{ id: "gen-current" }, { request_id: "request-current" }])(
+    "keeps a rejected request separate from earlier routing: %j",
+    (metadata) => {
+      const cause = Object.assign(new Error("Provider returned error"), {
+        statusCode: 400,
+        responseBody: JSON.stringify({ ...metadata, error: { code: 400 } }),
+      });
+      const error = wrapProviderTerminalError(cause, {
+        model: "configured-model",
+        openRouterMetadata: {
+          provider_name: "Earlier provider",
+          openrouter_selected_model: "previous/model",
+          openrouter_generation_id: "gen-previous",
+          openrouter_request_id: "request-previous",
+          openrouter_upstream_id: "upstream-previous",
+        },
+      });
+
+      expect(error.provider).toBe("unknown");
+      expect(error.model).toBe("configured-model");
+      expect(error.openrouterGenerationId).toBe(metadata.id);
+      expect(error.openrouterRequestId).toBe(metadata.request_id);
+      expect(error.openrouterUpstreamId).toBeUndefined();
+      expect(error.cause).toBe(cause);
+    },
+  );
+
+  it("retains compatible response attribution when the error only adds its request ID", () => {
+    const cause = Object.assign(new Error("Provider returned error"), {
+      statusCode: 502,
+      responseHeaders: { "x-request-id": "request-current" },
+    });
+    const error = wrapProviderTerminalError(cause, {
+      model: "configured-model",
+      openRouterMetadata: {
+        provider_name: "Current provider",
+        openrouter_selected_model: "current/model",
+        openrouter_generation_id: "gen-current",
+        openrouter_request_id: "request-current",
+        openrouter_upstream_id: "upstream-current",
+      },
+    });
+
+    expect(error).toMatchObject({
+      provider: "Current provider",
+      model: "current/model",
+      openrouterGenerationId: "gen-current",
+      openrouterRequestId: "request-current",
+      openrouterUpstreamId: "upstream-current",
+      category: "provider_5xx",
+      cause,
+    });
+  });
+
   it("can prepare recovery diagnostics when an empty stream has no provider error", () => {
     const state = { providerError: undefined };
     const error = wrapProviderTerminalError(state.providerError, {
