@@ -5,7 +5,11 @@ import {
   validGoalStart,
   verificationGatePassed,
 } from "../contracts";
-import { parseGoalCommand } from "../commands";
+import {
+  parseGoalCommand,
+  goalResumeMessage,
+  goalExecutionInstructions,
+} from "../commands";
 
 const terminal = (exitCode = 0) => ({
   type: "tool-run_terminal_cmd",
@@ -208,4 +212,20 @@ it("deduplicates proof identity while bounding cumulative verifier input", () =>
   }));
   expect(mergeGoalEvidence(proofs, [updated])).toHaveLength(64);
   expect(mergeGoalEvidence(proofs, [updated])).toContainEqual(updated);
+});
+
+it("keeps resume copy concise while retaining current-objective instructions for the worker", () => {
+  const goal = {
+    objective: "Current objective",
+    criteria: ["Current criterion"],
+  };
+  expect(goalResumeMessage(goal, "New information")).toBe(
+    "Resume goal: Current objective\n\nNew information",
+  );
+  expect(goalExecutionInstructions(goal)).toContain(
+    "Discard unfinished steps and plans for superseded objectives",
+  );
+  expect(goalExecutionInstructions(goal)).toContain(
+    "Goal: Current objective\nSuccess criteria:\n1. Current criterion",
+  );
 });

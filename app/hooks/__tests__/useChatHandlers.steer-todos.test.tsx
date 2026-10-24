@@ -182,14 +182,14 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
-  it("keeps the draft when the expanded saved goal exceeds the input budget", async () => {
+  it("keeps the draft when the saved objective exceeds the input budget", async () => {
     mockInput = "/goal resume";
     mockEmptyQueue = true;
     const validation = await import("@/lib/utils/client-token-validation");
     jest
       .mocked(validation.getInputTokenLimitStatus)
       .mockImplementationOnce(async (text) =>
-        text.includes("Verify the new file")
+        text.includes("Updated file goal")
           ? { exceedsLimit: true, tokenCount: 999999 }
           : { exceedsLimit: false },
       );

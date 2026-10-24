@@ -81,7 +81,7 @@ export function parseGoalCommand(text: string): GoalCommand | null {
   return result;
 }
 
-export function goalResumeMessage(
+export function goalExecutionInstructions(
   goal: { objective: string; criteria: string[] },
   reply = "",
 ): string {
@@ -90,4 +90,11 @@ export function goalResumeMessage(
 Goal: ${goal.objective}
 Success criteria:
 ${goal.criteria.map((criterion, i) => `${i + 1}. ${criterion}`).join("\n")}${reply.trim() ? `\n\nAdditional information: ${reply.trim()}` : ""}`;
+}
+
+export function goalResumeMessage(
+  goal: { objective: string },
+  reply = "",
+): string {
+  return `Resume goal: ${goal.objective}${reply.trim() ? `\n\n${reply.trim()}` : ""}`;
 }

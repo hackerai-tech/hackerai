@@ -78,7 +78,7 @@ describe("goal controls", () => {
     await waitFor(() =>
       expect(send).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: expect.stringContaining("Goal: Create marker"),
+          text: "Resume goal: Create marker",
         }),
         expect.objectContaining({
           body: expect.objectContaining({
@@ -133,9 +133,7 @@ describe("goal controls", () => {
     await waitFor(() =>
       expect(send).toHaveBeenCalledWith(
         {
-          text: expect.stringContaining(
-            "Goal: Create marker\nSuccess criteria:\n1. Marker exists",
-          ),
+          text: "Resume goal: Create marker",
         },
         {
           body: {

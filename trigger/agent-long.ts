@@ -1,4 +1,4 @@
-import { goalResumeMessage } from "@/lib/goals/commands";
+import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion } from "@/lib/goals/judge";
 import type { GoalJudgment } from "@/lib/goals/contracts";
 import { api as goalApi } from "@/convex/_generated/api";
@@ -2010,7 +2010,7 @@ export const agentLongTask = task({
           parts: [
             {
               type: "text",
-              text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalResumeMessage(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+              text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
             },
           ],
         };
@@ -3239,7 +3239,7 @@ export const agentLongTask = task({
             finalMessages = activeGoal
               ? appendSystemReminderToLastUserMessage(
                   messagesWithNotes,
-                  goalResumeMessage(activeGoal),
+                  goalExecutionInstructions(activeGoal),
                 )
               : messagesWithNotes;
 
