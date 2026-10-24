@@ -213,16 +213,92 @@ const parsePartialSaveBody = async (
 export const createAgentPartialSavePost =
   () =>
   async (req: NextRequest): Promise<Response> => {
+    let stage:
+      | "identify_user"
+      | "history_access"
+      | "rate_limit"
+      | "parse_request"
+      | "chat_lookup"
+      | "run_correlation"
+      | "save_message"
+      | "update_chat" = "identify_user";
+    let userId: string | undefined;
+    let body: PartialSaveBody | undefined;
+    let correlationVerified = false;
+    let messageSaveCompleted = false;
+    const startedAt = Date.now();
+    // A platform timeout can bypass catch. Take two snapshots across the whole
+    // request, using the same bounded identifiers as terminal diagnostics.
+    const getDiagnosticContext = () => {
+      const requestId = req.headers.get("x-vercel-id");
+      return {
+        stage,
+        request_id:
+          requestId &&
+          requestId.length <= 128 &&
+          /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? requestId
+            : undefined,
+        user_id:
+          userId && /^user_[0-9A-HJKMNP-TV-Z]{26}$/.test(userId)
+            ? userId
+            : undefined,
+        requested_chat_id:
+          body &&
+          /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+            body.chatId,
+          )
+            ? body.chatId
+            : undefined,
+        trigger_run_id:
+          correlationVerified &&
+          body &&
+          /^run_[a-z0-9]{20,32}$/.test(body.triggerRunId)
+            ? body.triggerRunId
+            : undefined,
+        run_correlation_verified: correlationVerified,
+        message_save_completed: messageSaveCompleted,
+      };
+    };
+    const slowRequestTimers = [10_000, 20_000].map((delayMs) =>
+      setTimeout(() => {
+        const elapsedMs = Date.now() - startedAt;
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "agent_long_client_partial_save_slow",
+            service: "chat-handler",
+            route: "/api/agent/partial-save",
+            timestamp: new Date().toISOString(),
+            elapsed_ms: elapsedMs,
+            warning_threshold_ms: delayMs,
+            timer_lateness_ms: Math.max(0, elapsedMs - delayMs),
+            outcome: "pending",
+            ...getDiagnosticContext(),
+          }),
+        );
+      }, delayMs),
+    );
     try {
-      const userId = await getUserID(req);
-      await assertUserCanAccessChatHistory(userId);
+      userId = await getUserID(req);
+      stage = "history_access";
+      await assertUserCanAccessChatHistory(userId, {
+        retryNetworkFailure: true,
+        signal: req.signal,
+      });
+      stage = "rate_limit";
       await assertPartialSaveRateLimit(userId);
 
-      const body = await parsePartialSaveBody(req);
+      stage = "parse_request";
+      body = await parsePartialSaveBody(req);
+      stage = "chat_lookup";
       const chat = await getChatById({ id: body.chatId });
       if (!chat || chat.user_id !== userId) {
         throw new ChatSDKError("forbidden:chat");
       }
+      stage = "run_correlation";
       if (
         !verifyAgentRunCorrelationToken({
           token: body.runCorrelationToken,
@@ -234,6 +310,8 @@ export const createAgentPartialSavePost =
         throw new ChatSDKError("forbidden:chat");
       }
 
+      correlationVerified = true;
+      stage = "save_message";
       await saveMessage({
         chatId: body.chatId,
         userId,
@@ -245,8 +323,10 @@ export const createAgentPartialSavePost =
         triggerRunId: body.triggerRunId,
         wasAborted: true,
       });
+      messageSaveCompleted = true;
 
       if (!chat.finish_reason) {
+        stage = "update_chat";
         await updateChat({
           chatId: body.chatId,
           finishReason: CLIENT_SAVED_FINISH_REASON,
@@ -270,11 +350,65 @@ export const createAgentPartialSavePost =
 
       return NextResponse.json({ saved: true });
     } catch (error) {
-      if (error instanceof ChatSDKError) return error.toResponse();
-      console.error("[agent-partial-save] failed:", error);
+      const databaseError =
+        error instanceof ChatSDKError && error.surface === "database"
+          ? error
+          : undefined;
+      if (error instanceof ChatSDKError && !databaseError) {
+        return error.toResponse();
+      }
+      const causeCode =
+        error instanceof Error && error.cause instanceof Error
+          ? (error.cause as NodeJS.ErrnoException).code
+          : undefined;
+      const transportCode =
+        causeCode &&
+        [
+          "ECONNRESET",
+          "ECONNREFUSED",
+          "ETIMEDOUT",
+          "ENOTFOUND",
+          "EAI_AGAIN",
+          "UND_ERR_SOCKET",
+          "UND_ERR_CONNECT_TIMEOUT",
+          "UND_ERR_HEADERS_TIMEOUT",
+        ].includes(causeCode)
+          ? causeCode
+          : undefined;
+      // Error objects can carry private arguments. Emit only bounded reasons
+      // and identifiers of known shapes; a client run is authoritative only
+      // after its ownership and correlation checks have passed.
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "agent_long_client_partial_save_failed",
+          service: "chat-handler",
+          route: "/api/agent/partial-save",
+          timestamp: new Date().toISOString(),
+          outcome: "error",
+          status_code: databaseError?.statusCode ?? 500,
+          reason: databaseError
+            ? "database_error"
+            : error instanceof TypeError && error.message === "fetch failed"
+              ? "network_fetch_failed"
+              : "unexpected_error",
+          error_type: databaseError
+            ? "ChatSDKError"
+            : error instanceof TypeError
+              ? "TypeError"
+              : error instanceof Error
+                ? "Error"
+                : "NonError",
+          transport_code: transportCode,
+          ...getDiagnosticContext(),
+        }),
+      );
+      if (databaseError) return databaseError.toResponse();
       return NextResponse.json(
         { saved: false, message: "Failed to save partial response" },
         { status: 500 },
       );
+    } finally {
+      for (const timer of slowRequestTimers) clearTimeout(timer);
     }
   };

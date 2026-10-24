@@ -4,6 +4,14 @@ import { sandboxConnectionChannel } from "./types";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 import { LocalCommandRelayUnsubscribedError } from "@/lib/ai/tools/utils/local-sandbox-errors";
 
+/** Publication completed, but the client's readiness reply was not observed. */
+export class RelayOperationReadinessTimeout extends Error {
+  constructor() {
+    super("Relay operation readiness timed out");
+    this.name = "RelayOperationReadinessTimeout";
+  }
+}
+
 /** Use the connection channel only while dispatching, then stop receiving its fanout. */
 export async function dispatchIsolatedOperation(
   client: Centrifuge,
@@ -12,6 +20,7 @@ export async function dispatchIsolatedOperation(
   request: Record<string, unknown>,
   isActive: () => boolean,
   reply: Subscription,
+  onBeforePublish?: () => void,
 ): Promise<void> {
   let onReady: (ctx: PublicationContext) => void;
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -49,10 +58,11 @@ export async function dispatchIsolatedOperation(
     })) {
       if (!isActive())
         throw new Error("Relay operation ended before dispatch completed");
+      onBeforePublish?.();
       await control.publish(fragment);
     }
     timeout = setTimeout(
-      () => rejectReady(new Error("Relay operation readiness timed out")),
+      () => rejectReady(new RelayOperationReadinessTimeout()),
       5000,
     );
     await ready;

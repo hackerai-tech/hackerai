@@ -37,6 +37,18 @@ describe("finalizeNewChatRoute", () => {
     expect(window.location.pathname).toBe("/c/current-chat");
   });
 
+  it("keeps a failed admission on the draft route when the SDK calls onFinish after onError", () => {
+    expect(
+      finalizeNewChatRoute({
+        chatId: "unsaved-task",
+        isAbort: false,
+        isError: true,
+        isExistingChat: false,
+      }),
+    ).toBe(false);
+    expect(window.location.pathname).toBe("/");
+  });
+
   it("finalizes a normally completed new chat", () => {
     expect(
       finalizeNewChatRoute({

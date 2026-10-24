@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import {
   limitImageParts,
   selectModel,
@@ -154,568 +155,177 @@ describe("limitImageParts", () => {
 // selectModel - Model selection logic
 // ==========================================================================
 describe("selectModel", () => {
-  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "uses native vision for %s Agent Pro across Standard experiment states",
+  const paidPlans = ["pro", "pro-plus", "ultra", "team"] as const;
+  const selections = [
+    undefined,
+    "auto",
+    "hackerai-standard",
+    "hackerai-pro",
+    "hackerai-max",
+  ] as const;
+  const attachments = [
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const;
+
+  it.each(paidPlans)(
+    "rejects every Ask selection for %s before routing",
     (subscription) => {
-      for (const directGlmVisionEnabled of [false, true]) {
-        for (const hasImage of [false, true]) {
+      for (const selection of selections) {
+        for (const [hasImage, hasPdf] of attachments) {
+          for (const options of [
+            {},
+            { directGlmVisionEnabled: true },
+            { auxiliaryVisionEnabled: true, extraUsageAvailable: true },
+          ]) {
+            expect(() =>
+              selectModel(
+                "ask",
+                subscription,
+                selection,
+                hasImage,
+                hasPdf,
+                options,
+              ),
+            ).toThrow(
+              expect.objectContaining({
+                statusCode: 403,
+                cause:
+                  "Paid plans use Agent mode. Ask mode is only available on the free plan.",
+              }),
+            );
+          }
+        }
+      }
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "preserves Free %s routing and ignores paid tier overrides",
+    (mode) => {
+      for (const selection of selections) {
+        for (const [hasImage, hasPdf] of attachments) {
+          expect(selectModel(mode, "free", selection, hasImage, hasPdf)).toBe(
+            mode === "ask" ? "ask-model-free-glm" : "model-glm-5.3-flash-agent",
+          );
+        }
+      }
+    },
+  );
+
+  describe.each(paidPlans)("%s Agent routing", (subscription) => {
+    it("uses native DeepSeek Flash for Standard and Pro with all attachments", () => {
+      for (const [hasImage, hasPdf] of attachments) {
+        for (const options of [
+          {},
+          { directGlmVisionEnabled: true },
+          { auxiliaryVisionEnabled: true },
+        ]) {
+          expect(
+            selectModel(
+              "agent",
+              subscription,
+              "hackerai-standard",
+              hasImage,
+              hasPdf,
+              options,
+            ),
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
           expect(
             selectModel(
               "agent",
               subscription,
               "hackerai-pro",
               hasImage,
-              false,
-              {
-                directGlmVisionEnabled,
-              },
+              hasPdf,
+              options,
             ),
+          ).toBe(DEEPSEEK_1017_MODEL_KEY);
+        }
+      }
+    });
+
+    it("keeps Auto and default text/PDF routes on DeepSeek and image routes on Grok", () => {
+      for (const selection of [undefined, "auto"] as const) {
+        for (const [hasImage, hasPdf] of attachments) {
+          expect(
+            selectModel("agent", subscription, selection, hasImage, hasPdf),
+          ).toBe(
+            hasImage ? "model-grok-4.5" : "model-deepseek-v4-flash-vision-pro",
+          );
+        }
+      }
+    });
+
+    it("preserves direct and auxiliary vision for Auto and default selections", () => {
+      for (const selection of [undefined, "auto"] as const) {
+        for (const [hasImage, hasPdf] of attachments) {
+          expect(
+            selectModel("agent", subscription, selection, hasImage, hasPdf, {
+              directGlmVisionEnabled: true,
+            }),
+          ).toBe(
+            !hasImage
+              ? "model-deepseek-v4-flash-vision-pro"
+              : subscription === "pro" || subscription === "pro-plus"
+                ? "model-glm-5.3-flash"
+                : "model-deepseek-v4-flash-vision",
+          );
+          expect(
+            selectModel("agent", subscription, selection, hasImage, hasPdf, {
+              auxiliaryVisionEnabled: true,
+            }),
           ).toBe("model-deepseek-v4-flash-vision-pro");
         }
       }
-    },
-  );
+    });
 
-  describe.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "%s Auto routing",
-    (subscription) => {
-      it.each(["ask", "agent"] as const)(
-        "routes %s Auto text to DeepSeek V4.1 Flash",
-        (mode) => {
-          expect(selectModel(mode, subscription, "auto", false, false)).toBe(
-            "model-deepseek-v4-flash-vision-pro",
-          );
-        },
-      );
-
-      it.each(["ask", "agent"] as const)(
-        "routes %s Auto PDFs to DeepSeek V4.1 Flash",
-        (mode) => {
-          expect(selectModel(mode, subscription, "auto", false, true)).toBe(
-            "model-deepseek-v4-flash-vision-pro",
-          );
-        },
-      );
-
-      it.each(["ask", "agent"] as const)(
-        "keeps %s Auto images on Grok 4.5",
-        (mode) => {
-          expect(selectModel(mode, subscription, "auto", true, false)).toBe(
-            "model-grok-4.5",
-          );
-        },
-      );
-    },
-  );
-
-  it("keeps explicit Pro while routing paid Agent Auto and Standard to Flash", () => {
-    const auxiliaryVision = { auxiliaryVisionEnabled: true };
-
-    expect(
-      selectModel(
-        "agent",
-        "pro-plus",
-        "hackerai-standard",
-        false,
-        false,
-        auxiliaryVision,
-      ),
-    ).toBe("model-glm-5.3-flash-agent");
-    expect(
-      selectModel(
-        "agent",
-        "pro-plus",
-        "hackerai-pro",
-        false,
-        false,
-        auxiliaryVision,
-      ),
-    ).toBe("model-deepseek-v4-flash-vision-pro");
-    expect(
-      selectModel("agent", "ultra", "auto", true, false, auxiliaryVision),
-    ).toBe("model-deepseek-v4-flash-vision-pro");
-  });
-
-  it("routes HackerAI Pro through DeepSeek V4.1 Flash", () => {
-    expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-      "model-deepseek-v4-flash-vision-pro",
-    );
-  });
-
-  it.each([
-    ["ask", "hackerai-standard", "model-glm-5.3-flash"],
-    ["agent", "hackerai-standard", "model-glm-5.3-flash-agent"],
-    ["ask", "hackerai-pro", "model-deepseek-v4-pro-0813"],
-    ["agent", "hackerai-pro", "model-deepseek-v4-flash-vision-pro"],
-  ] as const)(
-    "keeps %s %s on its text provider when auxiliary vision is enabled",
-    (mode, selectedModel, expected) => {
-      expect(
-        selectModel(mode, "pro", selectedModel, true, false, {
-          auxiliaryVisionEnabled: true,
-        }),
-      ).toBe(expected);
-    },
-  );
-
-  it("keeps paid Auto image prompts on DeepSeek V4.1 Flash with auxiliary vision", () => {
-    expect(
-      selectModel("ask", "pro", undefined, true, false, {
-        auxiliaryVisionEnabled: true,
-      }),
-    ).toBe("model-deepseek-v4-flash-vision-pro");
-  });
-
-  it.each(["ask", "agent"] as const)(
-    "routes Standard %s image prompts directly to GLM 5.3 Flash",
-    (mode) => {
-      expect(
-        selectModel(mode, "pro", "hackerai-standard", true, false, {
-          directGlmVisionEnabled: true,
-        }),
-      ).toBe(
-        mode === "agent" ? "model-glm-5.3-flash-agent" : "model-glm-5.3-flash",
-      );
-    },
-  );
-
-  it.each(["ask", "agent"] as const)(
-    "routes Pro %s image prompts directly to DeepSeek V4 Flash Vision",
-    (mode) => {
-      expect(
-        selectModel(mode, "pro", "hackerai-pro", true, false, {
-          directGlmVisionEnabled: true,
-        }),
-      ).toBe("model-deepseek-v4-flash-vision-pro");
-    },
-  );
-
-  describe.each(["ask", "agent"] as const)(
-    "%s direct vision boundaries",
-    (mode) => {
-      it.each(["pro", "pro-plus"] as const)(
-        "uses GLM Flash for %s Standard and Auto/default image turns only",
-        (subscription) => {
-          for (const selection of [
-            undefined,
-            "auto",
-            "hackerai-standard",
-          ] as const) {
-            const directVision = { directGlmVisionEnabled: true };
+    it("preserves Max entitlement and media routes", () => {
+      for (const extraUsageAvailable of [false, true]) {
+        for (const [hasImage, hasPdf] of attachments) {
+          for (const directGlmVisionEnabled of [false, true]) {
+            const maxAllowed = subscription === "ultra" || extraUsageAvailable;
             expect(
               selectModel(
-                mode,
+                "agent",
                 subscription,
-                selection,
-                true,
-                false,
-                directVision,
+                "hackerai-max",
+                hasImage,
+                hasPdf,
+                {
+                  extraUsageAvailable,
+                  directGlmVisionEnabled,
+                },
               ),
             ).toBe(
-              selection === "hackerai-standard" && mode === "agent"
-                ? "model-glm-5.3-flash-agent"
-                : "model-glm-5.3-flash",
-            );
-            expect(
-              selectModel(
-                mode,
-                subscription,
-                selection,
-                false,
-                false,
-                directVision,
-              ),
-            ).toBe(
-              selection !== "hackerai-standard"
-                ? "model-deepseek-v4-flash-vision-pro"
-                : mode === "agent"
-                  ? "model-glm-5.3-flash-agent"
-                  : "model-glm-5.3-flash",
-            );
-            expect(
-              selectModel(
-                mode,
-                subscription,
-                selection,
-                false,
-                true,
-                directVision,
-              ),
-            ).toBe(
-              selection !== "hackerai-standard"
-                ? "model-deepseek-v4-flash-vision-pro"
-                : mode === "agent"
-                  ? "model-glm-5.3-flash-agent"
-                  : "model-glm-5.3-flash",
-            );
-            expect(
-              selectModel(mode, subscription, selection, true, false, {
-                auxiliaryVisionEnabled: true,
-              }),
-            ).toBe(
-              selection !== "hackerai-standard"
-                ? "model-deepseek-v4-flash-vision-pro"
-                : mode === "agent"
-                  ? "model-glm-5.3-flash-agent"
-                  : "model-glm-5.3-flash",
+              !maxAllowed
+                ? DEEPSEEK_1017_MODEL_KEY
+                : hasImage
+                  ? DEEPSEEK_1017_MODEL_KEY
+                  : "model-glm-5.3",
             );
           }
           expect(
-            selectModel(mode, subscription, "hackerai-pro", true, false, {
-              directGlmVisionEnabled: true,
-            }),
-          ).toBe("model-deepseek-v4-flash-vision-pro");
-          expect(
-            selectModel(mode, subscription, "hackerai-max", true, false, {
-              directGlmVisionEnabled: true,
-              extraUsageAvailable: true,
-            }),
-          ).toBe("model-grok-4.6");
-        },
-      );
-
-      it.each(["ultra", "team"] as const)(
-        "uses GLM for %s Standard and preserves Auto vision",
-        (subscription) => {
-          expect(
-            selectModel(mode, subscription, "hackerai-standard", true, false, {
-              directGlmVisionEnabled: true,
-            }),
+            selectModel(
+              "agent",
+              subscription,
+              "hackerai-max",
+              hasImage,
+              hasPdf,
+              {
+                extraUsageAvailable,
+                auxiliaryVisionEnabled: true,
+              },
+            ),
           ).toBe(
-            mode === "agent"
-              ? "model-glm-5.3-flash-agent"
-              : "model-glm-5.3-flash",
+            subscription === "ultra" || extraUsageAvailable
+              ? "model-glm-5.3"
+              : DEEPSEEK_1017_MODEL_KEY,
           );
-          expect(
-            selectModel(mode, subscription, "auto", true, false, {
-              directGlmVisionEnabled: true,
-            }),
-          ).toBe(
-            mode === "ask" && subscription === "ultra"
-              ? "model-deepseek-v4-flash-vision-pro"
-              : "model-deepseek-v4-flash-vision",
-          );
-        },
-      );
-    },
-  );
-
-  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "routes paid %s explicit Standard text to the mode-specific Flash model",
-    (subscription) => {
-      expect(selectModel("ask", subscription, "hackerai-standard")).toBe(
-        "model-glm-5.3-flash",
-      );
-      expect(selectModel("agent", subscription, "hackerai-standard")).toBe(
-        "model-glm-5.3-flash-agent",
-      );
-    },
-  );
-
-  // Default model selection by mode
-  describe("default models (no override)", () => {
-    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-      "should return DeepSeek V4.1 Flash for paid text on %s",
-      (subscription) => {
-        expect(selectModel("ask", subscription)).toBe(
-          "model-deepseek-v4-flash-vision-pro",
-        );
-        expect(selectModel("agent", subscription)).toBe(
-          "model-deepseek-v4-flash-vision-pro",
-        );
-      },
-    );
-
-    it("should return Grok 4.5 medium for paid Agent Auto with an image", () => {
-      expect(selectModel("agent", "pro", undefined, true, false)).toBe(
-        "model-grok-4.5",
-      );
-    });
-
-    it("should keep paid agent on DeepSeek V4.1 Flash when a PDF is attached", () => {
-      expect(selectModel("agent", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should return DeepSeek V4.1 Flash for paid ask with no image/PDF", () => {
-      expect(selectModel("ask", "pro")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should return Grok 4.5 medium for paid Ask Auto with an image", () => {
-      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-grok-4.5",
-      );
-    });
-
-    it("should keep paid ask on DeepSeek V4.1 Flash when a PDF is attached", () => {
-      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should use Grok 4.5 medium when paid Ask Auto has both image and PDF attachments", () => {
-      expect(selectModel("ask", "pro", undefined, true, true)).toBe(
-        "model-grok-4.5",
-      );
-    });
-
-    it.each([false, true])("keeps free Ask on GLM with PDF=%s", (hasPdf) => {
-      expect(selectModel("ask", "free", "auto", false, hasPdf)).toBe(
-        "ask-model-free-glm",
-      );
-    });
-
-    it("should keep explicit Standard on GLM 5.3 Flash while Auto uses V4.1", () => {
-      expect(selectModel("ask", "ultra", "hackerai-standard")).toBe(
-        "model-glm-5.3-flash",
-      );
-      expect(selectModel("agent", "team", "hackerai-standard")).toBe(
-        "model-glm-5.3-flash-agent",
-      );
-    });
-  });
-
-  // Paid tier overrides preserve each tier's provider and media behavior.
-  describe("tier override for ask mode (paid users)", () => {
-    it("should map HackerAI Pro to DeepSeek V4 Pro 0813 for text-only ask mode", () => {
-      expect(selectModel("ask", "ultra", "hackerai-pro")).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-    });
-
-    it("should map HackerAI Pro to DeepSeek V4 Pro 0813 for team users", () => {
-      expect(selectModel("ask", "team", "hackerai-pro")).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-    });
-
-    it("should route HackerAI Pro vision to Grok 4.5 high", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", true, false)).toBe(
-        "model-grok-4.5-pro",
-      );
-    });
-
-    it("should keep HackerAI Pro on DeepSeek V4 Pro 0813 when a PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-pro", false, true)).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-    });
-
-    it("should map HackerAI Standard to GLM 5.3 Flash when no image/PDF", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard")).toBe(
-        "model-glm-5.3-flash",
-      );
-    });
-
-    it("should use native GLM Flash vision for HackerAI Standard", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true, false)).toBe(
-        "model-glm-5.3-flash",
-      );
-    });
-
-    it("should keep HackerAI Standard on GLM 5.3 Flash when a PDF is attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", false, true)).toBe(
-        "model-glm-5.3-flash",
-      );
-    });
-
-    it("should use GLM Flash for HackerAI Standard when image and PDF are both attached", () => {
-      expect(selectModel("ask", "pro", "hackerai-standard", true, true)).toBe(
-        "model-glm-5.3-flash",
-      );
-    });
-
-    it("should map HackerAI Max to GLM 5.3 for Ultra", () => {
-      expect(selectModel("ask", "ultra", "hackerai-max")).toBe("model-glm-5.3");
-    });
-
-    it("should downgrade HackerAI Max to Pro outside Ultra", () => {
-      expect(selectModel("ask", "pro", "hackerai-max")).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-      expect(selectModel("ask", "pro-plus", "hackerai-max")).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-      expect(selectModel("ask", "team", "hackerai-max")).toBe(
-        "model-deepseek-v4-pro-0813",
-      );
-    });
-
-    it("should map HackerAI Max to GLM 5.3 for paid users with extra usage", () => {
-      expect(
-        selectModel("ask", "pro", "hackerai-max", false, false, {
-          extraUsageAvailable: true,
-        }),
-      ).toBe("model-glm-5.3");
-    });
-  });
-
-  // Agent Standard uses native GLM for text, parsed PDFs, and images.
-  describe("tier override in agent mode", () => {
-    it("should map HackerAI Standard to GLM 5.3 Flash for text-only agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-standard")).toBe(
-        "model-glm-5.3-flash-agent",
-      );
-    });
-
-    it("should use native GLM Flash vision for HackerAI Standard", () => {
-      expect(
-        selectModel("agent", "pro", "hackerai-standard", true, false),
-      ).toBe("model-glm-5.3-flash-agent");
-    });
-
-    it("should keep HackerAI Standard on GLM 5.3 Flash when a PDF is attached", () => {
-      expect(
-        selectModel("agent", "pro", "hackerai-standard", false, true),
-      ).toBe("model-glm-5.3-flash-agent");
-    });
-
-    it("should map HackerAI Pro to DeepSeek V4.1 Flash in text-only agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should route HackerAI Pro vision to DeepSeek V4.1 Flash in agent mode", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro", true, false)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should keep HackerAI Pro on DeepSeek V4.1 Flash when a PDF is attached", () => {
-      expect(selectModel("agent", "pro", "hackerai-pro", false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should map HackerAI Max to GLM 5.3 in agent mode for Ultra", () => {
-      expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
-        "model-glm-5.3",
-      );
-    });
-
-    it("should downgrade HackerAI Max to Pro in agent mode outside Ultra", () => {
-      expect(selectModel("agent", "pro", "hackerai-max")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("agent", "pro-plus", "hackerai-max")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("agent", "team", "hackerai-max")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should map HackerAI Max to GLM 5.3 in agent mode for paid users with extra usage", () => {
-      expect(
-        selectModel("agent", "pro-plus", "hackerai-max", false, false, {
-          extraUsageAvailable: true,
-        }),
-      ).toBe("model-glm-5.3");
-    });
-
-    it("should default to DeepSeek V4.1 Flash when no model is selected", () => {
-      expect(selectModel("agent", "pro")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("agent", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-  });
-
-  it.each([
-    undefined,
-    "auto",
-    "hackerai-standard",
-    "hackerai-pro",
-    "hackerai-max",
-  ] as const)(
-    "routes free Agent %s directly to GLM Flash for text and PDFs",
-    (selection) => {
-      for (const hasPdf of [false, true]) {
-        expect(selectModel("agent", "free", selection, false, hasPdf)).toBe(
-          "model-glm-5.3-flash-agent",
-        );
+        }
       }
-    },
-  );
-
-  // Free user guard
-  describe("free user guard", () => {
-    it("should ignore tier override for free users in agent mode", () => {
-      expect(selectModel("agent", "free", "hackerai-pro")).toBe(
-        "model-glm-5.3-flash-agent",
-      );
-    });
-
-    it("should ignore tier override for free users in ask mode", () => {
-      expect(selectModel("ask", "free", "hackerai-pro")).toBe(
-        "ask-model-free-glm",
-      );
-    });
-
-    it("should keep free ask Standard on the free GLM Flash route", () => {
-      expect(selectModel("ask", "free", "hackerai-standard")).toBe(
-        "ask-model-free-glm",
-      );
-    });
-  });
-
-  // "auto" override
-  describe("auto override", () => {
-    it("should route paid agent Auto text to DeepSeek V4.1 Flash", () => {
-      expect(selectModel("agent", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should route paid Agent Auto images to Grok and PDFs to DeepSeek V4.1 Flash", () => {
-      expect(selectModel("agent", "pro", "auto", true, false)).toBe(
-        "model-grok-4.5",
-      );
-      expect(selectModel("agent", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek V4.1 Flash)", () => {
-      expect(selectModel("ask", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should treat 'auto' as no override in ask mode with image -> Grok", () => {
-      expect(selectModel("ask", "pro", "auto", true, false)).toBe(
-        "model-grok-4.5",
-      );
-    });
-
-    it("should treat 'auto' as no override in ask mode with PDF -> DeepSeek", () => {
-      expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-  });
-
-  // Undefined override
-  describe("undefined override", () => {
-    it("should use default when override is undefined", () => {
-      expect(selectModel("agent", "pro", undefined)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("ask", "pro", undefined)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("ask", "pro", undefined, true, false)).toBe(
-        "model-grok-4.5",
-      );
-      expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
     });
   });
 });

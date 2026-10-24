@@ -1,5 +1,5 @@
 import { schemaTask } from "@trigger.dev/sdk";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { api } from "@/convex/_generated/api";
@@ -74,7 +74,7 @@ const getResearchClient = () => {
       "NEXT_PUBLIC_CONVEX_URL and CONVEX_USER_RESEARCH_SERVICE_KEY are required",
     );
   }
-  return { client: new ConvexHttpClient(convexUrl), serviceKey };
+  return { client: createServiceConvexClient(convexUrl), serviceKey };
 };
 
 const usageForStorage = (usage: {

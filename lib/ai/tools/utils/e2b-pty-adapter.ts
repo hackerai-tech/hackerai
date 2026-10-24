@@ -20,6 +20,7 @@ interface E2BPtyCreateOpts {
   cols: number;
   rows: number;
   onData: PtyDataCb;
+  user: "root";
   cwd?: string;
   envs?: Record<string, string>;
   timeoutMs?: number;
@@ -95,7 +96,10 @@ export async function createE2BPtyHandle(
   const handle = await pty.create({
     cols: opts.cols,
     rows: opts.rows,
-    cwd: opts.cwd,
+    // Match commands.run: managed browser directories are private to root.
+    // E2B's default PTY user cannot access them and may launch an untracked browser.
+    user: "root",
+    cwd: opts.cwd ?? "/home/user",
     envs: opts.envs,
     onData,
     timeoutMs: PTY_NO_TIMEOUT_MS,

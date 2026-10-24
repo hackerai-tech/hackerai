@@ -1,4 +1,6 @@
+import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
+import { createBrowserHandoff } from "./browser-handoff";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -81,6 +83,7 @@ export type CreateToolsRuntimePolicy = {
   triggerRegion?: TriggerRunRegion;
   environment?: string;
   keepE2BLeaseAliveForRun?: boolean;
+  browserAgentId?: string;
 };
 
 export type SandboxSessionUsage = {
@@ -142,6 +145,11 @@ export const createTools = (
       writer.write({
         type: "data-cloud-connection-error",
         data: { code: "timeout", workspacePreserved: true },
+      }),
+    onFailure: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "unavailable", workspacePreserved: true },
       }),
     provider: runtimePolicy.cloudSandboxProvider,
     selectionReason: runtimePolicy.cloudSandboxSelectionReason,
@@ -250,7 +258,20 @@ export const createTools = (
     triggerRunId,
   });
 
-  const browserSessions = triggerRunId ? new BrowserSessions() : undefined;
+  const browserSessions = triggerRunId
+    ? new BrowserSessions(
+        serviceKey
+          ? {
+              userId: userID,
+              chatId,
+              runId: triggerRunId,
+              agentId: runtimePolicy.browserAgentId ?? "parent",
+              triggerRegion: runtimePolicy.triggerRegion,
+              serviceKey,
+            }
+          : undefined,
+      )
+    : undefined;
   const context: ToolContext = {
     browserSessions,
     sandboxManager,
@@ -287,6 +308,12 @@ export const createTools = (
     // one-time object so model-specific tool schemas can be rebuilt for
     // provider fallback legs.
     const allTools = {
+      ...(browserSessions && {
+        browser_handoff: createBrowserHandoff(
+          browserSessions,
+          runtimePolicy.signal,
+        ),
+      }),
       run_terminal_cmd: createRunTerminalCmd(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),
@@ -317,10 +344,14 @@ export const createTools = (
       ...(runtimePolicy.additionalTools?.(context) ?? {}),
     };
 
+    const guardedTools = browserSessions
+      ? browserSessions.guardTools(allTools, runtimePolicy.signal)
+      : allTools;
+
     if (runtimePolicy.allowedToolNames) {
       const allowed = new Set(runtimePolicy.allowedToolNames);
       return Object.fromEntries(
-        Object.entries(allTools).filter(([name]) => allowed.has(name)),
+        Object.entries(guardedTools).filter(([name]) => allowed.has(name)),
       ) as ToolSet;
     }
 
@@ -340,7 +371,7 @@ export const createTools = (
             open_url: createOpenUrlTool(context),
           }),
         }
-      : allTools;
+      : guardedTools;
   };
 
   const tools = buildTools();
@@ -437,7 +468,17 @@ export const createTools = (
   };
 
   return {
+    cloudNetworkPrompt: createCloudNetworkPrompt(
+      userID,
+      () =>
+        isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
+    ),
     tools,
+    waitForBrowserHandoff: (signal?: AbortSignal) =>
+      browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??
+      Promise.resolve(false),
+    getBrowserHandoffNotes: () =>
+      browserSessions?.getExitNotes() ?? Promise.resolve([]),
     cleanupBrowserSessions: () =>
       browserSessions?.cleanup() ?? Promise.resolve(),
     getSandbox,

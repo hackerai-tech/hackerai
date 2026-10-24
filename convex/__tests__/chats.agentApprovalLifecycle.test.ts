@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
@@ -90,6 +90,92 @@ const makeCtx = (
 describe("Agent approval lifecycle guards", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it.each([undefined, "stop"])(
+    "conditionally detaches recovered crashes without replacing finish reason %s",
+    async (finishReason) => {
+      const { ctx, patch } = makeCtx({
+        _id: "chat-doc",
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-old",
+        finish_reason: finishReason,
+      });
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+          recoveredCrash: true,
+        }),
+      ).toBe("updated");
+      const fields = patch.mock.calls[0][1];
+      if (finishReason) expect(fields).not.toHaveProperty("finish_reason");
+      else
+        expect(fields).toHaveProperty(
+          "finish_reason",
+          "trigger_crashed_client_saved",
+        );
+    },
+  );
+
+  it.each([
+    { fields: { canceled_at: 1 }, fenced: false },
+    { fields: { deletion_started_at: 1 }, fenced: false },
+    { fields: {}, fenced: true },
+  ])(
+    "leaves a fenced crash association for its owning cancellation/deletion flow: %j",
+    async ({ fields, fenced }) => {
+      const { ctx, patch } = makeCtx(
+        {
+          _id: "chat-doc",
+          id: "chat-1",
+          user_id: "user-1",
+          active_trigger_run_id: "run-old",
+          ...fields,
+        },
+        fenced,
+      );
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+          recoveredCrash: true,
+        }),
+      ).toBe("stale");
+      expect(patch).not.toHaveBeenCalled();
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: null,
+          expectedRunId: "run-old",
+        }),
+      ).toBe("updated");
+    },
+  );
+
+  it("does not label or detach a newer run during crash recovery", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-new",
+    });
+    expect(
+      await setActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-old",
+        recoveredCrash: true,
+      }),
+    ).toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("serializes parent and child approval prompts", async () => {

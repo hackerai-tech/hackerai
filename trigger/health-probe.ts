@@ -15,6 +15,7 @@ export const healthProbeTask = task({
     nonce: payload.nonce,
     ...(payload.includeRuntimeIdentity === true && {
       runtimeIdentity: {
+        nodeVersion: process.versions.node,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL ?? null,
         posthogKeyFingerprint: process.env.NEXT_PUBLIC_POSTHOG_KEY
           ? createHash("sha256")

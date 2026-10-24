@@ -1,7 +1,7 @@
 import { queueInfluencerEvent, validVisitor } from "./lib/influencerAnalytics";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import {
   attributionDoc,

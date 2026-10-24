@@ -199,9 +199,20 @@ describe("security validation subagent runtime contracts", () => {
     );
     expectMarkerOrder(
       acceptResult,
-      "await verifyResultEvidence(",
+      "await verifySubagentResultAfterHandoff(",
       "markSubagentFinalizing(",
     );
+    expect(acceptResult).toContain("getNotes: getBrowserHandoffNotes");
+    expect(acceptResult).toContain("waitForControl: waitForBrowserHandoff");
+    expect(acceptResult).toContain("modelNoteIds: modelHandoffNoteIds");
+    expect(child).toContain(
+      "modelHandoffNoteIds = handoffNotes.map(({ id }) => id)",
+    );
+    const onFinish = child.slice(
+      child.indexOf("onFinish: async () =>"),
+      child.indexOf("onStepFinish: async"),
+    );
+    expect(onFinish).toContain("!resultValue && !activeAbort.signal.aborted");
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );

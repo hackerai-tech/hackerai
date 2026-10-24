@@ -1,6 +1,14 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import type { SubscriptionTier } from "@/types";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
-import { isStaticToolUIPart, type UIMessage } from "ai";
+import {
+  isStaticToolUIPart,
+  type UIMessage,
+  type UIMessageStreamWriter,
+} from "ai";
 
 type MessagePartLike = {
   type?: unknown;
@@ -141,19 +149,49 @@ const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
- * Return the next bounded app-side recovery model for a DeepSeek Pro stream
- * disconnect. `completedRetryCount` counts retries already started, so the
- * only valid transitions are DeepSeek -> GLM -> Kimi.
+ * Return the next bounded app-side recovery after a stream disconnect.
+ * Max uses DeepSeek 1017 then a context-checked Grok attempt. Existing Pro
+ * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
  */
-export const getNextDeepSeekProDisconnectRetryModel = ({
+export const getNextProviderDisconnectRetryModel = ({
   originalModel,
   failedModel,
   completedRetryCount,
+  selectedModelOverride,
+  agentModelContextEnabled,
+  subscription,
+  requiredContextTokens,
 }: {
   originalModel: string;
   failedModel: string;
   completedRetryCount: number;
-}): (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number] | undefined => {
+  selectedModelOverride?: string;
+  agentModelContextEnabled?: boolean;
+  subscription?: SubscriptionTier;
+  requiredContextTokens?: number;
+}):
+  | (typeof DEEPSEEK_PRO_RECOVERY_CHAIN)[number]
+  | "model-grok-4.6"
+  | undefined => {
+  if (selectedModelOverride === "hackerai-max") {
+    if (
+      completedRetryCount !== 1 ||
+      failedModel !== DEEPSEEK_1017_MODEL_KEY ||
+      requiredContextTokens === undefined ||
+      !Number.isFinite(requiredContextTokens) ||
+      requiredContextTokens < 0
+    )
+      return;
+    const grokBudget = getAgentContextBudget({
+      enabled: agentModelContextEnabled,
+      mode: "agent",
+      subscription,
+      modelId: "x-ai/grok-4.6",
+    });
+    return requiredContextTokens <= getSummarizationThresholdTokens(grokBudget)
+      ? "model-grok-4.6"
+      : undefined;
+  }
   if (originalModel !== DEEPSEEK_PRO_MODEL) return undefined;
 
   if (completedRetryCount === 0 && failedModel === DEEPSEEK_PRO_MODEL) {
@@ -182,12 +220,26 @@ export const getNextDeepSeekProDisconnectRetryModel = ({
  */
 export const prepareProviderDisconnectContinuation = (
   messages: UIMessage[],
-  { allowCompletedTail = false }: { allowCompletedTail?: boolean } = {},
+  {
+    allowCompletedTail = false,
+    allowEmptyResponse = false,
+  }: { allowCompletedTail?: boolean; allowEmptyResponse?: boolean } = {},
 ): ProviderDisconnectContinuation | undefined => {
   const assistantIndex = messages.findLastIndex(
     (message) => message.role === "assistant",
   );
-  if (assistantIndex < 0) return undefined;
+  if (assistantIndex < 0) {
+    // A pre-stream failure with no output cannot have started an app tool.
+    if (allowEmptyResponse && messages.length === 0)
+      return {
+        messages: [],
+        removedPartCount: 0,
+        preservedCompletedToolCount: 0,
+        preservedUnknownToolCount: 0,
+        preservedTextPartCount: 0,
+      };
+    return undefined;
+  }
 
   const assistant = messages[assistantIndex];
   const parts = assistant.parts ?? [];
@@ -275,6 +327,65 @@ const isFallbackSafeProviderPart = (part: unknown): boolean => {
     (type === "text" && !getPartText(part)?.trim()) ||
     (type != null && FALLBACK_SAFE_METADATA_PART_TYPES.has(type))
   );
+};
+
+/** A normal stop with only hidden output or tool activity is not an answer. */
+export const isTerminalEmptyAssistantResponse = (
+  parts: unknown[],
+  finishReason?: string,
+): boolean =>
+  finishReason === "stop" &&
+  parts.every((part) => isFallbackSafeProviderPart(part) || isToolPart(part));
+
+/** Unknown tool outcomes require user review before any model continuation. */
+export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
+  parts.some((part) => isToolPart(part) && !isCompletedToolPart(part));
+
+export const PROVIDER_EMPTY_RESPONSE_MESSAGE =
+  "The model finished without a usable answer. Any completed tool results remain in this chat, but I could not safely finish the response. Continue this chat to review the work before repeating any action.";
+const UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE =
+  "The model stopped before this tool's result was confirmed. Its outcome is unknown; review its effects before trying it again.";
+
+/** Add the failure to both live UI output and the message later persisted. */
+export const appendProviderEmptyResponseFailure = (
+  messages: UIMessage[],
+  messageId: string,
+  writer: UIMessageStreamWriter,
+): void => {
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  const failurePart = {
+    type: "text" as const,
+    text: PROVIDER_EMPTY_RESPONSE_MESSAGE,
+    state: "done" as const,
+  };
+  if (assistant) {
+    assistant.parts = [
+      ...assistant.parts.map((part) => {
+        if (!isStaticToolUIPart(part) || part.state !== "input-available")
+          return part;
+        writer.write({
+          type: "tool-output-error",
+          toolCallId: part.toolCallId,
+          errorText: UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE,
+          providerExecuted: part.providerExecuted,
+        });
+        return {
+          ...part,
+          state: "output-error" as const,
+          errorText: UNKNOWN_PROVIDER_TOOL_OUTCOME_MESSAGE,
+        };
+      }),
+      failurePart,
+    ];
+  } else {
+    messages.push({ id: messageId, role: "assistant", parts: [failurePart] });
+  }
+  const textId = `provider-empty-${messageId}`;
+  writer.write({ type: "text-start", id: textId });
+  writer.write({ type: "text-delta", id: textId, delta: failurePart.text });
+  writer.write({ type: "text-end", id: textId });
 };
 
 const hasReasoningPart = (parts: unknown[]): boolean =>
@@ -445,6 +556,15 @@ export const shouldRetryProviderStreamWithFallback = (
   // excluded: their text and completed tool effects must be saved, and the
   // existing bounded continuation keeps the user's selected model.
   if (shouldRetryProviderStreamAfterNonDurableOutputLimit(parts, options)) {
+    return true;
+  }
+
+  // The provider can finish normally after spending its output on hidden
+  // reasoning. Retry only when there are no tool effects to replay.
+  if (
+    isTerminalEmptyAssistantResponse(parts, options.finishReason) &&
+    parts.every(isFallbackSafeProviderPart)
+  ) {
     return true;
   }
 

@@ -3,6 +3,13 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { workos } from "../../../../workos";
 import { requireAdminOrg } from "../../../team-auth";
+import { z } from "zod";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+
+const memberSettingsSchema = z.object({
+  monthlyLimitDollars: z.number().finite().nullable().optional(),
+  disabled: z.boolean().optional(),
+});
 
 /**
  * PATCH /api/team/extra-usage/members/:userId
@@ -46,7 +53,14 @@ export const PATCH = async (
       disabled?: boolean;
     };
     try {
-      body = await req.json();
+      const parsed = memberSettingsSchema.safeParse(await req.json());
+      if (!parsed.success) {
+        return NextResponse.json(
+          { error: "Invalid member usage settings" },
+          { status: 400 },
+        );
+      }
+      body = parsed.data;
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
@@ -61,9 +75,13 @@ export const PATCH = async (
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "An error occurred";
-    console.error("Failed to update team member usage settings:", error);
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    console.error(
+      "Failed to update team member usage settings:",
+      stringifyRedactedError(error),
+    );
+    return NextResponse.json(
+      { error: "Unable to update member usage settings" },
+      { status: 500 },
+    );
   }
 };

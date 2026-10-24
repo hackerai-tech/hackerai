@@ -48,6 +48,36 @@ describe("ToolLoopObserver", () => {
     });
   });
 
+  it.each([2, 3, 4])(
+    "reports each threshold only once as a %i-step cycle rotates",
+    (period) => {
+      const observer = new ToolLoopObserver();
+      const events = [];
+      for (let i = 0; i < period * 6 - 1; i++) {
+        const event = observe(
+          observer,
+          { path: `/${i % period}` },
+          `result ${i % period}`,
+        );
+        if (event) events.push({ step: i + 1, laps: event.repeatCount });
+      }
+      expect(events).toEqual([
+        { step: period * 3, laps: 3 },
+        { step: period * 5, laps: 5 },
+      ]);
+      // New evidence breaks the cycle and permits a new three-lap warning.
+      observe(observer, { path: "/new" }, "new evidence");
+      let resumed;
+      for (let i = 0; i < period * 3; i++)
+        resumed = observe(
+          observer,
+          { path: `/${i % period}` },
+          `result ${i % period}`,
+        );
+      expect(resumed?.repeatCount).toBe(3);
+    },
+  );
+
   it("detects alternating failed commands despite fresh terminal sessions", () => {
     const observer = new ToolLoopObserver();
     let result;
@@ -64,6 +94,7 @@ describe("ToolLoopObserver", () => {
             recordPath: `/records/session-${i}.json`,
             pid: 100 + i,
             rawSnapshot: `replay-${i}`,
+            callTiming: { startedAt: `time-${i}`, elapsedMs: i * 100 },
             executionEnvironment: "cloud",
             workingDirectory: "/home/user",
           },
@@ -106,6 +137,54 @@ describe("ToolLoopObserver", () => {
         ),
       ).toBeUndefined();
     }
+  });
+
+  it("detects mixed terminal steps despite fresh timing on interactive results", () => {
+    const observer = new ToolLoopObserver();
+    let observation;
+    for (let i = 0; i < 3; i++) {
+      observation = observer.observe(
+        [
+          {
+            toolCallId: "exec",
+            toolName: "run_terminal_cmd",
+            input: { command: "check" },
+          },
+          {
+            toolCallId: "view",
+            toolName: "interact_terminal_session",
+            input: { action: "view", session: "existing" },
+          },
+        ],
+        [
+          {
+            toolCallId: "exec",
+            output: {
+              result: {
+                output: "unchanged",
+                exitCode: 1,
+                callTiming: { elapsedMs: i },
+              },
+            },
+          },
+          {
+            toolCallId: "view",
+            output: {
+              result: {
+                output: "unchanged",
+                callTiming: { startedAt: String(i), elapsedMs: i * 10 },
+              },
+            },
+          },
+        ],
+        tools,
+      );
+    }
+    expect(observation).toEqual({
+      toolNames: ["run_terminal_cmd", "interact_terminal_session"],
+      repeatCount: 3,
+      cycleLength: 1,
+    });
   });
 
   it("does not confuse changed output with stalled work", () => {

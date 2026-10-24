@@ -1,6 +1,6 @@
 /** Real local file/HTTP transfers; Convex persistence and URL signing are in-memory fixtures. */
 jest.mock("server-only", () => ({}), { virtual: true });
-jest.mock("@/convex/_generated/server", () => ({
+jest.mock("@/convex/lib/serviceFunctions", () => ({
   action: (config: unknown) => config,
 }));
 jest.mock("@/convex/s3Utils", () => ({
@@ -16,13 +16,21 @@ jest.mock("pdfjs-serverless", () => ({ getDocument: jest.fn() }));
 jest.mock("isbinaryfile", () => ({ isBinaryFile: jest.fn() }));
 
 import { createServer, request, type Server } from "node:http";
-import { mkdtemp, readFile, writeFile, rm, symlink } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  rm,
+  symlink,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
+import { phLogger } from "@/lib/posthog/server";
 import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
 import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
 import { saveSandboxGeneratedFile } from "@/convex/fileActions";
@@ -158,8 +166,14 @@ describe("generated artifact delivery over HTTP", () => {
   async function deliverAfterReconnect(
     useSymlink = false,
     disconnectStream = false,
+    nativeMetadata = false,
+    nativeMissing = false,
+    options: { windows?: boolean; nativeUploadError?: Error } = {},
   ) {
-    const source = join(directory, "report.txt");
+    const source = join(
+      directory,
+      nativeMetadata ? "report & review!.txt" : "report.txt",
+    );
     await rm(source, { force: true });
     if (useSymlink) {
       const target = join(directory, "original-report.txt");
@@ -171,15 +185,25 @@ describe("generated artifact delivery over HTTP", () => {
     const connected = {
       sandboxKind: "centrifugo",
       getConnectionId: () => "reconnected-same-machine",
-      isWindows: () => false,
+      isWindows: () => options.windows ?? false,
+      detectShell: async () => (options.windows ? "cmd" : "bash"),
+      supportsNativeFileRelay: () => nativeMetadata,
       commands: {
-        run: async (command: string) => ({
-          ...(await exec("/bin/sh", ["-c", command])),
-          exitCode: 0,
+        run: jest.fn(async (command: string) => {
+          if (nativeMetadata) throw new Error("Shell metadata is unavailable");
+          return {
+            ...(await exec("/bin/sh", ["-c", command])),
+            exitCode: 0,
+          };
         }),
       },
       files: {
+        stat: async (path: string) =>
+          nativeMissing
+            ? { kind: "missing", path }
+            : { kind: "file", path, sizeBytes: (await stat(path)).size },
         uploadToUrl: async (path: string, url: string) => {
+          if (options.nativeUploadError) throw options.nativeUploadError;
           const response = await transfer(url, "PUT", await readFile(path));
           if (response.status !== 200) throw new Error("Upload failed");
         },
@@ -188,6 +212,12 @@ describe("generated artifact delivery over HTTP", () => {
     const stale = {
       ...connected,
       getConnectionId: () => "stale",
+      files: {
+        ...connected.files,
+        stat: async () => {
+          throw new LocalCommandRelayUnsubscribedError("stale");
+        },
+      },
       commands: {
         run: async () => {
           throw new LocalCommandRelayUnsubscribedError("stale");
@@ -226,8 +256,123 @@ describe("generated artifact delivery over HTTP", () => {
       { files: [source] },
       { toolCallId: "delivery-fixture" },
     );
-    return { source, context, result };
+    return { source, context, result, sandbox: connected };
   }
+
+  it("retains a Windows native transfer failure after reconnect without a shell retry or stored receipt", async () => {
+    const { context, result, sandbox } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+      false,
+      {
+        windows: true,
+        nativeUploadError: new Error("Native upload connection closed"),
+      },
+    );
+    expect(context.sandboxManager.recoverLocalConnection).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(result.files).toEqual([]);
+    expect(result.deliveryReceipts).toEqual([]);
+    expect(result.failedFiles).toEqual([
+      expect.objectContaining({
+        reason: expect.stringContaining("Native upload connection closed"),
+      }),
+    ]);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(context.fileAccumulator.add).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        delivered_file_count: 0,
+        failed_file_count: 1,
+        failure_phase_counts: { transfer: 1 },
+      }),
+    );
+  });
+
+  it("delivers a Windows native artifact after reconnect and reopens the stored bytes", async () => {
+    const { source, result, sandbox } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+      false,
+      { windows: true },
+    );
+    expect(result.failedFiles).toEqual([]);
+    expect(result.deliveryReceipts[0]).toMatchObject({
+      fileId: "file-fixture",
+      storageStatus: "stored",
+    });
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    await rm(source);
+    const url = await getSandboxUploadedFileUrl({
+      fileId: "file-fixture" as never,
+      userId: "test-user",
+    });
+    expect((await transfer(url!)).body.toString("utf8")).toBe(contents);
+  });
+
+  it("delivers native metadata files after reconnect without a shell size check", async () => {
+    const { source, context, result } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+    );
+    expect(context.sandboxManager.recoverLocalConnection).toHaveBeenCalledWith(
+      "stale",
+      "command_relay_unsubscribed",
+    );
+    expect(result.failedFiles).toEqual([]);
+    expect(result.deliveryReceipts[0]).toMatchObject({
+      fileId: "file-fixture",
+      sizeBytes: Buffer.byteLength(contents),
+      storageStatus: "stored",
+    });
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    await rm(source);
+    const url = await getSandboxUploadedFileUrl({
+      fileId: "file-fixture" as never,
+      userId: "test-user",
+    });
+    expect((await transfer(url!)).body.toString("utf8")).toBe(contents);
+  });
+
+  it("records the terminal bridge metadata reason after reconnect without uploading", async () => {
+    const { source, context, result } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+      true,
+    );
+    expect(context.sandboxManager.recoverLocalConnection).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(result.files).toEqual([]);
+    expect(result.deliveryReceipts).toEqual([]);
+    expect(result.failedFiles).toHaveLength(1);
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(storage.generateS3UploadUrl).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        delivered_file_count: 0,
+        failed_file_count: 1,
+        failure_phase_counts: { file_metadata: 1 },
+        metadata_failure_diagnostic_version: 1,
+        metadata_failure_reason_counts: { native_file_missing: 1 },
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain(source);
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain(contents);
+  });
 
   it.each([false, true])(
     "reconnects and opens the stored bytes without the source (symlink: %s)",

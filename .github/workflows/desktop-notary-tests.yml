@@ -1,0 +1,29 @@
+name: Desktop Notarization Recovery Tests
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/*notary*.py
+      - .github/scripts/*universal-dmg.sh
+      - .github/workflows/desktop-build.yml
+      - .github/workflows/desktop-notary-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/*notary*.py
+      - .github/scripts/*universal-dmg.sh
+      - .github/workflows/desktop-build.yml
+      - .github/workflows/desktop-notary-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  notary-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test interruption, redaction, and promotion boundary
+        run: python3 -m unittest discover -s .github/scripts -p test_notary_recovery.py -v

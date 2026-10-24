@@ -2023,13 +2023,16 @@ describe("attachment write fallback observability", () => {
 });
 
 it.each([
-  new CloudAcquisitionTimeoutError("connect"),
-  new CloudAcquisitionBudgetExhaustedError(
-    new CloudAcquisitionTimeoutError("discovery"),
-  ),
+  [new CloudAcquisitionTimeoutError("connect"), "connect"],
+  [
+    new CloudAcquisitionBudgetExhaustedError(
+      new CloudAcquisitionTimeoutError("discovery"),
+    ),
+    "discovery",
+  ],
 ])(
   "does not schedule an attachment reconnect after the cloud budget is spent: %s",
-  async (error) => {
+  async (error, acquisitionStage) => {
     const ensureSandbox = jest.fn().mockRejectedValue(error);
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -2052,6 +2055,7 @@ it.each([
         upload_failure_phase: "acquisition",
         upload_failure_reason: "sandbox_operation_timeout",
         upload_failure_error_name: error.name,
+        upload_failure_acquisition_stage: acquisitionStage,
       });
       expect(getSandboxUploadUserMessage(result)).toBe(
         "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.",
@@ -2068,6 +2072,39 @@ it.each([
     }
   },
 );
+
+it("does not copy an unsupported or spoofed acquisition stage into failure metadata", async () => {
+  const invalid = new CloudAcquisitionTimeoutError("connect");
+  Object.defineProperty(invalid, "acquisitionStage", {
+    value: "PRIVATE_STAGE_CANARY",
+  });
+  const spoofed = Object.assign(new Error("Cloud connection unavailable"), {
+    name: "CloudAcquisitionTimeoutError",
+    acquisitionStage: "connect",
+  });
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const error of [invalid, spoofed]) {
+      const ensureSandbox = jest.fn().mockRejectedValue(error);
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/test",
+            localPath: "/tmp/test",
+          },
+        ],
+        ensureSandbox,
+      );
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      const metadata = getSandboxUploadFailureMetadata(result);
+      expect(metadata).not.toHaveProperty("upload_failure_acquisition_stage");
+      expect(JSON.stringify(metadata)).not.toContain("PRIVATE_STAGE_CANARY");
+    }
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
 
 it("skips attachment refresh when an earlier acquisition has already spent the first attempt", async () => {
   const budget = new CloudAcquisitionBudget();

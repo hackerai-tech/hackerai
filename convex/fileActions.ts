@@ -11,7 +11,7 @@ if (typeof (Promise as unknown as { try?: unknown }).try !== "function") {
   };
 }
 
-import { action } from "./_generated/server";
+import { action } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { decode } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";

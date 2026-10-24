@@ -22,6 +22,8 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<target_request_limits>");
+      expect(ask).not.toContain("<target_request_limits>");
       expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
@@ -275,58 +277,66 @@ describe("systemPrompt security instructions", () => {
     expect(prompt).toBe(baseline);
   });
 
-  it("shares response style and freshness guidance across modes", async () => {
-    const askPrompt = await systemPrompt(
-      "user_123",
-      "ask",
-      "pro",
-      "ask-model",
-      null,
-      null,
-    );
-    const agentPrompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-    );
+  it.each([
+    ["ask-model", "agent-model"],
+    ["ask-model-free", "agent-model-free"],
+    ["model-deepseek-v4-pro-0813", "model-deepseek-v4-pro-0813"],
+  ] as const)(
+    "shares response style and freshness guidance across modes (%s, %s)",
+    async (askModel, agentModel) => {
+      const askPrompt = await systemPrompt(
+        "user_123",
+        "ask",
+        "pro",
+        askModel,
+        null,
+        null,
+      );
+      const agentPrompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        agentModel,
+        null,
+        null,
+      );
 
-    for (const prompt of [askPrompt, agentPrompt]) {
-      expect(prompt).toContain("<response_style>");
-      expect(prompt).toContain(
-        "For simple or conversational requests, respond naturally and concisely",
-      );
-      expect(prompt).toContain(
-        "Give the best useful answer before asking a follow-up question.",
-      );
-      expect(prompt).toContain(
-        "Do not use emojis unless the user asks for them",
-      );
-      expect(prompt.match(/emojis/gi)).toHaveLength(1);
+      for (const prompt of [askPrompt, agentPrompt]) {
+        expect(prompt).toContain("<response_style>");
+        expect(prompt).toContain(
+          "For simple or conversational requests, respond naturally and concisely",
+        );
+        expect(prompt).toContain(
+          "Give the best useful answer before asking a follow-up question.",
+        );
+        expect(prompt).toContain(
+          "Do not use emojis unless the user asks for them",
+        );
+        expect(prompt.match(/emojis/gi)).toHaveLength(1);
 
-      expect(prompt).toContain("<freshness_and_web_search>");
-      expect(prompt).toContain("Your reliable knowledge cutoff is");
-      expect(prompt).toContain(
-        "Use web_search when the user asks for current or time-sensitive information",
-      );
-      expect(prompt).toContain(
-        "Use open_url when the user provides a specific page to inspect",
-      );
-      expect(prompt).toContain("Do not search for stable general concepts");
+        expect(prompt).toContain("<freshness_and_web_search>");
+        expect(prompt).toContain("Your reliable knowledge cutoff is");
+        expect(prompt).toContain(
+          "Use web_search when the user asks for current or time-sensitive information",
+        );
+        expect(prompt).toContain(
+          "Use open_url when the user provides a specific page to inspect",
+        );
+        expect(prompt).toContain("Do not search for stable general concepts");
 
-      expect(prompt.match(/<response_style>/g)).toHaveLength(1);
-      expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
-      expect(prompt).toContain("<evidence_and_inference>");
-      expect(prompt).toContain(
-        "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
-      );
-      expect(prompt).toContain(
-        "Clearly distinguish observations, inferences, and unresolved uncertainty.",
-      );
-    }
-  });
+        expect(prompt.match(/<response_style>/g)).toHaveLength(1);
+        expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
+        expect(prompt).not.toContain("<web_tool_usage>");
+        expect(prompt).toContain("<evidence_and_inference>");
+        expect(prompt).toContain(
+          "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
+        );
+        expect(prompt).toContain(
+          "Clearly distinguish observations, inferences, and unresolved uncertainty.",
+        );
+      }
+    },
+  );
 
   it("does not invent a cutoff for the free Ask route", async () => {
     const prompt = await systemPrompt(

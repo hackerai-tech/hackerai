@@ -1,4 +1,5 @@
 import { AGENT_BROWSER_GUIDANCE } from "./ai/browser-guidance";
+import { TARGET_REQUEST_GUIDANCE } from "./ai/target-request-guidance";
 import type {
   AgentPermissionMode,
   ChatMode,
@@ -8,11 +9,7 @@ import type {
 } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
-import {
-  getModelCutoffDate,
-  isDeepSeekModel,
-  type ModelName,
-} from "@/lib/ai/providers";
+import { getModelCutoffDate, type ModelName } from "@/lib/ai/providers";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Keep the boundary before any user or host text; provider serialization splits only once.
@@ -241,12 +238,14 @@ For every Agent task, including coding, research, configuration, files, and pent
 
 ${AGENT_ARTIFACT_HYGIENE_SECTION}
 
+${TARGET_REQUEST_GUIDANCE}
+
 <maximize_parallel_tool_calls>
 Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
 
 USE PARALLEL tool calls when operations are genuinely independent:
 - Scanning multiple unrelated targets or subnets simultaneously
-- Running different reconnaissance tools on the same target
+- Running different reconnaissance tools on the same target only when their combined traffic respects its request limits and no cooldown applies
 - Testing multiple attack vectors that don't interfere with each other
 - Parallel subdomain enumeration or OSINT gathering
 - Concurrent log analysis or report generation from existing data
@@ -336,32 +335,6 @@ const getProductQuestionsSection = (subscription: SubscriptionTier): string =>
 or how to perform actions within the application, HackerAI should say that it doesn't know \
 and point them to 'https://help.hackerai.co'.`;
 
-const getDeepSeekToolUsageInstructions = (): string => `<web_tool_usage>
-CRITICAL: The web_search and open_url tools are EXPENSIVE. Invoke them only when answering the user's current question genuinely requires information you do not already have. Default to answering from your own knowledge.
-
-Use web_search ONLY when:
-- The user explicitly asks you to search, look up, verify, or find something online.
-- The question depends on real-time or post-cutoff data (current prices, weather, breaking news, live schedules, recent releases, election/appointment outcomes after your knowledge cutoff).
-- You genuinely do not know the answer and cannot reason it out from training knowledge or the conversation context.
-
-Do NOT use web_search for:
-- General concepts, definitions, programming, security, or technical fundamentals.
-- Common vulnerabilities, attack methodologies, tool usage, or anything covered by your training.
-- "Double-checking", "being thorough", or gathering extra context the user did not ask for.
-- Information already present in the conversation, attached files, or prior tool results.
-
-Use open_url ONLY when:
-- The user provides a specific URL and asks you to read, summarize, or analyze it.
-- A web_search result returned a URL whose contents are essential to answer the question, and the snippet alone is insufficient.
-
-Do NOT use open_url to:
-- Proactively crawl pages for background context.
-- Follow links you discovered on your own without a clear need from the user's question.
-- Re-fetch a page you already opened in this conversation.
-
-When in doubt, answer from your own knowledge first. One focused query beats several speculative ones.
-</web_tool_usage>`;
-
 const getAskModeSection = (
   subscription: SubscriptionTier,
   notesEnabled: boolean,
@@ -450,10 +423,6 @@ Your main goal is to follow the USER's instructions at each message.`;
     if (genericDelegationEnabled) {
       sections.push(getGenericDelegationSection(agentPermissionMode));
     }
-  }
-
-  if (isDeepSeekModel(modelName)) {
-    sections.push(getDeepSeekToolUsageInstructions());
   }
 
   const securityExecutionEnvironment =

@@ -1,4 +1,4 @@
-import { internalMutation, mutation } from "./_generated/server";
+import { internalMutation, mutation } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { convexLogger } from "./lib/logger";
 

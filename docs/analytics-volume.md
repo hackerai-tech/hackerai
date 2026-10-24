@@ -4,6 +4,20 @@ Keep payment, usage-cost, request outcome and actual experiment exposure events
 unsampled. Apply reductions at the producer so the events never reach ingestion.
 Deleting reports or historical data does not replace stopping unnecessary capture.
 
+`x_referral_visit` records an actual browser arrival with a `t.co`, `x.com`, or
+`twitter.com` referrer, including their subdomains. It requires the existing
+analytics consent decision and excludes recognizable crawlers/link previews.
+Anonymous arrivals initialize the same PostHog identity later used by `identify`,
+but allow only this event through `before_send`; pageviews, replay, surveys and
+exception capture stay disabled. Preserve the anonymous identity across navigation,
+and reset it on logout from an identified account or consent withdrawal.
+Capture is best effort; a stable identity/day UUID bounds repeats and browser
+storage avoids sending them. Count distinct persons over the entire reporting
+window, not summed daily uniques or event counts. The event allowlist removes
+SDK-added URLs, query strings and person properties. It does not require tagged
+links or replace the original first-touch attribution. Direct/search visits have
+no X evidence and are not inferred to be X traffic.
+
 ## Customer-visible performance
 
 `chat_visible_response_performance` records one best-effort summary per new
@@ -80,3 +94,37 @@ and `platform_costs_daily` run daily. Reports can lag source data by a day.
 Keep full refresh until an incremental replacement accounts for mutable rows,
 backdated adjustments and deletions. Sync schedules are managed in PostHog,
 independently of Vercel, Trigger and Convex deployments.
+
+## Desktop acknowledged output
+
+`desktop_ack_command_started` and `desktop_ack_command_settled` measure the
+Desktop sender's `ack-v1` delivery window. They are separate from the legacy
+`desktop_stream_command_settled` event. Join each pair by connection and command
+ID, and use `triggerRunId` / `chatId` for outcome correlation. Schema version 1
+includes the loaded frontend commit when available; worker version alone cannot
+identify the Desktop frontend. Deduplicate by event name, connection and command.
+
+Every identified command emits a start and, on sender settlement, at most one
+final event. Analytics is best effort, uses the existing bounded authenticated
+queue and consent settings, and is suppressed across account changes. A missing
+final (including app exit, lost telemetry or identity changes) is unknown, never
+successful delivery. Report start/final coverage and build availability alongside
+rates; this is not a census of commands from unidentified clients.
+
+`acknowledged` means the cumulative receiver ACK reached the terminal frame.
+`terminalType` distinguishes an exit frame from an error frame; acknowledgement
+is not successful execution, durable storage, semantic correctness or whole-run
+completion. `canceled` and `incomplete` remain separate outcomes. Finite reasons
+identify terminal ACK, cancellation, buffer exhaustion, deadline, lost ownership
+and explicit stop without exporting exception text.
+
+Frame counts distinguish observed callbacks, admitted frames and acknowledged
+frames. An overflow-rejected callback is observed but not admitted. Publish and
+replay attempts are attempts, not receipts; publish failures count rejected
+promises observed before settlement. Resume requests and replay attempts can
+follow a lost ACK even when the original output arrived. Report terminal ACK
+rates among all observed starts and separately among streams with replay,
+resume or publish-failure evidence; never claim a retransmission alone proves
+recovery. Counts, pending bytes and duration are frozen before buffer release,
+including when native invocation or publication has not returned. No command
+text, stdout/stderr, error message, paths or environment values are collected.

@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "./_generated/server";
+import { action } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import {
   getBudgetLimits,

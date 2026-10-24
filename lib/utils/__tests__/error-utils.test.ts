@@ -5,6 +5,7 @@ import {
   createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   extractRetryAttempts,
+  getErrorMessage,
   getUserFriendlyProviderError,
   getProviderErrorCategory,
   getProviderStatusCode,
@@ -28,6 +29,19 @@ const retryError = (errors: unknown[]) =>
     name: "AI_RetryError",
     errors,
   });
+
+describe("missing error messages", () => {
+  it.each([undefined, { message: undefined }, { toJSON: () => undefined }])(
+    "keeps structured error extraction safe without serialized text",
+    (value) => {
+      expect(getErrorMessage(value)).toBe("Unknown error occurred");
+      expect(extractErrorDetails(value)).toMatchObject({
+        errorName: "UnknownError",
+        errorMessage: "Unknown error occurred",
+      });
+    },
+  );
+});
 
 describe("extractRetryAttempts -> request_id", () => {
   it("extracts OpenRouter provider metadata from data.error.metadata", () => {

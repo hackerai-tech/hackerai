@@ -17,7 +17,7 @@ const freeAsk = {
 const freeAgent = {
   ...freeAsk,
   mode: "agent" as const,
-  selectedModel: "agent-model-free",
+  selectedModel: "model-glm-5.3-flash-agent",
 };
 const paid = {
   ...freeAsk,
@@ -87,7 +87,6 @@ describe("Flash routing experiments", () => {
     { ...freeAgent, mode: "ask" as const },
     { ...freeAgent, subscription: "pro" as const },
     { ...freeAgent, selectedModel: "model-deepseek-v4-flash-vision" },
-    { ...freeAgent, selectedModel: "model-glm-5.3-flash-agent" },
     { ...freeAgent, hasImages: true },
     { ...freeAgent, userId: "" },
     { ...paid, mode: "ask" as const },
@@ -177,7 +176,7 @@ describe("Flash routing experiments", () => {
       requestId: "request-1",
     });
     expect(capture).not.toHaveBeenCalled();
-    record("deepseek/deepseek-v4.1-flash");
+    record("deepseek/deepseek-v4.1-flash-1017");
     expect(capture).not.toHaveBeenCalled();
     record("z-ai/glm-5.3-flash");
     record("z-ai/glm-5.3-flash");
@@ -196,6 +195,7 @@ describe("Flash routing experiments", () => {
         selected_model: "model-glm-5.3-flash-agent",
         configured_model: "z-ai/glm-5.3-flash",
         request_id: "request-1",
+        message_id: "request-1",
         exposure_surface: "provider_request",
         $process_person_profile: false,
       },

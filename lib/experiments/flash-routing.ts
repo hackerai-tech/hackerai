@@ -21,6 +21,8 @@ export async function evaluateFlashRouting({
   subscription,
   selectedModel,
   hasImages,
+  limitRescue = false,
+  modelPolicyActive = false,
 }: {
   posthog: Pick<PostHog, "evaluateFlags"> | null;
   userId: string;
@@ -28,8 +30,11 @@ export async function evaluateFlashRouting({
   subscription: SubscriptionTier;
   selectedModel: ModelName;
   hasImages: boolean;
+  limitRescue?: boolean;
+  modelPolicyActive?: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
-  if (!posthog || !userId || hasImages) return undefined;
+  if (!posthog || !userId || limitRescue || modelPolicyActive) return undefined;
+  if (hasImages) return undefined;
   const key =
     mode === "agent" &&
     subscription !== "free" &&
@@ -115,6 +120,7 @@ export function createFlashRoutingExposureRecorder({
           selected_model: assignment.modelKey,
           configured_model: configuredModel,
           request_id: requestId,
+          message_id: requestId,
           exposure_surface: "provider_request",
           $process_person_profile: false,
         },

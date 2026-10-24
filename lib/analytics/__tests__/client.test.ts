@@ -1,4 +1,5 @@
 import {
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -21,6 +22,8 @@ jest.mock("posthog-js", () => ({
 }));
 
 const {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
   subscribeAuthenticatedAnalytics,
   captureComputerActivationImpression,
@@ -49,6 +52,133 @@ describe("client analytics", () => {
     mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
     jest.useFakeTimers().setSystemTime(new Date("2026-07-14T12:00:00Z"));
+  });
+
+  describe("native auth frontend build attribution", () => {
+    const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    const properties = {
+      native_auth_diagnostic_version: 1,
+      convex_request_id: "0123456789abcdef",
+    };
+
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "A".repeat(40);
+    });
+
+    afterEach(() => {
+      if (originalBuild === undefined) {
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      } else {
+        process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+      }
+    });
+
+    it.each([
+      "sandbox_connection_terminated",
+      "desktop_bridge_relay_state_changed",
+    ])(
+      "attributes %s to the loaded frontend without mutating its diagnostic",
+      (event) => {
+        expect(captureAuthenticatedEvent(event, properties)).toBe(true);
+        expect(mockCapture).toHaveBeenCalledWith(event, {
+          ...properties,
+          hackerai_frontend_build_commit: "a".repeat(40),
+        });
+        expect(properties).not.toHaveProperty("hackerai_frontend_build_commit");
+      },
+    );
+
+    it.each([undefined, "a".repeat(39), "a".repeat(41), "g".repeat(40)])(
+      "omits an absent or malformed build without dropping the diagnostic (%s)",
+      (build) => {
+        if (build === undefined) {
+          delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        } else {
+          process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = build;
+        }
+        expect(
+          captureAuthenticatedEvent(
+            "sandbox_connection_terminated",
+            properties,
+          ),
+        ).toBe(true);
+        expect(mockCapture).toHaveBeenCalledWith(
+          "sandbox_connection_terminated",
+          properties,
+        );
+      },
+    );
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unrelated_event", properties],
+      ["sandbox_connection_terminated", { native_auth_diagnostic_version: 2 }],
+      ["desktop_bridge_relay_state_changed", { reason: "connected" }],
+    ])(
+      "preserves diagnostics outside the versioned auth scope (%s)",
+      (event, diagnostic) => {
+        expect(captureAuthenticatedEvent(event, diagnostic)).toBe(true);
+        expect(mockCapture).toHaveBeenCalledWith(event, diagnostic);
+      },
+    );
+
+    it("attributes a queued diagnostic when the identified SDK becomes ready", async () => {
+      mockPostHog.__loaded = false;
+      expect(
+        captureQueuedAuthenticatedEvent({
+          event: "sandbox_connection_terminated",
+          properties,
+          dedupeKey: "owned-native-auth-fixture",
+        }),
+      ).toBe(true);
+      expect(mockCapture).not.toHaveBeenCalled();
+      mockPostHog.__loaded = true;
+      expect(flushPendingAuthenticatedEvents("user_123")).toBe(true);
+      await Promise.resolve();
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockCapture).toHaveBeenCalledWith(
+        "sandbox_connection_terminated",
+        { ...properties, hackerai_frontend_build_commit: "a".repeat(40) },
+        { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
+      );
+    });
+
+    it("retains best-effort capture failure without retrying the diagnostic", () => {
+      mockCapture.mockImplementationOnce(() => {
+        throw new Error("SDK unavailable");
+      });
+      expect(
+        captureAuthenticatedEvent("sandbox_connection_terminated", properties),
+      ).toBe(false);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["not configured", "SDK not ready"])(
+      "does not bypass the existing capture gate when %s",
+      (state) => {
+        const originalKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+        try {
+          if (state === "not configured") {
+            delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
+          } else {
+            mockPostHog.__loaded = false;
+          }
+          expect(
+            captureAuthenticatedEvent(
+              "sandbox_connection_terminated",
+              properties,
+            ),
+          ).toBe(false);
+          expect(mockCapture).not.toHaveBeenCalled();
+        } finally {
+          if (originalKey === undefined) {
+            delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
+          } else {
+            process.env.NEXT_PUBLIC_POSTHOG_KEY = originalKey;
+          }
+          mockPostHog.__loaded = true;
+        }
+      },
+    );
   });
 
   it("notifies survey consumers only of the consented, identified account", () => {

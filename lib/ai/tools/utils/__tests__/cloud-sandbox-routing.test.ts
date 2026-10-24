@@ -1,3 +1,10 @@
+jest.mock("@/lib/cloud-recovery/store", () => ({ readFailures: jest.fn() }));
+import { readFailures } from "@/lib/cloud-recovery/store";
+jest.mock("@/lib/cloud-network/service", () => ({
+  readNetworkSettings: jest.fn(async () => null),
+  ensureCloudNetwork: jest.fn(async () => {}),
+}));
+import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
@@ -110,6 +117,17 @@ describe("E2B cloud acquisition", () => {
     );
   });
 
+  it("does not publish a workspace whose network policy could not be applied", async () => {
+    jest
+      .mocked(ensureCloudNetwork)
+      .mockRejectedValueOnce(new Error("network unavailable"));
+    const setSandbox = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox }),
+    ).rejects.toThrow("network unavailable");
+    expect(setSandbox).not.toHaveBeenCalled();
+  });
+
   it("reconnects the exact recovered destination rather than discovering its stale source", async () => {
     read.mockResolvedValue(recovered);
     await ensureCloudSandboxConnection({
@@ -132,7 +150,62 @@ describe("E2B cloud acquisition", () => {
     ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
     expect(ensure).not.toHaveBeenCalled();
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
+
+  it.each(["cleanup", "deleted"] as const)(
+    "attributes a %s workspace rejection without logging the persisted record",
+    async (phase) => {
+      read.mockResolvedValue({
+        version: 1,
+        phase,
+        token: "private-cleanup-token",
+        migration: recovered,
+      });
+      const setSandbox = jest.fn();
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { chatId: "chat-1", triggerRunId: "run-1" },
+        }),
+      ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          userId: "user-1",
+          chat_id: "chat-1",
+          trigger_run_id: "run-1",
+          workspace_guard_reason: "workspace_phase_unavailable",
+          workspace_phase: phase,
+        }),
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        "Cloud sandbox acquisition completed",
+        expect.objectContaining({
+          outcome: "error",
+          workspace_guard_reason: "workspace_phase_unavailable",
+          workspace_phase: phase,
+        }),
+      );
+      const logged = JSON.stringify([
+        jest.mocked(phLogger.event).mock.calls,
+        jest.mocked(console.warn).mock.calls,
+      ]);
+      for (const value of [
+        "private-cleanup-token",
+        recovered.token,
+        recovered.sourceId,
+        recovered.destinationId,
+      ]) {
+        expect(logged).not.toContain(value);
+      }
+    },
+  );
 
   it.each([undefined, "eu-central-1"] as const)(
     "does not reconnect a pin through an unverified or different cluster: %s",
@@ -148,8 +221,33 @@ describe("E2B cloud acquisition", () => {
         }),
       ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
       expect(ensure).not.toHaveBeenCalled();
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          workspace_guard_reason: region
+            ? "workspace_region_mismatch"
+            : "trigger_region_missing",
+          workspace_phase: "e2b",
+          workspace_region: "us-east-1",
+          trigger_region: region,
+        }),
+      );
     },
   );
+
+  it("does not label different regions in the same E2B cluster as a mismatch", async () => {
+    read.mockResolvedValue(recovered);
+    const setSandbox = jest.fn();
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { triggerRegion: "us-west-2" },
+    });
+    expect(setSandbox).toHaveBeenCalledWith({ sandboxId: "new-e2b" });
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
+  });
 
   it("never publishes a result if cleanup takes ownership during acquisition", async () => {
     available.mockRejectedValue(new CloudWorkspaceUnavailableError());
@@ -158,6 +256,9 @@ describe("E2B cloud acquisition", () => {
       ensureCloudSandboxConnection({ userId: "user-1", setSandbox }),
     ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
 
   it("fences late results after cancellation without publishing a connection", async () => {
@@ -175,5 +276,38 @@ describe("E2B cloud acquisition", () => {
       }),
     ).rejects.toThrow();
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
+});
+
+it("pins ordinary retries to a failed workspace even if discovery would return empty", async () => {
+  const original = process.env.CLOUD_DISK_RECOVERY_TARGETS;
+  process.env.CLOUD_DISK_RECOVERY_TARGETS = "configured";
+  read.mockResolvedValue(null);
+  available.mockResolvedValue(undefined);
+  jest.mocked(readFailures).mockResolvedValue({
+    sandboxId: "failed-existing",
+    region: "us-east-1",
+  } as never);
+  ensure.mockRejectedValueOnce(new Error("workspace not found"));
+  const publish = jest.fn();
+  try {
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: publish,
+        context: { triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow("workspace not found");
+    expect(ensure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ destinationId: "failed-existing" }),
+    );
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    if (original === undefined) delete process.env.CLOUD_DISK_RECOVERY_TARGETS;
+    else process.env.CLOUD_DISK_RECOVERY_TARGETS = original;
+  }
 });

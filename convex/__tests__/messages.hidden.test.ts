@@ -1,7 +1,7 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
@@ -34,6 +34,7 @@ jest.mock("convex/values", () => {
       }
     },
     getDocumentSize: actualValues.getDocumentSize,
+    getConvexSize: actualValues.getConvexSize,
   };
 });
 jest.mock("../_generated/api", () => ({
@@ -141,6 +142,100 @@ describe("saveMessage — is_hidden handling", () => {
       };
     });
   }
+
+  it.each(["run-new", undefined])(
+    "rejects a crash save when active run is %s",
+    async (activeRun) => {
+      setupExistingMessage(null, {
+        _id: "chat-doc",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        active_trigger_run_id: activeRun,
+      });
+      const { saveMessage } = await import("../messages");
+      expect(
+        await saveMessage.handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "message",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "assistant",
+          parts: [{ type: "text", text: "stale" }],
+          triggerRunId: "run-old",
+          expectedActiveTriggerRunId: "run-old",
+        }),
+      ).toBe("stale_run");
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["trigger_crashed_client_saved", "stop"])(
+    "refreshes only the same run's recoverable snapshot, existing reason %s",
+    async (finishReason) => {
+      const message = makeMessage({
+        role: "assistant",
+        finish_reason: finishReason,
+        trigger_run_id: "run-old",
+      });
+      setupExistingMessage(message, {
+        _id: "chat-doc",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        active_trigger_run_id: "run-old",
+      });
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: message.id,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [{ type: "text", text: "full retained progress" }],
+        triggerRunId: "run-old",
+        expectedActiveTriggerRunId: "run-old",
+      });
+      if (finishReason === "stop")
+        expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      else
+        expect(mockCtx.db.patch).toHaveBeenCalledWith(
+          message._id,
+          expect.objectContaining({
+            parts: [{ type: "text", text: "full retained progress" }],
+          }),
+        );
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { canceled_at: 1 },
+    { deletion_started_at: 1 },
+    { user_id: "different" },
+  ])("does not recover into an unwritable chat %j", async (fields) => {
+    setupExistingMessage(null, {
+      _id: "chat-doc",
+      id: CHAT_ID,
+      user_id: USER_ID,
+      active_trigger_run_id: "run-old",
+      ...fields,
+    });
+    const { saveMessage } = await import("../messages");
+    expect(
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "message",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [],
+        triggerRunId: "run-old",
+        expectedActiveTriggerRunId: "run-old",
+      }),
+    ).toBe("stale_run");
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
 
   it("should store is_hidden: true on insert", async () => {
     setupExistingMessage(null);
@@ -750,36 +845,40 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
     return paginateMock;
   }
 
-  it("should exclude messages where is_hidden is true", async () => {
-    const visibleMsg = makeMessage({
-      _id: "msg-doc-visible" as Id<"messages">,
-      id: "msg-visible",
-      role: "user",
-    });
-    const hiddenMsg = makeMessage({
-      _id: "msg-doc-hidden" as Id<"messages">,
-      id: "msg-hidden",
-      role: "user",
-      is_hidden: true,
-    });
+  it.each([undefined, true])(
+    "excludes hidden messages including takeover context (%s)",
+    async (isBrowserHandoff) => {
+      const visibleMsg = makeMessage({
+        _id: "msg-doc-visible" as Id<"messages">,
+        id: "msg-visible",
+        role: "user",
+      });
+      const hiddenMsg = makeMessage({
+        _id: "msg-doc-hidden" as Id<"messages">,
+        id: "msg-hidden",
+        role: "user",
+        is_hidden: true,
+        is_browser_handoff: isBrowserHandoff,
+      });
 
-    const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
+      const paginateMock = setupPaginatedMessages([visibleMsg, hiddenMsg]);
 
-    const { getMessagesByChatId } = await import("../messages");
+      const { getMessagesByChatId } = await import("../messages");
 
-    const result = await getMessagesByChatId.handler(mockCtx, {
-      chatId: CHAT_ID,
-      paginationOpts: { numItems: 10, cursor: null },
-    });
+      const result = await getMessagesByChatId.handler(mockCtx, {
+        chatId: CHAT_ID,
+        paginationOpts: { numItems: 10, cursor: null },
+      });
 
-    expect(result.page).toHaveLength(1);
-    expect(result.page[0].id).toBe("msg-visible");
-    expect(paginateMock).toHaveBeenCalledWith({
-      numItems: 10,
-      cursor: null,
-      maximumBytesRead: 4 * 1024 * 1024,
-    });
-  });
+      expect(result.page).toHaveLength(1);
+      expect(result.page[0].id).toBe("msg-visible");
+      expect(paginateMock).toHaveBeenCalledWith({
+        numItems: 10,
+        cursor: null,
+        maximumBytesRead: 4 * 1024 * 1024,
+      });
+    },
+  );
 
   it("should include messages where is_hidden is undefined or false", async () => {
     const msg1 = makeMessage({
@@ -939,6 +1038,33 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     );
     return paginateMock;
   }
+
+  it("rehydrates takeover context for a new Agent run while excluding auto-continue signals", async () => {
+    setupPaginatedMessages([
+      makeMessage({ id: "task" }),
+      makeMessage({
+        id: "note",
+        is_hidden: true,
+        is_browser_handoff: true,
+        parts: [{ type: "text", text: "STOP! /LAB?X=YES café 日本語 😀" }],
+      }),
+      makeMessage({ id: "signal", is_hidden: true }),
+    ]);
+    const { getMessagesPageForBackend } = await import("../messages");
+    const result = await getMessagesPageForBackend.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(result.page.map((message: any) => message.id)).toEqual([
+      "task",
+      "note",
+    ]);
+    expect(result.page[1].parts).toEqual([
+      { type: "text", text: "STOP! /LAB?X=YES café 日本語 😀" },
+    ]);
+  });
 
   it("returns routing provenance only for visible assistant messages, outside prompt parts", async () => {
     const seed = {
@@ -1117,6 +1243,185 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
 });
 
 describe("client stop-save routing provenance", () => {
+  const makeClientContext = () => ({
+    auth: {
+      getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+    },
+    runQuery: jest.fn<any>().mockResolvedValue(true),
+    db: {
+      query: jest.fn().mockReturnValue({
+        withIndex: jest.fn().mockReturnValue({
+          first: jest.fn<any>().mockResolvedValue(null),
+        }),
+      }),
+      insert: jest.fn<any>().mockResolvedValue("doc"),
+    },
+  });
+
+  it("fits the whole insert without shortening canonical multibyte text", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getDocumentSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const text = "🙂".repeat(150_000);
+    const parts = [{ type: "text", text }];
+    await saveAssistantMessage.handler(ctx as any, {
+      id: "large-client-text",
+      chatId: CHAT_ID,
+      role: "assistant",
+      parts,
+    });
+    const document = ctx.db.insert.mock.calls[0][1];
+    expect(document.parts).toEqual(parts);
+    expect(document.content.length).toBeGreaterThan(256);
+    expect(document.content.length).toBeLessThan(text.length);
+    expect(document.content.endsWith("🙂")).toBe(true);
+    expect(getDocumentSize(document)).toBeLessThanOrEqual(960 * 1024);
+  });
+
+  it("rejects aggregate oversized parts before native insert with bounded diagnostics", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const parts = [
+      { type: "text", text: "private-first" + "x".repeat(510 * 1024) },
+      { type: "text", text: "private-second" + "x".repeat(510 * 1024) },
+    ];
+    const error = await saveAssistantMessage
+      .handler(ctx as any, {
+        id: "oversized-client-parts",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts,
+      })
+      .catch((reason: unknown) => reason);
+    expect(error).toMatchObject({
+      data: {
+        code: "MESSAGE_TOO_LARGE",
+        operation: "messages.saveAssistantMessage",
+        failureStage: "prepare_insert_message",
+        maxDocumentSizeBytes: 1024 * 1024,
+        targetDocumentSizeBytes: 960 * 1024,
+        partCount: 2,
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "text",
+          largestPartSizeBytes: getConvexSize(parts[1]),
+          categories: {
+            text: { count: 2, sizeBytes: getConvexSize(parts) - 2 },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("private-first");
+    expect(JSON.stringify(error)).not.toContain("private-second");
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("reports UTF-8 part bytes without leaking arbitrary names or values", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const { getConvexSize } = await import("convex/values");
+    const ctx = makeClientContext();
+    const parts = [
+      { type: "reasoning", text: "🙂".repeat(270_000) },
+      { type: "tool-private-tool", output: "private-output" },
+      {
+        type: "dynamic-tool",
+        toolName: "private-name",
+        input: "private-input",
+      },
+      { type: "data-private-data", data: { privateKey: "private-value" } },
+      { type: "private-unknown", value: 1n },
+      { type: 123, value: new ArrayBuffer(10) },
+      { type: "file", url: "private-url" },
+      { type: "step-start" },
+      {},
+    ];
+    const error = await saveAssistantMessage
+      .handler(ctx as any, {
+        id: "private-message-id",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts,
+      })
+      .catch((reason: any) => reason);
+    expect(error).toMatchObject({
+      message: "Message is too large to save",
+      data: {
+        code: "MESSAGE_TOO_LARGE",
+        partDiagnostics: {
+          partsSizeBytes: getConvexSize(parts),
+          largestPartCategory: "reasoning",
+          largestPartSizeBytes: getConvexSize(parts[0]),
+          categories: {
+            reasoning: { count: 1, sizeBytes: getConvexSize(parts[0]) },
+            tool: { count: 2 },
+            data: { count: 1 },
+            other: { count: 3 },
+            file: { count: 1 },
+            "step-start": { count: 1 },
+          },
+        },
+      },
+    });
+    expect(error.data.partDiagnostics.partsSizeBytes).toBeGreaterThan(
+      1_080_000,
+    );
+    expect(JSON.stringify(error)).not.toMatch(/private|🙂/);
+    expect(JSON.stringify(error).length).toBeLessThan(1500);
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("keeps stop-save authentication and ownership ahead of insert", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const ctx = makeClientContext();
+    ctx.runQuery.mockResolvedValue(false);
+    await expect(
+      saveAssistantMessage.handler(ctx as any, {
+        id: "foreign-client",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts: [],
+      }),
+    ).rejects.toThrow("Chat not found");
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    ctx.auth.getUserIdentity.mockResolvedValue(null);
+    ctx.runQuery.mockClear();
+    await expect(
+      saveAssistantMessage.handler(ctx as any, {
+        id: "signed-out",
+        chatId: CHAT_ID,
+        role: "assistant",
+        parts: [],
+      }),
+    ).rejects.toThrow("Unauthorized");
+    expect(ctx.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("includes metadata in the aggregate bound and keeps duplicate saves idempotent", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const ctx = makeClientContext();
+    const args = {
+      id: "metadata-heavy",
+      chatId: CHAT_ID,
+      role: "assistant" as const,
+      parts: [{ type: "text", text: "x".repeat(510 * 1024) }],
+      usage: { opaqueProviderMetadata: "y".repeat(510 * 1024) },
+    };
+    await expect(
+      saveAssistantMessage.handler(ctx as any, args),
+    ).rejects.toMatchObject({ data: { code: "MESSAGE_TOO_LARGE" } });
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+    ctx.db.query.mockReturnValue({
+      withIndex: jest.fn().mockReturnValue({
+        first: jest.fn<any>().mockResolvedValue({ id: args.id }),
+      }),
+    });
+    await expect(
+      saveAssistantMessage.handler(ctx as any, args),
+    ).resolves.toBeNull();
+    expect(ctx.db.insert).not.toHaveBeenCalled();
+  });
+
   it("cannot insert routing evidence through client usage", async () => {
     const { saveAssistantMessage } = await import("../messages");
     const insert = jest.fn<any>().mockResolvedValue("doc");
@@ -1153,5 +1458,41 @@ describe("client stop-save routing provenance", () => {
       "messages",
       expect.objectContaining({ usage: { inputTokens: 5 } }),
     );
+  });
+});
+
+describe("isUserMessagePersisted", () => {
+  const check = async (message: any, identity: any = { subject: USER_ID }) => {
+    const first = jest
+      .fn<any>()
+      .mockResolvedValueOnce(message)
+      .mockResolvedValueOnce({ user_id: USER_ID });
+    const ctx = {
+      auth: { getUserIdentity: async () => identity },
+      db: { query: () => ({ withIndex: () => ({ first }) }) },
+    };
+    const { isUserMessagePersisted } = await import("../messages");
+    return (isUserMessagePersisted as any).handler(ctx, {
+      chatId: CHAT_ID,
+      messageId: "msg-1",
+    });
+  };
+
+  it("checks saved turns independently of any client history page", async () => {
+    await expect(check(makeMessage())).resolves.toBe(true);
+  });
+  it("allows an absent turn before the first chat write", async () => {
+    await expect(check(null)).resolves.toBe(false);
+  });
+  it.each([{ user_id: "another-user" }, { chat_id: "another-chat" }])(
+    "rejects a message outside the authenticated chat: %j",
+    async (overrides) => {
+      await expect(check(makeMessage(overrides))).rejects.toThrow(
+        "Unauthorized",
+      );
+    },
+  );
+  it("requires authentication even for a missing message", async () => {
+    await expect(check(null, null)).rejects.toThrow("Unauthorized");
   });
 });

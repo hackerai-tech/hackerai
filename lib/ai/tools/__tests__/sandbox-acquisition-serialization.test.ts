@@ -4,31 +4,38 @@ const mockQuarantineLocalConnection = jest.fn();
 const mockIsE2BSandbox = jest.fn();
 const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
+const mockNetworkQuery = jest.fn();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ query: mockNetworkQuery }),
+}));
 
-jest.mock("../run-terminal-cmd", () => ({ createRunTerminalCmd: jest.fn() }));
+jest.mock("../run-terminal-cmd", () => ({
+  createRunTerminalCmd: jest.fn(() => ({})),
+}));
 jest.mock("../interact-terminal-session", () => ({
-  createInteractTerminalSession: jest.fn(),
+  createInteractTerminalSession: jest.fn(() => ({})),
 }));
 jest.mock("../get-terminal-files", () => ({
-  createGetTerminalFiles: jest.fn(),
+  createGetTerminalFiles: jest.fn(() => ({})),
 }));
-jest.mock("../file", () => ({ createFile: jest.fn() }));
-jest.mock("../web-search", () => ({ createWebSearch: jest.fn() }));
-jest.mock("../open-url", () => ({ createOpenUrlTool: jest.fn() }));
-jest.mock("../todo-write", () => ({ createTodoWrite: jest.fn() }));
+jest.mock("../file", () => ({ createFile: jest.fn(() => ({})) }));
+jest.mock("../web-search", () => ({ createWebSearch: jest.fn(() => ({})) }));
+jest.mock("../open-url", () => ({ createOpenUrlTool: jest.fn(() => ({})) }));
+jest.mock("../todo-write", () => ({ createTodoWrite: jest.fn(() => ({})) }));
 jest.mock("../notes", () => ({
-  createCreateNote: jest.fn(),
-  createListNotes: jest.fn(),
-  createUpdateNote: jest.fn(),
-  createDeleteNote: jest.fn(),
+  createCreateNote: jest.fn(() => ({})),
+  createListNotes: jest.fn(() => ({})),
+  createUpdateNote: jest.fn(() => ({})),
+  createDeleteNote: jest.fn(() => ({})),
 }));
 
 jest.mock("../utils/hybrid-sandbox-manager", () => ({
   HybridSandboxManager: jest
     .fn()
-    .mockImplementation((_userId, trackSandboxUsage) => {
+    .mockImplementation((_userId, trackSandboxUsage, preference) => {
       mockTrackSandboxUsage = trackSandboxUsage;
       return {
+        getEffectivePreference: () => preference,
         resetSandbox: mockResetSandbox,
         quarantineLocalConnection: mockQuarantineLocalConnection,
       };
@@ -36,7 +43,9 @@ jest.mock("../utils/hybrid-sandbox-manager", () => ({
 }));
 
 jest.mock("../utils/sandbox-manager", () => ({
-  DefaultSandboxManager: jest.fn(),
+  DefaultSandboxManager: jest.fn(() => ({
+    getEffectivePreference: () => "e2b",
+  })),
 }));
 
 jest.mock("../utils/sandbox-types", () => ({
@@ -73,6 +82,68 @@ describe("sandbox acquisition serialization", () => {
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it("dispatches parent delegation and child tools without a scope lookup", async () => {
+    const execute = jest.fn().mockResolvedValue({ result: "completed" });
+    mockNetworkQuery.mockRejectedValue(new Error("scope storage unavailable"));
+    const args: Parameters<typeof createTools> = [
+      "user-1",
+      "chat-1",
+      {} as never,
+      "agent",
+      {} as never,
+    ];
+    args[22] = {
+      additionalTools: () => ({ delegate_task: { execute } as never }),
+    };
+    const { tools, getToolsForModel } = createTools(...args);
+    const input = { task: "bounded offline analysis" };
+    await tools.delegate_task.execute!(input, {
+      toolCallId: "parent",
+      messages: [],
+    });
+    await getToolsForModel("test-model").delegate_task.execute!(input, {
+      toolCallId: "child",
+      messages: [],
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(mockNetworkQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["agent", "e2b", true],
+    ["agent", undefined, true],
+    ["agent", "desktop", false],
+    ["agent", "connection-1", false],
+    ["ask", "e2b", false],
+  ] as const)(
+    "includes network context for %s/%s only when executing in E2B",
+    async (mode, preference, expected) => {
+      mockNetworkQuery.mockResolvedValue({
+        policy: { mode: "offline", allow: [] },
+        revision: 1,
+        status: "ready",
+      });
+      const { cloudNetworkPrompt } = createTools(
+        "user-1",
+        "chat-1",
+        {} as never,
+        mode,
+        {} as never,
+        [],
+        false,
+        undefined,
+        preference,
+        "test-service-key",
+      );
+      const prompt = await cloudNetworkPrompt();
+      if (expected) expect(prompt).toContain("Saved access: No internet");
+      else {
+        expect(prompt).toBe("");
+        expect(mockNetworkQuery).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("does not let a pre-reset acquisition replace the refreshed sandbox", async () => {
     let resolveFirst!: (value: { sandbox: { id: string } }) => void;

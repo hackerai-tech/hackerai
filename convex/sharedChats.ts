@@ -1,5 +1,5 @@
 import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
-import { query, mutation } from "./_generated/server";
+import { query, mutation } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { convexLogger } from "./lib/logger";
 import {

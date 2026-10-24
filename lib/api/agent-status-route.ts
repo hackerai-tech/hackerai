@@ -7,6 +7,8 @@ import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
 import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 
+import { recoverCrashedAgentRun } from "./agent-crash-recovery";
+
 type AgentStatusRequestBody = {
   chatId?: unknown;
   runId?: unknown;
@@ -48,10 +50,12 @@ const clearTerminalAgentRun = async ({
   chatId,
   userId,
   runId,
+  recoveredCrash,
 }: {
   chatId: string;
   userId: string;
   runId: string;
+  recoveredCrash?: boolean;
 }) => {
   const chat = await getChatById({ id: chatId });
   if (
@@ -59,18 +63,19 @@ const clearTerminalAgentRun = async ({
     chat.user_id !== userId ||
     chat.active_trigger_run_id !== runId
   ) {
-    return;
+    return "stale" as const;
   }
 
   await closeAgentApprovalSession(
     chat.active_agent_approval_session_id,
     "agent-run-terminal",
   );
-  await setActiveTriggerRun({
+  return await setActiveTriggerRun({
     chatId,
     triggerRunId: null,
     approvalSessionId: null,
     expectedRunId: runId,
+    ...(recoveredCrash ? { recoveredCrash } : {}),
     clearApprovalPending: true,
   });
 };
@@ -92,6 +97,7 @@ export const createAgentStatusPost =
     // stage beforehand, with a fixed two-warning budget for the whole request.
     const slowRequestTimers = [10_000, 20_000].map((delay) =>
       setTimeout(() => {
+        const elapsedMs = Date.now() - requestStartedAt;
         console.warn(
           JSON.stringify({
             timestamp: new Date().toISOString(),
@@ -105,7 +111,9 @@ export const createAgentStatusPost =
             chat_id: ownedRun?.chatId,
             trigger_run_id: ownedRun?.runId,
             stage,
-            elapsed_ms: Date.now() - requestStartedAt,
+            elapsed_ms: elapsedMs,
+            warning_threshold_ms: delay,
+            timer_lateness_ms: Math.max(0, elapsedMs - delay),
           }),
         );
       }, delay),
@@ -161,13 +169,31 @@ export const createAgentStatusPost =
         run.status && TERMINAL_RUN_STATUSES.has(run.status),
       );
       if (terminal) {
+        if (run.status === "CRASHED") {
+          stage = "recover_crashed_trigger_run";
+          const outcome = await recoverCrashedAgentRun({
+            chatId,
+            userId,
+            runId,
+            metadata: run.metadata,
+          });
+          if (outcome === "stale")
+            return NextResponse.json({ status: "DETACHED", terminal: true });
+        }
         stage = "clear_terminal_trigger_run";
-        await clearTerminalAgentRun({ chatId, userId, runId });
+        const detachOutcome = await clearTerminalAgentRun({
+          chatId,
+          userId,
+          runId,
+          recoveredCrash: run.status === "CRASHED",
+        });
+        if (run.status === "CRASHED" && detachOutcome === "stale")
+          return NextResponse.json({ status: "DETACHED", terminal: true });
       }
 
       return NextResponse.json({ status: run.status, terminal });
     } catch (error) {
-      if (isMissingTriggerRunError(error)) {
+      if (stage === "retrieve_trigger_run" && isMissingTriggerRunError(error)) {
         if (chatId && userId && runId) {
           stage = "clear_missing_trigger_run";
           await clearTerminalAgentRun({ chatId, userId, runId }).catch(

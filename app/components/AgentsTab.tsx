@@ -1,5 +1,7 @@
 "use client";
 
+import { CloudNetworkSettings } from "./CloudNetworkSettings";
+
 import {
   Select,
   SelectContent,
@@ -70,6 +72,8 @@ const AgentsTab = () => {
           </div>
         </div>
       </div>
+
+      {subscription !== "free" && <CloudNetworkSettings />}
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (

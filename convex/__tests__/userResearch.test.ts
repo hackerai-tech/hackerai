@@ -3,7 +3,7 @@ import { getDocumentSize } from "convex/values";
 
 const mockValidateUserResearchServiceKey = jest.fn();
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config) => config),
   query: jest.fn((config) => config),
 }));

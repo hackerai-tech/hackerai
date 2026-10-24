@@ -16,6 +16,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useEffect, useRef } from "react";
+import { ConvexError } from "convex/values";
+import { toast } from "sonner";
 
 jest.mock("uuid", () => ({
   v4: () => "queued-message-id",
@@ -53,7 +55,10 @@ jest.mock("@/lib/chat/agent-long-transport", () => ({
   ) => mockResumeAgentLongStream(...args),
 }));
 let mockRouteParams: Record<string, string> = {};
+const mockBranchChat = jest.fn<() => Promise<string | null>>();
+const mockRouterPush = jest.fn();
 let mockComputerOverlayMedia = false;
+const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
@@ -92,6 +97,12 @@ jest.mock("convex/react", () => {
     jest.requireActual<typeof import("convex/react")>("convex/react");
   return {
     ...original,
+    useMutation: (mutation: any) => {
+      const { getFunctionName } = require("convex/server");
+      return getFunctionName(mutation) === "messages:branchChat"
+        ? mockBranchChat
+        : original.useMutation(mutation);
+    },
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
       if (getFunctionName(query) === "localSandbox:listConnections")
@@ -123,7 +134,7 @@ jest.mock("next/navigation", () => ({
     mockRouteParams.id ? `/c/${mockRouteParams.id}` : "/",
   ),
   useRouter: jest.fn(() => ({
-    push: jest.fn(),
+    push: mockRouterPush,
     replace: jest.fn(),
     back: jest.fn(),
     forward: jest.fn(),
@@ -238,12 +249,15 @@ jest.mock("../MemoizedMarkdown", () => ({
 }));
 
 jest.mock("../Messages", () => ({
-  Messages: ({ messages, acquisitionSurvey }: any) => (
+  Messages: ({ messages, acquisitionSurvey, onBranchMessage }: any) => (
     <div
       data-testid="messages-component"
       data-survey-message={acquisitionSurvey?.messageId}
     >
       {messages.length} messages
+      <button type="button" onClick={() => onBranchMessage("assistant-1")}>
+        Branch message
+      </button>
     </div>
   ),
 }));
@@ -252,14 +266,25 @@ jest.mock("../ChatInput", () => ({
   ChatInput: () => <div data-testid="chat-input">ChatInput</div>,
 }));
 
+let mockBrowserContinue: (message: {
+  id: string;
+  text: string;
+}) => Promise<void>;
 jest.mock("../ComputerSidebar", () => ({
-  ComputerSidebar: () => (
-    <div data-testid="computer-sidebar">
-      Sidebar
-      <button type="button">First computer action</button>
-      <button type="button">Last computer action</button>
-    </div>
-  ),
+  ComputerSidebar: ({
+    onBrowserContinue,
+  }: {
+    onBrowserContinue: typeof mockBrowserContinue;
+  }) => {
+    mockBrowserContinue = onBrowserContinue;
+    return (
+      <div data-testid="computer-sidebar">
+        Sidebar
+        <button type="button">First computer action</button>
+        <button type="button">Last computer action</button>
+      </div>
+    );
+  },
 }));
 
 jest.mock("../ChatHeader", () => ({
@@ -455,6 +480,7 @@ describe("Chat Component Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBranchChat.mockReset();
     mockUseAuth.mockReturnValue(defaultAuth);
     global.fetch = originalFetch;
     const convexReact = require("convex/react");
@@ -467,6 +493,7 @@ describe("Chat Component Integration", () => {
     mockUseRealChatHandlers = false;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
+    mockOverlayListeners.clear();
     window.matchMedia = jest.fn(
       (query: string) =>
         ({
@@ -475,7 +502,10 @@ describe("Chat Component Integration", () => {
           },
           media: query,
           onchange: null,
-          addEventListener: jest.fn(),
+          addEventListener: jest.fn((_event: string, listener: () => void) => {
+            if (query === "(max-width: 949px)")
+              mockOverlayListeners.add(listener);
+          }),
           removeEventListener: jest.fn(),
           addListener: jest.fn(),
           removeListener: jest.fn(),
@@ -498,6 +528,80 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it.each([
+      [
+        new ConvexError({ code: "BRANCH_HISTORY_TOO_LARGE" }),
+        "This task is too large to branch at this message. Try branching from an earlier message. Your original task is unchanged.",
+      ],
+      [
+        new ConvexError({ code: "UNAUTHORIZED", message: "private details" }),
+        "Failed to branch task. Please try again.",
+      ],
+    ])(
+      "shows safe branch guidance without navigating on failure (%#)",
+      async (error, expected) => {
+        const toastError = jest.spyOn(toast, "error");
+        mockBranchChat.mockRejectedValueOnce(error);
+        mockUseChat.mockReturnValue({
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              parts: [{ type: "text", text: "Answer" }],
+            },
+          ],
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          status: "ready",
+          stop: mockStop,
+        });
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Branch message" }));
+        await waitFor(() => expect(toastError).toHaveBeenCalledWith(expected));
+        expect(mockBranchChat).toHaveBeenCalledTimes(1);
+        expect(mockBranchChat).toHaveBeenCalledWith({
+          messageId: "assistant-1",
+        });
+        expect(mockRouterPush).not.toHaveBeenCalled();
+        expect(screen.getByTestId("messages-component")).toHaveTextContent(
+          "1 messages",
+        );
+        toastError.mockRestore();
+      },
+    );
+
+    it("still navigates to a successfully created branch", async () => {
+      mockBranchChat.mockResolvedValueOnce("new-branch");
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "assistant-1",
+            role: "assistant",
+            parts: [{ type: "text", text: "Answer" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+      });
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Branch message" }));
+      await waitFor(() =>
+        expect(mockRouterPush).toHaveBeenCalledWith("/c/new-branch"),
+      );
+      expect(mockBranchChat).toHaveBeenCalledTimes(1);
+    });
+
     it("releases a persisted streamed title so later manual renames stay visible", () => {
       const { rerender } = render(
         <ChatTitleHandoffHarness persistedTitle="Original prompt" />,
@@ -1292,6 +1396,25 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("does not turn an attachment admission error into a saved-task route on finish", () => {
+      window.history.replaceState({}, "", "/");
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onError: (error: Error) => void;
+        onFinish: (result: { isAbort: boolean; isError: boolean }) => void;
+      };
+      act(() => {
+        options.onError(new Error("Failed to prepare local attachments"));
+        options.onFinish({ isAbort: false, isError: true });
+      });
+      expect(window.location.pathname).toBe("/");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(false);
+    });
+
     it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
       render(
         <TestWrapper>
@@ -1356,6 +1479,41 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      await screen.findByTestId("computer-sidebar");
+      // An older backend may still return the note; never echo or overwrite it.
+      await act(async () => {
+        await expect(
+          mockBrowserContinue({
+            id: "private-note-id",
+            text: "STOP! /LAB?X=YES café 日本語 😀",
+          }),
+        ).rejects.toThrow("Your note is saved");
+      });
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "private-note-id-continue",
+          role: "user",
+          metadata: { isAutoContinue: true },
+          parts: [{ type: "text", text: "Continue after browser takeover." }],
+        }),
+        {
+          body: expect.objectContaining({
+            mode: "agent",
+            isAutoContinue: true,
+          }),
+        },
+      );
+      expect(JSON.stringify(mockSendMessage.mock.calls)).not.toContain("STOP!");
+    });
+
     it("should render sidebar on desktop", () => {
       render(
         <TestWrapper>
@@ -1390,6 +1548,27 @@ describe("Chat Component Integration", () => {
       );
     });
 
+    it("preserves the Computer controller across responsive layout changes", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      const controller = await screen.findByTestId("computer-sidebar");
+      for (const overlay of [true, false]) {
+        act(() => {
+          mockComputerOverlayMedia = overlay;
+          mockOverlayListeners.forEach((listener) => listener());
+        });
+        expect(
+          screen.getByTestId("computer-sidebar-container"),
+        ).toHaveAttribute("data-layout", overlay ? "overlay" : "split");
+        expect(screen.getByTestId("computer-sidebar")).toBe(controller);
+      }
+    });
+
     it("uses an accessible Computer overlay on narrow workspaces", async () => {
       mockComputerOverlayMedia = true;
 
@@ -1422,6 +1601,23 @@ describe("Chat Component Integration", () => {
         name: "Last computer action",
       });
       await waitFor(() => expect(firstAction).toHaveFocus());
+
+      // Portal dialogs (browser takeover / exit prompt) own their keyboard focus.
+      const portal = document.createElement("div");
+      portal.setAttribute("role", "dialog");
+      const portalInput = document.createElement("input");
+      portal.append(portalInput);
+      document.body.append(portal);
+      try {
+        portalInput.focus();
+        fireEvent.keyDown(portalInput, { key: "Escape" });
+        expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+          "open",
+        );
+        expect(portalInput).toHaveFocus();
+      } finally {
+        portal.remove();
+      }
 
       lastAction.focus();
       fireEvent.keyDown(document, { key: "Tab" });

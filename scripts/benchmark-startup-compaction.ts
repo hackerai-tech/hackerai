@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { AGENT_SUMMARIZATION_PROMPT } from "../lib/chat/summarization/prompts";
+import { DEEPSEEK_1017_SLUG } from "../lib/experiments/paid-deepseek-1017";
 
 // Synthetic fixtures only: never load customer conversations into this benchmark.
 config({ path: ".env.local", quiet: true });
@@ -16,7 +17,7 @@ const variants = [
   },
   {
     name: "deepseek-low",
-    model: "deepseek/deepseek-v4.1-flash",
+    model: DEEPSEEK_1017_SLUG,
     reasoning: { enabled: true, effort: "low" },
     prompt: AGENT_SUMMARIZATION_PROMPT,
   },

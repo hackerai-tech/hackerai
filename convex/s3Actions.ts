@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "./_generated/server";
+import { action } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import {
   generateS3UploadUrl,
