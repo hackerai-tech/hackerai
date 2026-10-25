@@ -165,7 +165,10 @@ export function ComputerWorkspace({
   useEffect(() => {
     if (!open) return;
     const tab = document.getElementById(`${prefix}-tab-${active}`);
-    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    tab?.parentElement?.scrollIntoView?.({
+      block: "nearest",
+      inline: "nearest",
+    });
     tab?.focus({ preventScroll: true });
   }, [active, open, prefix, overlay]);
 
@@ -196,14 +199,26 @@ export function ComputerWorkspace({
     };
     update();
     const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(() => {
+            // Overflow controls change the viewport width after the tab opens.
+            // Reveal the entire tab, including its close button, after resizing.
+            document
+              .getElementById(`${prefix}-tab-${active}`)
+              ?.parentElement?.scrollIntoView?.({
+                block: "nearest",
+                inline: "nearest",
+              });
+            update();
+          });
     observer?.observe(strip);
     strip.addEventListener("scroll", update, { passive: true });
     return () => {
       observer?.disconnect();
       strip.removeEventListener("scroll", update);
     };
-  }, [open, tabs.length]);
+  }, [open, tabs.length, active, prefix]);
 
   const scrollTabs = (direction: number) => {
     const strip = tabStrip.current;
