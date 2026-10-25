@@ -2077,6 +2077,7 @@ export const agentLongTask = task({
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2105,6 +2106,7 @@ export const agentLongTask = task({
       }
 
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog,
         userId,
         selectedModel,
         subscription,
@@ -2112,11 +2114,15 @@ export const agentLongTask = task({
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
+        newUserTurn: !regenerate && !isAutoContinue && !isAutomaticContinuation,
         messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
-        ...(ctx.environment.type === "PREVIEW" && {
-          previewDiagnosticContext: { chatId, requestId: ctx.run.id },
-        }),
+        diagnosticContext: {
+          chatId,
+          requestId: ctx.run.id,
+          logAll: ctx.environment.type === "PREVIEW",
+        },
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
