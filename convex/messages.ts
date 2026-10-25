@@ -287,6 +287,20 @@ const getMessageSaveDiagnostics = (parts: any[]) => {
   };
 };
 
+type MessageFileValidationReason =
+  "file_missing" | "file_lookup_failed" | "file_not_owned";
+
+// Keep the existing public error while distinguishing failed reads from absent rows.
+class MessageFileValidationError extends Error {
+  constructor(readonly reason: MessageFileValidationReason) {
+    super(
+      reason === "file_not_owned"
+        ? "File does not belong to user"
+        : "File not found",
+    );
+  }
+}
+
 const getErrorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
 
@@ -638,9 +652,11 @@ export const saveMessage = mutation({
       ): Promise<Doc<"files">[]> => {
         if (!fileIds || fileIds.length === 0) return [];
 
+        const failedReads = new Set<number>();
         const files = await Promise.all(
-          fileIds.map((fileId) =>
+          fileIds.map((fileId, index) =>
             ctx.db.get(fileId).catch((error) => {
+              failedReads.add(index);
               console.error(
                 `Failed to read file ${fileId} while validating ownership:`,
                 error,
@@ -653,10 +669,12 @@ export const saveMessage = mutation({
         for (let i = 0; i < fileIds.length; i++) {
           const file = files[i];
           if (!file) {
-            throw new Error("File not found");
+            throw new MessageFileValidationError(
+              failedReads.has(i) ? "file_lookup_failed" : "file_missing",
+            );
           }
           if (file.user_id !== args.userId) {
-            throw new Error("File does not belong to user");
+            throw new MessageFileValidationError("file_not_owned");
           }
         }
 
@@ -1042,10 +1060,15 @@ export const saveMessage = mutation({
         return null;
       }
 
+      const fileValidationReason =
+        error instanceof MessageFileValidationError ? error.reason : undefined;
       console.error(
         JSON.stringify({
           level: "error",
           event: "convex_message_save_failed",
+          ...(fileValidationReason && {
+            file_validation_reason: fileValidationReason,
+          }),
           service: "convex",
           timestamp: new Date().toISOString(),
           db_operation: "messages.saveMessage",
@@ -1070,6 +1093,7 @@ export const saveMessage = mutation({
         code: "MESSAGE_SAVE_FAILED",
         message: "Failed to save message",
         failureStage,
+        ...(fileValidationReason && { fileValidationReason }),
         causeName: getErrorName(error),
         causeMessage: getErrorMessage(error),
         causeData,

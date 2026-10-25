@@ -629,12 +629,64 @@ describe("saveMessage — is_hidden handling", () => {
         code: "MESSAGE_SAVE_FAILED",
         failureStage: "validate_new_message_file_ownership",
         causeMessage: "File does not belong to user",
+        fileValidationReason: "file_not_owned",
       }),
     });
 
     expect(mockCtx.db.insert).not.toHaveBeenCalled();
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["missing row", "file_missing"],
+    ["failed lookup", "file_lookup_failed"],
+    ["different owner", "file_not_owned"],
+  ])(
+    "diagnoses %s without admitting an attached message",
+    async (scenario, reason) => {
+      setupExistingMessage(null);
+      if (scenario === "failed lookup") {
+        mockCtx.db.get.mockRejectedValue(new Error("lookup unavailable"));
+      } else {
+        mockCtx.db.get.mockResolvedValue(
+          scenario === "different owner" ? { user_id: "other-user" } : null,
+        );
+      }
+      const { saveMessage } = await import("../messages");
+      await expect(
+        saveMessage.handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "file-validation-message",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "user",
+          parts: [{ type: "text", text: "attachment" }],
+          fileIds: ["unavailable-file" as Id<"files">],
+        }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "validate_new_message_file_ownership",
+          causeName: "Error",
+          causeMessage:
+            scenario === "different owner"
+              ? "File does not belong to user"
+              : "File not found",
+          fileValidationReason: reason,
+        }),
+      });
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      const structuredErrors = (console.error as jest.Mock).mock.calls.filter(
+        (call) => typeof call[0] === "string" && call[0].startsWith("{"),
+      );
+      expect(structuredErrors).toHaveLength(1);
+      expect(JSON.parse(structuredErrors[0][0] as string)).toMatchObject({
+        event: "convex_message_save_failed",
+        file_validation_reason: reason,
+      });
+    },
+  );
 
   const previewParts = (ids: string[]) => [
     {
@@ -802,6 +854,7 @@ describe("saveMessage — is_hidden handling", () => {
         code: "MESSAGE_SAVE_FAILED",
         failureStage: "validate_existing_message_file_ownership",
         causeMessage: "File does not belong to user",
+        fileValidationReason: "file_not_owned",
       }),
     });
 

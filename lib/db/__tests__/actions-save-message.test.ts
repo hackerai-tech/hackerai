@@ -675,6 +675,61 @@ describe("setActiveTriggerRun", () => {
 });
 
 describe("saveMessage", () => {
+  it.each([
+    "file_missing",
+    "file_lookup_failed",
+    "file_not_owned",
+    "private-file-name",
+  ])("logs only an allowlisted file validation reason: %s", async (reason) => {
+    const { saveMessage, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const failure = Object.assign(
+      new Error("[Request ID: file-check] Server Error"),
+      {
+        data: {
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "validate_new_message_file_ownership",
+          fileValidationReason: reason,
+        },
+      },
+    );
+    mockMutation.mockRejectedValue(failure as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const error = await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "attachment" }],
+        },
+      }).catch((e: unknown) => e);
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      const diagnostics = mockPhEvent.mock.calls.find(
+        (call) => call[0] === "database_operation_failed",
+      )?.[1];
+      expect(diagnostics).toBeDefined();
+      expect(diagnostics?.db_file_validation_reason).toBe(
+        reason === "private-file-name" ? undefined : reason,
+      );
+      expect(diagnostics?.db_failure_stage).toBe(
+        "validate_new_message_file_ownership",
+      );
+      expect(error).toMatchObject({ type: "bad_request", surface: "database" });
+      const { serializeChatSDKErrorForStream } = await import("@/lib/errors");
+      const wireError = serializeChatSDKErrorForStream(
+        error as import("@/lib/errors").ChatSDKError,
+      );
+      expect(wireError).toContain(
+        "Something went wrong. Please try again later.",
+      );
+      expect(wireError).not.toContain(reason);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("forwards the durable Trigger run ID to Convex", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
 
