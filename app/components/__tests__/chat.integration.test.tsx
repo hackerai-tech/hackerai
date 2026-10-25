@@ -282,7 +282,9 @@ jest.mock("../ComputerSidebar", () => ({
       <div data-testid="computer-sidebar">
         Sidebar
         <div hidden>
-          <button>Hidden computer action</button>
+          <button role="tab" aria-selected="true">
+            Hidden computer action
+          </button>
         </div>
         <button tabIndex={-1}>Inactive computer tab</button>
         {mockSelectedComputerTab && (

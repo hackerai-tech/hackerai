@@ -640,14 +640,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const focusTimeout = window.setTimeout(() => {
-      if (!hasNestedDialogFocus())
-        (
-          dialog.querySelector<HTMLElement>(
-            '[role="tab"][aria-selected="true"]',
-          ) ??
-          getFocusableElements()[0] ??
-          dialog
-        ).focus();
+      if (hasNestedDialogFocus()) return;
+      const focusableElements = getFocusableElements();
+      (
+        focusableElements.find((element) =>
+          element.matches('[role="tab"][aria-selected="true"]'),
+        ) ??
+        focusableElements[0] ??
+        dialog
+      ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
