@@ -1747,9 +1747,11 @@ export const replaceActiveTriggerRun = mutation({
       (await isUserDeletionFenced(ctx.db, chat.user_id))
     )
       return "deleting" as const;
+    const currentRunId = chat.active_trigger_run_id ?? null;
     if (
-      chat.active_trigger_run_id !== args.triggerRunId &&
-      (chat.active_trigger_run_id ?? null) !== args.expectedRunId
+      currentRunId !== null &&
+      currentRunId !== args.triggerRunId &&
+      currentRunId !== args.expectedRunId
     )
       return "stale" as const;
     const previous = {

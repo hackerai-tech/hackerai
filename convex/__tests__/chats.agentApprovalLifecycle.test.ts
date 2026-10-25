@@ -1075,3 +1075,24 @@ it("rejects a concurrent admission that already lost its expected owner", async 
   ).resolves.toBe("stale");
   expect(patch).not.toHaveBeenCalled();
 });
+
+it("claims an empty slot when the expected previous run finished during startup", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "finished",
+      approvalSessionId: null,
+    }),
+  ).resolves.toEqual({ previousRunId: null, previousApprovalSessionId: null });
+  expect(patch).toHaveBeenCalledWith(
+    "chat-doc",
+    expect.objectContaining({ active_trigger_run_id: "new" }),
+  );
+});

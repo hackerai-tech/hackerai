@@ -1891,10 +1891,18 @@ export async function replaceActiveTriggerRun(args: {
   triggerRunId: string;
   approvalSessionId: string | null;
 }) {
-  return await getConvexClient().mutation(api.chats.replaceActiveTriggerRun, {
-    serviceKey,
-    ...args,
-  });
+  try {
+    return await getConvexClient().mutation(api.chats.replaceActiveTriggerRun, {
+      serviceKey,
+      ...args,
+    });
+  } catch (error) {
+    throw databaseError("chats.replaceActiveTriggerRun", error, {
+      chat_id: args.chatId,
+      trigger_run_id: args.triggerRunId,
+      expected_run_id: args.expectedRunId ?? undefined,
+    });
+  }
 }
 
 export async function setActiveTriggerRun({
