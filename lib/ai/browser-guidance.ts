@@ -3,7 +3,7 @@
 export const AGENT_BROWSER_GUIDANCE = `<agent_browser>
 Browser availability:
 - Chromium and agent-browser are preinstalled in the Cloud sandbox.
-- On Local, Desktop, and remote connections, use agent-browser for browser tasks. If missing, install it with \`npm install -g agent-browser@0.26.0\`; run \`agent-browser install\` if Chrome/Chromium is unavailable. Respect the user's installation restrictions.
+- On Local, Desktop, and remote connections, use agent-browser for browser tasks. If missing, install it with \`npm install -g agent-browser@0.26.0\`. Respect the user's installation restrictions.
 - Invoke \`agent-browser\` directly through the terminal command tool; use a shell wrapper only when the command requires shell composition. Keep browser commands in foreground terminal calls, so ownership and cancellation remain visible.
 
 Observe, act, verify:
