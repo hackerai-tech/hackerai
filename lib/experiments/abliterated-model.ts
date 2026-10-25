@@ -9,7 +9,7 @@ import {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_SHORT_FOLLOWUP_KEY,
+  ABLITERATED_PRO_FIRST_STEP_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
@@ -18,7 +18,7 @@ export {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_SHORT_FOLLOWUP_KEY,
+  ABLITERATED_PRO_FIRST_STEP_KEY,
 } from "./abliteration-keys";
 import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { UIMessage } from "ai";
@@ -38,7 +38,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
-    | typeof ABLITERATED_SHORT_FOLLOWUP_KEY;
+    | typeof ABLITERATED_PRO_FIRST_STEP_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -58,20 +58,6 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
           !part.mediaType.startsWith("image/")),
     ),
   );
-
-const FOLLOWUP_MAX_CHARACTERS = 200;
-
-const isShortTextFollowup = (messages: UIMessage[]): boolean => {
-  const lastMessage = messages.at(-1);
-  if (lastMessage?.role !== "user") return false;
-  if (lastMessage.parts.some((part) => part.type !== "text")) return false;
-  const text = lastMessage.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join(" ")
-    .trim();
-  return text.length > 0 && text.length <= FOLLOWUP_MAX_CHARACTERS;
-};
 
 export function isEligibleForAbliteratedModel({
   subscription,
@@ -103,8 +89,7 @@ export async function evaluateAbliteratedModel({
   moderationEligible,
   moderationChecked = true,
   allowsAbliterationContinuation = false,
-  independentAbliterationSeedCount = 0,
-  continuationTurn = false,
+  newUserTurn = false,
   messages,
   limitRescue = false,
   diagnosticContext,
@@ -118,34 +103,27 @@ export async function evaluateAbliteratedModel({
   moderationEligible: boolean;
   moderationChecked?: boolean;
   allowsAbliterationContinuation?: boolean;
-  independentAbliterationSeedCount?: number;
-  continuationTurn?: boolean;
+  newUserTurn?: boolean;
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
-  const shortFollowupEligible =
+  const proFirstStepEligible =
     subscription === "pro" &&
     !moderationEligible &&
     moderationChecked &&
     allowsAbliterationContinuation &&
-    continuationTurn &&
-    independentAbliterationSeedCount >= 2 &&
-    isShortTextFollowup(messages);
+    newUserTurn;
   const reportDecision = (reason: string, variant?: string) => {
-    if (
-      !diagnosticContext ||
-      (!diagnosticContext.logAll && independentAbliterationSeedCount < 2)
-    )
-      return;
+    if (!diagnosticContext?.logAll) return;
     try {
       phLogger.info("Abliteration assignment decision", {
         userId,
         chatId: diagnosticContext.chatId,
         requestId: diagnosticContext.requestId,
-        experiment_key: shortFollowupEligible
-          ? ABLITERATED_SHORT_FOLLOWUP_KEY
+        experiment_key: proFirstStepEligible
+          ? ABLITERATED_PRO_FIRST_STEP_KEY
           : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
@@ -153,8 +131,6 @@ export async function evaluateAbliteratedModel({
         moderation_eligible: moderationEligible,
         moderation_checked: moderationChecked,
         continuation_moderation_allowed: allowsAbliterationContinuation,
-        independent_seed_count: independentAbliterationSeedCount,
-        short_followup: isShortTextFollowup(messages),
         provider_configured: providerConfigured,
         reason,
         ...(variant && { variant }),
@@ -167,7 +143,7 @@ export async function evaluateAbliteratedModel({
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
-      moderationEligible: moderationEligible || shortFollowupEligible,
+      moderationEligible: moderationEligible || proFirstStepEligible,
       messages,
       limitRescue,
     })
@@ -182,11 +158,11 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  if (shortFollowupEligible && posthog) {
+  if (proFirstStepEligible && posthog) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
         posthog,
-        ABLITERATED_SHORT_FOLLOWUP_KEY,
+        ABLITERATED_PRO_FIRST_STEP_KEY,
         userId,
         { subscription, subscription_tier: subscription },
       );
@@ -202,22 +178,21 @@ export async function evaluateAbliteratedModel({
           selectedModelOverride,
           limitRescue,
         });
-        reportDecision("short_followup_continuity", variant);
+        reportDecision("pro_first_step", variant);
         return {
-          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          key: ABLITERATED_PRO_FIRST_STEP_KEY,
           variant,
           modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
           baselineModel,
           generationStepLimit: 1,
-          selectionSource: "history",
+          selectionSource: "paid_first_step",
           moderationEligible: false,
           moderationChecked,
-          independentHistoryCount: independentAbliterationSeedCount,
         };
       }
-      reportDecision("short_followup_flag_off");
+      reportDecision("pro_first_step_flag_off");
     } catch {
-      reportDecision("short_followup_flag_error");
+      reportDecision("pro_first_step_flag_error");
     }
     return undefined;
   }

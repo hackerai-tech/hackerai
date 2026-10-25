@@ -2115,10 +2115,7 @@ export const agentLongTask = task({
         moderationEligible: platformAuthorized,
         moderationChecked,
         allowsAbliterationContinuation,
-        independentAbliterationSeedCount:
-          chat?.user_id === userId ? chat.abliteration_seed_count : 0,
-        continuationTurn:
-          !regenerate && !isAutoContinue && !isAutomaticContinuation,
+        newUserTurn: !regenerate && !isAutoContinue && !isAutomaticContinuation,
         messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
         diagnosticContext: {

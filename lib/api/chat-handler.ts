@@ -613,9 +613,7 @@ export const createChatHandler = () => {
         moderationEligible: platformAuthorized,
         moderationChecked,
         allowsAbliterationContinuation,
-        independentAbliterationSeedCount:
-          chat?.user_id === userId ? chat.abliteration_seed_count : 0,
-        continuationTurn: !regenerate && !isAutoContinue,
+        newUserTurn: !regenerate && !isAutoContinue,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
         diagnosticContext: {

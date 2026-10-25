@@ -1,7 +1,7 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_SHORT_FOLLOWUP_KEY,
+  ABLITERATED_PRO_FIRST_STEP_KEY,
 } from "../abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "../abliterated-model-steps";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
@@ -268,8 +268,8 @@ describe("paid moderation-gated three-step Abliteration", () => {
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
   });
 
-  describe("bounded same-chat follow-up", () => {
-    const shortFollowup = [
+  describe("stateless Pro first-step experiment", () => {
+    const firstRequest = [
       {
         id: "followup",
         role: "user" as const,
@@ -281,34 +281,33 @@ describe("paid moderation-gated three-step Abliteration", () => {
         ],
       },
     ];
-    const continuity = {
+    const proFirstStep = {
       ...defaults,
       posthog: {} as any,
       moderationEligible: false,
       allowsAbliterationContinuation: true,
-      independentAbliterationSeedCount: 2,
-      continuationTurn: true,
-      messages: shortFollowup,
+      newUserTurn: true,
+      messages: firstRequest,
     };
 
     it.each(["ask", "agent"] as const)(
-      "uses same-chat preference on %s without timestamps and returns to baseline on step two",
+      "routes a new %s chat without history and returns to baseline on step two",
       async (mode) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
         const assignment = await evaluateAbliteratedModel({
-          ...continuity,
+          ...proFirstStep,
           mode,
         });
         expect(assignment).toMatchObject({
-          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          key: ABLITERATED_PRO_FIRST_STEP_KEY,
           modelKey: ABLITERATION_MODEL_KEY,
           baselineModel: defaults.selectedModel,
           generationStepLimit: 1,
-          selectionSource: "history",
+          selectionSource: "paid_first_step",
         });
         expect(getPostHogFlagWithoutExposure).toHaveBeenCalledWith(
           expect.anything(),
-          ABLITERATED_SHORT_FOLLOWUP_KEY,
+          ABLITERATED_PRO_FIRST_STEP_KEY,
           "u",
           expect.objectContaining({ subscription_tier: "pro" }),
         );
@@ -332,7 +331,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
     );
 
     it.each(["ask", "agent"] as const)(
-      "excludes every non-Pro tier from %s follow-up enrollment even with a test flag",
+      "excludes every non-Pro tier from %s first-step enrollment even with a test flag",
       async (mode) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
         for (const subscription of [
@@ -343,7 +342,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
         ] as const) {
           expect(
             await evaluateAbliteratedModel({
-              ...continuity,
+              ...proFirstStep,
               mode,
               subscription,
             }),
@@ -353,12 +352,47 @@ describe("paid moderation-gated three-step Abliteration", () => {
       },
     );
 
+    it("routes long new requests and supported image requests without a history threshold", async () => {
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+      for (const messages of [
+        [
+          {
+            ...firstRequest[0],
+            parts: [{ type: "text" as const, text: "x".repeat(2000) }],
+          },
+        ],
+        imageAttachmentMessages,
+      ]) {
+        expect(
+          await evaluateAbliteratedModel({ ...proFirstStep, messages }),
+        ).toMatchObject({
+          key: ABLITERATED_PRO_FIRST_STEP_KEY,
+          generationStepLimit: 1,
+          modelKey: ABLITERATION_MODEL_KEY,
+        });
+      }
+    });
+
+    it("preserves the existing three-step route even when the Pro first-step flag returns test", async () => {
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+      expect(
+        await evaluateAbliteratedModel({
+          ...proFirstStep,
+          moderationEligible: true,
+        }),
+      ).toMatchObject({
+        key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        generationStepLimit: 3,
+      });
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+    });
+
     it.each(["control", "test"] as const)(
       "uses the shipped Pro/Auto baseline for the %s arm",
       async (variant) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(variant);
         const assignment = await evaluateAbliteratedModel({
-          ...continuity,
+          ...proFirstStep,
           selectedModel: "model-deepseek-v4-flash-vision-pro",
           selectedModelOverride: "auto",
         });
@@ -373,30 +407,17 @@ describe("paid moderation-gated three-step Abliteration", () => {
     );
 
     it.each([
-      ["new or branched chat", { independentAbliterationSeedCount: 0 }],
-      ["one seed", { independentAbliterationSeedCount: 1 }],
       ["failed moderation", { allowsAbliterationContinuation: false }],
       ["unchecked moderation", { moderationChecked: false }],
-      ["regeneration or auto-run", { continuationTurn: false }],
+      ["regeneration or auto-run", { newUserTurn: false }],
       ["free plan", { subscription: "free" as const }],
       ["rescue", { limitRescue: true }],
-      [
-        "long message",
-        {
-          messages: [
-            {
-              ...shortFollowup[0],
-              parts: [{ type: "text" as const, text: "x".repeat(201) }],
-            },
-          ],
-        },
-      ],
       [
         "unsupported file",
         {
           messages: [
             {
-              ...shortFollowup[0],
+              ...firstRequest[0],
               parts: [
                 {
                   type: "file" as const,
@@ -412,7 +433,7 @@ describe("paid moderation-gated three-step Abliteration", () => {
       jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
       expect(
         await evaluateAbliteratedModel({
-          ...continuity,
+          ...proFirstStep,
           ...(overrides as object),
         }),
       ).toBeUndefined();
@@ -423,13 +444,13 @@ describe("paid moderation-gated three-step Abliteration", () => {
       async (mode) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
         expect(
-          await evaluateAbliteratedModel({ ...continuity, mode }),
+          await evaluateAbliteratedModel({ ...proFirstStep, mode }),
         ).toMatchObject({
-          key: ABLITERATED_SHORT_FOLLOWUP_KEY,
+          key: ABLITERATED_PRO_FIRST_STEP_KEY,
           variant: "control",
           modelKey: defaults.selectedModel,
           baselineModel: defaults.selectedModel,
-          selectionSource: "history",
+          selectionSource: "paid_first_step",
         });
       },
     );
@@ -437,16 +458,16 @@ describe("paid moderation-gated three-step Abliteration", () => {
       "does not enroll invalid/off flag value %s",
       async (value) => {
         jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
-        expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+        expect(await evaluateAbliteratedModel(proFirstStep)).toBeUndefined();
       },
     );
     it("keeps the baseline when the flag is off or unavailable", async () => {
       jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValueOnce(false);
-      expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+      expect(await evaluateAbliteratedModel(proFirstStep)).toBeUndefined();
       jest
         .mocked(getPostHogFlagWithoutExposure)
         .mockRejectedValueOnce(new Error("flag unavailable"));
-      expect(await evaluateAbliteratedModel(continuity)).toBeUndefined();
+      expect(await evaluateAbliteratedModel(proFirstStep)).toBeUndefined();
     });
   });
 });

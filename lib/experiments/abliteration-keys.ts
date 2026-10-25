@@ -12,4 +12,4 @@ export const ABLITERATED_PAID_MODERATED_DEFAULT_KEY =
 export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
   "abliterated_paid_moderated_three_steps_default_v1";
 
-export const ABLITERATED_SHORT_FOLLOWUP_KEY = "abliterated_short_followup_v1";
+export const ABLITERATED_PRO_FIRST_STEP_KEY = "abliterated_pro_first_step_v1";

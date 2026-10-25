@@ -519,13 +519,13 @@ describe("current experiment reservation", () => {
       "test",
     ],
     [
-      "abliterated_short_followup_v1",
-      "abliterated_short_followup_feedback_v1",
+      "abliterated_pro_first_step_v1",
+      "abliterated_pro_first_step_feedback_v1",
       "control",
     ],
     [
-      "abliterated_short_followup_v1",
-      "abliterated_short_followup_feedback_v1",
+      "abliterated_pro_first_step_v1",
+      "abliterated_pro_first_step_feedback_v1",
       "test",
     ],
   ])(
