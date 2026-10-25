@@ -4,6 +4,7 @@ import {
 } from "./client";
 import type { AcknowledgedCommandSettlement } from "../centrifugo/acknowledged-command-output";
 import {
+  isDesktopAckAge,
   isDesktopAckStopSource,
   type DesktopAckStopSource,
 } from "./desktop-ack-privacy";
@@ -68,6 +69,15 @@ export function startDesktopAckTelemetry(context: DesktopAckContext) {
       terminalType: result.terminalType,
       terminalAcknowledged: result.terminalAcknowledged,
       durationMs: result.durationMs,
+      ...(isDesktopAckAge(result.oldestPendingAgeMs) && {
+        oldestPendingAgeMs: result.oldestPendingAgeMs,
+      }),
+      ...(isDesktopAckAge(result.lastAcknowledgementAgeMs) && {
+        lastAcknowledgementAgeMs: result.lastAcknowledgementAgeMs,
+      }),
+      ...(isDesktopAckAge(result.publishInFlightAgeMs) && {
+        publishInFlightAgeMs: result.publishInFlightAgeMs,
+      }),
     });
   };
 }

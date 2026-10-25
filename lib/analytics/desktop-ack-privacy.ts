@@ -17,6 +17,19 @@ export function isDesktopAckStopSource(
   return STOP_SOURCES.some((source) => source === value);
 }
 
+export function isDesktopAckAge(value: unknown): value is number | null {
+  return (
+    value === null ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+  );
+}
+
+const AGE_PROPERTIES = new Set([
+  "oldestPendingAgeMs",
+  "lastAcknowledgementAgeMs",
+  "publishInFlightAgeMs",
+]);
+
 // PostHog enriches captures with URL, attribution and registered properties.
 // Filter at before_send, after that enrichment, as well as at capture time.
 const ALLOWED_PROPERTIES = new Set([
@@ -51,6 +64,7 @@ const ALLOWED_PROPERTIES = new Set([
   "terminalType",
   "terminalAcknowledged",
   "durationMs",
+  ...AGE_PROPERTIES,
 ]);
 
 export function sanitizeDesktopAckEvent<
@@ -71,6 +85,9 @@ export function sanitizeDesktopAckEvent<
       Object.entries(event.properties).filter(
         ([key, value]) =>
           ALLOWED_PROPERTIES.has(key) &&
+          (!AGE_PROPERTIES.has(key) ||
+            (event.event === "desktop_ack_command_settled" &&
+              isDesktopAckAge(value))) &&
           (key !== "stopSource" ||
             (event.event === "desktop_ack_command_settled" &&
               event.properties?.reason === "stopped" &&
