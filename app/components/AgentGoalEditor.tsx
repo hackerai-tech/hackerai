@@ -1,12 +1,13 @@
 "use client";
 
+import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { useId, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Target, X } from "lucide-react";
+import { X } from "lucide-react";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { toast } from "sonner";
 import { defaultGoalCriterion } from "@/lib/goals/contracts";
@@ -25,7 +26,7 @@ export function AgentGoalEditor({
       aria-label="Edit goal"
     >
       <header className="flex items-center gap-2 border-b p-3">
-        <Target className="size-4" />
+        <GoalTargetIcon className="size-4" />
         <h2 className="flex-1 font-medium">Edit goal</h2>
         <Button
           variant="ghost"

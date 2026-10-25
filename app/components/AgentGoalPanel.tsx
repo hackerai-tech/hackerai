@@ -1,4 +1,5 @@
 "use client";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -19,7 +20,6 @@ import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ChevronDown,
-  Target,
   Pause,
   CirclePause,
   CirclePlay,
@@ -496,7 +496,7 @@ export function AgentGoalPanel({
               }
               className="flex min-h-11 max-w-full items-center gap-2 rounded-full border bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Target
+              <GoalTargetIcon
                 className={`size-4 shrink-0 ${mobileOpen ? "" : statusColor}`}
                 aria-hidden="true"
               />
@@ -562,7 +562,7 @@ export function AgentGoalPanel({
             title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
             className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Target
+            <GoalTargetIcon
               className={`size-4 shrink-0 ${statusColor}`}
               aria-hidden="true"
             />

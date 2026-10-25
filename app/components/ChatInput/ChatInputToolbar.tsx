@@ -66,7 +66,6 @@ export function ChatInputToolbar({
         !freeDesktopAgentOnlyActive ? (
           <ChatModeSelector />
         ) : null}
-        {goalControl}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
         {user && isAgentMode(chatMode) ? (
           <>
@@ -92,6 +91,7 @@ export function ChatInputToolbar({
             </div>
           </>
         ) : null}
+        {goalControl}
       </div>
       <div
         className="flex shrink-0 items-center gap-2.5"

@@ -1,4 +1,5 @@
 import type { LimitRescueRequest } from "@/types/chat";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
@@ -19,13 +20,7 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import {
-  ChevronDown,
-  ChevronUp,
-  FileSearch,
-  Target,
-  CircleCheck,
-} from "lucide-react";
+import { ChevronDown, ChevronUp, FileSearch, CircleCheck } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -714,7 +709,7 @@ export const MessageItem = memo(function MessageItem({
           >
             {isUser && message.metadata.goal.sent ? (
               <>
-                <Target className="size-3.5" aria-hidden="true" />
+                <GoalTargetIcon className="size-3.5" aria-hidden="true" />
                 <span>Sent as goal</span>
               </>
             ) : !isUser &&

@@ -54,7 +54,9 @@ import {
 } from "@/app/hooks/useOnlineStatus";
 import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
-import { WifiOff, Target, X } from "lucide-react";
+import { WifiOff } from "lucide-react";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
+import { GoalModeButton } from "./GoalModeButton";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
@@ -998,7 +1000,7 @@ const ChatInputContent = ({
             onClick={selectGoal}
             className="order-1 mb-2 flex w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted p-3 text-left hover:bg-accent"
           >
-            <Target className="size-4 shrink-0" />
+            <GoalTargetIcon className="size-4 shrink-0" />
             <span>Goal</span>
             <span className="text-sm text-muted-foreground">
               Set a goal to keep pursuing
@@ -1087,18 +1089,8 @@ const ChatInputContent = ({
               />
               <ChatInputToolbar
                 goalControl={
-                  goalMode ? (
-                    <button
-                      type="button"
-                      aria-label="Exit goal mode"
-                      title="Goal · 3 runs by default"
-                      onClick={() => setGoalMode(false)}
-                      className="flex shrink-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-muted"
-                    >
-                      <Target className="size-4" />
-                      Goal
-                      <X className="size-3" />
-                    </button>
+                  goalMode && !compactAgentControls ? (
+                    <GoalModeButton onClear={() => setGoalMode(false)} />
                   ) : undefined
                 }
                 compactAgentControls={compactAgentControls}
@@ -1152,6 +1144,9 @@ const ChatInputContent = ({
               >
                 <AgentPermissionSelector analyticsSurface="chat_input" />
               </div>
+              {goalMode && compactAgentControls && (
+                <GoalModeButton onClear={() => setGoalMode(false)} />
+              )}
             </div>
           )}
         </div>
