@@ -121,6 +121,9 @@ export const ensureSandboxConnection = async (
   }
   const startedAt = performance.now();
   let phase: E2BAcquisitionPhase = "routing";
+  let connectState: "running" | "paused" | null = null;
+  let connectSelectionSource: "pinned" | "inventory" | null = null;
+  let connectRequestTimeoutMs: number | null = null;
   let createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -164,6 +167,11 @@ export const ensureSandboxConnection = async (
           sandboxVersion: info.metadata.sandboxVersion,
         };
       const resumingPausedWorkspace = info.state === "paused";
+      connectState = resumingPausedWorkspace ? "paused" : "running";
+      connectSelectionSource = "pinned";
+      connectRequestTimeoutMs = resumingPausedWorkspace
+        ? CLOUD_RESUME_DEADLINE_MS
+        : null;
       options.reportStage?.("connect", { resumingPausedWorkspace });
       const sandbox = await retryWithBackoff(
         () =>
@@ -294,6 +302,15 @@ export const ensureSandboxConnection = async (
       try {
         phase = "connect";
         const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
+        connectState = resumingPausedWorkspace
+          ? "paused"
+          : existingSandboxInfo.state === "running"
+            ? "running"
+            : null;
+        connectSelectionSource = "inventory";
+        connectRequestTimeoutMs = resumingPausedWorkspace
+          ? CLOUD_RESUME_DEADLINE_MS
+          : null;
         options.reportStage?.("connect", { resumingPausedWorkspace });
         const sandbox = await retryWithBackoff(
           () =>
@@ -448,6 +465,12 @@ export const ensureSandboxConnection = async (
         trigger_run_id: options.triggerRunId ?? null,
         user_id: userID,
         ...diagnostics,
+        e2b_connect_state: phase === "connect" ? connectState : null,
+        e2b_connect_selection_source:
+          phase === "connect" ? connectSelectionSource : null,
+        // Null means the SDK default was used, not a measured timeout of zero.
+        e2b_connect_request_timeout_ms:
+          phase === "connect" ? connectRequestTimeoutMs : null,
         duration_ms: Math.round(performance.now() - startedAt),
       }),
     );
