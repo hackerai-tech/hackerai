@@ -1452,11 +1452,24 @@ export class DesktopSandboxBridge {
     return error instanceof Error ? error.message : String(error);
   }
 
+  private fileReplyPublisher(): (message: SandboxMessage) => Promise<void> {
+    const router = this.operationRouter;
+    const subscription = this.subscription;
+    return (message) => {
+      // Native I/O may finish after stop/re-registration. Never send an old
+      // operation's result on the replacement connection.
+      if (this.operationRouter !== router || this.subscription !== subscription)
+        return Promise.resolve();
+      return this.publishResult(message);
+    };
+  }
+
   private async publishFileError(
     requestId: string,
     error: unknown,
+    reply: (message: SandboxMessage) => Promise<void>,
   ): Promise<void> {
-    await this.publishResult({
+    await reply({
       type: "file_error",
       requestId,
       message: this.getErrorMessage(error),
@@ -1677,6 +1690,7 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileStat(message: FileStatMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const payload = await this.callDesktopFileBridge<{
@@ -1695,7 +1709,7 @@ export class DesktopSandboxBridge {
       if (payload.kind === "file" && typeof payload.sizeBytes !== "number") {
         throw new Error("Desktop file bridge returned an invalid stat payload");
       }
-      await this.publishResult({
+      await reply({
         type: "file_stat_result",
         requestId,
         kind: payload.kind,
@@ -1703,11 +1717,12 @@ export class DesktopSandboxBridge {
         ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRead(message: FileReadMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, range, maxFullBytes, maxResultBytes } = message;
     try {
       const payload = await this.callDesktopFileBridge<unknown>(
@@ -1721,17 +1736,18 @@ export class DesktopSandboxBridge {
           max_result_bytes: maxResultBytes,
         },
       );
-      await this.publishResult({
+      await reply({
         type: "file_read_result",
         requestId,
         ...this.normalizeReadPayload(path, payload, range),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileWrite(message: FileWriteMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_write", "/files/write", {
@@ -1740,13 +1756,14 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_append", "/files/append", {
@@ -1755,25 +1772,27 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRemove(message: FileRemoveMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       await this.callDesktopFileBridge("file_remove", "/files/remove", {
         path,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileList(message: FileListMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const entries = await this.callDesktopFileBridge<Array<{ name: string }>>(
@@ -1781,13 +1800,13 @@ export class DesktopSandboxBridge {
         "/files/list",
         { path },
       );
-      await this.publishResult({
+      await reply({
         type: "file_list_result",
         requestId,
         entries,
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 

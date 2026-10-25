@@ -1,3 +1,8 @@
+import {
+  classifyPersistenceFailure as classifyTerminalOutputPersistenceFailure,
+  persistenceCommandError,
+  type PersistenceFailureCategory as TerminalOutputPersistenceFailureCategory,
+} from "./persistence-failure";
 import { createHash } from "node:crypto";
 import type { AnySandbox } from "@/types";
 import type { createTerminalHandler } from "@/lib/utils/terminal-executor";
@@ -21,13 +26,6 @@ export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
   "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
 type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
-type TerminalOutputPersistenceFailureCategory =
-  | "timeout"
-  | "transport"
-  | "relay_unavailable"
-  | "permission"
-  | "filesystem"
-  | "unknown";
 
 export type TerminalOutputPersistenceTelemetry = {
   service: "agent-long" | "chat-handler";
@@ -53,51 +51,7 @@ const getPersistenceProvider = (
   return "e2b";
 };
 
-export const classifyTerminalOutputPersistenceFailure = (
-  error: unknown,
-): TerminalOutputPersistenceFailureCategory => {
-  const message = (
-    error instanceof Error
-      ? error.message
-      : error && typeof error === "object"
-        ? (["message", "error", "reason", "code"]
-            .map((key) => (error as Record<string, unknown>)[key])
-            .find((value): value is string => typeof value === "string") ?? "")
-        : typeof error === "string"
-          ? error
-          : ""
-  ).toLowerCase();
-  if (/timed?\s*out|timeout/.test(message)) return "timeout";
-  if (
-    /not subscribed|relay is not available|reconnect the desktop app|connection(?: is)? inactive|connection_inactive/.test(
-      message,
-    )
-  ) {
-    return "relay_unavailable";
-  }
-  if (
-    /load failed|failed to publish|subscription error|network|disconnected|connection (?:closed|reset)|econnreset|file transport is unavailable/.test(
-      message,
-    )
-  ) {
-    return "transport";
-  }
-  if (
-    /outside (?:its allowed root|the allowed project folder)|permission denied|access denied|eacces|eperm/.test(
-      message,
-    )
-  ) {
-    return "permission";
-  }
-  if (
-    /no space left|enospc|read-only file system|enoent|not a directory/.test(
-      message,
-    )
-  ) {
-    return "filesystem";
-  }
-  return "unknown";
-};
+export { classifyPersistenceFailure as classifyTerminalOutputPersistenceFailure } from "./persistence-failure";
 
 const canRetryPersistenceFailure = (
   provider: TerminalOutputPersistenceProvider,
@@ -130,7 +84,6 @@ const emitPersistenceFailure = (args: {
   retryDecision:
     "retried" | "verified_after_timeout" | "skipped_timeout" | "not_retryable";
   telemetry?: TerminalOutputPersistenceTelemetry;
-  error?: unknown;
   failureStage?: "ensure_directory" | "write_output";
 }): void => {
   const fields = {
@@ -248,9 +201,10 @@ export async function saveFullOutputToFile(
           timeoutMs: 5000,
         });
         if (mkdirResult.exitCode !== 0)
-          throw Object.assign(new Error("Output directory creation failed"), {
-            exitCode: mkdirResult.exitCode,
-          });
+          throw persistenceCommandError(
+            "Output directory creation failed",
+            mkdirResult,
+          );
       }
       failureStage = "write_output";
       await sandbox.files.write(filePath, fullOutput);
@@ -300,6 +254,7 @@ export async function saveFullOutputToFile(
               result: "recovered",
               failureCategory: firstCategory,
               retryDecision: "verified_after_timeout",
+              failureStage: firstStage,
               telemetry,
             });
             return filePath;
@@ -313,6 +268,7 @@ export async function saveFullOutputToFile(
           result: "failed",
           failureCategory: firstCategory,
           retryDecision: "verified_after_timeout",
+          failureStage: firstStage,
           telemetry,
         });
         return null;
@@ -327,7 +283,6 @@ export async function saveFullOutputToFile(
         retryDecision:
           firstCategory === "timeout" ? "skipped_timeout" : "not_retryable",
         telemetry,
-        error: firstError,
         failureStage: firstStage,
       });
       return null;
@@ -346,7 +301,6 @@ export async function saveFullOutputToFile(
         failureCategory: firstCategory,
         retryDecision: "retried",
         telemetry,
-        error: firstError,
         failureStage: firstStage,
       });
       return savedPath;
@@ -358,7 +312,6 @@ export async function saveFullOutputToFile(
         failureCategory: classifyTerminalOutputPersistenceFailure(retryError),
         retryDecision: "retried",
         telemetry,
-        error: retryError,
         failureStage,
       });
       return null;

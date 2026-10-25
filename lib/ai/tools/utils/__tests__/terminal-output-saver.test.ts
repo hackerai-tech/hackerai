@@ -1,3 +1,4 @@
+import { LocalFileRequestError } from "../local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { describe, expect, it, jest } from "@jest/globals";
 import { phLogger } from "@/lib/posthog/server";
@@ -52,6 +53,71 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
+  it("does not retry canceled native persistence or classify transport text as filesystem permission", async () => {
+    expect(
+      classifyTerminalOutputPersistenceFailure(
+        new LocalFileRequestError(
+          "dispatch_error",
+          "PRIVATE permission denied",
+        ),
+      ),
+    ).toBe("transport");
+    const sandbox = createSandbox({
+      sandboxKind: "centrifugo",
+      nativeFileRelay: true,
+    });
+    sandbox.files.write.mockRejectedValue(
+      new LocalFileRequestError("aborted", "PRIVATE canceled path"),
+    );
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output"),
+      ).toBeNull();
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(event).toHaveBeenCalledWith(
+        "terminal_output_persistence_failure",
+        expect.objectContaining({
+          failure_category: "aborted",
+          failure_stage: "write_output",
+          retry_decision: "not_retryable",
+        }),
+      );
+      expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+    } finally {
+      event.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("reports the mkdir cause without leaking shell output or retrying an unusable root", async () => {
+    const sandbox = createSandbox();
+    sandbox.commands.run.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "mkdir: /private/customer-root: Read-only file system",
+    });
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        await saveFullOutputToFile(sandbox as any, "private-output"),
+      ).toBeNull();
+      const payload = JSON.parse(warning.mock.calls.at(-1)![0] as string);
+      expect(payload).toMatchObject({
+        failure_category: "read_only_filesystem",
+        failure_stage: "ensure_directory",
+        attempt_count: 1,
+      });
+      expect(JSON.stringify(payload)).not.toMatch(
+        /customer-root|private-output/,
+      );
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each(["/Users/test/My Project", "C:\\Users\\test\\My Project"])(
     "writes and prunes native artifacts inside %s without shell setup",
     async (project) => {
@@ -444,7 +510,7 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
     ],
     ["Direct file mutation path is outside its allowed root", "permission"],
     ["Path is outside the allowed project folder: /tmp/output", "permission"],
-    ["ENOSPC: no space left on device", "filesystem"],
+    ["ENOSPC: no space left on device", "no_space"],
     ["opaque failure", "unknown"],
   ])("classifies %s as %s", (message, category) => {
     expect(classifyTerminalOutputPersistenceFailure(new Error(message))).toBe(
