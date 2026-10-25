@@ -9,7 +9,7 @@ import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
   type AbliteratedAssignment,
 } from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
@@ -119,8 +119,8 @@ export class AbliteratedModelTelemetry {
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
-      ...(args.assignment.key === ABLITERATED_PRO_FIRST_STEP_KEY && {
-        pro_first_step_measurement_version: 1,
+      ...(args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY && {
+        pro_three_steps_measurement_version: 1,
       }),
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,

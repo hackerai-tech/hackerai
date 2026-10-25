@@ -188,16 +188,16 @@ describe("current Pro/Max experiment feedback", () => {
       "abliterated_paid_moderated_default_feedback_v1",
     ],
     [
-      "abliterated_pro_first_step_v1",
+      "abliterated_pro_three_steps_v1",
       "paid_first_step",
       "control",
-      "abliterated_pro_first_step_feedback_v1",
+      "abliterated_pro_three_steps_feedback_v1",
     ],
     [
-      "abliterated_pro_first_step_v1",
+      "abliterated_pro_three_steps_v1",
       "paid_first_step",
       "test",
-      "abliterated_pro_first_step_feedback_v1",
+      "abliterated_pro_three_steps_feedback_v1",
     ],
   ] as const)(
     "reserves %s/%s/%s with its own phase",

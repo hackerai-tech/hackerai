@@ -3,7 +3,7 @@ import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
@@ -94,7 +94,7 @@ describe("Abliteration stream telemetry", () => {
     async (variant) => {
       const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
         assignment: {
-          key: ABLITERATED_PRO_FIRST_STEP_KEY,
+          key: ABLITERATED_PRO_THREE_STEPS_KEY,
           variant,
           modelKey:
             variant === "test"
@@ -102,7 +102,7 @@ describe("Abliteration stream telemetry", () => {
               : "model-deepseek-v4-flash-0731",
           baselineModel: "model-deepseek-v4-flash-0731",
           selectionSource: "paid_first_step",
-          generationStepLimit: 1,
+          generationStepLimit: 3,
         },
         messageId: "original",
         chatId: "chat",
@@ -121,7 +121,8 @@ describe("Abliteration stream telemetry", () => {
         experiment_variant: variant,
         experiment_request_id: "original",
         message_id: "replacement",
-        pro_first_step_measurement_version: 1,
+        pro_three_steps_measurement_version: 1,
+        generation_step_limit: 3,
         response_model: "deepseek/deepseek-v4-flash-0731",
       });
       expect(telemetry.getSummary()).toMatchObject({

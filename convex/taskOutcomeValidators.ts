@@ -1,13 +1,13 @@
 import { v } from "convex/values";
 import { AGENT_CONTEXT_FEEDBACK_PHASE } from "../lib/feedback/agent-context";
 import {
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "../lib/experiments/abliteration-keys";
 import {
-  PRO_FIRST_STEP_TASK_OUTCOME_PHASE,
+  PRO_THREE_STEPS_TASK_OUTCOME_PHASE,
   EXPERIMENT_TASK_OUTCOME_PHASE,
   PAID_FIRST_STEP_TASK_OUTCOME_PHASE,
   PAID_MODERATED_TASK_OUTCOME_PHASE,
@@ -42,7 +42,7 @@ export const experimentTaskOutcomeContext = {
   ...taskOutcomeContext,
   survey_kind: v.literal("current_experiment"),
   experiment_key: v.union(
-    v.literal(ABLITERATED_PRO_FIRST_STEP_KEY),
+    v.literal(ABLITERATED_PRO_THREE_STEPS_KEY),
     v.literal(ABLITERATED_MAX_EXPERIMENT_KEY),
     v.literal(ABLITERATED_PAID_FIRST_STEP_KEY),
     v.literal(ABLITERATED_PAID_MODERATED_DEFAULT_KEY),
@@ -58,7 +58,7 @@ export const experimentTaskOutcomeContext = {
   assigned_model: v.string(),
   baseline_model: v.string(),
   feedback_phase: v.union(
-    v.literal(PRO_FIRST_STEP_TASK_OUTCOME_PHASE),
+    v.literal(PRO_THREE_STEPS_TASK_OUTCOME_PHASE),
     v.literal(EXPERIMENT_TASK_OUTCOME_PHASE),
     v.literal(PAID_FIRST_STEP_TASK_OUTCOME_PHASE),
     v.literal(PAID_MODERATED_TASK_OUTCOME_PHASE),

@@ -9,7 +9,7 @@ import {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
@@ -18,7 +18,7 @@ export {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
 } from "./abliteration-keys";
 import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { UIMessage } from "ai";
@@ -38,7 +38,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
-    | typeof ABLITERATED_PRO_FIRST_STEP_KEY;
+    | typeof ABLITERATED_PRO_THREE_STEPS_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -109,7 +109,7 @@ export async function evaluateAbliteratedModel({
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
-  const proFirstStepEligible =
+  const proThreeStepsEligible =
     subscription === "pro" &&
     !moderationEligible &&
     moderationChecked &&
@@ -122,8 +122,8 @@ export async function evaluateAbliteratedModel({
         userId,
         chatId: diagnosticContext.chatId,
         requestId: diagnosticContext.requestId,
-        experiment_key: proFirstStepEligible
-          ? ABLITERATED_PRO_FIRST_STEP_KEY
+        experiment_key: proThreeStepsEligible
+          ? ABLITERATED_PRO_THREE_STEPS_KEY
           : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
@@ -143,7 +143,7 @@ export async function evaluateAbliteratedModel({
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
-      moderationEligible: moderationEligible || proFirstStepEligible,
+      moderationEligible: moderationEligible || proThreeStepsEligible,
       messages,
       limitRescue,
     })
@@ -158,11 +158,11 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  if (proFirstStepEligible && posthog) {
+  if (proThreeStepsEligible && posthog) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
         posthog,
-        ABLITERATED_PRO_FIRST_STEP_KEY,
+        ABLITERATED_PRO_THREE_STEPS_KEY,
         userId,
         { subscription, subscription_tier: subscription },
       );
@@ -178,21 +178,23 @@ export async function evaluateAbliteratedModel({
           selectedModelOverride,
           limitRescue,
         });
-        reportDecision("pro_first_step", variant);
+        reportDecision("pro_three_steps", variant);
         return {
-          key: ABLITERATED_PRO_FIRST_STEP_KEY,
+          key: ABLITERATED_PRO_THREE_STEPS_KEY,
           variant,
           modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
           baselineModel,
-          generationStepLimit: 1,
+          generationStepLimit: 3,
+          // Historical source label for unmoderated paid routing; the step
+          // budget is carried separately by generationStepLimit.
           selectionSource: "paid_first_step",
           moderationEligible: false,
           moderationChecked,
         };
       }
-      reportDecision("pro_first_step_flag_off");
+      reportDecision("pro_three_steps_flag_off");
     } catch {
-      reportDecision("pro_first_step_flag_error");
+      reportDecision("pro_three_steps_flag_error");
     }
     return undefined;
   }

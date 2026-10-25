@@ -12,7 +12,7 @@ import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-  ABLITERATED_PRO_FIRST_STEP_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
   type AbliteratedAssignment,
 } from "../experiments/abliterated-model";
 
@@ -69,7 +69,7 @@ export async function selectTaskOutcomeSurvey(args: {
       args.assignment !== undefined &&
       args.assignment.selectionSource ===
         (args.assignment.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
-        args.assignment.key === ABLITERATED_PRO_FIRST_STEP_KEY
+        args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY
           ? "paid_first_step"
           : "moderation") &&
       (args.assignment.key !== ABLITERATED_PAID_MODERATED_DEFAULT_KEY ||
@@ -107,7 +107,7 @@ export async function selectTaskOutcomeSurvey(args: {
                 | typeof ABLITERATED_MAX_EXPERIMENT_KEY
                 | typeof ABLITERATED_PAID_FIRST_STEP_KEY
                 | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
-                | typeof ABLITERATED_PRO_FIRST_STEP_KEY,
+                | typeof ABLITERATED_PRO_THREE_STEPS_KEY,
               experiment_variant: args.assignment.variant,
               // Abliteration telemetry uses the original assistant ID as request ID.
               experiment_request_id: args.messageId,
