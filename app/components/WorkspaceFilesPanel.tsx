@@ -1,5 +1,6 @@
 "use client";
 
+import type { CapturedFile } from "@/lib/workspace-preview/chat-files";
 import { ChatFilesPanel } from "./ChatFilesPanel";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -70,14 +71,24 @@ const sizeLabel = (size: number) =>
       ? `${(size / 1024).toFixed(1)} KB`
       : `${(size / 1048576).toFixed(1)} MB`;
 
+export type LoadedWorkspaceFile = {
+  id: string;
+  file: WorkspacePreview;
+  bytes: Uint8Array<ArrayBuffer>;
+  source: string;
+  loadedAt: number;
+};
+
 export function LiveWorkspaceFilesPanel({
   messages,
   chatId,
   environment,
+  onOpenFile,
 }: {
   messages: any[];
   chatId: string;
   environment?: string;
+  onOpenFile?: (file: LoadedWorkspaceFile) => void;
 }) {
   const [path, setPath] = useState("");
   const [search, setSearch] = useState("");
@@ -280,12 +291,13 @@ export function LiveWorkspaceFilesPanel({
       } else {
         const type =
           imageTypes[entry.name.split(".").pop()?.toLowerCase() ?? ""];
+        let nextPreview: WorkspacePreview;
         if (type)
-          setPreview({
+          nextPreview = {
             name: entry.name,
             path: filePath,
             url: URL.createObjectURL(new Blob([bytes], { type })),
-          });
+          };
         else {
           let text: string;
           try {
@@ -302,8 +314,26 @@ export function LiveWorkspaceFilesPanel({
             throw new Error(
               "This binary file has no preview. Download it to open it.",
             );
-          setPreview({ name: entry.name, path: filePath, text });
+          nextPreview = { name: entry.name, path: filePath, text };
         }
+        if (onOpenFile) {
+          onOpenFile({
+            id: JSON.stringify([
+              environment,
+              sandboxId.current,
+              filePath,
+              revision,
+            ]),
+            file: nextPreview,
+            bytes,
+            source:
+              status?.environmentLabel ??
+              (environment === "e2b" || environment === "cloud"
+                ? "Cloud"
+                : "Local / Desktop"),
+            loadedAt: Date.now(),
+          });
+        } else setPreview(nextPreview);
       }
     } catch (cause) {
       if (!controller.signal.aborted)
@@ -679,9 +709,13 @@ export function LiveWorkspaceFilesPanel({
 export function WorkspaceFilesPanel({
   messages,
   chatId,
+  onOpenCapturedFile,
+  onOpenWorkspaceFile,
 }: {
   messages: any[];
   chatId: string;
+  onOpenCapturedFile?: (file: CapturedFile) => void;
+  onOpenWorkspaceFile?: (file: LoadedWorkspaceFile) => void;
 }) {
   const { sandboxPreference } = useGlobalState();
   const [tab, setTab] = useState<"chat" | "workspace">("chat");
@@ -707,7 +741,7 @@ export function WorkspaceFilesPanel({
         </Button>
       </div>
       {tab === "chat" ? (
-        <ChatFilesPanel messages={messages} />
+        <ChatFilesPanel messages={messages} onOpenFile={onOpenCapturedFile} />
       ) : (
         <>
           <p className="py-2 text-xs text-muted-foreground">
@@ -722,6 +756,7 @@ export function WorkspaceFilesPanel({
             chatId={chatId}
             messages={messages}
             environment={sandboxPreference}
+            onOpenFile={onOpenWorkspaceFile}
           />
         </>
       )}

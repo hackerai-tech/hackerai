@@ -1,0 +1,194 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { ComputerWorkspace } from "../ComputerWorkspace";
+import type { SidebarContent } from "@/types/chat";
+
+const mockGetUrl = jest.fn();
+jest.mock("convex/react", () => ({ useAction: () => mockGetUrl }));
+jest.mock("../ComputerCodeBlock", () => ({
+  ComputerCodeBlock: ({ children }: { children: string }) => (
+    <pre>{children}</pre>
+  ),
+}));
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: jest.fn(),
+}));
+jest.mock("../../contexts/GlobalState", () => ({
+  useGlobalState: () => ({ sandboxPreference: "cloud" }),
+}));
+jest.mock("@/hooks/use-workspace-layout", () => ({
+  useComputerSidebarOverlay: () => false,
+}));
+jest.mock("../AllFilesDialog", () => ({ AllFilesDialog: () => null }));
+jest.mock("../../hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
+jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
+const messages = ["cloud", "desktop"].map((environment, index) => ({
+  id: `m${index}`,
+  role: "assistant",
+  parts: [
+    {
+      type: "tool-file",
+      state: "output-available",
+      toolCallId: `call${index}`,
+      input: { path: "/reports/report.txt", action: "read" },
+      output: {
+        originalContent: `${environment} historical version`,
+        fileSnapshot: {
+          environment,
+          identity: environment,
+          capturedAt: 100 + index,
+        },
+      },
+    },
+  ],
+}));
+const files: SidebarContent = {
+  kind: "workspace-files",
+  chatId: "chat",
+  toolCallId: "workspace-files:chat",
+};
+const activity = {
+  kind: "terminal",
+  toolCallId: "terminal1",
+  command: "echo hello",
+  output: "hello",
+} as SidebarContent;
+const props = {
+  chatId: "chat",
+  messages,
+  open: true,
+  selection: files,
+  openRequest: 1,
+  onClose: jest.fn(),
+  renderActivity: () => <p>Latest activity</p>,
+};
+
+beforeEach(() => {
+  global.fetch = jest.fn().mockRejectedValue(new Error("offline"));
+});
+
+it("keeps two captured versions open, reuses a version, and preserves the selected file through activity updates and minimize", async () => {
+  const { rerender } = render(<ComputerWorkspace {...props} />);
+  const rows = within(
+    screen.getByRole("navigation", { name: "Files in this chat" }),
+  ).getAllByRole("button", { name: /report.txt/ });
+  fireEvent.click(rows[0]);
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[1],
+  );
+  expect(await screen.findByText("cloud historical version")).toBeVisible();
+  expect(screen.getAllByRole("tab", { name: "report.txt" })).toHaveLength(2);
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[1],
+  );
+  expect(screen.getAllByRole("tab", { name: "report.txt" })).toHaveLength(2);
+  rerender(<ComputerWorkspace {...props} selection={activity} />);
+  expect(screen.getByText("cloud historical version")).toBeVisible();
+  rerender(<ComputerWorkspace {...props} open={false} selection={null} />);
+  expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  rerender(<ComputerWorkspace {...props} selection={activity} />);
+  expect(screen.getByText("cloud historical version")).toBeVisible();
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
+it("removes a deleted historical payload immediately instead of retaining cached content", async () => {
+  const { rerender } = render(<ComputerWorkspace {...props} />);
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  rerender(<ComputerWorkspace {...props} messages={[]} />);
+  expect(
+    screen.queryByText("desktop historical version"),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "no longer in this chat",
+  );
+});
+
+it("opens Files from the new-tab chooser, preserves its search, and supports keyboard selection and closing", async () => {
+  render(<ComputerWorkspace {...props} selection={activity} />);
+  fireEvent.click(screen.getByRole("button", { name: "New computer tab" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: /Files Captured chat files/ }),
+  );
+  fireEvent.change(screen.getByRole("textbox", { name: "Search chat files" }), {
+    target: { value: "report" },
+  });
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Activity" }), {
+    key: "ArrowRight",
+  });
+  expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  expect(
+    screen.getByRole("textbox", { name: "Search chat files" }),
+  ).toHaveValue("report");
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Files" }), {
+    key: "Delete",
+  });
+  expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
+it("retains the loaded workspace bytes when the live file changes and opens the new revision separately", async () => {
+  let revision = "one";
+  global.fetch = jest.fn().mockImplementation(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    return {
+      ok: true,
+      json: async () =>
+        body.action === "preview"
+          ? {
+              data: btoa(`version ${revision}`),
+              size: 11,
+              revision,
+              sandboxId: "cloud-owned",
+            }
+          : {
+              state: "running",
+              sandboxId: "cloud-owned",
+              root: "/home/user",
+              environmentLabel: "Cloud",
+              entries: [
+                { name: "report.txt", kind: "file", size: 11, modified: 1000 },
+              ],
+              total: 1,
+              nextOffset: null,
+            },
+    };
+  });
+  render(<ComputerWorkspace {...props} />);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Workspace", exact: true }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Preview report.txt" }),
+  );
+  expect(await screen.findByText("version one")).toBeVisible();
+  revision = "two";
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(screen.getByRole("button", { name: "Preview report.txt" }));
+  expect(await screen.findByText("version two")).toBeVisible();
+  const fileTabs = screen.getAllByRole("tab", { name: "report.txt" });
+  expect(fileTabs).toHaveLength(2);
+  fireEvent.click(fileTabs[0]);
+  expect(screen.getByText("version one")).toBeVisible();
+  expect(screen.getByText("version two")).not.toBeVisible();
+  expect(
+    within(screen.getByRole("tabpanel")).getByText(/Loaded from Cloud/),
+  ).toBeVisible();
+});

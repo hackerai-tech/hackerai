@@ -2688,14 +2688,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
               }
             >
-              {sidebarOpen && (
-                <ComputerSidebar
-                  onBrowserContinue={continueBrowserHandoff}
-                  chatId={chatId}
-                  messages={messages}
-                  status={status}
-                />
-              )}
+              <ComputerSidebar
+                key={chatId ?? "new"}
+                onBrowserContinue={continueBrowserHandoff}
+                chatId={chatId}
+                messages={messages}
+                status={status}
+              />
             </div>
           </div>
 

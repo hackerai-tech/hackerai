@@ -106,6 +106,7 @@ interface GlobalStateType {
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
+  sidebarOpenRequest: number;
   setSidebarOpen: (open: boolean) => void;
   sidebarContent: SidebarContent | null;
   setSidebarContent: (content: SidebarContent | null) => void;
@@ -295,6 +296,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpenRequest, setSidebarOpenRequest] = useState(0);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
@@ -1264,6 +1266,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   const openSidebar = useCallback((content: SidebarContent) => {
+    setSidebarOpenRequest((request) => request + 1);
     setSidebarContent(content);
     setSidebarOpen(true);
   }, []);
@@ -1357,6 +1360,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     paidAgentOnlyActive,
     freeDesktopAgentOnlyActive,
     sidebarOpen,
+    sidebarOpenRequest,
     setSidebarOpen,
     sidebarContent,
     setSidebarContent,

@@ -4,8 +4,7 @@ import useSWR from "swr";
 import { FolderOpen } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 
-export function WorkspaceFilesButton({ chatId }: { chatId?: string }) {
-  const { openSidebar } = useGlobalState();
+export function useWorkspaceFilesEnabled(chatId?: string): boolean {
   const { data } = useSWR(
     chatId ? `/api/workspace-files?chatId=${encodeURIComponent(chatId)}` : null,
     async (url: string) => {
@@ -14,7 +13,13 @@ export function WorkspaceFilesButton({ chatId }: { chatId?: string }) {
     },
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
-  if (!data?.enabled || !chatId) return null;
+  return data?.enabled === true;
+}
+
+export function WorkspaceFilesButton({ chatId }: { chatId?: string }) {
+  const { openSidebar } = useGlobalState();
+  const enabled = useWorkspaceFilesEnabled(chatId);
+  if (!enabled || !chatId) return null;
   return (
     <button
       type="button"

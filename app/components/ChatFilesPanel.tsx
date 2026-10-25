@@ -289,7 +289,13 @@ function FileTree({
   );
 }
 
-export function ChatFilesPanel({ messages }: { messages: FileMessage[] }) {
+export function ChatFilesPanel({
+  messages,
+  onOpenFile,
+}: {
+  messages: FileMessage[];
+  onOpenFile?: (file: CapturedFile) => void;
+}) {
   const files = useMemo(() => collectChatFiles(messages), [messages]);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -342,7 +348,12 @@ export function ChatFilesPanel({ messages }: { messages: FileMessage[] }) {
             aria-label="Files in this chat"
             className="min-h-0 flex-1 overflow-auto"
           >
-            <FileTree node={root} onOpen={(file) => setSelectedId(file.id)} />
+            <FileTree
+              node={root}
+              onOpen={(file) =>
+                onOpenFile ? onOpenFile(file) : setSelectedId(file.id)
+              }
+            />
           </nav>
           {!files.length && (
             <p className="text-sm text-muted-foreground">

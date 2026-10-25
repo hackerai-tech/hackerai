@@ -1,3 +1,4 @@
+import { useWorkspaceFilesEnabled } from "./WorkspaceFilesButton";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -71,6 +72,11 @@ import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
 import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
 
+const ComputerWorkspace = dynamic(
+  () => import("./ComputerWorkspace").then((m) => m.ComputerWorkspace),
+  { ssr: false },
+);
+
 const CapturedFilePreview = dynamic(
   () => import("./ChatFilesPanel").then((m) => m.CapturedFilePreview),
   { ssr: false },
@@ -87,6 +93,7 @@ const SubagentsSidebar = dynamic(
 );
 
 interface ComputerSidebarProps {
+  embedded?: boolean;
   sidebarOpen: boolean;
   sidebarContent: SidebarContent | null;
   closeSidebar: () => void;
@@ -334,6 +341,7 @@ const ViewFileSummary = ({ file }: { file: NonNullable<SidebarContent> }) => {
 };
 
 export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
+  embedded = false,
   sidebarOpen,
   sidebarContent,
   closeSidebar,
@@ -627,9 +635,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     <div
       ref={sidebarRef}
       className={
-        isFullscreen
-          ? "fixed inset-0 z-50 h-full w-full bg-background p-4"
-          : "h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0"
+        embedded
+          ? "h-full min-h-0 w-full"
+          : isFullscreen
+            ? "fixed inset-0 z-50 h-full w-full bg-background p-4"
+            : "h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0"
       }
       role={isFullscreen ? "dialog" : undefined}
       aria-modal={isFullscreen ? true : undefined}
@@ -637,95 +647,108 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       onKeyDown={handleKeyDown}
     >
       <div className="h-full w-full">
-        <div className="shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-border/20 dark:border-border flex h-full w-full bg-background rounded-[22px]">
-          <div className="flex-1 min-w-0 p-4 flex flex-col h-full">
+        <div
+          className={
+            embedded
+              ? "flex h-full w-full"
+              : "shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-border/20 dark:border-border flex h-full w-full bg-background rounded-[22px]"
+          }
+        >
+          <div
+            className={
+              embedded
+                ? "flex-1 min-w-0 flex flex-col h-full"
+                : "flex-1 min-w-0 p-4 flex flex-col h-full"
+            }
+          >
             {/* Header */}
-            <div className="flex items-center gap-2 w-full">
-              {backNavigation && (
+            {!embedded && (
+              <div className="flex items-center gap-2 w-full">
+                {backNavigation && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={backNavigation.onBack}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={backNavigation.label}
+                      >
+                        <ArrowLeft className="h-5 w-5" aria-hidden />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>{backNavigation.label}</TooltipContent>
+                  </Tooltip>
+                )}
+                <div className="text-foreground text-lg font-semibold flex-1">
+                  {headerTitle}
+                </div>
+                {!computerSidebarOverlay && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        ref={fullscreenButtonRef}
+                        onClick={() => setIsExpanded((expanded) => !expanded)}
+                        className="hidden desktop:inline-flex w-7 h-7 relative rounded-md items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={
+                          isFullscreen ? "Exit full screen" : "Expand sidebar"
+                        }
+                        aria-pressed={isFullscreen}
+                      >
+                        {isFullscreen ? (
+                          <Minimize2
+                            className="w-5 h-5 text-muted-foreground"
+                            aria-hidden
+                          />
+                        ) : (
+                          <Maximize2
+                            className="w-5 h-5 text-muted-foreground"
+                            aria-hidden
+                          />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isFullscreen ? "Exit full screen" : "Full screen"}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      onClick={backNavigation.onBack}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      aria-label={backNavigation.label}
-                    >
-                      <ArrowLeft className="h-5 w-5" aria-hidden />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>{backNavigation.label}</TooltipContent>
-                </Tooltip>
-              )}
-              <div className="text-foreground text-lg font-semibold flex-1">
-                {headerTitle}
-              </div>
-              {!computerSidebarOverlay && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      ref={fullscreenButtonRef}
-                      onClick={() => setIsExpanded((expanded) => !expanded)}
-                      className="hidden desktop:inline-flex w-7 h-7 relative rounded-md items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={handleClose}
+                      className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
                       aria-label={
-                        isFullscreen ? "Exit full screen" : "Expand sidebar"
+                        usesCloseAction ? "Close details" : "Minimize sidebar"
                       }
-                      aria-pressed={isFullscreen}
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape" && !isFullscreen) handleClose();
+                      }}
                     >
-                      {isFullscreen ? (
-                        <Minimize2
+                      {usesCloseAction ? (
+                        <X
                           className="w-5 h-5 text-muted-foreground"
-                          aria-hidden
+                          aria-hidden="true"
                         />
                       ) : (
-                        <Maximize2
-                          className="w-5 h-5 text-muted-foreground"
-                          aria-hidden
-                        />
+                        <>
+                          <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
+                          <PanelRight
+                            className="hidden desktop:block w-5 h-5 text-muted-foreground"
+                            aria-hidden
+                          />
+                        </>
                       )}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                    {usesCloseAction ? "Close" : "Minimize"}
                   </TooltipContent>
                 </Tooltip>
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={handleClose}
-                    className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
-                    aria-label={
-                      usesCloseAction ? "Close details" : "Minimize sidebar"
-                    }
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape" && !isFullscreen) handleClose();
-                    }}
-                  >
-                    {usesCloseAction ? (
-                      <X
-                        className="w-5 h-5 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <>
-                        <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
-                        <PanelRight
-                          className="hidden desktop:block w-5 h-5 text-muted-foreground"
-                          aria-hidden
-                        />
-                      </>
-                    )}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {usesCloseAction ? "Close" : "Minimize"}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-
+              </div>
+            )}
             {isWorkspaceFiles ? (
               <WorkspaceFilesPanel
                 chatId={sidebarContent.chatId}
@@ -1504,44 +1527,82 @@ export const ComputerSidebar: React.FC<{
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
 }> = ({ chatId, messages, status, onBrowserContinue }) => {
-  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
-    useGlobalState();
+  const {
+    sidebarOpen,
+    sidebarContent,
+    sidebarOpenRequest,
+    setSidebarContent,
+    closeSidebar,
+    openSidebar,
+  } = useGlobalState();
+  const tabsEnabled = useWorkspaceFilesEnabled(chatId);
 
-  if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
-    return (
-      <SubagentsSidebar
-        key={sidebarContent.toolCallId}
-        content={sidebarContent}
-        closeSidebar={closeSidebar}
-      />
-    );
-  }
-
-  if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
-    return (
-      <SubagentComputerSidebar
-        onBrowserContinue={onBrowserContinue}
-        key={sidebarContent.origin.subagentId}
-        chatId={chatId ?? ""}
-        closeSidebar={closeSidebar}
-        parentMessages={messages ?? []}
-        openSidebar={openSidebar}
-        origin={sidebarContent.origin}
-        sidebarContent={sidebarContent}
-      />
-    );
-  }
+  const subagents =
+    sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)
+      ? sidebarContent
+      : null;
+  const origin =
+    sidebarOpen && sidebarContent?.origin?.kind === "subagent"
+      ? sidebarContent.origin
+      : null;
+  const hasNestedView = !!subagents || !!origin;
 
   return (
-    <ComputerSidebarBase
-      onBrowserContinue={onBrowserContinue}
-      sidebarOpen={sidebarOpen}
-      browserChatId={chatId}
-      sidebarContent={sidebarContent}
-      closeSidebar={closeSidebar}
-      messages={messages}
-      onNavigate={openSidebar}
-      status={status}
-    />
+    <>
+      {tabsEnabled && chatId && (
+        <ComputerWorkspace
+          chatId={chatId}
+          messages={messages ?? []}
+          open={sidebarOpen && !hasNestedView}
+          selection={hasNestedView ? null : sidebarContent}
+          openRequest={sidebarOpenRequest}
+          onClose={closeSidebar}
+          renderActivity={(content, visible) => (
+            <ComputerSidebarBase
+              embedded
+              sidebarOpen={visible}
+              sidebarContent={content}
+              closeSidebar={closeSidebar}
+              messages={messages}
+              status={status}
+              onNavigate={setSidebarContent}
+              browserChatId={chatId}
+              onBrowserContinue={onBrowserContinue}
+            />
+          )}
+        />
+      )}
+      {subagents ? (
+        <SubagentsSidebar
+          key={subagents.toolCallId}
+          content={subagents}
+          closeSidebar={closeSidebar}
+        />
+      ) : origin && sidebarContent ? (
+        <SubagentComputerSidebar
+          onBrowserContinue={onBrowserContinue}
+          key={origin.subagentId}
+          chatId={chatId ?? ""}
+          closeSidebar={closeSidebar}
+          parentMessages={messages ?? []}
+          openSidebar={openSidebar}
+          origin={origin}
+          sidebarContent={sidebarContent}
+        />
+      ) : (
+        (!tabsEnabled || !chatId) && (
+          <ComputerSidebarBase
+            onBrowserContinue={onBrowserContinue}
+            sidebarOpen={sidebarOpen}
+            browserChatId={chatId}
+            sidebarContent={sidebarContent}
+            closeSidebar={closeSidebar}
+            messages={messages}
+            onNavigate={openSidebar}
+            status={status}
+          />
+        )
+      )}
+    </>
   );
 };
