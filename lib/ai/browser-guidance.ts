@@ -5,7 +5,7 @@ export const CONNECTED_AGENT_BROWSER_GUIDANCE = `On Local, Desktop, and remote c
 - If the global npm directory is not writable, use a user-owned npm prefix and add its executable directory to PATH for subsequent commands. Do not use sudo or change system permissions to force installation. If Node.js/npm is missing, network access is blocked, or installation fails, report the prerequisite or failure instead of claiming browser access works.
 - Keep an existing agent-browser installation and consult its version/help; do not upgrade or downgrade it solely to match the install version. Verify a new installation with \`agent-browser --version\` and \`agent-browser --help\`.
 - Use an available compatible Chrome/Chromium. If no browser is available, run \`agent-browser install\` to download it. If Linux system libraries are missing, report the required dependencies; do not silently escalate privileges. Verify setup by opening the requested page and taking \`agent-browser snapshot -i\` before interacting.
-- Use agent-browser rather than installing a separate Playwright, Puppeteer, or Selenium workflow. Preserve per-agent sessions and do not attach to the user's existing browser/profile without explicit authorization.`;
+- Use agent-browser rather than installing a separate Playwright, Puppeteer, or Selenium workflow. On Local, Desktop, and remote hosts, choose a unique session name containing this run/agent identity and the test-account label, and pass \`--session <name>\` on every browser command. Do not attach to the user's existing browser/profile without explicit authorization.`;
 
 export const AGENT_BROWSER_GUIDANCE = `<agent_browser>
 Browser availability:
@@ -24,7 +24,6 @@ Observe, act, verify:
 Browser ownership and test identities:
 - In managed Cloud Agent runs, the runtime gives this agent its own browser socket directory. Its default session is separate from the parent, siblings and other runs. Never override AGENT_BROWSER_SOCKET_DIR or connect to another agent's browser.
 - Use \`--session alice\` and \`--session bob\` on EVERY command for two test identities, including snapshots, screenshots and state save/load. Tabs within one session share cookies: a new tab is not a second user.
-- On local/Desktop hosts, choose a unique session name containing this run/agent identity and the test-account label, and pass it on every command. Never take over the user's existing browser/profile without explicit authorization.
 - Keep as few browsers open as the task needs (normally one, two for an authorization comparison). Close your sessions when finished. Never use \`close --all\`, global cleanup or another agent's session name.
 - Verify the signed-in identity using the application's actual identity/account UI before comparing access. Keep baseline and second-account outcomes separate; successful navigation or HTTP status alone does not establish an authorization flaw.
 

@@ -748,7 +748,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain("Do not promise recovery across Agent runs");
     expect(localPrompt).toContain("npm install -g agent-browser@0.26.0");
     expect(localPrompt).toContain(
-      "On local/Desktop hosts, choose a unique session name",
+      "On Local, Desktop, and remote hosts, choose a unique session name",
     );
 
     for (const prompt of [askPrompt]) {
