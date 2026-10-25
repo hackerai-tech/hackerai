@@ -167,3 +167,49 @@ it("drops private report reads/lists and sanitizes update inputs from shares and
     /secret|private-id|evidence|changes|reason/,
   );
 });
+
+it("omits incomplete and failed skill tools while preserving successful built-ins", () => {
+  const incomplete = ["search_skills", "load_skill"].flatMap((toolName) =>
+    ["input-streaming", "input-available", "output-error"].flatMap((state) =>
+      [`tool-${toolName}`, "dynamic-tool"].map((type) => ({
+        type,
+        toolName,
+        state,
+        input: { query: "private workflow", category: "my-skills" },
+        errorText: "private error details",
+      })),
+    ),
+  );
+  const builtins = [
+    {
+      type: "tool-search_skills",
+      state: "output-available",
+      output: { success: true, results: [{ id: "idor", name: "IDOR" }] },
+    },
+    {
+      type: "tool-load_skill",
+      state: "output-available",
+      output: {
+        success: true,
+        skills: ["idor"],
+        content: "Reviewed methodology",
+      },
+    },
+  ];
+  expect(
+    sanitizeFindingPartsForShare([
+      ...incomplete,
+      { type: "tool-search_skills", input: { query: "private context" } },
+      {
+        type: "tool-search_skills",
+        output: { success: false, error: "private category" },
+      },
+      {
+        type: "tool-search_skills",
+        input: { category: "my-skills" },
+        output: { success: true, results: [] },
+      },
+      ...builtins,
+    ]),
+  ).toEqual(builtins);
+});

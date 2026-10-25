@@ -1,3 +1,7 @@
+import {
+  resolvePrivateSkillTools,
+  PRIVATE_SKILL_DISCOVERY,
+} from "@/lib/user-skills/runtime";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
@@ -881,6 +885,20 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  // Surface selection lookup failures rather than silently answer without
+  // methodology the user may have explicitly selected. Disabled skills return null.
+  const privateSkillTools = await resolvePrivateSkillTools(
+    ctx.userId,
+    ctx.chatId,
+    "search_skills" in ctx.tools,
+  );
+  if (privateSkillTools)
+    ctx = {
+      ...ctx,
+      tools: { ...ctx.tools, ...privateSkillTools },
+      // Trusted discovery guidance only; user-authored metadata/content stays in tool results.
+      currentSystemPrompt: `${ctx.currentSystemPrompt}\n\n${PRIVATE_SKILL_DISCOVERY}`,
+    };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
@@ -2062,6 +2080,16 @@ export async function createAgentStream(
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
         [];
       const parentGate = await resolveParentGate(toolResults);
+      // Discover metadata once per response. This is a bounded read-only tool,
+      // still subject to the budget check above and delegated-result gate.
+      const stepToolChoice =
+        parentGate.toolChoice ??
+        (privateSkillTools &&
+        !steps.some((step) =>
+          step.toolCalls.some((call) => call.toolName === "search_skills"),
+        )
+          ? { type: "tool" as const, toolName: "search_skills" }
+          : undefined);
       const enforceParentGateTool = (
         activeTools: Array<keyof typeof ctx.tools> | undefined,
       ): Array<keyof typeof ctx.tools> | undefined => {
@@ -2303,9 +2331,7 @@ export async function createAgentStream(
                 providerOptions,
                 messages: preparedMessages,
                 system: requestSystemPrompt(continuationModelInfo.modelName),
-                ...(parentGate.toolChoice
-                  ? { toolChoice: parentGate.toolChoice }
-                  : {}),
+                ...(stepToolChoice ? { toolChoice: stepToolChoice } : {}),
               };
             }
           } else if (
@@ -2504,9 +2530,7 @@ export async function createAgentStream(
                   providerOptions,
                   messages: preparedMessages,
                   system: requestSystemPrompt(continuationModelInfo.modelName),
-                  ...(parentGate.toolChoice
-                    ? { toolChoice: parentGate.toolChoice }
-                    : {}),
+                  ...(stepToolChoice ? { toolChoice: stepToolChoice } : {}),
                 };
               }
             }
@@ -2617,9 +2641,7 @@ export async function createAgentStream(
           providerOptions,
           messages: preparedMessages,
           system: requestSystemPrompt(effectiveModelInfo.modelName),
-          ...(parentGate.toolChoice
-            ? { toolChoice: parentGate.toolChoice }
-            : {}),
+          ...(stepToolChoice ? { toolChoice: stepToolChoice } : {}),
         };
       } catch (error) {
         // Do not persist a request assembled through the recovery path as an exact replay.
@@ -2663,9 +2685,7 @@ export async function createAgentStream(
           ),
           providerOptions,
           messages: fallbackMessages,
-          ...(parentGate.toolChoice
-            ? { toolChoice: parentGate.toolChoice }
-            : {}),
+          ...(stepToolChoice ? { toolChoice: stepToolChoice } : {}),
           system: buildSystemPrompt(
             ctx.currentSystemPrompt + networkSection,
             fallbackModelInfo.modelName,

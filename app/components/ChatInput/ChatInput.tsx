@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ComposerSkillsProvider } from "./ComposerSkills";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -766,7 +767,9 @@ const ChatInputContent = ({
     selectedComputerUnavailable,
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
+  const [skillsSaving, setSkillsSaving] = useState(false);
   const effectiveSendDisabledReason =
+    (skillsSaving ? "Saving skill selection" : undefined) ??
     sendDisabledReason ??
     (user
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
@@ -961,34 +964,41 @@ const ChatInputContent = ({
             onStop={() => void handleAgentStop()}
           />
         ) : (
-          <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
-            data-testid="chat-input-surface"
+          <ComposerSkillsProvider
+            chatId={chatId}
+            disabled={!user || isOffline || isGenerating}
+            onSavingChange={setSkillsSaving}
           >
-            <ChatInputTextarea
-              draftId={draftId}
-              chatMode={chatMode}
-              onEnterSubmit={handleSubmit}
-              minRows={isCentered ? 3 : 1}
-              placeholder={placeholder}
-              autoFocus={autoFocus}
-            />
-            <ChatInputToolbar
-              compactAgentControls={compactAgentControls}
-              onAttachClick={handleAttachClick}
-              isGenerating={isGenerating}
-              hideStop={hideStop}
-              onStop={() => void handleAgentStop()}
-              onSubmit={handleSubmit}
-              status={status}
-              isUploadingFiles={isUploadingFiles}
-              input={input}
-              uploadedFiles={uploadedFiles}
-              chatMode={user ? chatMode : "ask"}
-              isOnline={!isOffline}
-              sendDisabledReason={effectiveSendDisabledReason}
-            />
-          </div>
+            <div
+              className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+              data-testid="chat-input-surface"
+            >
+              <ChatInputTextarea
+                draftId={draftId}
+                chatMode={chatMode}
+                onEnterSubmit={handleSubmit}
+                minRows={isCentered ? 3 : 1}
+                placeholder={placeholder}
+                autoFocus={autoFocus}
+              />
+              <ChatInputToolbar
+                chatId={chatId}
+                compactAgentControls={compactAgentControls}
+                onAttachClick={handleAttachClick}
+                isGenerating={isGenerating}
+                hideStop={hideStop}
+                onStop={() => void handleAgentStop()}
+                onSubmit={handleSubmit}
+                status={status}
+                isUploadingFiles={isUploadingFiles}
+                input={input}
+                uploadedFiles={uploadedFiles}
+                chatMode={user ? chatMode : "ask"}
+                isOnline={!isOffline}
+                sendDisabledReason={effectiveSendDisabledReason}
+              />
+            </div>
+          </ComposerSkillsProvider>
         )}
 
         {/* Compact Agent controls below the input. The composer switches to
