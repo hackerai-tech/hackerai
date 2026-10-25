@@ -907,6 +907,8 @@ export default defineSchema({
     // Legacy field retained so historical rows remain schema-valid. The
     // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
+    // Legacy field retained only so historical rows remain schema-valid.
+    // Traits are no longer accepted, returned, or applied to prompts.
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     updated_at: v.number(),

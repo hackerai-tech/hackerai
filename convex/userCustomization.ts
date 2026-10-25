@@ -82,7 +82,6 @@ export const saveUserCustomization = mutation({
   args: {
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
-    traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     include_notes: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
@@ -112,12 +111,6 @@ export const saveUserCustomization = mutation({
         message: `Occupation exceeds ${MAX_CHAR_LIMIT} character limit`,
       });
     }
-    if (args.traits && args.traits.length > MAX_CHAR_LIMIT) {
-      throw new ConvexError({
-        code: "VALIDATION_ERROR",
-        message: `Traits exceeds ${MAX_CHAR_LIMIT} character limit`,
-      });
-    }
     if (args.additional_info && args.additional_info.length > MAX_CHAR_LIMIT) {
       throw new ConvexError({
         code: "VALIDATION_ERROR",
@@ -138,8 +131,6 @@ export const saveUserCustomization = mutation({
           patch.nickname = args.nickname.trim() || undefined;
         if (args.occupation !== undefined)
           patch.occupation = args.occupation.trim() || undefined;
-        if (args.traits !== undefined)
-          patch.traits = args.traits.trim() || undefined;
         if (args.additional_info !== undefined)
           patch.additional_info = args.additional_info.trim() || undefined;
         if (args.include_notes !== undefined)
@@ -154,7 +145,6 @@ export const saveUserCustomization = mutation({
           user_id: identity.subject,
           nickname: args.nickname?.trim() || undefined,
           occupation: args.occupation?.trim() || undefined,
-          traits: args.traits?.trim() || undefined,
           additional_info: args.additional_info?.trim() || undefined,
           include_notes: args.include_notes ?? true,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
@@ -187,7 +177,6 @@ export const getUserCustomization = query({
     v.object({
       nickname: v.optional(v.string()),
       occupation: v.optional(v.string()),
-      traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
       extra_usage_enabled: v.boolean(),
@@ -213,7 +202,6 @@ export const getUserCustomization = query({
       return {
         nickname: customization.nickname,
         occupation: customization.occupation,
-        traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
@@ -239,7 +227,6 @@ export const getUserCustomizationForBackend = query({
     v.object({
       nickname: v.optional(v.string()),
       occupation: v.optional(v.string()),
-      traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
       extra_usage_enabled: v.boolean(),
@@ -262,7 +249,6 @@ export const getUserCustomizationForBackend = query({
       return {
         nickname: customization.nickname,
         occupation: customization.occupation,
-        traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
