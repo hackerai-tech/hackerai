@@ -117,3 +117,66 @@ it.each(["status", "resume"])(
     }
   },
 );
+
+it.each(["list", "status", "resume", "preview", "download"])(
+  "rejects incomplete %s results instead of reporting an empty workspace",
+  async (action) => {
+    run.mockResolvedValue({ exitCode: 0, stdout: "{}" });
+    await expect(
+      accessLocalWorkspaceFiles(
+        "owner",
+        "environment:machine",
+        input({ action, path: "report.txt", sandboxId: "session" }),
+      ),
+    ).rejects.toThrow();
+    expect(close).toHaveBeenCalled();
+  },
+);
+
+it("preserves invalid_request for a chunk request missing its revision", async () => {
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({ error: "invalid_request" }),
+  });
+  await expect(
+    accessLocalWorkspaceFiles(
+      "owner",
+      "environment:machine",
+      input({
+        action: "download",
+        path: "report.txt",
+        sandboxId: "session",
+        byteOffset: 1,
+      }),
+    ),
+  ).rejects.toMatchObject({ code: "invalid_request" });
+  expect(close).toHaveBeenCalled();
+});
+
+it.each(["preview", "download"])(
+  "accepts a complete %s chunk including an empty file",
+  async (action) => {
+    run.mockResolvedValue({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        root: "/home/test",
+        data: "",
+        size: 0,
+        revision: "a".repeat(64),
+        nextByteOffset: null,
+      }),
+    });
+    await expect(
+      accessLocalWorkspaceFiles(
+        "owner",
+        "environment:machine",
+        input({ action, path: "empty.txt", sandboxId: "session" }),
+      ),
+    ).resolves.toMatchObject({
+      state: "running",
+      data: "",
+      size: 0,
+      nextByteOffset: null,
+    });
+  },
+);

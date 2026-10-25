@@ -1,3 +1,5 @@
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { accessLocalWorkspaceFiles } from "@/lib/sandbox/local-workspace-files";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
 import { NextRequest, NextResponse } from "next/server";
@@ -112,18 +114,28 @@ export async function POST(req: NextRequest) {
       );
       if (count > 120) return json({ error: "rate_limited" }, 429);
     }
+    let normalizedPreference = preference;
+    if (local) {
+      const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+      if (!serviceKey)
+        throw new WorkspaceFileError("workspace_unavailable", 503);
+      normalizedPreference = await getConvexClient().query(
+        api.localSandbox.resolveEnvironmentPreferenceForBackend,
+        { serviceKey, userId, preference },
+      );
+    }
     const project = local
       ? await resolveProjectExecutionContext({
           chat: auth.chat,
           userId,
           mode: "agent",
-          sandboxPreference: preference,
+          sandboxPreference: normalizedPreference,
         })
       : {};
     const result = local
       ? await accessLocalWorkspaceFiles(
           userId,
-          preference,
+          normalizedPreference,
           input,
           project.workingDirectory,
         )

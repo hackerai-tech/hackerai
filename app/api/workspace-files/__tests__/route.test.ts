@@ -1,8 +1,10 @@
 import type { NextRequest } from "next/server";
 import { accessLocalWorkspaceFiles } from "@/lib/sandbox/local-workspace-files";
+import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { getConvexClient } from "@/lib/db/convex-client";
 import { GET, POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { getChatById } from "@/lib/db/actions";
+import { getChatById, getProjectById } from "@/lib/db/actions";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
 import {
@@ -21,7 +23,11 @@ jest.mock("@/lib/chat/project-context", () => ({
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
 jest.mock("@/lib/auth/get-user-id", () => ({ getUserIDAndPro: jest.fn() }));
-jest.mock("@/lib/db/actions", () => ({ getChatById: jest.fn() }));
+jest.mock("@/lib/db/actions", () => ({
+  getChatById: jest.fn(),
+  getProjectById: jest.fn(),
+}));
+jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({
   getPostHogBooleanFlagDecisionForUser: jest.fn(),
   phLogger: { event: jest.fn() },
@@ -57,6 +63,12 @@ const request = (values = {}) =>
   });
 beforeEach(() => {
   jest.resetAllMocks();
+  process.env.CONVEX_SERVICE_ROLE_KEY = "test";
+  jest
+    .mocked(getConvexClient)
+    .mockReturnValue({
+      query: jest.fn(async (_ref, args) => args.preference),
+    } as any);
   jest
     .mocked(
       require("@/lib/chat/project-context").resolveProjectExecutionContext,
@@ -160,5 +172,39 @@ it("bounds repeated workspace access before calling the provider", async () => {
   const response = await POST(request());
   expect(response.status).toBe(429);
   expect(await response.json()).toEqual({ error: "rate_limited" });
+  expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+});
+
+it("normalizes a legacy Desktop connection before checking its linked project folder", async () => {
+  jest
+    .mocked(getChatById)
+    .mockResolvedValue({
+      user_id: "owner",
+      sandbox_type: "legacy-session",
+      project_id: "project",
+    } as any);
+  jest
+    .mocked(getProjectById)
+    .mockResolvedValue({ folder_path: "/Users/test/project" } as any);
+  jest
+    .mocked(resolveProjectExecutionContext)
+    .mockImplementation(
+      jest.requireActual("@/lib/chat/project-context")
+        .resolveProjectExecutionContext,
+    );
+  const query = jest.fn().mockResolvedValue("desktop-environment:machine");
+  jest.mocked(getConvexClient).mockReturnValue({ query } as any);
+  const response = await POST(request());
+  expect(response.status).toBe(200);
+  expect(query).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ userId: "owner", preference: "legacy-session" }),
+  );
+  expect(accessLocalWorkspaceFiles).toHaveBeenCalledWith(
+    "owner",
+    "desktop-environment:machine",
+    expect.anything(),
+    "/Users/test/project",
+  );
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
 });

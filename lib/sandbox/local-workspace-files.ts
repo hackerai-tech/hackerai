@@ -11,7 +11,7 @@ import {
 import { z } from "zod";
 
 const resultSchema = z.object({
-  root: z.string().optional(),
+  root: z.string(),
   entries: z
     .array(
       z.object({
@@ -47,6 +47,18 @@ const resultSchema = z.object({
     .max(50 * 1024 * 1024)
     .nullable()
     .optional(),
+});
+
+const listResultSchema = resultSchema.required({
+  entries: true,
+  total: true,
+  nextOffset: true,
+});
+const fileResultSchema = resultSchema.required({
+  data: true,
+  size: true,
+  revision: true,
+  nextByteOffset: true,
 });
 
 /** Resolve an authenticated owner connection, then pin every read to its session.
@@ -114,6 +126,7 @@ export async function accessLocalWorkspaceFiles(
     const parsed = JSON.parse(result.stdout);
     if (parsed.error) {
       const allowed = [
+        "invalid_request",
         "not_found",
         "unreadable_path",
         "file_too_large",
@@ -126,12 +139,19 @@ export async function accessLocalWorkspaceFiles(
         allowed.includes(parsed.error) ? parsed.error : "workspace_unavailable",
       );
     }
+    const validated = (
+      input.action === "list" ||
+      input.action === "status" ||
+      input.action === "resume"
+        ? listResultSchema
+        : fileResultSchema
+    ).parse(parsed);
     return {
-      ...resultSchema.parse(parsed),
+      ...validated,
       state: "running" as const,
       sandboxId: connection.connectionId,
       environmentLabel: connection.name,
-      root: root ?? parsed.root,
+      root: root ?? validated.root,
     };
   } finally {
     await sandbox.close();
