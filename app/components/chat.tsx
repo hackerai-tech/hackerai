@@ -596,6 +596,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
+      ).filter(
+        (element) =>
+          element.tabIndex >= 0 && !element.closest("[hidden], [inert]"),
       );
 
     const hasNestedDialogFocus = () => {
@@ -638,7 +641,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     const focusTimeout = window.setTimeout(() => {
       if (!hasNestedDialogFocus())
-        (getFocusableElements()[0] ?? dialog).focus();
+        (
+          dialog.querySelector<HTMLElement>(
+            '[role="tab"][aria-selected="true"]',
+          ) ??
+          getFocusableElements()[0] ??
+          dialog
+        ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
