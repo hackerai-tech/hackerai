@@ -808,6 +808,7 @@ export function WorkspaceFilesPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col sm:pt-3">
       <div
+        role="group"
         className="flex gap-2 max-sm:[&>button]:min-h-11 max-sm:[&>button]:flex-1"
         aria-label="File sources"
       >
