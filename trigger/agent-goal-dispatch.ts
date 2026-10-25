@@ -112,13 +112,21 @@ export const agentGoalDispatch = task({
   },
 });
 
-export async function scheduleGoalContinuation(payload: AgentLongPayload) {
+export async function scheduleGoalContinuation(
+  payload: AgentLongPayload,
+  completedRunId: string,
+) {
   if (payload.goalGeneration === undefined) return;
   if (payload.convexUrl) setConvexUrl(payload.convexUrl);
   let generation = payload.goalGeneration;
   try {
     const goal = await getGoal(payload.chatId, payload.userId);
-    if (!goal || !["queued", "waiting"].includes(goal.state)) return;
+    if (
+      !goal ||
+      !["queued", "waiting"].includes(goal.state) ||
+      goal.continuationSourceRunId !== completedRunId
+    )
+      return;
     generation = goal.generation;
     await tasks.trigger(
       "agent-goal-dispatch",

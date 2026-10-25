@@ -147,6 +147,7 @@ export const pauseForCanceledRun = mutation({
     await ctx.db.patch(goal._id, {
       state: "paused",
       dispatchId: undefined,
+      continuationSourceRunId: undefined,
       waitUntil: undefined,
       reason: "Paused by user",
       updatedAt: Date.now(),
@@ -203,6 +204,7 @@ export const control = mutation({
         generation: goal.generation + 1,
         checkpoint: undefined,
         dispatchId: undefined,
+        continuationSourceRunId: undefined,
         noProgressRuns: 0,
         reason: "Resumed by user",
         updatedAt: Date.now(),
@@ -215,6 +217,7 @@ export const control = mutation({
         deletedAt: args.action === "clear" ? Date.now() : goal.deletedAt,
         generation: goal.generation + (args.action === "clear" ? 1 : 0),
         dispatchId: undefined,
+        continuationSourceRunId: undefined,
         waitUntil: undefined,
         reason: args.action === "pause" ? "Paused by user" : "Stopped by user",
         updatedAt: Date.now(),
@@ -263,6 +266,7 @@ export const update = mutation({
       progress: "",
       noProgressRuns: 0,
       dispatchId: undefined,
+      continuationSourceRunId: undefined,
       waitUntil: undefined,
       reason: "Goal updated. Resume when ready.",
       updatedAt: Date.now(),
@@ -404,6 +408,7 @@ export const claimRun = mutation({
     await ctx.db.patch(goal._id, {
       state: "running",
       activeRunId: args.runId,
+      continuationSourceRunId: undefined,
       runs: goal.runs + 1,
       waitUntil: undefined,
       checkpoint: undefined,
@@ -503,6 +508,7 @@ export const finish = mutation({
       await ctx.db.patch(goal._id, {
         activeRunId: undefined,
         dispatchId: undefined,
+        continuationSourceRunId: undefined,
         updatedAt: Date.now(),
       });
       return (await ctx.db.get(goal._id))!;
@@ -552,6 +558,11 @@ export const finish = mutation({
       dispatchId: undefined,
       evidence,
       noProgressRuns,
+      // Only this settled worker may schedule its automatic successor. Manual
+      // resume and replacement must use their newly admitted execution settings.
+      continuationSourceRunId: ["queued", "waiting"].includes(state)
+        ? args.runId
+        : undefined,
       generation: ["queued", "waiting"].includes(state)
         ? goal.generation + 1
         : goal.generation,
@@ -618,6 +629,7 @@ export const failDispatch = mutation({
       await ctx.db.patch(goal._id, {
         state: "failed",
         dispatchId: undefined,
+        continuationSourceRunId: undefined,
         reason:
           "Continuation could not start. Review saved progress and resume.",
         updatedAt: Date.now(),

@@ -368,6 +368,20 @@ describe("persistent goal lifecycle", () => {
     });
     expect(db.goal().state).toBe("failed");
   });
+  it("authorizes continuation only for the finished run and clears it on manual resume", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(finish, db.ctx, terminal);
+    db.chat().active_trigger_run_id = undefined;
+    expect(db.goal()).toMatchObject({
+      state: "queued",
+      continuationSourceRunId: "r1",
+    });
+    await invoke(control, db.ctx, { ...owner, action: "pause" });
+    await invoke(control, db.ctx, { ...owner, action: "resume" });
+    expect(db.goal().continuationSourceRunId).toBeUndefined();
+  });
   it("retains cumulative budget and requires an explicit extension", async () => {
     const db = database();
     await invoke(start, db.ctx, { ...startArgs, maxRuns: 1 });

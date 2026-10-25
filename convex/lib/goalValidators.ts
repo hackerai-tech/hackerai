@@ -65,6 +65,7 @@ export const goalFields = {
   evidence: v.array(goalEvidence),
   activeRunId: v.optional(v.string()),
   dispatchId: v.optional(v.string()),
+  continuationSourceRunId: v.optional(v.string()),
   checkpoint: v.optional(goalCheckpoint),
   deletedAt: v.optional(v.number()),
   startedAt: v.optional(v.number()),

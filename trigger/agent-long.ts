@@ -1582,10 +1582,13 @@ export const agentLongTask = task({
   machine: { preset: "small-1x" },
 
   onSuccess: async ({ payload, ctx }) => {
-    await scheduleGoalContinuation({
-      ...payload,
-      goalWorkerVersion: payload.goalWorkerVersion ?? ctx.deployment?.version,
-    });
+    await scheduleGoalContinuation(
+      {
+        ...payload,
+        goalWorkerVersion: payload.goalWorkerVersion ?? ctx.deployment?.version,
+      },
+      ctx.run.id,
+    );
   },
   onFailure: async ({ payload, ctx }) => {
     const settledGoal = await finishGoalRun(payload, ctx.run.id, {

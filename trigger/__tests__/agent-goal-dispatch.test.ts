@@ -106,6 +106,20 @@ describe("bounded goal continuation dispatch", () => {
       expect.objectContaining({ generation: 2, chatId: "chat" }),
     );
   });
+  it.each([
+    ["replacement or manually resumed goal", undefined],
+    ["another run's continuation", "newer-run"],
+  ])("ignores a late success callback for a %s", async (_, sourceRunId) => {
+    mockGetGoal.mockResolvedValue({
+      _id: "goal",
+      state: "queued",
+      generation: 3,
+      continuationSourceRunId: sourceRunId,
+    });
+    await scheduleGoalContinuation(payload, "finished-run");
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
   it("honors the persisted wake time and never schedules a paused goal", async () => {
     const waitUntil = Date.now() + 60_000;
     mockGetGoal.mockResolvedValue({
@@ -113,8 +127,9 @@ describe("bounded goal continuation dispatch", () => {
       state: "waiting",
       generation: 3,
       waitUntil,
+      continuationSourceRunId: "finished-run",
     });
-    await scheduleGoalContinuation(payload);
+    await scheduleGoalContinuation(payload, "finished-run");
     expect(tasks.trigger).toHaveBeenCalledWith(
       "agent-goal-dispatch",
       expect.objectContaining({ goalGeneration: 3 }),
@@ -125,7 +140,7 @@ describe("bounded goal continuation dispatch", () => {
     );
     (tasks.trigger as jest.Mock).mockClear();
     mockGetGoal.mockResolvedValue({ state: "paused" });
-    await scheduleGoalContinuation(payload);
+    await scheduleGoalContinuation(payload, "finished-run");
     expect(tasks.trigger).not.toHaveBeenCalled();
   });
 });
