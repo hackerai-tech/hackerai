@@ -136,6 +136,15 @@ export default function WorkspaceFilePreview({
           <X size={14} />
         </Button>
       </div>
+      <div className="border-b px-3 py-1.5 text-xs text-muted-foreground">
+        <span className="sr-only">File path: </span>
+        <span
+          className="block overflow-x-auto whitespace-nowrap"
+          title={file.path}
+        >
+          {file.path}
+        </span>
+      </div>
       {copyStatus && (
         <p role="status" className="px-3 text-xs">
           {copyStatus}

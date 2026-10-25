@@ -137,10 +137,10 @@ it("keeps Files discoverable, loads it on selection, and preserves its search th
   expect(
     screen.getByRole("textbox", { name: "Search chat files" }),
   ).toHaveValue("report");
-  fireEvent.click(screen.getByRole("button", { name: "New computer tab" }));
-  fireEvent.click(
-    screen.getByRole("button", { name: /Files Captured chat files/ }),
-  );
+  fireEvent.keyDown(screen.getByRole("button", { name: "Open computer tab" }), {
+    key: "Enter",
+  });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Files" }));
   expect(screen.getAllByRole("tab", { name: "Files" })).toHaveLength(1);
   expect(
     screen.getByRole("textbox", { name: "Search chat files" }),
@@ -257,3 +257,56 @@ it.each(["image", "pdf"] as const)(
     expect(mockGetUrl).not.toHaveBeenCalled();
   },
 );
+
+it("lets users reach overflowed tabs and disables arrows at the corresponding edge", () => {
+  render(<ComputerWorkspace {...props} />);
+  const strip = screen.getByRole("tablist", { name: "Computer tabs" });
+  Object.defineProperties(strip, {
+    clientWidth: { configurable: true, value: 200 },
+    scrollWidth: { configurable: true, value: 600 },
+    scrollLeft: { configurable: true, writable: true, value: 0 },
+  });
+  strip.scrollBy = jest.fn(({ left }: ScrollToOptions) => {
+    strip.scrollLeft += left ?? 0;
+    fireEvent.scroll(strip);
+  });
+  fireEvent.scroll(strip);
+  expect(
+    screen.getByRole("button", { name: "Scroll tabs left" }),
+  ).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Scroll tabs right" }));
+  expect(strip.scrollLeft).toBeGreaterThan(0);
+  expect(
+    screen.getByRole("button", { name: "Scroll tabs left" }),
+  ).toBeEnabled();
+  strip.scrollLeft = 400;
+  fireEvent.scroll(strip);
+  expect(
+    screen.getByRole("button", { name: "Scroll tabs right" }),
+  ).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Scroll tabs left" }));
+  expect(strip.scrollLeft).toBeLessThan(400);
+});
+
+it("opens the compact menu without replacing the preview and dismisses it without closing Computer", async () => {
+  const onClose = jest.fn();
+  render(<ComputerWorkspace {...props} onClose={onClose} />);
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  fireEvent.keyDown(screen.getByRole("button", { name: "Open computer tab" }), {
+    key: "Enter",
+  });
+  const item = await screen.findByRole("menuitem", { name: "Files" });
+  expect(screen.getByText("desktop historical version")).toBeVisible();
+  fireEvent.keyDown(item, { key: "Escape" });
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "report.txt" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});

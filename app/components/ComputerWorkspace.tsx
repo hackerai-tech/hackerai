@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import {
+  ChevronLeft,
+  ChevronRight,
   FileText,
   FolderOpen,
   Maximize2,
@@ -41,6 +43,13 @@ import { downloadFile } from "@/lib/utils/file-download";
 import { isTauriEnvironment } from "../hooks/useTauri";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
 type FileTab = { id: string; name: string } & (
   | { kind: "captured"; capturedId: string }
   | { kind: "workspace"; loaded: LoadedWorkspaceFile }
@@ -70,13 +79,14 @@ export function ComputerWorkspace({
   const prefix = useId();
   const [active, setActive] = useState("activity");
   const [filesVisited, setFilesVisited] = useState(false);
-  const [chooserOpen, setChooserOpen] = useState(false);
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activity, setActivity] = useState<SidebarContent | null>(null);
   const [expanded, setExpanded] = useState(false);
   const overlay = useComputerSidebarOverlay();
   const fullscreen = expanded && !overlay;
   const frame = useRef<HTMLDivElement>(null);
+  const tabStrip = useRef<HTMLDivElement>(null);
+  const [tabScroll, setTabScroll] = useState({ left: false, right: false });
   const expandButton = useRef<HTMLButtonElement>(null);
   const [lastRequest, setLastRequest] = useState<number | null>(null);
   const [previousSelection, setPreviousSelection] = useState(selection);
@@ -93,7 +103,6 @@ export function ComputerWorkspace({
 
   const openFiles = useCallback(() => {
     setFilesVisited(true);
-    setChooserOpen(false);
     setActive("files");
   }, []);
   const openCaptured = useCallback((file: CapturedFile) => {
@@ -172,13 +181,44 @@ export function ComputerWorkspace({
     };
   }, [open, fullscreen]);
 
+  useEffect(() => {
+    const strip = tabStrip.current;
+    if (!open || !strip) return;
+    const update = () => {
+      const left = strip.scrollLeft > 1;
+      const right =
+        strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+      setTabScroll((current) =>
+        current.left === left && current.right === right
+          ? current
+          : { left, right },
+      );
+    };
+    update();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(strip);
+    strip.addEventListener("scroll", update, { passive: true });
+    return () => {
+      observer?.disconnect();
+      strip.removeEventListener("scroll", update);
+    };
+  }, [open, tabs.length]);
+
+  const scrollTabs = (direction: number) => {
+    const strip = tabStrip.current;
+    strip?.scrollBy({
+      left: direction * Math.max(120, strip.clientWidth * 0.75),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant"
+        : "smooth",
+    });
+  };
+
   const visibleTabs = [
     { id: "activity", name: "Activity", icon: Monitor, closable: false },
     { id: "files", name: "Files", icon: FolderOpen, closable: false },
     ...tabs.map((tab) => ({ ...tab, icon: FileText, closable: true })),
-    ...(chooserOpen
-      ? [{ id: "new", name: "New tab", icon: Plus, closable: true }]
-      : []),
   ];
   const focusTab = (id: string) => {
     if (id === "files") setFilesVisited(true);
@@ -190,13 +230,10 @@ export function ComputerWorkspace({
   const closeTab = (id: string) => {
     const index = visibleTabs.findIndex((tab) => tab.id === id);
     if (id === "activity" || id === "files") return;
-    if (id === "new") setChooserOpen(false);
-    else {
-      const url = ownedUrls.current.get(id);
-      if (url) URL.revokeObjectURL(url);
-      ownedUrls.current.delete(id);
-      setTabs((current) => current.filter((tab) => tab.id !== id));
-    }
+    const url = ownedUrls.current.get(id);
+    if (url) URL.revokeObjectURL(url);
+    ownedUrls.current.delete(id);
+    setTabs((current) => current.filter((tab) => tab.id !== id));
     focusTab(active === id ? visibleTabs[Math.max(0, index - 1)].id : active);
   };
 
@@ -240,6 +277,7 @@ export function ComputerWorkspace({
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[22px] border border-border/40 bg-background">
         <div className="flex min-w-0 items-center gap-1 border-b bg-muted/20 px-2 pt-2">
           <div
+            ref={tabStrip}
             role="tablist"
             aria-label="Computer tabs"
             className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
@@ -255,7 +293,20 @@ export function ComputerWorkspace({
                   aria-controls={`${prefix}-panel-${tab.id}`}
                   aria-selected={active === tab.id}
                   tabIndex={active === tab.id ? 0 : -1}
-                  title={tab.name}
+                  title={
+                    "kind" in tab
+                      ? tab.kind === "workspace"
+                        ? `${tab.loaded.file.path} · ${tab.loaded.source}`
+                        : (() => {
+                            const capture = captures.find(
+                              (file) => file.id === tab.capturedId,
+                            );
+                            return capture
+                              ? `${capture.path} · Captured from ${capture.source}`
+                              : tab.name;
+                          })()
+                      : tab.name
+                  }
                   onClick={() => focusTab(tab.id)}
                   className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   onKeyDown={(event) => {
@@ -292,17 +343,54 @@ export function ComputerWorkspace({
               </div>
             ))}
           </div>
-          <button
-            aria-label="New computer tab"
-            title="New tab"
-            onClick={() => {
-              setChooserOpen(true);
-              setActive("new");
-            }}
-            className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Plus size={16} />
-          </button>
+          {(tabScroll.left || tabScroll.right) && (
+            <div
+              role="group"
+              aria-label="Scroll computer tabs"
+              className="mb-1 flex shrink-0"
+            >
+              <button
+                aria-label="Scroll tabs left"
+                title="Scroll tabs left"
+                disabled={!tabScroll.left}
+                onClick={() => scrollTabs(-1)}
+                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button
+                aria-label="Scroll tabs right"
+                title="Scroll tabs right"
+                disabled={!tabScroll.right}
+                onClick={() => scrollTabs(1)}
+                className="rounded p-1 hover:bg-muted disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label="Open computer tab"
+                title="Open tab"
+                className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus size={16} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              onEscapeKeyDown={(event) => event.stopPropagation()}
+            >
+              <DropdownMenuItem onSelect={openFiles}>
+                <FolderOpen size={16} /> Files
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => focusTab("activity")}>
+                <Monitor size={16} /> Activity
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {!overlay && (
             <button
               ref={expandButton}
@@ -391,47 +479,6 @@ export function ComputerWorkspace({
               )}
             </div>
           ))}
-          {chooserOpen && (
-            <div
-              role="tabpanel"
-              id={`${prefix}-panel-new`}
-              aria-labelledby={`${prefix}-tab-new`}
-              hidden={active !== "new"}
-              className="h-full overflow-auto p-4"
-            >
-              <h2 className="mt-8 text-lg font-medium">Open a tab</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Keep files open while the Agent works.
-              </p>
-              <button
-                onClick={openFiles}
-                className="mt-6 flex w-full items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <FolderOpen size={24} />
-                <span>
-                  <span className="block text-sm font-medium">Files</span>
-                  <span className="block text-xs text-muted-foreground">
-                    Captured chat files and your current workspace
-                  </span>
-                </span>
-              </button>
-              <button
-                onClick={() => {
-                  setChooserOpen(false);
-                  setActive("activity");
-                }}
-                className="mt-3 flex w-full items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Monitor size={24} />
-                <span>
-                  <span className="block text-sm font-medium">Activity</span>
-                  <span className="block text-xs text-muted-foreground">
-                    Follow the Agent’s tools and computer
-                  </span>
-                </span>
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </div>
