@@ -515,7 +515,7 @@ export function AgentGoalPanel({
       className="relative z-0 order-1 mx-3 -mb-5 flex min-w-0 shrink-0 flex-col-reverse text-sm"
     >
       <div className="rounded-t-[22px] border border-black/8 bg-muted px-2 pb-5 dark:border-border">
-        <div className="flex min-h-12 min-w-0 items-center gap-2">
+        <div className="flex min-h-9 min-w-0 items-center gap-2">
           <button
             type="button"
             aria-label={expanded ? "Hide goal details" : "Show goal details"}
@@ -523,7 +523,7 @@ export function AgentGoalPanel({
             aria-controls={detailsId}
             onClick={() => setExpanded(!expanded)}
             title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
-            className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Target
               className={`size-4 shrink-0 ${statusColor}`}
