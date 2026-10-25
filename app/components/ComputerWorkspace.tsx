@@ -29,7 +29,7 @@ import {
   type CapturedFile,
   type FileMessage,
 } from "@/lib/workspace-preview/chat-files";
-import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { extractSidebarContentFromMessage } from "@/lib/utils/sidebar-utils";
 import { CapturedFilePreview } from "./ChatFilesPanel";
 import {
   WorkspaceFilesPanel,
@@ -83,8 +83,14 @@ export function ComputerWorkspace({
   const [previousSelection, setPreviousSelection] = useState(selection);
   const ownedUrls = useRef(new Map<string, string>());
   const captures = useMemo(() => collectChatFiles(messages), [messages]);
-  const activityContent =
-    activity ?? extractAllSidebarContent(messages).at(-1) ?? null;
+  const activityContent = useMemo(() => {
+    if (activity) return activity;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const content = extractSidebarContentFromMessage(messages[index]);
+      if (content.length) return content.at(-1) ?? null;
+    }
+    return null;
+  }, [activity, messages]);
 
   const openFiles = useCallback(() => {
     setFilesOpen(true);
@@ -140,6 +146,9 @@ export function ComputerWorkspace({
       setActivity(selection);
       const capture =
         isSidebarFile(selection) &&
+        selection.action !== "viewing" &&
+        !selection.isExecuting &&
+        !selection.error &&
         captures.find((file) => file.toolCallId === selection.toolCallId);
       if (capture) openCaptured(capture);
       else setActive("activity");

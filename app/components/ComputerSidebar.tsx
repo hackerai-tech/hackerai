@@ -1590,7 +1590,8 @@ export const ComputerSidebar: React.FC<{
           sidebarContent={sidebarContent}
         />
       ) : (
-        (!tabsEnabled || !chatId) && (
+        (!tabsEnabled || !chatId) &&
+        sidebarOpen && (
           <ComputerSidebarBase
             onBrowserContinue={onBrowserContinue}
             sidebarOpen={sidebarOpen}

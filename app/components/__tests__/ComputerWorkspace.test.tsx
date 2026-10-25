@@ -192,3 +192,58 @@ it("retains the loaded workspace bytes when the live file changes and opens the 
     within(screen.getByRole("tabpanel")).getByText(/Loaded from Cloud/),
   ).toBeVisible();
 });
+
+it.each(["image", "pdf"] as const)(
+  "keeps %s view tool selections in the existing Activity viewer",
+  (kind) => {
+    const preview = {
+      type: "file" as const,
+      fileId: "saved-preview",
+      filename: "page.png",
+      mediaType: "image/png",
+      size: 524288,
+    };
+    const viewMessages = [
+      {
+        id: "view-message",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-file",
+            state: "output-available",
+            toolCallId: "view-call",
+            input: { action: "view", path: `/report.${kind}` },
+            output: { previewFiles: [preview] },
+          },
+        ],
+      },
+    ];
+    const selection = {
+      path: `/report.${kind}`,
+      content: "",
+      action: "viewing" as const,
+      kind,
+      toolCallId: "view-call",
+      previewFiles: [preview],
+    };
+    const renderActivity = jest.fn(() => <p>Existing full-size viewer</p>);
+    render(
+      <ComputerWorkspace
+        {...props}
+        messages={viewMessages}
+        selection={selection}
+        renderActivity={renderActivity}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("Existing full-size viewer")).toBeVisible();
+    expect(
+      screen.queryByRole("tab", { name: `report.${kind}` }),
+    ).not.toBeInTheDocument();
+    expect(renderActivity).toHaveBeenLastCalledWith(selection, true);
+    expect(mockGetUrl).not.toHaveBeenCalled();
+  },
+);
