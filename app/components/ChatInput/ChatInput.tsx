@@ -353,12 +353,13 @@ const ChatInputContent = ({
   const [submissionPending, setSubmissionPending] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
-  const chatInputContainerRef = useRef<HTMLDivElement>(null);
+  const [chatInputContainer, setChatInputContainer] =
+    useState<HTMLDivElement | null>(null);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
 
   useLayoutEffect(() => {
-    const container = chatInputContainerRef.current;
+    const container = chatInputContainer;
     if (!container) return;
 
     const updateCompactLayout = (width: number) => {
@@ -376,7 +377,7 @@ const ChatInputContent = ({
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  }, [chatInputContainer]);
 
   useEffect(() => {
     if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
@@ -928,7 +929,7 @@ const ChatInputContent = ({
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div
-        ref={chatInputContainerRef}
+        ref={setChatInputContainer}
         className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
       >

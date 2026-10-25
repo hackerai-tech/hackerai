@@ -1372,109 +1372,114 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", async () => {
-      jest.mocked(useAuth).mockReturnValue({
-        user: { id: "user_123" },
-        entitlements: [],
-      } as ReturnType<typeof useAuth>);
-      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
-      mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
-          ? [
-              {
-                connectionId: "local-sandbox",
-                name: "Local sandbox",
-                isDesktop: false,
-              },
-            ]
-          : undefined,
-      );
-
-      let resizeCallback: ResizeObserverCallback | null = null;
-      const originalResizeObserverDescriptor = Object.getOwnPropertyDescriptor(
-        globalThis,
-        "ResizeObserver",
-      );
-
-      class ResizeObserverMock implements ResizeObserver {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect = jest.fn();
-        observe = (element: Element) => {
-          if (
-            (element as HTMLElement).dataset.testid === "chat-input-container"
-          ) {
-            resizeCallback = this.callback;
-          }
-        };
-        unobserve = jest.fn();
-      }
-
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        configurable: true,
-        value: ResizeObserverMock,
-      });
-
-      try {
-        render(
-          <TestWrapper>
-            <ChatInput
-              onSubmit={mockOnSubmit}
-              onStop={mockOnStop}
-              status="ready"
-              hasMessages
-            />
-          </TestWrapper>,
+    it.each([false, true])(
+      "moves Agent controls below the input after loading and resizing (initial loading: %s)",
+      async (initialLoading) => {
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? [
+                {
+                  connectionId: "local-sandbox",
+                  name: "Local sandbox",
+                  isDesktop: false,
+                },
+              ]
+            : undefined,
         );
 
-        await screen.findByTestId("chat-input-surface");
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 700 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
+        let resizeCallback: ResizeObserverCallback | null = null;
+        const originalResizeObserverDescriptor =
+          Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
 
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "true",
-        );
-        expect(screen.getByTestId("chat-input-agent-context")).not.toHaveClass(
-          "md:hidden",
-        );
-        expect(
-          screen.getByTestId("chat-input-desktop-permission"),
-        ).not.toHaveClass("md:block");
+        class ResizeObserverMock implements ResizeObserver {
+          constructor(private readonly callback: ResizeObserverCallback) {}
 
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 740 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "false",
-        );
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
-          "md:hidden",
-        );
-        expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
-          "md:block",
-        );
-      } finally {
-        if (originalResizeObserverDescriptor) {
-          Object.defineProperty(
-            globalThis,
-            "ResizeObserver",
-            originalResizeObserverDescriptor,
-          );
-        } else {
-          Reflect.deleteProperty(globalThis, "ResizeObserver");
+          disconnect = jest.fn();
+          observe = (element: Element) => {
+            if (
+              (element as HTMLElement).dataset.testid === "chat-input-container"
+            ) {
+              resizeCallback = this.callback;
+            }
+          };
+          unobserve = jest.fn();
         }
-      }
-    });
+
+        Object.defineProperty(globalThis, "ResizeObserver", {
+          configurable: true,
+          value: ResizeObserverMock,
+        });
+
+        try {
+          const input = (loading: boolean) => (
+            <TestWrapper>
+              <ChatInput
+                onSubmit={mockOnSubmit}
+                onStop={mockOnStop}
+                status="ready"
+                hasMessages
+                isResolvingInitialState={loading}
+              />
+            </TestWrapper>
+          );
+          const { rerender } = render(input(initialLoading));
+          if (initialLoading) {
+            await screen.findByLabelText("Loading task input");
+            rerender(input(false));
+          }
+
+          await screen.findByTestId("chat-input-surface");
+          act(() => {
+            (resizeCallback as ResizeObserverCallback | null)?.(
+              [{ contentRect: { width: 700 } } as ResizeObserverEntry],
+              {} as ResizeObserver,
+            );
+          });
+
+          expect(
+            screen.getByTestId("chat-input-agent-context"),
+          ).toHaveAttribute("data-compact", "true");
+          expect(
+            screen.getByTestId("chat-input-agent-context"),
+          ).not.toHaveClass("md:hidden");
+          expect(
+            screen.getByTestId("chat-input-desktop-permission"),
+          ).not.toHaveClass("md:block");
+
+          act(() => {
+            (resizeCallback as ResizeObserverCallback | null)?.(
+              [{ contentRect: { width: 740 } } as ResizeObserverEntry],
+              {} as ResizeObserver,
+            );
+          });
+
+          expect(
+            screen.getByTestId("chat-input-agent-context"),
+          ).toHaveAttribute("data-compact", "false");
+          expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
+            "md:hidden",
+          );
+          expect(
+            screen.getByTestId("chat-input-desktop-permission"),
+          ).toHaveClass("md:block");
+        } finally {
+          if (originalResizeObserverDescriptor) {
+            Object.defineProperty(
+              globalThis,
+              "ResizeObserver",
+              originalResizeObserverDescriptor,
+            );
+          } else {
+            Reflect.deleteProperty(globalThis, "ResizeObserver");
+          }
+        }
+      },
+    );
 
     it("does not show a late approval after the composer stop button is clicked", async () => {
       let resolveStop: ((stopped: boolean) => void) | undefined;
