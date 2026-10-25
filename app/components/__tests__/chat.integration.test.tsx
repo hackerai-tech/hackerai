@@ -270,6 +270,7 @@ let mockBrowserContinue: (message: {
   id: string;
   text: string;
 }) => Promise<void>;
+let mockSelectedComputerTab = false;
 jest.mock("../ComputerSidebar", () => ({
   ComputerSidebar: ({
     onBrowserContinue,
@@ -280,8 +281,22 @@ jest.mock("../ComputerSidebar", () => ({
     return (
       <div data-testid="computer-sidebar">
         Sidebar
+        <div hidden>
+          <button role="tab" aria-selected="true">
+            Hidden computer action
+          </button>
+        </div>
+        <button tabIndex={-1}>Inactive computer tab</button>
+        {mockSelectedComputerTab && (
+          <button role="tab" aria-selected="true">
+            Selected file
+          </button>
+        )}
         <button type="button">First computer action</button>
         <button type="button">Last computer action</button>
+        <div hidden>
+          <button>Hidden preview action</button>
+        </div>
       </div>
     );
   },
@@ -479,6 +494,7 @@ describe("Chat Component Integration", () => {
   });
 
   beforeEach(() => {
+    mockSelectedComputerTab = false;
     jest.clearAllMocks();
     mockBranchChat.mockReset();
     mockUseAuth.mockReturnValue(defaultAuth);
@@ -1479,6 +1495,27 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("focuses the selected file when Computer becomes a narrow overlay", async () => {
+      mockSelectedComputerTab = true;
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      await screen.findByTestId("computer-sidebar");
+      act(() => {
+        mockComputerOverlayMedia = true;
+        mockOverlayListeners.forEach((listener) => listener());
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("tab", { name: "Selected file" }),
+        ).toHaveFocus(),
+      );
+    });
+
     it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
       render(
         <TestWrapper>

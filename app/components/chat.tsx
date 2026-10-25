@@ -596,6 +596,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
+      ).filter(
+        (element) =>
+          element.tabIndex >= 0 && !element.closest("[hidden], [inert]"),
       );
 
     const hasNestedDialogFocus = () => {
@@ -637,8 +640,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const focusTimeout = window.setTimeout(() => {
-      if (!hasNestedDialogFocus())
-        (getFocusableElements()[0] ?? dialog).focus();
+      if (hasNestedDialogFocus()) return;
+      const focusableElements = getFocusableElements();
+      (
+        focusableElements.find((element) =>
+          element.matches('[role="tab"][aria-selected="true"]'),
+        ) ??
+        focusableElements[0] ??
+        dialog
+      ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
@@ -2666,7 +2676,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             className={
               computerSidebarOverlay
                 ? sidebarOpen
-                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pl-[env(safe-area-inset-left)] max-sm:pr-[env(safe-area-inset-right)] sm:p-4"
                   : "hidden"
                 : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
             }
@@ -2688,14 +2698,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
               }
             >
-              {sidebarOpen && (
-                <ComputerSidebar
-                  onBrowserContinue={continueBrowserHandoff}
-                  chatId={chatId}
-                  messages={messages}
-                  status={status}
-                />
-              )}
+              <ComputerSidebar
+                key={chatId ?? "new"}
+                onBrowserContinue={continueBrowserHandoff}
+                chatId={chatId}
+                messages={messages}
+                status={status}
+              />
             </div>
           </div>
 

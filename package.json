@@ -120,6 +120,7 @@
     "clsx": "^2.1.1",
     "convex": "1.46.0",
     "date-fns": "4.4.0",
+    "dompurify": "3.4.16",
     "e2b": "2.52.1",
     "eventsource-parser": "3.1.1",
     "gpt-tokenizer": "^4.0.0",

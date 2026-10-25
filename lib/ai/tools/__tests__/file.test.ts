@@ -107,6 +107,7 @@ function makeSandbox(
     ...(opts?.windows
       ? {
           sandboxKind: "centrifugo" as const,
+          getConnectionId: () => "windows-session",
           isWindows: () => true,
         }
       : {}),
@@ -193,7 +194,10 @@ describe("file tool large text safety", () => {
         brief: "test connection binding",
         text: "allowed on desktop A",
       }),
-    ).resolves.toBe("File written: C:\\repo\\approved-on-a.txt");
+    ).resolves.toMatchObject({
+      content: "File written: C:\\repo\\approved-on-a.txt",
+      fileSnapshot: { environment: "desktop", identity: "desktop-a" },
+    });
     expect(sandbox.files.write).toHaveBeenCalledWith(
       "C:\\repo\\approved-on-a.txt",
       "allowed on desktop A",
@@ -308,6 +312,7 @@ describe("file tool large text safety", () => {
     })) as { content: string };
 
     expect(result.content).toContain("too large to read in full");
+    expect(result).not.toHaveProperty("originalContent");
     expect(result.content).toContain("range [1, 200]");
     expect(sandbox.files.read).not.toHaveBeenCalled();
   });
