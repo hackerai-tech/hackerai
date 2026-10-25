@@ -502,6 +502,11 @@ describe("E2B sandbox lease lifecycle", () => {
       expect(sandboxApi.connect).not.toHaveBeenCalled();
       expect(sandboxApi.list).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+        e2b_connect_state: null,
+        e2b_connect_selection_source: null,
+        e2b_connect_request_timeout_ms: null,
+      });
     } finally {
       errorLog.mockRestore();
     }
@@ -611,6 +616,11 @@ describe("E2B sandbox lease lifecycle", () => {
       expect(JSON.stringify(errorLog.mock.calls)).not.toContain(
         "private token and response body",
       );
+      expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+        e2b_connect_state: null,
+        e2b_connect_selection_source: null,
+        e2b_connect_request_timeout_ms: null,
+      });
     } finally {
       errorLog.mockRestore();
     }
@@ -952,6 +962,84 @@ describe("E2B sandbox lease lifecycle", () => {
       errorSpy.mockRestore();
     }
   });
+
+  it.each([
+    ["paused", "inventory", 90_000, 1],
+    ["running", "inventory", null, 3],
+    ["paused", "pinned", 90_000, 1],
+    ["running", "pinned", null, 3],
+  ] as const)(
+    "records the selected %s %s connection when the provider fails",
+    async (state, selectionSource, requestTimeoutMs, attempts) => {
+      jest.useFakeTimers();
+      const errorLog = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const setSandbox = jest.fn();
+      const privateWorkspace = "private-workspace-id";
+      const info = {
+        sandboxId: privateWorkspace,
+        state,
+        metadata: {
+          userID: "user-1",
+          template: "terminal-agent-sandbox",
+          e2bCluster: "us",
+          sandboxVersion: "v12",
+          privateContext: "private-workspace-metadata",
+        },
+      };
+      listSandbox(info);
+      sandboxApi.getInfo.mockResolvedValue(info);
+      sandboxApi.connect.mockRejectedValue(
+        Object.assign(new Error("504: private-provider-response"), {
+          status: 504,
+        }),
+      );
+      try {
+        const result = ensureSandboxConnection(
+          { userID: "user-1", setSandbox },
+          {
+            triggerRegion: "us-east-1",
+            ...(selectionSource === "pinned"
+              ? { destinationId: privateWorkspace }
+              : {}),
+          },
+        ).catch((error) => error);
+        await jest.runAllTimersAsync();
+        expect((await result).diagnostics).toEqual({
+          e2b_phase: "connect",
+          e2b_error_category: "unknown",
+          e2b_http_status: 504,
+        });
+        expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+          event: "e2b_sandbox_acquisition_failed",
+          e2b_connect_state: state,
+          e2b_connect_selection_source: selectionSource,
+          e2b_connect_request_timeout_ms: requestTimeoutMs,
+        });
+        const serializedLogs = JSON.stringify(errorLog.mock.calls);
+        for (const privateValue of [
+          privateWorkspace,
+          "private-workspace-metadata",
+          "private-provider-response",
+        ])
+          expect(serializedLogs).not.toContain(privateValue);
+        expect(sandboxApi.connect).toHaveBeenCalledTimes(attempts);
+        const connectOptions = sandboxApi.connect.mock.calls[0][1];
+        if (state === "paused")
+          expect(connectOptions).toMatchObject({
+            requestTimeoutMs: 90_000,
+            retries: 0,
+          });
+        else expect(connectOptions).not.toHaveProperty("requestTimeoutMs");
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(sandboxApi.kill).not.toHaveBeenCalled();
+        expect(sandboxApi.create).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
 
   it("preserves a paused sandbox after a placement failure", async () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
