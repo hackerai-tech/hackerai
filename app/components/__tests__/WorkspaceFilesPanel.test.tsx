@@ -156,3 +156,35 @@ it("aborts an in-flight preview when navigating away and never displays its late
   );
   expect(screen.queryByText("OLD PREVIEW")).not.toBeInTheDocument();
 });
+
+it.each(["Tree view", "List view", "Grid view"])(
+  "explains size limits only on affected files in %s",
+  async (view) => {
+    fetchMock.mockResolvedValue(
+      response(
+        listing([
+          file,
+          { ...file, name: "large.txt", size: 300 * 1024 },
+          { ...file, name: "huge.txt", size: 51 * 1024 * 1024 },
+        ]),
+      ),
+    );
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+    await screen.findByRole("button", { name: "Preview report.txt" });
+    fireEvent.click(screen.getByRole("button", { name: view }));
+    expect(
+      await screen.findByText("Too large to preview · Download available"),
+    ).toBeVisible();
+    expect(screen.getByText("Exceeds 50 MB download limit")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Download large.txt" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Download huge.txt" }),
+    ).toBeDisabled();
+    expect(screen.queryByText(/Preview ≤256 KB/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Live files can change/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Workspace details" }));
+    expect(await screen.findByText(/Live files can change/)).toBeVisible();
+  },
+);

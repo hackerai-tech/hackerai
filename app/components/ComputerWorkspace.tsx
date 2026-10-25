@@ -32,6 +32,7 @@ import {
   type FileMessage,
 } from "@/lib/workspace-preview/chat-files";
 import { extractSidebarContentFromMessage } from "@/lib/utils/sidebar-utils";
+import { FileSourceDetails } from "./FileSourceDetails";
 import { CapturedFilePreview } from "./ChatFilesPanel";
 import {
   WorkspaceFilesPanel,
@@ -548,11 +549,21 @@ function LoadedFilePreview({
   };
   return (
     <>
-      <p className="mb-3 text-xs text-muted-foreground">
-        Loaded from {loaded.source} at{" "}
-        {new Date(loaded.loadedAt).toLocaleTimeString()}. This tab keeps the
-        version you opened; reopen from Files to check for changes.
-      </p>
+      <div className="mb-2">
+        <FileSourceDetails
+          label={`${loaded.source} · Snapshot`}
+          name="Snapshot details"
+        >
+          <p>
+            Loaded from {loaded.source} at{" "}
+            {new Date(loaded.loadedAt).toLocaleString()}.
+          </p>
+          <p>
+            This tab keeps the version you opened. Reopen the file from Files to
+            check for changes.
+          </p>
+        </FileSourceDetails>
+      </div>
       {error && (
         <p role="alert" className="mb-2 text-sm text-destructive">
           {error}

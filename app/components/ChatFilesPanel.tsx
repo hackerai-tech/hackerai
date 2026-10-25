@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { File, Folder } from "lucide-react";
+import { FileSourceDetails } from "./FileSourceDetails";
 import { Button } from "@/components/ui/button";
 import {
   collectChatFiles,
@@ -185,16 +186,26 @@ export function CapturedFilePreview({
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <p className="px-2 text-xs text-muted-foreground">
-        {file.source} · {file.action} · {file.detail}
-        {file.capturedAt
-          ? ` · ${new Date(file.capturedAt).toLocaleString()}`
-          : ""}
-      </p>
-      <p className="px-2 text-xs text-muted-foreground">
-        Saved with this tool result. Changing environments does not change this
-        view.{file.partial ? " This is an excerpt, not the complete file." : ""}
-      </p>
+      <FileSourceDetails
+        label={`${file.source} · Captured`}
+        name="Captured file details"
+      >
+        <p>
+          {file.action} · {file.detail}
+          {file.capturedAt
+            ? ` · ${new Date(file.capturedAt).toLocaleString()}`
+            : ""}
+        </p>
+        <p>
+          Saved with this tool result. Changing environments does not change
+          this view.
+        </p>
+      </FileSourceDetails>
+      {file.partial && (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          Captured excerpt · This is not the complete file.
+        </p>
+      )}
       {file.originalText !== undefined && (
         <Button
           variant="outline"
@@ -333,10 +344,12 @@ export function ChatFilesPanel({
         />
       ) : (
         <>
-          <p className="text-xs text-muted-foreground">
-            Captured file versions and saved outputs from this chat. Available
-            independently of the current environment.
-          </p>
+          <FileSourceDetails label="Captured files" name="Chat files details">
+            <p>
+              File versions and saved outputs from this chat. Available
+              independently of the current environment.
+            </p>
+          </FileSourceDetails>
           <input
             aria-label="Search chat files"
             placeholder="Search chat files"

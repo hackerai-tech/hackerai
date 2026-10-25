@@ -198,9 +198,19 @@ it("retains the loaded workspace bytes when the live file changes and opens the 
   fireEvent.click(fileTabs[0]);
   expect(screen.getByText("version one")).toBeVisible();
   expect(screen.getByText("version two")).not.toBeVisible();
+  const panel = within(screen.getByRole("tabpanel"));
+  expect(panel.getByText("Cloud · Snapshot")).toBeVisible();
+  expect(screen.queryByText(/Loaded from Cloud/)).not.toBeInTheDocument();
+  fireEvent.click(panel.getByRole("button", { name: "Snapshot details" }));
+  const details = await screen.findByRole("dialog", {
+    name: "Snapshot details",
+  });
+  expect(within(details).getByText(/Loaded from Cloud/)).toBeVisible();
+  fireEvent.keyDown(details, { key: "Escape" });
   expect(
-    within(screen.getByRole("tabpanel")).getByText(/Loaded from Cloud/),
-  ).toBeVisible();
+    screen.queryByRole("dialog", { name: "Snapshot details" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("version one")).toBeVisible();
 });
 
 it.each(["image", "pdf"] as const)(

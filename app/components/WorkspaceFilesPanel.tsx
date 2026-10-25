@@ -1,6 +1,7 @@
 "use client";
 
 import type { CapturedFile } from "@/lib/workspace-preview/chat-files";
+import { FileSourceDetails } from "./FileSourceDetails";
 import { ChatFilesPanel } from "./ChatFilesPanel";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -347,11 +348,15 @@ export function LiveWorkspaceFilesPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 pt-3">
-      <div className="text-xs text-muted-foreground">
-        {status?.environmentLabel ?? "Workspace"}
-        {status?.root ? ` · ${status.root}` : ""}. Live files can be shared
-        across tasks; download files you want to keep.
-      </div>
+      <FileSourceDetails
+        label={`${status?.environmentLabel ?? (environment === "cloud" || environment === "e2b" ? "Cloud" : "Local / Desktop")}${status?.root ? ` · ${status.root}` : ""}`}
+        name="Workspace details"
+      >
+        <p>
+          Live files can change and may be shared across tasks. Download files
+          you want to keep.
+        </p>
+      </FileSourceDetails>
       {!tree && (
         <div className="flex items-center gap-1 rounded-lg border p-1">
           <Button
@@ -622,6 +627,14 @@ export function LiveWorkspaceFilesPanel({
                                   : "Unsupported"}{" "}
                             · {new Date(entry.modified).toLocaleDateString()}
                           </span>
+                          {entry.kind === "file" &&
+                            entry.size > WORKSPACE_PREVIEW_LIMIT && (
+                              <span className="block text-xs text-muted-foreground">
+                                {entry.size > WORKSPACE_DOWNLOAD_LIMIT
+                                  ? "Exceeds 50 MB download limit"
+                                  : "Too large to preview · Download available"}
+                              </span>
+                            )}
                         </span>
                       </button>
                       {entry.kind === "file" && (
@@ -689,8 +702,7 @@ export function LiveWorkspaceFilesPanel({
           }
         />
       )}
-      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>Preview ≤256 KB · Download ≤50 MB</span>
+      <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
         <Button variant="ghost" size="sm" onClick={() => setSavedOpen(true)}>
           Saved chat files ({savedFiles.length})
         </Button>
@@ -743,22 +755,13 @@ export function WorkspaceFilesPanel({
       {tab === "chat" ? (
         <ChatFilesPanel messages={messages} onOpenFile={onOpenCapturedFile} />
       ) : (
-        <>
-          <p className="py-2 text-xs text-muted-foreground">
-            Live{" "}
-            {sandboxPreference === "e2b" || sandboxPreference === "cloud"
-              ? "Cloud"
-              : "Local / Desktop"}{" "}
-            workspace. These files may change or become unavailable.
-          </p>
-          <LiveWorkspaceFilesPanel
-            key={`${chatId}:${sandboxPreference}`}
-            chatId={chatId}
-            messages={messages}
-            environment={sandboxPreference}
-            onOpenFile={onOpenWorkspaceFile}
-          />
-        </>
+        <LiveWorkspaceFilesPanel
+          key={`${chatId}:${sandboxPreference}`}
+          chatId={chatId}
+          messages={messages}
+          environment={sandboxPreference}
+          onOpenFile={onOpenWorkspaceFile}
+        />
       )}
     </div>
   );

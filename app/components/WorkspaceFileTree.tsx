@@ -178,7 +178,7 @@ function Directory({
               return (
                 <li
                   key={entryPath}
-                  className={`flex min-w-0 items-center rounded ${props.selected === entryPath ? "bg-muted" : "hover:bg-muted/50"}`}
+                  className={`flex min-w-0 flex-wrap items-center rounded ${props.selected === entryPath ? "bg-muted" : "hover:bg-muted/50"}`}
                 >
                   <button
                     type="button"
@@ -210,6 +210,14 @@ function Directory({
                       <Download size={14} />
                     </button>
                   )}
+                  {entry.kind === "file" &&
+                    entry.size > WORKSPACE_PREVIEW_LIMIT && (
+                      <p className="basis-full px-2 pb-2 text-xs text-muted-foreground">
+                        {entry.size > WORKSPACE_DOWNLOAD_LIMIT
+                          ? "Exceeds 50 MB download limit"
+                          : "Too large to preview · Download available"}
+                      </p>
+                    )}
                 </li>
               );
             })}

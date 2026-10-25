@@ -50,6 +50,20 @@ it("opens each captured version without fetching a workspace, including after re
   fireEvent.click(screen.getAllByRole("button", { name: /report.txt/ })[0]);
   expect(await screen.findByText("desktop saved content")).toBeVisible();
   expect(screen.getByLabelText("Download captured excerpt")).toBeVisible();
+  expect(
+    screen.getByText(/Captured excerpt · This is not the complete file/),
+  ).toBeVisible();
+  expect(
+    screen.queryByText(/Saved with this tool result/),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Captured file details" }),
+  );
+  expect(await screen.findByText(/Saved with this tool result/)).toBeVisible();
+  fireEvent.keyDown(
+    screen.getByRole("dialog", { name: "Captured file details" }),
+    { key: "Escape" },
+  );
   fireEvent.click(screen.getByLabelText("Close file preview"));
   fireEvent.click(screen.getAllByRole("button", { name: /report.txt/ })[1]);
   expect(await screen.findByText("cloud saved content")).toBeVisible();
