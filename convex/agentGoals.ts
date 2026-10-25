@@ -1,4 +1,5 @@
 import { v, ConvexError } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { query, mutation } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
@@ -481,6 +482,7 @@ export const finish = mutation({
     runId: v.string(),
     finishReason: v.optional(v.string()),
     messageId: v.optional(v.string()),
+    messageIds: v.optional(v.array(v.string())),
     canceled: v.boolean(),
     failed: v.boolean(),
     usageExhausted: v.boolean(),
@@ -513,24 +515,39 @@ export const finish = mutation({
       });
       return (await ctx.db.get(goal._id))!;
     }
-    const verified =
-      goal.checkpoint?.evidence
-        .filter(
-          (e) =>
-            message?.chat_id === args.chatId &&
-            message.role === "assistant" &&
-            message?.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
-        )
-        .map((e) => ({ ...e, messageId: args.messageId ?? args.runId })) ?? [];
+    // The service registers each assistant response created by this worker,
+    // including provider retries. Keep proof ownership with the source message.
+    const runMessages: Doc<"messages">[] = [];
+    for (const id of new Set([
+      args.runId,
+      ...(args.messageIds ?? []).slice(0, 16),
+      args.messageId ?? args.runId,
+    ])) {
+      const source =
+        id === message?.id
+          ? message
+          : await ctx.db
+              .query("messages")
+              .withIndex("by_message_id", (q) => q.eq("id", id))
+              .unique();
+      if (source?.chat_id === args.chatId && source.role === "assistant")
+        runMessages.push(source);
+    }
+    const verified = (goal.checkpoint?.evidence ?? []).flatMap((e) => {
+      const source = runMessages.find((m) =>
+        m.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
+      );
+      return source ? [{ ...e, messageId: source.id }] : [];
+    });
     const evidence = mergeGoalEvidence(goal.evidence, verified);
     const progressed =
       verified.length > 0 ||
-      (message?.chat_id === args.chatId &&
-        message.role === "assistant" &&
-        !!message.parts?.some((p) => {
+      runMessages.some((m) =>
+        m.parts?.some((p) => {
           const id = (p as { toolCallId?: string }).toolCallId;
           return !!id && isGoalEvidencePart(p, id);
-        }));
+        }),
+      );
     const noProgressRuns = progressed ? 0 : goal.noProgressRuns + 1;
     const state = ["paused", "canceled"].includes(goal.state)
       ? goal.state
@@ -615,6 +632,7 @@ export const failDispatch = mutation({
     chatId: v.string(),
     userId: v.string(),
     generation: v.number(),
+    continuationSourceRunId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -624,6 +642,8 @@ export const failDispatch = mutation({
       goal &&
       goal.userId === args.userId &&
       goal.generation === args.generation &&
+      (args.continuationSourceRunId === undefined ||
+        goal.continuationSourceRunId === args.continuationSourceRunId) &&
       ["queued", "waiting"].includes(goal.state)
     )
       await ctx.db.patch(goal._id, {

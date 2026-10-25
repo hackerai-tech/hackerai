@@ -120,6 +120,18 @@ describe("bounded goal continuation dispatch", () => {
     expect(tasks.trigger).not.toHaveBeenCalled();
     expect(mockMutation).not.toHaveBeenCalled();
   });
+  it("fails the settled successor safely when the lookup is unavailable", async () => {
+    mockGetGoal.mockRejectedValueOnce(new Error("Backend unavailable"));
+    await scheduleGoalContinuation(payload, "finished-run");
+    expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        generation: 3,
+        continuationSourceRunId: "finished-run",
+      }),
+    );
+  });
   it("honors the persisted wake time and never schedules a paused goal", async () => {
     const waitUntil = Date.now() + 60_000;
     mockGetGoal.mockResolvedValue({

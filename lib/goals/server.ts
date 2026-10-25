@@ -79,6 +79,7 @@ export async function finishGoalRun(
   outcome: {
     finishReason?: string;
     messageId?: string;
+    messageIds?: string[];
     canceled: boolean;
     failed: boolean;
     usageExhausted: boolean;

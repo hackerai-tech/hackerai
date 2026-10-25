@@ -318,6 +318,67 @@ describe("persistent goal lifecycle", () => {
       (await invoke(evidenceForBackend, db.ctx, owner))[0].result,
     ).toContain("marker");
   });
+  it("retains proofs from registered provider retry messages without importing other history", async () => {
+    const db = database();
+    await invoke(start, db.ctx, {
+      ...startArgs,
+      criteria: ["First marker", "Second marker"],
+    });
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await db.message("r1", [result]);
+    await db.message("retry-message", [{ ...result, toolCallId: "cmd2" }]);
+    await invoke(checkpoint, db.ctx, {
+      ...owner,
+      runId: "r1",
+      checkpoint: {
+        outcome: "achieved",
+        progress: "Both markers",
+        evidence: [proof, { ...proof, criterion: 1, toolCallId: "cmd2" }],
+      },
+    });
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      messageId: "retry-message",
+      messageIds: ["r1", "retry-message"],
+      judgment: { verdict: "done", reason: "Both markers observed" },
+    });
+    expect(db.goal().state).toBe("achieved");
+    expect(
+      db.goal().evidence.map((e: any) => [e.criterion, e.messageId]),
+    ).toEqual([
+      [0, "r1"],
+      [1, "retry-message"],
+    ]);
+  });
+  it("requires the verification command in the final retry message", async () => {
+    const db = database();
+    await invoke(start, db.ctx, {
+      ...startArgs,
+      verificationCommand: "verify-marker",
+    });
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await db.message("r1", [
+      { ...result, input: { command: "verify-marker" } },
+    ]);
+    await db.message("retry-message", []);
+    await invoke(checkpoint, db.ctx, {
+      ...owner,
+      runId: "r1",
+      checkpoint: {
+        outcome: "achieved",
+        progress: "Marker",
+        evidence: [proof],
+      },
+    });
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      messageId: "retry-message",
+      messageIds: ["r1", "retry-message"],
+      judgment: { verdict: "done", reason: "Marker" },
+    });
+    expect(db.goal().state).toBe("queued");
+    expect(db.goal().evidence[0].messageId).toBe("r1");
+  });
   it("rejects a completion claim backed by another chat's message", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);
@@ -381,6 +442,42 @@ describe("persistent goal lifecycle", () => {
     await invoke(control, db.ctx, { ...owner, action: "pause" });
     await invoke(control, db.ctx, { ...owner, action: "resume" });
     expect(db.goal().continuationSourceRunId).toBeUndefined();
+  });
+  it("fails a successor dispatch only for its settled source run", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(finish, db.ctx, terminal);
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(failDispatch, db.ctx, {
+      ...owner,
+      generation: 2,
+      continuationSourceRunId: "other-run",
+    });
+    expect(db.goal().state).toBe("queued");
+    await invoke(failDispatch, db.ctx, {
+      ...owner,
+      generation: 2,
+      continuationSourceRunId: "r1",
+    });
+    expect(db.goal().state).toBe("failed");
+  });
+  it("does not fail a replacement whose generation matches a stale scheduling fallback", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(finish, db.ctx, { ...terminal, failed: true });
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(start, db.ctx, { ...startArgs, objective: "Replacement" });
+    await invoke(failDispatch, db.ctx, {
+      ...owner,
+      generation: 2,
+      continuationSourceRunId: "r1",
+    });
+    expect(db.goal()).toMatchObject({
+      state: "queued",
+      objective: "Replacement",
+    });
   });
   it("retains cumulative budget and requires an explicit extension", async () => {
     const db = database();

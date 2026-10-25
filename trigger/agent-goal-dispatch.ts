@@ -118,7 +118,8 @@ export async function scheduleGoalContinuation(
 ) {
   if (payload.goalGeneration === undefined) return;
   if (payload.convexUrl) setConvexUrl(payload.convexUrl);
-  let generation = payload.goalGeneration;
+  // finish() advances the successor before this success callback runs.
+  let generation = payload.goalGeneration + 1;
   try {
     const goal = await getGoal(payload.chatId, payload.userId);
     if (
@@ -144,6 +145,7 @@ export async function scheduleGoalContinuation(
       chatId: payload.chatId,
       userId: payload.userId,
       generation,
+      continuationSourceRunId: completedRunId,
     });
   }
 }

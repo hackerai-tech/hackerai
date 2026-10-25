@@ -6043,6 +6043,7 @@ export const agentLongTask = task({
       if (goalClaimed) {
         await finishGoalRun(payload, ctx.run.id, {
           messageId: goalFinalMessageId,
+          messageIds: [...goalRunMessageIds],
           finishReason:
             terminalAgentState?.streamFinishReason ?? goalFinishReason,
           judgment: goalJudgment,
