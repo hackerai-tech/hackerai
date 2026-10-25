@@ -1,4 +1,5 @@
 import { ChatSDKError } from "@/lib/errors";
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import {
   Centrifuge,
   type Subscription,
@@ -1011,8 +1012,7 @@ Available tools depend on what's installed on the host system.
 Browser Automation:
 - Chromium and agent-browser are preinstalled only in the Cloud sandbox.
 - On this host, browser automation is host-dependent. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
-- Use agent-browser only if it is already installed. Do not install browser automation packages on the host unless the user explicitly asks.
-- If agent-browser is unavailable, continue with other installed tools when possible or tell the user they can switch to the Cloud sandbox for the preinstalled browser workflow.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}
 </sandbox_environment>`;
     }
 
