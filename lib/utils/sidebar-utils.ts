@@ -8,6 +8,7 @@ import {
 import {
   formatSendInput,
   getTerminalExecutionPhase,
+  getShellExitCode,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
@@ -256,6 +257,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
@@ -310,6 +312,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: false,
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,

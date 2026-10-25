@@ -6,6 +6,38 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
+  it.each([
+    [
+      "tool-run_terminal_cmd",
+      { command: 'sh -c "exit 7"' },
+      { result: { exitCode: 7 } },
+    ],
+    [
+      "tool-interact_terminal_session",
+      { action: "wait", session: "qa" },
+      { result: { exited: { exitCode: 7 } } },
+    ],
+    ["tool-shell", { action: "exec", command: "false" }, { exitCode: 7 }],
+  ])(
+    "retains the exit code when rebuilding %s from history",
+    (type, input, output) => {
+      const [terminal] = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type,
+            input,
+            output,
+            toolCallId: "call-exit7",
+            state: "output-available",
+          },
+        ],
+      });
+
+      expect(terminal).toMatchObject({ exitCode: 7, isExecuting: false });
+    },
+  );
+
   it("shows the generated command while automatic review is still pending", () => {
     const startedAt = Date.now();
     const [terminal] = extractSidebarContentFromMessage({

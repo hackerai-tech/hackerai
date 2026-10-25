@@ -149,6 +149,7 @@ export function getActionText(content: SidebarContent): string {
       isActive: content.isExecuting,
       interactive: content.isInteractive,
       isBackground: content.isBackground,
+      exitCode: content.exitCode,
     });
   }
 

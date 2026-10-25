@@ -280,6 +280,8 @@ export interface SidebarTerminal {
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Structured process exit code, available after command completion. */
+  exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
     "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
