@@ -600,6 +600,115 @@ describe("uploadSandboxFileToConvex", () => {
     );
   });
 
+  test.each([true, false])(
+    "adds numeric signing diagnostics while preserving the original upload failure (native Windows: %s)",
+    async (nativeWindows) => {
+      const clock = jest
+        .spyOn(Date, "now")
+        .mockReturnValue(Date.parse("2026-10-25T17:57:09Z"));
+      const url =
+        "https://s3.example/upload?X-Amz-Date=20261025T175700Z&X-Amz-Expires=60&X-Amz-Signature=fixture-signature";
+      mockGenerateS3UploadUrl.mockResolvedValueOnce({
+        uploadUrl: url,
+        s3Key: "users/u1/file.txt",
+        storageLocation: { region: "us-west-2", bucket: "test-west-bucket" },
+      });
+      const sandbox = {
+        ...makeSandbox(1234, !nativeWindows, nativeWindows),
+        ...(nativeWindows && { supportsNativeFileRelay: () => true }),
+      };
+      if (nativeWindows) {
+        Object.assign(sandbox.files, {
+          stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+        });
+      }
+      const error = new Error(
+        "Failed to upload file: curl: (22) The requested URL returned error: 403",
+      );
+      if (nativeWindows) {
+        sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+      } else {
+        const run = sandbox.commands.run.getMockImplementation()!;
+        sandbox.commands.run.mockImplementation(async (command) =>
+          command.includes("curl -fsSL -X PUT")
+            ? {
+                stdout: "",
+                stderr: "curl: (22) The requested URL returned error: 403",
+                exitCode: 22,
+              }
+            : run(command),
+        );
+      }
+      try {
+        const result = uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/report.txt",
+        });
+        if (nativeWindows) await expect(result).rejects.toBe(error);
+        else
+          await expect(result).rejects.toThrow(
+            "The requested URL returned error: 403",
+          );
+        const calls = nativeWindows
+          ? consoleWarnSpy.mock.calls
+          : consoleErrorSpy.mock.calls;
+        const event = calls
+          .map(([line]) => JSON.parse(line))
+          .find(
+            (value) =>
+              value.event ===
+              (nativeWindows
+                ? "sandbox_generated_file_native_upload_failed"
+                : "sandbox_generated_file_upload_failed"),
+          );
+        expect(event).toMatchObject({
+          upload_reported_http_status: 403,
+          upload_signature_age_ms: 9_000,
+          upload_signature_ttl_ms: 60_000,
+          upload_signature_remaining_ms: 51_000,
+        });
+        expect(JSON.stringify(calls)).not.toMatch(/fixture-signature|X-Amz/);
+        expect(mockConvexAction).not.toHaveBeenCalled();
+        if (nativeWindows)
+          expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(1);
+        else expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  test("retains diagnostic status from a command error message when stderr is empty", async () => {
+    const sandbox = makeSandbox(1234, true);
+    const originalRun = sandbox.commands.run.getMockImplementation()!;
+    const error = Object.assign(
+      new Error("curl: (22) The requested URL returned error: 403"),
+      { exitCode: 22, stderr: "" },
+    );
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (command.includes("curl -fsSL -X PUT")) throw error;
+      return originalRun(command);
+    });
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/report.txt",
+      }),
+    ).rejects.toThrow("curl: (22) The requested URL returned error: 403");
+    const event = consoleErrorSpy.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .find((value) => value.event === "sandbox_generated_file_upload_failed");
+    expect(event).toMatchObject({
+      upload_reported_http_status: 403,
+      exit_code: 22,
+    });
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+    expect(mockConvexAction).not.toHaveBeenCalled();
+  });
+
   test("reports command upload stderr instead of a bare exit status", async () => {
     const sandbox = makeSandbox(1234, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(
