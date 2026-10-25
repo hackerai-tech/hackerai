@@ -385,8 +385,8 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
   private async sendFileResponse(key: string, route: Route<S>): Promise<void> {
     if (this.stopped || this.routes.get(key) !== route || !route.fileResponse)
       return;
+    const response = route.fileResponse;
     try {
-      const response = route.fileResponse;
       if (response.attempts++ > 0) {
         const presence = await route.subscription.presence();
         if (
@@ -412,12 +412,17 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       )
         return;
       await route.queue.publish(response.message);
-    } catch {
+    } catch (error) {
+      if (error instanceof RelayOutputOverflowError) {
+        this.failOutput(response.message);
+        throw error;
+      }
       // Retain the response through temporary disconnects or lost broker ACKs.
       // The receiver deduplicates by requestId; the filesystem is never replayed.
     } finally {
       if (
         !this.stopped &&
+        !route.failed &&
         this.routes.get(key) === route &&
         route.fileResponse
       ) {
@@ -425,7 +430,9 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         // until its explicit ACK or the original operation deadline releases state.
         route.fileResponse.timer = setTimeout(
           () => {
-            void this.sendFileResponse(key, route);
+            // Permanent failures are reported by failOutput; timer callers have
+            // no original publisher awaiting their rejection.
+            void this.sendFileResponse(key, route).catch(() => {});
           },
           Math.min(
             5000,

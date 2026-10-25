@@ -3,7 +3,10 @@ import {
   OperationChannelRouter,
   sandboxOperationChannel,
 } from "../operation-channels";
-import { CentrifugoMessageReassembler } from "../centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  RelayOutputOverflowError,
+} from "../centrifugo-transport";
 
 class Subscription extends EventEmitter {
   presence = jest.fn().mockResolvedValue({ clients: {} });
@@ -91,6 +94,35 @@ describe("operation channels", () => {
     expect(subs[0].publish).toHaveBeenCalledTimes(count);
     await router.dispatch(start, append);
     expect(append).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an oversized retained reply without retrying or replaying the file operation", async () => {
+    const handle = jest.fn();
+    const start = {
+      ...request("oversized", "file_read"),
+      fileResponseAck: true,
+    };
+    await router.dispatch(start, handle);
+    subs[0].publish.mockClear();
+    subs[0].presence.mockResolvedValue({
+      clients: { receiver: { user: "user-1" } },
+    });
+    await expect(
+      router.publish({
+        type: "file_read_result",
+        requestId: "oversized",
+        content: "x".repeat(3 * 1024 * 1024),
+      }),
+    ).rejects.toBeInstanceOf(RelayOutputOverflowError);
+    await jest.advanceTimersByTimeAsync(10000);
+    expect(subs[0].publish).toHaveBeenCalledTimes(1);
+    expect(subs[0].publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file_error", requestId: "oversized" }),
+    );
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+    await router.dispatch(start, handle);
+    expect(handle).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the first immutable file outcome and drops retained replies on stop", async () => {
