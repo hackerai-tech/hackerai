@@ -4,9 +4,87 @@ import {
   getTerminalFailureAction,
   isToolInputValidationError,
   stripAgentOnlyTerminalGuidance,
+  type ShellToolOutput,
 } from "../shell-tool-utils";
 
 describe("terminal shell tool display helpers", () => {
+  const completedCommand = (shellOutput: ShellToolOutput) =>
+    computeShellTerminalBlock({
+      isShellTool: false,
+      shellInput: undefined,
+      shellOutput,
+      isExecuting: false,
+      hasResult: true,
+      toolCallId: "call-exit",
+      legacyCommand: 'sh -c "exit 7"',
+    });
+
+  it.each([
+    { result: { exitCode: 7, error: "exit status 7" } },
+    { result: { exitCode: 7, output: "partial output" } },
+    { result: { exited: { exitCode: 7 }, output: "partial output" } },
+    { exitCode: 7, output: "partial output" },
+  ])("shows a structured nonzero exit in the completed header", (output) => {
+    const result = completedCommand(output);
+
+    expect(result.blockAction(false)).toBe("Exited with code 7");
+    expect(result.blockTarget).toBe('sh -c "exit 7"');
+    expect(result.sidebarContent?.command).toBe('sh -c "exit 7"');
+  });
+
+  it.each([0, null, undefined, NaN, Infinity, 1.5])(
+    "does not infer a failed process from an absent or invalid exit code %s",
+    (exitCode) => {
+      const result = completedCommand({
+        result: { exitCode, output: "exit status 7" },
+      });
+
+      expect(result.blockAction(false)).toBe("Executed");
+    },
+  );
+
+  it("keeps failed commands identifiable when a shell brief is present", () => {
+    const result = computeShellTerminalBlock({
+      isShellTool: true,
+      shellInput: { action: "exec", command: "false", brief: "Check target" },
+      shellOutput: { result: { exitCode: 1, output: "partial output" } },
+      isExecuting: false,
+      hasResult: true,
+      toolCallId: "call-brief",
+    });
+
+    expect(result.blockAction(false)).toBe("Exited with code 1");
+    expect(result.blockTarget).toBe("false");
+    expect(result.finalOutput).toBe("partial output");
+    expect(result.blockAction(true)).toBe("Executing");
+  });
+
+  it("does not label a running command as failed before a result arrives", () => {
+    const result = computeShellTerminalBlock({
+      isShellTool: true,
+      shellInput: { action: "exec", command: "false" },
+      shellOutput: { result: { exitCode: 7 } },
+      isExecuting: true,
+      hasResult: false,
+      toolCallId: "call-running",
+    });
+
+    expect(result.blockAction(true)).toBe("Executing");
+  });
+
+  it("keeps intentional session termination labeled as killed", () => {
+    const result = computeShellTerminalBlock({
+      isShellTool: true,
+      shellInput: { action: "kill", session: "qa-session" },
+      shellOutput: { result: { exited: { exitCode: 130 } } },
+      isExecuting: false,
+      hasResult: true,
+      toolCallId: "call-kill",
+    });
+
+    expect(result.blockAction(false)).toBe("Killed");
+  });
+
   const validationError =
     "Invalid input for tool run_terminal_cmd: Type validation failed: Value: {}.";
 

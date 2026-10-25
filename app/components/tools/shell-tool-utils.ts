@@ -58,6 +58,8 @@ export interface ShellToolOutput {
     stdout?: string;
     stderr?: string;
     error?: string;
+    exitCode?: number | null;
+    exited?: { exitCode: number | null };
     sessionSnapshot?: string;
     rawSnapshot?: string;
   };
@@ -66,6 +68,18 @@ export interface ShellToolOutput {
   pid?: number;
   session?: string;
   error?: boolean | string;
+}
+
+export function getShellExitCode(
+  output: ShellToolOutput | undefined,
+): number | undefined {
+  const exitCode =
+    output?.result?.exitCode ??
+    output?.result?.exited?.exitCode ??
+    output?.exitCode;
+  return typeof exitCode === "number" && Number.isInteger(exitCode)
+    ? exitCode
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +115,7 @@ export function getShellActionLabel(opts: {
   interactive?: boolean;
   /** Legacy run_terminal_cmd: input.is_background — true runs detached. */
   isBackground?: boolean;
+  exitCode?: number | null;
 }): string {
   const {
     isShellTool,
@@ -108,7 +123,18 @@ export function getShellActionLabel(opts: {
     isActive = false,
     interactive,
     isBackground,
+    exitCode,
   } = opts;
+
+  if (
+    !isActive &&
+    action !== "kill" &&
+    typeof exitCode === "number" &&
+    Number.isInteger(exitCode) &&
+    exitCode !== 0
+  ) {
+    return `Exited with code ${exitCode}`;
+  }
 
   if (!isShellTool) {
     // For interactive / background, the verb is the action label and the
@@ -438,6 +464,15 @@ export function computeShellTerminalBlock(
     ? getShellDisplayTarget(shellInput) || displayCommand
     : displayCommand;
 
+  // A tool can return successfully even when the command exits nonzero.
+  // Use structured process results, never text printed by the command.
+  const exitCode = getShellExitCode(shellOutput);
+  const hasFailedExit =
+    hasResult &&
+    shellAction !== "kill" &&
+    exitCode !== undefined &&
+    exitCode !== 0;
+
   // Brief-only label: drop the verb prefix ("Sent input", "Viewed", "Killed",
   // "Executed") and let the model's brief stand alone. Applied to:
   //   - interactive PTY actions (always — the verb is too generic without it)
@@ -445,6 +480,7 @@ export function computeShellTerminalBlock(
   //     run, so the user still sees the live command while it's executing.
   const briefText = shellInput?.brief || "";
   const useBriefOnly =
+    !hasFailedExit &&
     !!briefText &&
     ((isShellTool && isInteractiveAction) ||
       (!isInteractiveAction && hasResult));
@@ -459,6 +495,7 @@ export function computeShellTerminalBlock(
             isActive,
             interactive: !isShellTool ? legacyInteractive : undefined,
             isBackground: !isShellTool ? legacyIsBackground : undefined,
+            exitCode: hasResult ? exitCode : undefined,
           });
   const blockTarget = useBriefOnly ? undefined : displayTarget;
 
@@ -497,6 +534,7 @@ export function computeShellTerminalBlock(
           output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
           executionPhase,
+          exitCode: hasResult ? exitCode : undefined,
           isBackground: !isShellTool ? legacyIsBackground : undefined,
           isInteractive: !isShellTool ? legacyInteractive : undefined,
           toolCallId,
