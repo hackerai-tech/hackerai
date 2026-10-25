@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/sheet";
 
 type AgentPermissionSelectorProps = {
-  size?: "sm" | "md";
+  size?: "xs" | "sm" | "md";
   analyticsSurface: "chat_input" | "agents_tab";
 };
 
@@ -103,11 +103,18 @@ export function AgentPermissionSelector({
   const Icon = selectedOption.icon;
 
   const buttonClassName =
-    size === "md"
-      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+    size === "xs"
+      ? "h-8 max-w-full px-1 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : size === "md"
+        ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+        : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
-  const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-5 w-5 shrink-0";
+  const iconClassName =
+    size === "xs"
+      ? "size-3 shrink-0"
+      : size === "md"
+        ? "h-4 w-4 shrink-0"
+        : "h-5 w-5 shrink-0";
 
   const trigger = (
     <Button
@@ -122,7 +129,11 @@ export function AgentPermissionSelector({
       <ChevronDown
         aria-hidden="true"
         className={
-          size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-4 w-4 ml-0.5 shrink-0"
+          size === "xs"
+            ? "size-3 shrink-0"
+            : size === "md"
+              ? "h-4 w-4 ml-1 shrink-0"
+              : "h-4 w-4 ml-0.5 shrink-0"
         }
       />
     </Button>

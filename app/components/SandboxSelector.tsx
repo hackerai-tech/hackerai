@@ -35,7 +35,7 @@ interface SandboxSelectorProps {
   value: string;
   onChange?: SetSandboxPreference;
   disabled?: boolean;
-  size?: "sm" | "toolbar" | "md";
+  size?: "xs" | "sm" | "toolbar" | "md";
   triggerLabel?: string;
   compact?: boolean;
 }
@@ -319,13 +319,20 @@ export function SandboxSelector({
       : selectedOption.shortLabel;
 
   const buttonClassName =
-    size === "md"
-      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : size === "toolbar"
-        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-64"
-        : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+    size === "xs"
+      ? "h-8 max-w-full px-1 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : size === "md"
+        ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+        : size === "toolbar"
+          ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-64"
+          : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
-  const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
+  const iconClassName =
+    size === "xs"
+      ? "size-3 shrink-0"
+      : size === "md"
+        ? "h-4 w-4 shrink-0"
+        : "h-3 w-3 shrink-0";
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -349,7 +356,11 @@ export function SandboxSelector({
           </span>
           <ChevronDown
             className={
-              size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+              size === "xs"
+                ? "size-3 shrink-0"
+                : size === "md"
+                  ? "h-4 w-4 ml-1 shrink-0"
+                  : "h-3 w-3 ml-1 shrink-0"
             }
           />
         </Button>

@@ -1130,23 +1130,31 @@ const ChatInputContent = ({
               data-testid="chat-input-agent-context"
             >
               <div
-                className="min-w-0 flex-1"
+                className={
+                  goalMode && compactAgentControls
+                    ? "min-w-[70px] max-w-[40%] shrink"
+                    : "min-w-0 flex-1"
+                }
                 data-testid="chat-input-mobile-sandbox"
               >
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
                   compact
+                  size={goalMode && compactAgentControls ? "xs" : "sm"}
                 />
               </div>
               <div
-                className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                className={`ml-auto min-w-0 max-w-full ${goalMode && compactAgentControls ? "flex-1" : "shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
                 data-testid="chat-input-mobile-permission"
               >
-                <AgentPermissionSelector analyticsSurface="chat_input" />
+                <AgentPermissionSelector
+                  analyticsSurface="chat_input"
+                  size={goalMode && compactAgentControls ? "xs" : "sm"}
+                />
               </div>
               {goalMode && compactAgentControls && (
-                <GoalModeButton onClear={() => setGoalMode(false)} />
+                <GoalModeButton compact onClear={() => setGoalMode(false)} />
               )}
             </div>
           )}
