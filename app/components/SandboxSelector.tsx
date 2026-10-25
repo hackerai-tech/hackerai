@@ -320,7 +320,7 @@ export function SandboxSelector({
 
   const buttonClassName =
     size === "xs"
-      ? "h-8 max-w-full px-1 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      ? "h-8 max-w-full px-1 has-[>svg]:px-1 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
       : size === "md"
         ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
         : size === "toolbar"
