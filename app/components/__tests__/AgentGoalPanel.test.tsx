@@ -459,14 +459,14 @@ describe("goal controls", () => {
   });
 
   it.each([false, true])(
-    "shows the saved completion duration instead of continuing the timer (mobile: %s)",
+    "rounds the saved completion duration like the message receipt (mobile: %s)",
     async (isMobile) => {
       mockIsMobile = isMobile;
       setMockQueryResult({
         ...goal,
         state: "achieved",
         startedAt: 1000,
-        achievedAt: 66000,
+        achievedAt: 65600,
       });
       render(
         <AgentGoalPanel

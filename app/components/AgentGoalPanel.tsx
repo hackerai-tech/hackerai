@@ -564,10 +564,12 @@ function GoalElapsedTime({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [achievedAt]);
-  const seconds = Math.max(
-    0,
-    Math.floor(((achievedAt ?? now) - startedAt) / 1000),
-  );
+  const elapsedSeconds = ((achievedAt ?? now) - startedAt) / 1000;
+  // Completed durations use the same rounding as the saved message receipt.
+  const seconds =
+    achievedAt === undefined
+      ? Math.max(0, Math.floor(elapsedSeconds))
+      : Math.max(1, Math.round(elapsedSeconds));
   const duration =
     seconds < 60
       ? `${seconds}s`
