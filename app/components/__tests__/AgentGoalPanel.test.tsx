@@ -151,6 +151,52 @@ describe("goal controls", () => {
       ),
     );
   });
+  it("does not carry an old goal's extra runs or reply into a replacement using the same saved row", async () => {
+    setMockQueryResult({ ...goal, startedAt: 1000 });
+    const send = jest.fn().mockResolvedValue(undefined);
+    const props = {
+      chatId: "chat",
+      exists: true,
+      eligible: true,
+      idle: true,
+      send,
+      settings,
+    };
+    const { rerender } = render(<AgentGoalPanel {...props} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
+    fireEvent.change(
+      screen.getByRole("spinbutton", { name: "Additional goal runs" }),
+      {
+        target: { value: "2" },
+      },
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
+      target: { value: "Context for the old goal" },
+    });
+    // Starting again reuses the tombstoned row; query updates may skip the null state.
+    setMockQueryResult({
+      ...goal,
+      state: "paused",
+      objective: "New marker",
+      startedAt: 2000,
+      runs: 0,
+      maxRuns: 3,
+    });
+    rerender(<AgentGoalPanel {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        { text: "Resume goal: New marker" },
+        expect.objectContaining({
+          body: expect.objectContaining({
+            goal: { action: "resume", additionalRuns: 0 },
+          }),
+        }),
+      ),
+    );
+  });
+
   it("allows Pause and Stop while a submitted goal stream is still pending", async () => {
     setMockQueryResult({ ...goal, state: "paused", runs: 0 });
     const send = jest.fn(() => new Promise<void>(() => {}));

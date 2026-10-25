@@ -108,7 +108,11 @@ export function AgentGoalPanel({
   useEffect(() => {
     setMobileOpen(false);
     setExpanded(false);
-  }, [chatId, goal?._id]);
+    setAdditionalRuns(0);
+    setReply("");
+    setFormError("");
+    // Replacement goals reuse the saved row, but receive a new start time.
+  }, [chatId, goal?._id, goal?.startedAt]);
   if (!goal) return null;
   const active = goal && !["achieved", "canceled"].includes(goal.state);
   const resumable =
