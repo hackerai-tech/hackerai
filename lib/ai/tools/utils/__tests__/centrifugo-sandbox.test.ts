@@ -5197,9 +5197,7 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain(
         "command -v agent-browser && agent-browser --version",
       );
-      expect(context).toContain(
-        "do not install browser automation packages on the host unless the user explicitly asks",
-      );
+      expect(context).toContain("npm install -g agent-browser@0.26.0");
     });
 
     it("uses a cmd-compatible browser probe on Windows", () => {

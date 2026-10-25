@@ -13,6 +13,7 @@ import {
 } from "./attachment-command";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
 import { EventEmitter } from "events";
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
@@ -433,9 +434,10 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
 
-Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Do not install host tools without the user's request.
+Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Other than the browser setup described below, do not install host tools without the user's request.
 
-Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;
