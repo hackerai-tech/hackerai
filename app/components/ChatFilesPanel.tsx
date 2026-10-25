@@ -280,7 +280,7 @@ function FileTree({
         <li key={file.id}>
           <button
             onClick={() => onOpen(file)}
-            className="flex w-full items-start gap-2 rounded p-2 text-left hover:bg-muted focus-visible:ring-2"
+            className="flex w-full items-start gap-2 rounded p-2 max-sm:min-h-11 text-left hover:bg-muted focus-visible:ring-2"
             title={file.path}
           >
             <File size={15} className="mt-1 shrink-0" />
@@ -355,7 +355,7 @@ export function ChatFilesPanel({
             placeholder="Search chat files"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="rounded border bg-background p-2 text-sm"
+            className="rounded border bg-background p-2 text-sm max-sm:min-h-11 max-sm:text-base"
           />
           <nav
             aria-label="Files in this chat"

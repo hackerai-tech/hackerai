@@ -3,6 +3,7 @@ import { ComputerWorkspace } from "../ComputerWorkspace";
 import type { SidebarContent } from "@/types/chat";
 
 const mockGetUrl = jest.fn();
+let mockOverlay = false;
 jest.mock("convex/react", () => ({ useAction: () => mockGetUrl }));
 jest.mock("../ComputerCodeBlock", () => ({
   ComputerCodeBlock: ({ children }: { children: string }) => (
@@ -16,7 +17,7 @@ jest.mock("../../contexts/GlobalState", () => ({
   useGlobalState: () => ({ sandboxPreference: "cloud" }),
 }));
 jest.mock("@/hooks/use-workspace-layout", () => ({
-  useComputerSidebarOverlay: () => false,
+  useComputerSidebarOverlay: () => mockOverlay,
 }));
 jest.mock("../AllFilesDialog", () => ({ AllFilesDialog: () => null }));
 jest.mock("../../hooks/useTauri", () => ({ isTauriEnvironment: () => false }));
@@ -63,6 +64,7 @@ const props = {
 };
 
 beforeEach(() => {
+  mockOverlay = false;
   global.fetch = jest.fn().mockRejectedValue(new Error("offline"));
 });
 
@@ -319,4 +321,23 @@ it("opens the compact menu without replacing the preview and dismisses it withou
     "aria-selected",
     "true",
   );
+});
+
+it("uses direct tabs and a clear close action in the mobile overlay", async () => {
+  mockOverlay = true;
+  const onClose = jest.fn();
+  render(<ComputerWorkspace {...props} onClose={onClose} />);
+  expect(
+    screen.queryByRole("button", { name: "Open computer tab" }),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Files in this chat" }),
+    ).getAllByRole("button", { name: /report.txt/ })[0],
+  );
+  expect(await screen.findByText("desktop historical version")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Close Computer" }));
+  expect(onClose).toHaveBeenCalledTimes(1);
 });

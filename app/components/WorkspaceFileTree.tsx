@@ -129,7 +129,7 @@ function Directory({
             toggle();
           }
         }}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-2 text-left text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full min-w-0 max-sm:min-h-11 items-center gap-1.5 rounded px-1 py-2 text-left text-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
       >
         {open ? (
           <ChevronDown size={14} className="shrink-0" />
@@ -187,7 +187,7 @@ function Directory({
                     aria-current={
                       props.selected === entryPath ? "true" : undefined
                     }
-                    className="flex min-w-0 flex-1 items-center gap-2 p-2 text-left text-sm disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex min-w-0 flex-1 items-center gap-2 p-2 max-sm:min-h-11 text-left text-sm disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring"
                     title={`${entryPath} · ${entry.size} bytes${entry.kind !== "file" ? " · Link or special file blocked" : ""}`}
                     onClick={() => props.onFile(entry, entryPath, false)}
                   >
@@ -205,7 +205,7 @@ function Directory({
                         props.busy || entry.size > WORKSPACE_DOWNLOAD_LIMIT
                       }
                       onClick={() => props.onFile(entry, entryPath, true)}
-                      className="shrink-0 rounded p-2 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-ring"
+                      className="shrink-0 rounded p-2 max-sm:min-h-11 max-sm:min-w-11 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <Download size={14} />
                     </button>

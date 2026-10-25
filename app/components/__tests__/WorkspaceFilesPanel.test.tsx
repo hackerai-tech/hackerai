@@ -89,7 +89,14 @@ it("offers explicit resume for a paused workspace and keeps saved artifacts acce
     .mockResolvedValueOnce(response({ state: "paused", sandboxId: "owned" }))
     .mockResolvedValueOnce(response(listing([file])));
   await act(async () => {
-    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+    render(
+      <WorkspaceFilesPanel
+        chatId="chat"
+        messages={[
+          { id: "saved", fileDetails: [{ name: "report.txt", sizeBytes: 5 }] },
+        ]}
+      />,
+    );
   });
   fireEvent.click(screen.getByRole("button", { name: "List view" }));
   fireEvent.click(
@@ -102,7 +109,7 @@ it("offers explicit resume for a paused workspace and keeps saved artifacts acce
     action: "resume",
     sandboxId: "owned",
   });
-  fireEvent.click(screen.getByRole("button", { name: "Saved chat files (0)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Saved chat files (1)" }));
   expect(screen.getByText("Saved artifacts dialog")).toBeVisible();
 });
 
@@ -188,3 +195,50 @@ it.each(["Tree view", "List view", "Grid view"])(
     expect(await screen.findByText(/Live files can change/)).toBeVisible();
   },
 );
+
+it("keeps refresh and layout choices usable through the compact file menu", async () => {
+  fetchMock.mockResolvedValue(response(listing([file])));
+  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  await screen.findByRole("button", { name: "Preview report.txt" });
+  expect(
+    screen.queryByRole("button", { name: /Saved chat files/ }),
+  ).not.toBeInTheDocument();
+  const openOptions = async () => {
+    fireEvent.keyDown(screen.getByRole("button", { name: "File options" }), {
+      key: "Enter",
+    });
+    return await screen.findByRole("menu");
+  };
+  const menu = await openOptions();
+  fireEvent.keyDown(menu, { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.getByRole("button", { name: "Preview report.txt" }),
+  ).toBeVisible();
+  await openOptions();
+  fireEvent.click(
+    screen.getByRole("menuitemradio", { name: "List", exact: true }),
+  );
+  expect(
+    await screen.findByRole("textbox", { name: "Search this folder" }),
+  ).toBeVisible();
+  await openOptions();
+  expect(
+    screen.getByRole("menuitemradio", { name: "List", exact: true }),
+  ).toHaveAttribute("aria-checked", "true");
+  fetchMock.mockResolvedValue(response(listing([folder])));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Refresh files" }));
+  expect(
+    await screen.findByRole("button", { name: "Open folder reports" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Preview report.txt" }),
+  ).not.toBeInTheDocument();
+  await openOptions();
+  fireEvent.click(screen.getByRole("menuitemradio", { name: "Folder tree" }));
+  expect(
+    await screen.findByRole("navigation", { name: "Workspace file tree" }),
+  ).toBeVisible();
+});

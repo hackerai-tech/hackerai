@@ -290,7 +290,7 @@ export function ComputerWorkspace({
         }
       }}
     >
-      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[22px] border border-border/40 bg-background">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[22px] border border-border/40 bg-background max-sm:rounded-none max-sm:border-0">
         <div className="flex min-w-0 items-center gap-1 border-b bg-muted/20 px-2 pt-2">
           <div
             ref={tabStrip}
@@ -324,7 +324,7 @@ export function ComputerWorkspace({
                       : tab.name
                   }
                   onClick={() => focusTab(tab.id)}
-                  className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm max-sm:min-h-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   onKeyDown={(event) => {
                     let next: number | undefined;
                     if (event.key === "ArrowRight")
@@ -351,7 +351,7 @@ export function ComputerWorkspace({
                   <button
                     aria-label={`Close ${tab.name} tab`}
                     onClick={() => closeTab(tab.id)}
-                    className="mr-1 rounded p-1 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                    className="mr-1 rounded p-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <X size={13} />
                   </button>
@@ -363,7 +363,7 @@ export function ComputerWorkspace({
             <div
               role="group"
               aria-label="Scroll computer tabs"
-              className="mb-1 flex shrink-0"
+              className="mb-1 hidden shrink-0 sm:flex"
             >
               <button
                 aria-label="Scroll tabs left"
@@ -385,28 +385,30 @@ export function ComputerWorkspace({
               </button>
             </div>
           )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label="Open computer tab"
-                title="Open tab"
-                className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+          {!overlay && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="Open computer tab"
+                  title="Open tab"
+                  className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Plus size={16} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                onEscapeKeyDown={(event) => event.stopPropagation()}
               >
-                <Plus size={16} />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              onEscapeKeyDown={(event) => event.stopPropagation()}
-            >
-              <DropdownMenuItem onSelect={openFiles}>
-                <FolderOpen size={16} /> Files
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => focusTab("activity")}>
-                <Monitor size={16} /> Activity
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <DropdownMenuItem onSelect={openFiles}>
+                  <FolderOpen size={16} /> Files
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => focusTab("activity")}>
+                  <Monitor size={16} /> Activity
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           {!overlay && (
             <button
               ref={expandButton}
@@ -418,14 +420,14 @@ export function ComputerWorkspace({
             </button>
           )}
           <button
-            aria-label="Minimize sidebar"
+            aria-label={overlay ? "Close Computer" : "Minimize sidebar"}
             onClick={onClose}
-            className="mb-1 shrink-0 rounded-md p-2 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+            className="mb-1 shrink-0 rounded-md p-2 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <PanelRight size={16} />
+            {overlay ? <X size={20} /> : <PanelRight size={16} />}
           </button>
         </div>
-        <div className="min-h-0 flex-1 p-3">
+        <div className="min-h-0 flex-1 p-2 sm:p-3">
           <div
             role="tabpanel"
             id={`${prefix}-panel-activity`}

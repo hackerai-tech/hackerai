@@ -2676,7 +2676,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             className={
               computerSidebarOverlay
                 ? sidebarOpen
-                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-0 max-sm:pt-[env(safe-area-inset-top)] max-sm:pb-[env(safe-area-inset-bottom)] max-sm:pl-[env(safe-area-inset-left)] max-sm:pr-[env(safe-area-inset-right)] sm:p-4"
                   : "hidden"
                 : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
             }

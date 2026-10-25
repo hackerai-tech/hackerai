@@ -14,6 +14,7 @@ import {
   FolderTree,
   LayoutGrid,
   List,
+  MoreHorizontal,
   RefreshCw,
   Search,
 } from "lucide-react";
@@ -28,6 +29,16 @@ import {
 } from "@/lib/workspace-preview/format";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   WORKSPACE_DOWNLOAD_LIMIT,
   WORKSPACE_PREVIEW_LIMIT,
@@ -44,7 +55,7 @@ const errors: Record<string, string> = {
   rate_limited: "Too many file requests. Wait a minute, then refresh.",
   unauthorized: "Sign in again to access workspace files.",
   not_found:
-    "This workspace or file is no longer available. Saved chat files are still separate below.",
+    "This workspace or file is no longer available. Captured files are still available in This chat.",
   recovery_required:
     "This workspace needs recovery. Your existing workspace has been preserved.",
   workspace_changed:
@@ -362,7 +373,7 @@ export function LiveWorkspaceFilesPanel({
           <Button
             size="icon"
             variant="ghost"
-            className="h-8 w-8 shrink-0"
+            className="h-8 w-8 shrink-0 max-sm:h-11 max-sm:w-11"
             aria-label="Parent folder"
             disabled={!path || busy}
             onClick={() => navigate(path.split("/").slice(0, -1).join("/"))}
@@ -399,7 +410,7 @@ export function LiveWorkspaceFilesPanel({
           <Button
             size="icon"
             variant="ghost"
-            className="h-8 w-8 shrink-0"
+            className="hidden h-8 w-8 shrink-0 sm:inline-flex"
             aria-label="Refresh workspace files"
             disabled={busy}
             onClick={() => setVersion((value) => value + 1)}
@@ -416,7 +427,7 @@ export function LiveWorkspaceFilesPanel({
             placeholder={
               tree ? "Search expanded folders" : "Search this folder"
             }
-            className="h-9 min-w-0 w-full bg-transparent text-sm outline-none"
+            className="h-11 min-w-0 w-full bg-transparent text-base outline-none sm:h-9 sm:text-sm"
             value={tree ? treeSearch : search}
             onChange={(event) =>
               tree
@@ -425,53 +436,111 @@ export function LiveWorkspaceFilesPanel({
             }
           />
         </label>
-        {tree && (
+        <div className="hidden gap-2 sm:flex">
+          {tree && (
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label="Refresh workspace files"
+              disabled={busy}
+              onClick={() => setVersion((value) => value + 1)}
+            >
+              <RefreshCw size={16} />
+            </Button>
+          )}
           <Button
             size="icon"
             variant="outline"
-            aria-label="Refresh workspace files"
-            disabled={busy}
-            onClick={() => setVersion((value) => value + 1)}
+            aria-label="Tree view"
+            aria-pressed={tree}
+            onClick={() => {
+              navigate("");
+              setTree(true);
+            }}
           >
-            <RefreshCw size={16} />
+            <FolderTree size={16} />
           </Button>
-        )}
-        <Button
-          size="icon"
-          variant="outline"
-          aria-label="Tree view"
-          aria-pressed={tree}
-          onClick={() => {
-            navigate("");
-            setTree(true);
-          }}
-        >
-          <FolderTree size={16} />
-        </Button>
-        <Button
-          size="icon"
-          variant="outline"
-          aria-label="List view"
-          aria-pressed={!tree && !grid}
-          onClick={() => {
-            setTree(false);
-            setGrid(false);
-          }}
-        >
-          <List size={16} />
-        </Button>
-        <Button
-          size="icon"
-          variant="outline"
-          aria-label="Grid view"
-          aria-pressed={!tree && grid}
-          onClick={() => {
-            setTree(false);
-            setGrid(true);
-          }}
-        >
-          <LayoutGrid size={16} />
-        </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            aria-label="List view"
+            aria-pressed={!tree && !grid}
+            onClick={() => {
+              setTree(false);
+              setGrid(false);
+            }}
+          >
+            <List size={16} />
+          </Button>
+          <Button
+            size="icon"
+            variant="outline"
+            aria-label="Grid view"
+            aria-pressed={!tree && grid}
+            onClick={() => {
+              setTree(false);
+              setGrid(true);
+            }}
+          >
+            <LayoutGrid size={16} />
+          </Button>
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-11 w-11 shrink-0 sm:hidden"
+              aria-label="File options"
+            >
+              <MoreHorizontal size={20} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="min-w-52"
+            onEscapeKeyDown={(event) => event.stopPropagation()}
+          >
+            <DropdownMenuItem
+              className="min-h-11"
+              disabled={busy}
+              onSelect={() => setVersion((value) => value + 1)}
+            >
+              <RefreshCw size={16} /> Refresh files
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>View</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={tree ? "tree" : grid ? "grid" : "list"}
+              onValueChange={(view) => {
+                if (view === "tree") navigate("");
+                setTree(view === "tree");
+                setGrid(view === "grid");
+              }}
+            >
+              <DropdownMenuRadioItem className="min-h-11" value="tree">
+                Folder tree
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem className="min-h-11" value="list">
+                List
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem className="min-h-11" value="grid">
+                Grid
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            {savedFiles.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="min-h-11"
+                  onSelect={() => setSavedOpen(true)}
+                >
+                  Saved chat files ({savedFiles.length})
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {error && (
         <div
@@ -596,7 +665,7 @@ export function LiveWorkspaceFilesPanel({
                               )
                             : void readFile(entry, false)
                         }
-                        className={`flex min-w-0 flex-1 gap-2 text-left disabled:cursor-default ${grid ? "flex-col" : "items-center"}`}
+                        className={`flex min-w-0 flex-1 gap-2 text-left max-sm:min-h-11 disabled:cursor-default ${grid ? "flex-col" : "items-center"}`}
                         aria-label={`${directory ? "Open folder" : previewable ? "Preview" : "File"} ${entry.name}`}
                       >
                         {directory ? (
@@ -641,7 +710,7 @@ export function LiveWorkspaceFilesPanel({
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8 shrink-0 self-end"
+                          className="h-8 w-8 shrink-0 self-end max-sm:h-11 max-sm:w-11"
                           aria-label={`Download ${entry.name}`}
                           title={
                             entry.size > WORKSPACE_DOWNLOAD_LIMIT
@@ -702,11 +771,13 @@ export function LiveWorkspaceFilesPanel({
           }
         />
       )}
-      <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-        <Button variant="ghost" size="sm" onClick={() => setSavedOpen(true)}>
-          Saved chat files ({savedFiles.length})
-        </Button>
-      </div>
+      {savedFiles.length > 0 && (
+        <div className="hidden items-center justify-end gap-2 text-xs text-muted-foreground sm:flex">
+          <Button variant="ghost" size="sm" onClick={() => setSavedOpen(true)}>
+            Saved chat files ({savedFiles.length})
+          </Button>
+        </div>
+      )}
       {savedOpen && (
         <AllFilesDialog
           open={savedOpen}
@@ -735,8 +806,11 @@ export function WorkspaceFilesPanel({
     captureAuthenticatedEvent("workspace_files_viewed", { source: "chat" });
   }, []);
   return (
-    <div className="flex min-h-0 flex-1 flex-col pt-3">
-      <div className="flex gap-2" aria-label="File sources">
+    <div className="flex min-h-0 flex-1 flex-col sm:pt-3">
+      <div
+        className="flex gap-2 max-sm:[&>button]:min-h-11 max-sm:[&>button]:flex-1"
+        aria-label="File sources"
+      >
         <Button
           variant={tab === "chat" ? "secondary" : "ghost"}
           aria-pressed={tab === "chat"}
