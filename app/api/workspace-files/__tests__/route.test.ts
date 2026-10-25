@@ -5,7 +5,11 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById } from "@/lib/db/actions";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { accessCloudWorkspaceFiles } from "@/lib/sandbox/cloud-workspace-files";
-import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import {
+  assertUserCanAccessChatHistory,
+  assertUserCanMakeCostIncurringRequest,
+} from "@/lib/suspensions";
+import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 
 jest.mock("@/lib/sandbox/local-workspace-files", () => ({
@@ -82,6 +86,22 @@ it("keeps capability discovery separate from live sandbox access", async () => {
   expect(await response.json()).toEqual({ enabled: true });
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
 });
+it("preserves history-access denials without exposing internal details", async () => {
+  jest
+    .mocked(assertUserCanAccessChatHistory)
+    .mockRejectedValue(
+      new ChatSDKError("forbidden:chat", "private denial detail"),
+    );
+  const response = await GET(
+    makeRequest("https://preview.example/api/workspace-files?chatId=chat"),
+  );
+  expect(response.status).toBe(403);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(await response.json()).toEqual({ error: "forbidden" });
+  expect(getChatById).not.toHaveBeenCalled();
+  expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
+});
 it("rejects another user's chat and disabled flags before sandbox access", async () => {
   jest.mocked(getChatById).mockResolvedValue({ user_id: "other" } as any);
   expect((await POST(request())).status).toBe(404);
@@ -104,8 +124,8 @@ it("preserves subscription and suspension gates", async () => {
   });
   jest
     .mocked(assertUserCanMakeCostIncurringRequest)
-    .mockRejectedValue(new Error("blocked"));
-  expect((await POST(request())).status).toBe(503);
+    .mockRejectedValue(new ChatSDKError("forbidden:chat", "blocked"));
+  expect((await POST(request())).status).toBe(403);
   expect(accessCloudWorkspaceFiles).not.toHaveBeenCalled();
 });
 it("never probes cloud for a Desktop task and rejects traversal and unpinned downloads", async () => {

@@ -8,6 +8,7 @@ import {
   assertUserCanAccessChatHistory,
 } from "@/lib/suspensions";
 import { getChatById } from "@/lib/db/actions";
+import { ChatSDKError } from "@/lib/errors";
 import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
@@ -51,6 +52,8 @@ async function authorize(req: NextRequest, chatId: string) {
 }
 
 function failure(error: unknown) {
+  if (error instanceof ChatSDKError)
+    return json({ error: error.type }, error.statusCode);
   if (error instanceof WorkspaceFileError)
     return json({ error: error.code }, error.status);
   if (error instanceof CloudWorkspaceUnavailableError)
