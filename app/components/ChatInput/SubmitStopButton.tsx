@@ -53,17 +53,19 @@ function getSendButtonTooltip(
   hasFileErrors: boolean,
   isUploading: boolean,
   sendDisabledReason?: string,
+  pausesGoal = false,
 ): string {
   if (sendDisabledReason) return sendDisabledReason;
   if (!isOnline) return "Reconnect to send";
   if (hasFileErrors) return "Remove failed files to send";
   if (isUploading) return "File upload pending";
-  return "Send (⏎)";
+  return pausesGoal ? "Send message and pause goal (⏎)" : "Send (⏎)";
 }
 
 export interface SubmitStopButtonProps {
   isGenerating: boolean;
   allowSendWhileGenerating?: boolean;
+  pausesGoal?: boolean;
   hideStop: boolean;
   onStop: () => void;
   onSubmit: (e: React.FormEvent) => void | Promise<void>;
@@ -81,6 +83,7 @@ export interface SubmitStopButtonProps {
 export function SubmitStopButton({
   isGenerating,
   allowSendWhileGenerating = false,
+  pausesGoal = false,
   hideStop,
   onStop,
   onSubmit,
@@ -155,7 +158,9 @@ export function SubmitStopButton({
                   }
                   variant="default"
                   className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
-                  aria-label="Send message"
+                  aria-label={
+                    pausesGoal ? "Send message and pause goal" : "Send message"
+                  }
                   data-testid="send-button"
                 >
                   <ArrowUp size={15} strokeWidth={3} />
@@ -169,6 +174,7 @@ export function SubmitStopButton({
                   uploadedFiles.some((f) => f.error),
                   isUploadingFiles,
                   sendDisabledReason,
+                  pausesGoal,
                 )}
               </p>
             </TooltipContent>

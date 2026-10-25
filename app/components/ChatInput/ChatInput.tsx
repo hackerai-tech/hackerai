@@ -65,6 +65,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 interface ChatInputProps {
   goalPanel?: React.ReactNode;
   hasActiveGoalRun?: boolean;
+  pauseGoalOnSend?: boolean;
   onSubmit: (
     e: React.FormEvent,
     inputOverride?: string,
@@ -257,6 +258,7 @@ export const ChatInput = (props: ChatInputProps) => {
 const ChatInputContent = ({
   goalPanel,
   hasActiveGoalRun = false,
+  pauseGoalOnSend = false,
   onSubmit,
   onStop,
   onReconnect,
@@ -1103,6 +1105,11 @@ const ChatInputContent = ({
                 onAttachClick={handleAttachClick}
                 isGenerating={isGenerating}
                 allowSendWhileGenerating={hasActiveGoalRun}
+                pausesGoal={
+                  pauseGoalOnSend &&
+                  !goalMode &&
+                  !/^\/goal(?:\s|$)/i.test(input.trim())
+                }
                 hideStop={hideStop}
                 onStop={() => void handleAgentStop()}
                 onSubmit={handleSubmit}

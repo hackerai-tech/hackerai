@@ -200,7 +200,7 @@ export function AgentGoalPanel({
   );
   const actions = (
     <div
-      className={`flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground empty:hidden ${isMobile ? "[&_button]:min-h-11 [&_button]:min-w-11" : ""}`}
+      className={`flex shrink-0 items-center justify-end gap-0.5 empty:hidden ${isMobile ? "text-muted-foreground [&_button]:min-h-11 [&_button]:min-w-11" : "text-foreground/80"}`}
     >
       {!isMobile && deleteAction}
       {active &&
@@ -419,6 +419,21 @@ export function AgentGoalPanel({
         : ["paused", "queued", "canceled", "blocked"].includes(goal.state)
           ? `${stateLabels[goal.state]} goal`
           : stateLabels[goal.state];
+  const statusColor =
+    goal.state === "achieved"
+      ? "text-emerald-700 dark:text-emerald-400"
+      : [
+            "needs_input",
+            "needs_approval",
+            "blocked",
+            "failed",
+            "usage_exhausted",
+            "budget_exhausted",
+          ].includes(goal.state)
+        ? "text-amber-700 dark:text-amber-400"
+        : ["paused", "canceled"].includes(goal.state)
+          ? "text-muted-foreground"
+          : "text-foreground";
   if (isMobile) {
     return (
       <section
@@ -435,11 +450,14 @@ export function AgentGoalPanel({
               }
               className="flex min-h-11 max-w-full items-center gap-2 rounded-full border bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Target className="size-4 shrink-0" aria-hidden="true" />
+              <Target
+                className={`size-4 shrink-0 ${mobileOpen ? "" : statusColor}`}
+                aria-hidden="true"
+              />
               <span
                 role="status"
                 aria-live="polite"
-                className="min-w-0 truncate"
+                className={`min-w-0 truncate font-medium ${mobileOpen ? "" : statusColor}`}
               >
                 {goalLabel}
               </span>
@@ -503,11 +521,14 @@ export function AgentGoalPanel({
             title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
             className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <Target className="size-4 shrink-0" aria-hidden="true" />
+            <Target
+              className={`size-4 shrink-0 ${statusColor}`}
+              aria-hidden="true"
+            />
             <span
               role="status"
               aria-live="polite"
-              className="shrink-0 font-medium text-foreground"
+              className={`shrink-0 font-medium ${statusColor}`}
             >
               {goalLabel}
             </span>

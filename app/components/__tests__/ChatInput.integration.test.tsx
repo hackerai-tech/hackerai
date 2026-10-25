@@ -918,15 +918,18 @@ describe("ChatInput - Integration Tests", () => {
               onStop={mockOnStop}
               status={status}
               hasActiveGoalRun
+              pauseGoalOnSend
             />
           </TestWrapper>,
         );
-        expect(screen.queryByLabelText("Send message")).not.toBeInTheDocument();
+        expect(
+          screen.queryByLabelText("Send message and pause goal"),
+        ).not.toBeInTheDocument();
         fireEvent.change(screen.getByRole("textbox"), {
           target: { value: "Please check the saved result" },
         });
         expect(screen.getByLabelText("Stop generation")).toBeEnabled();
-        fireEvent.click(screen.getByLabelText("Send message"));
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
         expect(mockOnSubmit).toHaveBeenCalledTimes(1);
         expect(mockOnSubmit).toHaveBeenCalledWith(
           expect.any(Object),
@@ -957,16 +960,19 @@ describe("ChatInput - Integration Tests", () => {
               onStop={mockOnStop}
               status="streaming"
               hasActiveGoalRun
+              pauseGoalOnSend
             />
           </TestWrapper>,
         );
         const input = screen.getByRole("textbox");
         fireEvent.change(input, { target: { value: "First follow-up" } });
-        fireEvent.click(screen.getByLabelText("Send message"));
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
         fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-        fireEvent.click(screen.getByLabelText("Send message"));
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
         expect(mockOnSubmit).toHaveBeenCalledTimes(1);
-        expect(screen.getByLabelText("Send message")).toBeDisabled();
+        expect(
+          screen.getByLabelText("Send message and pause goal"),
+        ).toBeDisabled();
         expect(screen.getByLabelText("Stop generation")).toBeEnabled();
         await act(async () => settle(accepted));
         if (accepted) {
@@ -975,10 +981,41 @@ describe("ChatInput - Integration Tests", () => {
           expect(input).toHaveValue("First follow-up");
         }
         fireEvent.change(input, { target: { value: "Next follow-up" } });
-        fireEvent.click(screen.getByLabelText("Send message"));
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
         expect(mockOnSubmit).toHaveBeenCalledTimes(2);
       },
     );
+
+    it("explains that follow-ups pause a waiting goal without mislabeling goal commands", () => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            pauseGoalOnSend
+          />
+        </TestWrapper>,
+      );
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, {
+        target: { value: "Please check the saved result" },
+      });
+      expect(
+        screen.getByLabelText("Send message and pause goal"),
+      ).toBeEnabled();
+      fireEvent.change(input, { target: { value: "/GOAL status" } });
+      expect(screen.getByLabelText("Send message")).toBeEnabled();
+      fireEvent.change(input, { target: { value: "/goals are useful" } });
+      expect(
+        screen.getByLabelText("Send message and pause goal"),
+      ).toBeEnabled();
+    });
 
     it("hides a stale stop action after an Agent run is known to be terminal", () => {
       render(

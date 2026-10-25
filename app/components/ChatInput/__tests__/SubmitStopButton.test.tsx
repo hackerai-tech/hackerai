@@ -56,6 +56,34 @@ function renderButton(
 }
 
 describe("SubmitStopButton paid mode colors", () => {
+  it.each([
+    {
+      sendDisabledReason: undefined,
+      tooltip: "Send message and pause goal (⏎)",
+    },
+    { sendDisabledReason: "Messages loading", tooltip: "Messages loading" },
+  ])(
+    "explains a goal follow-up while preserving the blocking reason: $tooltip",
+    async ({ sendDisabledReason, tooltip }) => {
+      const user = userEvent.setup();
+      render(
+        <TooltipProvider delayDuration={0}>
+          <SubmitStopButton
+            {...defaultProps}
+            chatMode="agent"
+            pausesGoal
+            sendDisabledReason={sendDisabledReason}
+          />
+        </TooltipProvider>,
+      );
+      const sendButton = screen.getByLabelText("Send message and pause goal");
+      if (sendDisabledReason) expect(sendButton).toBeDisabled();
+      else expect(sendButton).toBeEnabled();
+      await user.hover(sendButton.parentElement!);
+      expect(await screen.findByText(tooltip)).toBeInTheDocument();
+    },
+  );
+
   it("disables sending while offline without hiding the composer action", () => {
     render(
       <TooltipProvider>

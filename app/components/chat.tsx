@@ -2537,6 +2537,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     ["queued", "running", "needs_approval"].includes(
       persistedGoal?.state ?? "",
     );
+  const pauseGoalOnSend = [
+    "queued",
+    "running",
+    "waiting",
+    "needs_approval",
+  ].includes(persistedGoal?.state ?? "");
   const goalPanel = (
     <AgentGoalPanel
       key={chatId}
@@ -2716,6 +2722,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                           <ChatInput
                             goalPanel={goalPanel}
                             hasActiveGoalRun={hasActiveGoalRun}
+                            pauseGoalOnSend={pauseGoalOnSend}
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onReconnect={resumeStream}
@@ -2760,6 +2767,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   <ChatInput
                     goalPanel={goalPanel}
                     hasActiveGoalRun={hasActiveGoalRun}
+                    pauseGoalOnSend={pauseGoalOnSend}
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
