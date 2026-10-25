@@ -69,7 +69,6 @@ export function ComputerWorkspace({
 }) {
   const prefix = useId();
   const [active, setActive] = useState("activity");
-  const [filesOpen, setFilesOpen] = useState(false);
   const [filesVisited, setFilesVisited] = useState(false);
   const [chooserOpen, setChooserOpen] = useState(false);
   const [tabs, setTabs] = useState<FileTab[]>([]);
@@ -93,7 +92,6 @@ export function ComputerWorkspace({
   }, [activity, messages]);
 
   const openFiles = useCallback(() => {
-    setFilesOpen(true);
     setFilesVisited(true);
     setChooserOpen(false);
     setActive("files");
@@ -176,15 +174,14 @@ export function ComputerWorkspace({
 
   const visibleTabs = [
     { id: "activity", name: "Activity", icon: Monitor, closable: false },
-    ...(filesOpen
-      ? [{ id: "files", name: "Files", icon: FolderOpen, closable: true }]
-      : []),
+    { id: "files", name: "Files", icon: FolderOpen, closable: false },
     ...tabs.map((tab) => ({ ...tab, icon: FileText, closable: true })),
     ...(chooserOpen
       ? [{ id: "new", name: "New tab", icon: Plus, closable: true }]
       : []),
   ];
   const focusTab = (id: string) => {
+    if (id === "files") setFilesVisited(true);
     setActive(id);
     requestAnimationFrame(() =>
       document.getElementById(`${prefix}-tab-${id}`)?.focus(),
@@ -192,8 +189,8 @@ export function ComputerWorkspace({
   };
   const closeTab = (id: string) => {
     const index = visibleTabs.findIndex((tab) => tab.id === id);
-    if (id === "files") setFilesOpen(false);
-    else if (id === "new") setChooserOpen(false);
+    if (id === "activity" || id === "files") return;
+    if (id === "new") setChooserOpen(false);
     else {
       const url = ownedUrls.current.get(id);
       if (url) URL.revokeObjectURL(url);
@@ -259,7 +256,7 @@ export function ComputerWorkspace({
                   aria-selected={active === tab.id}
                   tabIndex={active === tab.id ? 0 : -1}
                   title={tab.name}
-                  onClick={() => setActive(tab.id)}
+                  onClick={() => focusTab(tab.id)}
                   className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   onKeyDown={(event) => {
                     let next: number | undefined;
@@ -344,7 +341,7 @@ export function ComputerWorkspace({
             <div
               role="tabpanel"
               id={`${prefix}-panel-files`}
-              aria-labelledby={filesOpen ? `${prefix}-tab-files` : undefined}
+              aria-labelledby={`${prefix}-tab-files`}
               hidden={active !== "files"}
               className="h-full flex-col data-[active=true]:flex"
               data-active={active === "files"}

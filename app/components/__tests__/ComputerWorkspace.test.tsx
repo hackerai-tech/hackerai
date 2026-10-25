@@ -92,7 +92,7 @@ it("keeps two captured versions open, reuses a version, and preserves the select
   expect(screen.getByText("cloud historical version")).toBeVisible();
   rerender(<ComputerWorkspace {...props} open={false} selection={null} />);
   expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-  rerender(<ComputerWorkspace {...props} selection={activity} />);
+  rerender(<ComputerWorkspace {...props} selection={null} />);
   expect(screen.getByText("cloud historical version")).toBeVisible();
   expect(global.fetch).not.toHaveBeenCalled();
 });
@@ -114,12 +114,15 @@ it("removes a deleted historical payload immediately instead of retaining cached
   );
 });
 
-it("opens Files from the new-tab chooser, preserves its search, and supports keyboard selection and closing", async () => {
+it("keeps Files discoverable, loads it on selection, and preserves its search through keyboard navigation", async () => {
   render(<ComputerWorkspace {...props} selection={activity} />);
-  fireEvent.click(screen.getByRole("button", { name: "New computer tab" }));
-  fireEvent.click(
-    screen.getByRole("button", { name: /Files Captured chat files/ }),
-  );
+  expect(screen.getByRole("tab", { name: "Files" })).toBeVisible();
+  expect(
+    screen.queryByRole("textbox", { name: "Search chat files" }),
+  ).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Activity" }), {
+    key: "ArrowRight",
+  });
   fireEvent.change(screen.getByRole("textbox", { name: "Search chat files" }), {
     target: { value: "report" },
   });
@@ -134,11 +137,18 @@ it("opens Files from the new-tab chooser, preserves its search, and supports key
   expect(
     screen.getByRole("textbox", { name: "Search chat files" }),
   ).toHaveValue("report");
+  fireEvent.click(screen.getByRole("button", { name: "New computer tab" }));
+  fireEvent.click(
+    screen.getByRole("button", { name: /Files Captured chat files/ }),
+  );
+  expect(screen.getAllByRole("tab", { name: "Files" })).toHaveLength(1);
+  expect(
+    screen.getByRole("textbox", { name: "Search chat files" }),
+  ).toHaveValue("report");
   fireEvent.keyDown(screen.getByRole("tab", { name: "Files" }), {
     key: "Delete",
   });
-  expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
-  expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+  expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute(
     "aria-selected",
     "true",
   );

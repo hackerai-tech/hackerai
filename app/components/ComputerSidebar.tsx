@@ -1,4 +1,4 @@
-import { useWorkspaceFilesEnabled } from "./WorkspaceFilesButton";
+import { useWorkspaceFilesEnabled } from "./ComputerPanelToggle";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
