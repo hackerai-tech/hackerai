@@ -160,7 +160,7 @@ export function ComputerWorkspace({
     const tab = document.getElementById(`${prefix}-tab-${active}`);
     tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     tab?.focus({ preventScroll: true });
-  }, [active, open, prefix]);
+  }, [active, open, prefix, overlay]);
 
   useEffect(() => {
     if (!open || !fullscreen) return;
