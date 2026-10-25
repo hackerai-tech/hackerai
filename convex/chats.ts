@@ -467,6 +467,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   }
 
   await prepareChatForDeletion(ctx, chat);
+  const goal = await ctx.db
+    .query("agent_goals")
+    .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
+    .unique();
+  if (goal) await ctx.db.delete(goal._id);
 
   if (await deleteFindingsForChatBatch(ctx, chat)) {
     await scheduleDeleteAllChatsBatch(ctx, userId);

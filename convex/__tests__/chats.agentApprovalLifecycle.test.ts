@@ -645,85 +645,109 @@ describe("Agent approval lifecycle guards", () => {
       deletion_started_at: expect.any(Number),
     });
   });
-  it("cascades structured findings before deleting their source chat", async () => {
-    const tables: Record<string, Array<Record<string, any>>> = {
-      chats: [
-        {
-          _id: "chat-doc-1",
-          id: "chat-1",
-          user_id: "user-1",
-          canceled_at: 1,
-        },
-      ],
-      findings: [
-        {
-          _id: "finding-doc-1",
-          user_id: "user-1",
-          chat_id: "chat-1",
-          created_at: 1,
-        },
-      ],
-      finding_sources: [
-        {
-          _id: "finding-source-1",
-          user_id: "user-1",
-          chat_id: "chat-1",
-        },
-      ],
-      messages: [],
-      chat_summaries: [],
-    };
-    const deleted: string[] = [];
-    const db = {
-      query: jest.fn((table: string) => ({
-        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
-          const filters: Array<[string, unknown]> = [];
-          const q: any = {
-            eq: (field: string, value: unknown) => {
-              filters.push([field, value]);
-              return q;
-            },
-          };
-          build(q);
-          const rows = () =>
-            (tables[table] ?? []).filter((row) =>
-              filters.every(([field, value]) => row[field] === value),
-            );
-          return {
-            first: jest.fn(async () => rows()[0] ?? null),
-            unique: jest.fn(async () => rows()[0] ?? null),
-            take: jest.fn(async (limit: number) => rows().slice(0, limit)),
-          };
+  it.each([false, true])(
+    "cascades goals and findings before deleting their source chat (bulk: %s)",
+    async (bulk) => {
+      const tables: Record<string, Array<Record<string, any>>> = {
+        chats: [
+          {
+            _id: "chat-doc-1",
+            id: "chat-1",
+            user_id: "user-1",
+            canceled_at: 1,
+          },
+        ],
+        agent_goals: [
+          {
+            _id: "goal-1",
+            chatId: "chat-1",
+            objective: "Private objective",
+            evidence: [{ explanation: "Private evidence" }],
+          },
+          { _id: "other-goal", chatId: "other-chat" },
+        ],
+        findings: [
+          {
+            _id: "finding-doc-1",
+            user_id: "user-1",
+            chat_id: "chat-1",
+            created_at: 1,
+          },
+        ],
+        finding_sources: [
+          {
+            _id: "finding-source-1",
+            user_id: "user-1",
+            chat_id: "chat-1",
+          },
+        ],
+        messages: [],
+        chat_summaries: [],
+      };
+      const deleted: string[] = [];
+      const db = {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+            const filters: Array<[string, unknown]> = [];
+            const q: any = {
+              eq: (field: string, value: unknown) => {
+                filters.push([field, value]);
+                return q;
+              },
+            };
+            build(q);
+            const rows = () =>
+              (tables[table] ?? []).filter((row) =>
+                filters.every(([field, value]) => row[field] === value),
+              );
+            return {
+              first: jest.fn(async () => rows()[0] ?? null),
+              unique: jest.fn(async () => rows()[0] ?? null),
+              take: jest.fn(async (limit: number) => rows().slice(0, limit)),
+            };
+          }),
+        })),
+        patch: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn(async (id: string) => {
+          deleted.push(id);
+          for (const [table, rows] of Object.entries(tables)) {
+            tables[table] = rows.filter((row) => row._id !== id);
+          }
         }),
-      })),
-      patch: jest.fn().mockResolvedValue(undefined),
-      delete: jest.fn(async (id: string) => {
-        deleted.push(id);
-        for (const [table, rows] of Object.entries(tables)) {
-          tables[table] = rows.filter((row) => row._id !== id);
-        }
-      }),
-    };
+      };
 
-    await expect(
-      deleteChatForBackend.handler(
-        { db, scheduler: { runAfter: jest.fn() } } as any,
-        {
-          serviceKey: "service-key",
-          chatId: "chat-1",
-          userId: "user-1",
-          expectedTriggerRunId: null,
-          expectedApprovalSessionId: null,
-        },
-      ),
-    ).resolves.toBe("deleted");
-
-    expect(deleted).toEqual([
-      "finding-doc-1",
-      "finding-source-1",
-      "chat-doc-1",
-    ]);
-  });
+      if (bulk) {
+        await expect(
+          deleteAllChatsForUser.handler(
+            { db, scheduler: { runAfter: jest.fn() } } as any,
+            { serviceKey: "service-key", userId: "user-1" },
+          ),
+        ).resolves.toBeNull();
+      } else {
+        await expect(
+          deleteChatForBackend.handler(
+            { db, scheduler: { runAfter: jest.fn() } } as any,
+            {
+              serviceKey: "service-key",
+              chatId: "chat-1",
+              userId: "user-1",
+              expectedTriggerRunId: null,
+              expectedApprovalSessionId: null,
+            },
+          ),
+        ).resolves.toBe("deleted");
+      }
+      expect(tables.agent_goals).toEqual([
+        { _id: "other-goal", chatId: "other-chat" },
+      ]);
+      expect(deleted).toEqual([
+        "goal-1",
+        "finding-doc-1",
+        "finding-source-1",
+        "chat-doc-1",
+      ]);
+    },
+  );
 
   it("uses bounded continuation batches for service-key test cleanup", async () => {
     const chat = {
