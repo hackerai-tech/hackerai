@@ -15,9 +15,16 @@ export function useWorkspaceFilesEnabled(chatId?: string): boolean {
     chatId ? `/api/workspace-files?chatId=${encodeURIComponent(chatId)}` : null,
     async (url: string) => {
       const response = await fetch(url);
+      if (response.status >= 500 || response.status === 429) {
+        throw new Error("Computer availability temporarily unavailable");
+      }
       return response.ok ? response.json() : { enabled: false };
     },
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+    {
+      revalidateOnFocus: false,
+      errorRetryCount: 2,
+      errorRetryInterval: 2_000,
+    },
   );
   return data?.enabled === true;
 }
