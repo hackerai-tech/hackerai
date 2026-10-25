@@ -98,7 +98,13 @@ export async function accessLocalWorkspaceFiles(
   try {
     const result = await sandbox.commands.run(
       workspaceReaderCommand(
-        { ...input, action: input.action === "status" ? "list" : input.action },
+        {
+          ...input,
+          action:
+            input.action === "status" || input.action === "resume"
+              ? "list"
+              : input.action,
+        },
         root ?? null,
       ),
       { timeoutMs: 15_000, displayName: "Browse workspace files" },

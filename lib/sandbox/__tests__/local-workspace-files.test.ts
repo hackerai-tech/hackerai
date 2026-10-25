@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { accessLocalWorkspaceFiles } from "../local-workspace-files";
 import { workspaceRequest } from "../workspace-files";
 const query = jest.fn();
@@ -18,16 +22,14 @@ beforeEach(() => {
   process.env.CONVEX_SERVICE_ROLE_KEY = "test";
   process.env.CENTRIFUGO_WS_URL = "wss://test.invalid";
   process.env.CENTRIFUGO_TOKEN_SECRET = "test";
-  query
-    .mockResolvedValueOnce("environment:machine")
-    .mockResolvedValueOnce([
-      {
-        connectionId: "session",
-        environmentId: "machine",
-        name: "Test Mac",
-        osInfo: { platform: "darwin" },
-      },
-    ]);
+  query.mockResolvedValueOnce("environment:machine").mockResolvedValueOnce([
+    {
+      connectionId: "session",
+      environmentId: "machine",
+      name: "Test Mac",
+      osInfo: { platform: "darwin" },
+    },
+  ]);
   run.mockResolvedValue({
     exitCode: 0,
     stdout: JSON.stringify({
@@ -81,3 +83,37 @@ it("releases the relay on failures and preserves a file-change error", async () 
   ).rejects.toMatchObject({ code: "file_changed" });
   expect(close).toHaveBeenCalled();
 });
+
+it.each(["status", "resume"])(
+  "returns a real root listing for Local %s without a path",
+  async (action) => {
+    const root = realpathSync(
+      mkdtempSync(join(tmpdir(), "local-workspace-resume-")),
+    );
+    try {
+      writeFileSync(join(root, "report.txt"), "fixture");
+      run.mockImplementationOnce(async (command: string) => ({
+        exitCode: 0,
+        stdout: execFileSync("sh", ["-c", command], {
+          encoding: "utf8",
+          cwd: root,
+        }),
+      }));
+      const result = await accessLocalWorkspaceFiles(
+        "owner",
+        "environment:machine",
+        input({ action, sandboxId: "session" }),
+        root,
+      );
+      expect(result).toMatchObject({
+        state: "running",
+        sandboxId: "session",
+        root,
+        entries: [{ name: "report.txt", kind: "file", size: 7 }],
+      });
+      expect(close).toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
