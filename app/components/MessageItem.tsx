@@ -721,7 +721,7 @@ export const MessageItem = memo(function MessageItem({
               typeof message.metadata.goal.achievedElapsedMs === "number" ? (
               <>
                 <CircleCheck className="size-3.5" aria-hidden="true" />
-                <span title="Elapsed time from goal creation, including pauses and waiting">
+                <span title="Time spent pursuing the goal">
                   Goal achieved in{" "}
                   {formatGoalDuration(message.metadata.goal.achievedElapsedMs)}
                 </span>

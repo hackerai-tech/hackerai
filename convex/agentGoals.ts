@@ -1,3 +1,4 @@
+import { goalTimingForState } from "../lib/goals/timing";
 import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { query, mutation } from "./lib/serviceFunctions";
@@ -114,6 +115,8 @@ export const start = mutation({
       progress: "",
       reason: "Goal started",
       startedAt: Date.now(),
+      elapsedMs: 0,
+      activeSince: Date.now(),
       noProgressRuns: 0,
       evidence: [],
       updatedAt: Date.now(),
@@ -146,6 +149,7 @@ export const pauseForCanceledRun = mutation({
     )
       return null;
     await ctx.db.patch(goal._id, {
+      ...goalTimingForState(goal, "paused", Date.now()),
       state: "paused",
       dispatchId: undefined,
       continuationSourceRunId: undefined,
@@ -199,6 +203,7 @@ export const control = mutation({
           "Run budget exhausted. Explicitly add runs after reviewing progress.",
         );
       await ctx.db.patch(goal._id, {
+        ...goalTimingForState(goal, "queued", Date.now()),
         state: "queued",
         maxRuns: goal.maxRuns + additionalRuns,
         waitUntil: undefined,
@@ -214,6 +219,11 @@ export const control = mutation({
     } else {
       if (goal.state === "achieved" && args.action !== "clear") return goal;
       await ctx.db.patch(goal._id, {
+        ...goalTimingForState(
+          goal,
+          args.action === "pause" ? "paused" : "canceled",
+          Date.now(),
+        ),
         state: args.action === "pause" ? "paused" : "canceled",
         deletedAt: args.action === "clear" ? Date.now() : goal.deletedAt,
         generation: goal.generation + (args.action === "clear" ? 1 : 0),
@@ -259,6 +269,7 @@ export const update = mutation({
       constraints: args.constraints?.trim(),
       boundaries: args.boundaries?.trim(),
       stopWhen: args.stopWhen?.trim(),
+      ...goalTimingForState(goal, "paused", Date.now()),
       state: "paused",
       generation: goal.generation + 1,
       checkpoint: undefined,
@@ -332,6 +343,7 @@ export const claimDispatch = mutation({
     )
       return false;
     await ctx.db.patch(goal._id, {
+      ...goalTimingForState(goal, goal.state, Date.now()),
       dispatchId: args.dispatchId,
       updatedAt: Date.now(),
     });
@@ -407,6 +419,7 @@ export const claimRun = mutation({
     )
       return null;
     await ctx.db.patch(goal._id, {
+      ...goalTimingForState(goal, "running", Date.now()),
       state: "running",
       activeRunId: args.runId,
       continuationSourceRunId: undefined,
@@ -508,6 +521,7 @@ export const finish = mutation({
     // lease without importing evidence or judgments from the old objective.
     if (["paused", "canceled"].includes(goal.state)) {
       await ctx.db.patch(goal._id, {
+        ...goalTimingForState(goal, goal.state, Date.now()),
         activeRunId: undefined,
         dispatchId: undefined,
         continuationSourceRunId: undefined,
@@ -568,7 +582,9 @@ export const finish = mutation({
                 evidence.some((e) => e.criterion === i),
               ),
           });
+    const timing = goalTimingForState(goal, state, Date.now());
     await ctx.db.patch(goal._id, {
+      ...timing,
       state,
       achievedAt: state === "achieved" ? Date.now() : undefined,
       activeRunId: undefined,
@@ -615,12 +631,12 @@ export const finish = mutation({
     });
     if (
       state === "achieved" &&
-      goal.startedAt &&
+      goal.startedAt !== undefined &&
       message?.chat_id === args.chatId &&
       message.role === "assistant"
     ) {
       await ctx.db.patch(message._id, {
-        goal: { achievedElapsedMs: Math.max(0, Date.now() - goal.startedAt) },
+        goal: { achievedElapsedMs: timing.elapsedMs },
       });
     }
     return (await ctx.db.get(goal._id))!;
@@ -647,6 +663,7 @@ export const failDispatch = mutation({
       ["queued", "waiting"].includes(goal.state)
     )
       await ctx.db.patch(goal._id, {
+        ...goalTimingForState(goal, "failed", Date.now()),
         state: "failed",
         dispatchId: undefined,
         continuationSourceRunId: undefined,

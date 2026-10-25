@@ -1,3 +1,4 @@
+import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
@@ -1920,6 +1921,7 @@ export const setActiveAgentApprovalPending = mutation({
         goal?.state === "running"
       )
         await ctx.db.patch(goal._id, {
+          ...goalTimingForState(goal, "needs_approval", Date.now()),
           state: "needs_approval",
           reason: "Waiting for existing tool approval",
           updatedAt: Date.now(),
@@ -1944,7 +1946,11 @@ export const setActiveAgentApprovalPending = mutation({
       goal?.activeRunId === chat.active_trigger_run_id &&
       goal?.state === "needs_approval"
     )
-      await ctx.db.patch(goal._id, { state: "running", updatedAt: Date.now() });
+      await ctx.db.patch(goal._id, {
+        ...goalTimingForState(goal, "running", Date.now()),
+        state: "running",
+        updatedAt: Date.now(),
+      });
     return "released" as const;
   },
 });

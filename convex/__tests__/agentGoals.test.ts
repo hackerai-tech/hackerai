@@ -115,6 +115,48 @@ const terminal = {
 
 describe("persistent goal lifecycle", () => {
   beforeEach(() => jest.clearAllMocks());
+  it("freezes composer Stop across late settlement and excludes pauses from the completion receipt", async () => {
+    const clock = jest.spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(1000);
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      clock.mockReturnValue(6000);
+      await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+      expect(db.goal().elapsedMs).toBe(5000);
+      clock.mockReturnValue(66000);
+      await invoke(finish, db.ctx, { ...terminal, canceled: true });
+      await invoke(control, db.ctx, { ...owner, action: "pause" });
+      expect(db.goal().elapsedMs).toBe(5000);
+      db.chat().active_trigger_run_id = undefined;
+      await invoke(control, db.ctx, { ...owner, action: "resume" });
+      await invoke(claimRun, db.ctx, { ...owner, generation: 2, runId: "r2" });
+      clock.mockReturnValue(69000);
+      await invoke(checkpoint, db.ctx, {
+        ...owner,
+        runId: "r2",
+        checkpoint: {
+          outcome: "achieved",
+          progress: "Observed marker",
+          evidence: [{ ...proof, runId: "r2" }],
+        },
+      });
+      const messageId = await db.message("r2", [result]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        runId: "r2",
+        judgment: { verdict: "done", reason: "Marker observed" },
+      });
+      expect(db.goal().state).toBe("achieved");
+      expect(db.goal().elapsedMs).toBe(8000);
+      expect((await db.ctx.db.get(messageId)).goal.achievedElapsedMs).toBe(
+        8000,
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it("makes a queued worker stoppable before claim without spending a run", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

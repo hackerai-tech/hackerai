@@ -505,6 +505,72 @@ describe("goal controls", () => {
   });
 
   it.each([false, true])(
+    "freezes the saved timer across remount and resumes without the paused gap (mobile: %s)",
+    async (isMobile) => {
+      jest.useFakeTimers().setSystemTime(6000);
+      mockIsMobile = isMobile;
+      const panel = () => (
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+        />
+      );
+      try {
+        setMockQueryResult({
+          ...goal,
+          state: "paused",
+          startedAt: 1000,
+          updatedAt: 6000,
+          elapsedMs: 5000,
+        });
+        const first = render(panel());
+        await act(async () => {});
+        expect(
+          screen.getByLabelText(
+            "Elapsed time 5s, excluding pauses and waiting",
+          ),
+        ).toBeVisible();
+        act(() => jest.advanceTimersByTime(60000));
+        expect(
+          screen.getByLabelText(
+            "Elapsed time 5s, excluding pauses and waiting",
+          ),
+        ).toBeVisible();
+        first.unmount();
+        const second = render(panel());
+        await act(async () => {});
+        expect(
+          screen.getByLabelText(
+            "Elapsed time 5s, excluding pauses and waiting",
+          ),
+        ).toBeVisible();
+        setMockQueryResult({
+          ...goal,
+          state: "running",
+          startedAt: 1000,
+          updatedAt: 66000,
+          elapsedMs: 5000,
+          activeSince: 66000,
+        });
+        second.rerender(panel());
+        act(() => jest.advanceTimersByTime(3000));
+        expect(
+          screen.getByLabelText(
+            "Elapsed time 8s, excluding pauses and waiting",
+          ),
+        ).toBeVisible();
+        second.unmount();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([false, true])(
     "rounds the saved completion duration like the message receipt (mobile: %s)",
     async (isMobile) => {
       mockIsMobile = isMobile;
@@ -528,7 +594,7 @@ describe("goal controls", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
       expect(
         screen.getByLabelText(
-          "Elapsed time 1m 5s, including pauses and waiting",
+          "Elapsed time 1m 5s, excluding pauses and waiting",
         ),
       ).toBeVisible();
     },

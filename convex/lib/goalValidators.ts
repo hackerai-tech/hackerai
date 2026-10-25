@@ -70,6 +70,8 @@ export const goalFields = {
   deletedAt: v.optional(v.number()),
   startedAt: v.optional(v.number()),
   achievedAt: v.optional(v.number()),
+  elapsedMs: v.optional(v.number()),
+  activeSince: v.optional(v.number()),
   updatedAt: v.number(),
   waitUntil: v.optional(v.number()),
   judgment: v.optional(goalJudgment),

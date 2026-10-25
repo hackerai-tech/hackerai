@@ -28,6 +28,11 @@ import {
   Pencil,
 } from "lucide-react";
 import { goalResumeMessage } from "@/lib/goals/commands";
+import {
+  goalElapsedMs,
+  isGoalTimerRunning,
+  type GoalTiming,
+} from "@/lib/goals/timing";
 import { GOAL_MAX_RUNS, type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
@@ -502,12 +507,7 @@ export function AgentGoalPanel({
               >
                 {goalLabel}
               </span>
-              {goal.startedAt !== undefined && (
-                <GoalElapsedTime
-                  startedAt={goal.startedAt}
-                  achievedAt={goal.achievedAt}
-                />
-              )}
+              {goal.startedAt !== undefined && <GoalElapsedTime goal={goal} />}
             </button>
           </PopoverTrigger>
           <PopoverContent
@@ -577,10 +577,7 @@ export function AgentGoalPanel({
             {goal.startedAt !== undefined && (
               <>
                 <span aria-hidden="true">·</span>
-                <GoalElapsedTime
-                  startedAt={goal.startedAt}
-                  achievedAt={goal.achievedAt}
-                />
+                <GoalElapsedTime goal={goal} />
               </>
             )}
           </button>
@@ -592,25 +589,20 @@ export function AgentGoalPanel({
   );
 }
 
-function GoalElapsedTime({
-  startedAt,
-  achievedAt,
-}: {
-  startedAt: number;
-  achievedAt?: number;
-}) {
+function GoalElapsedTime({ goal }: { goal: GoalTiming }) {
   const [now, setNow] = useState(Date.now);
+  const running = isGoalTimerRunning(goal.state);
   useEffect(() => {
-    if (achievedAt !== undefined) return;
+    if (!running) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [achievedAt]);
-  const elapsedSeconds = ((achievedAt ?? now) - startedAt) / 1000;
+  }, [running]);
+  const elapsedSeconds = goalElapsedMs(goal, now) / 1000;
   // Completed durations use the same rounding as the saved message receipt.
   const seconds =
-    achievedAt === undefined
-      ? Math.max(0, Math.floor(elapsedSeconds))
-      : Math.max(1, Math.round(elapsedSeconds));
+    goal.state === "achieved"
+      ? Math.max(1, Math.round(elapsedSeconds))
+      : Math.max(0, Math.floor(elapsedSeconds));
   const duration =
     seconds < 60
       ? `${seconds}s`
@@ -619,9 +611,9 @@ function GoalElapsedTime({
         : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   return (
     <span
-      aria-label={`Elapsed time ${duration}, including pauses and waiting`}
+      aria-label={`Elapsed time ${duration}, excluding pauses and waiting`}
       className="shrink-0 tabular-nums"
-      title="Elapsed time since goal creation, including pauses and waiting"
+      title="Time spent pursuing the goal, excluding pauses and waiting"
     >
       {duration}
     </span>
