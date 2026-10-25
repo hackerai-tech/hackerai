@@ -614,6 +614,7 @@ export const saveMessage = mutation({
     finishReason: v.optional(v.string()),
     triggerRunId: v.optional(v.string()),
     expectedActiveTriggerRunId: v.optional(v.string()),
+    clientSnapshot: v.optional(v.boolean()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
@@ -782,10 +783,12 @@ export const saveMessage = mutation({
         // The retained server stream is authoritative over an earlier browser
         // snapshot of this same interrupted run. Never replace a final answer.
         if (
-          args.expectedActiveTriggerRunId &&
           existingMessage.role === "assistant" &&
-          existingMessage.trigger_run_id === args.expectedActiveTriggerRunId &&
-          existingMessage.finish_reason === "trigger_crashed_client_saved"
+          args.triggerRunId &&
+          existingMessage.trigger_run_id === args.triggerRunId &&
+          !args.clientSnapshot &&
+          (!existingMessage.finish_reason ||
+            existingMessage.finish_reason === "trigger_crashed_client_saved")
         ) {
           const base = {
             ...existingMessage,
@@ -833,7 +836,13 @@ export const saveMessage = mutation({
         ) {
           patch.generation_time_ms = args.generationTimeMs;
         }
-        if (args.finishReason && !existingMessage.finish_reason) {
+        if (
+          args.finishReason &&
+          (!existingMessage.finish_reason ||
+            (!args.clientSnapshot &&
+              args.triggerRunId === existingMessage.trigger_run_id &&
+              existingMessage.finish_reason === "trigger_crashed_client_saved"))
+        ) {
           patch.finish_reason = args.finishReason;
         }
         if (

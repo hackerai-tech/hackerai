@@ -962,6 +962,7 @@ export const updateChat = mutation({
     chatId: v.string(),
     title: v.optional(v.string()),
     finishReason: v.optional(v.string()),
+    expectedActiveTriggerRunId: v.optional(v.string()),
     defaultModelSlug: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
     ),
@@ -1000,6 +1001,15 @@ export const updateChat = mutation({
         // arrived (e.g., user deleted mid-stream). Nothing to update.
         return null;
       }
+
+      // A delayed browser snapshot must not finish a replacement run.
+      if (
+        args.expectedActiveTriggerRunId !== undefined &&
+        (chat.active_trigger_run_id !== args.expectedActiveTriggerRunId ||
+          chat.canceled_at !== undefined ||
+          chat.deletion_started_at !== undefined)
+      )
+        return null;
 
       // Prepare update object with only provided fields.
       // update_time is only bumped for user-visible changes (title, model,
@@ -1708,6 +1718,57 @@ export const fenceChatsForDeletion = mutation({
  * kicking off a long-running task). Stored on the chat row so the cancel
  * endpoint and reconnect flow can find the in-flight run by chatId.
  */
+export const replaceActiveTriggerRun = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    triggerRunId: v.string(),
+    expectedRunId: v.union(v.string(), v.null()),
+    approvalSessionId: v.union(v.string(), v.null()),
+  },
+  returns: v.union(
+    v.literal("stale"),
+    v.literal("not_found"),
+    v.literal("deleting"),
+    v.object({
+      previousRunId: v.union(v.string(), v.null()),
+      previousApprovalSessionId: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat) return "not_found" as const;
+    if (
+      chat.deletion_started_at !== undefined ||
+      (await isUserDeletionFenced(ctx.db, chat.user_id))
+    )
+      return "deleting" as const;
+    const currentRunId = chat.active_trigger_run_id ?? null;
+    if (
+      currentRunId !== null &&
+      currentRunId !== args.triggerRunId &&
+      currentRunId !== args.expectedRunId
+    )
+      return "stale" as const;
+    const previous = {
+      previousRunId: chat.active_trigger_run_id ?? null,
+      previousApprovalSessionId: chat.active_agent_approval_session_id ?? null,
+    };
+    await ctx.db.patch(chat._id, {
+      active_trigger_run_id: args.triggerRunId,
+      active_agent_approval_session_id: args.approvalSessionId ?? undefined,
+      active_agent_approval_pending: undefined,
+      active_agent_approval_request: undefined,
+      canceled_at: undefined,
+    });
+    return previous;
+  },
+});
+
 export const setActiveTriggerRun = mutation({
   args: {
     serviceKey: v.string(),
