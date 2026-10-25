@@ -10,6 +10,7 @@ import {
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
 import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
+import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,11 +25,15 @@ export type TerminalExecutionPhase = NonNullable<
 export function getTerminalExecutionPhase({
   toolState,
   autoReviewStatus,
+  errorText,
 }: {
   toolState?: string;
   autoReviewStatus?: AgentAutoReviewLifecycleStatus;
+  errorText?: string;
 }): TerminalExecutionPhase | undefined {
-  if (toolState === "output-error") return "failed";
+  if (toolState === "output-error") {
+    return isUserStoppedToolError(errorText) ? "stopped" : "failed";
+  }
   if (toolState === "output-available") return "completed";
   if (
     toolState === "approval-requested" ||
