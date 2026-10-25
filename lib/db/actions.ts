@@ -597,6 +597,17 @@ const databaseError = (
           : retryReason
             ? `Database temporarily unavailable: ${operation}: ${dbErrorMessage}`
             : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+  const fileValidationReason = getObjectString(
+    dbErrorData,
+    "fileValidationReason",
+  );
+  const boundedFileValidationReason =
+    fileValidationReason &&
+    ["file_missing", "file_lookup_failed", "file_not_owned"].includes(
+      fileValidationReason,
+    )
+      ? fileValidationReason
+      : undefined;
   const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
@@ -605,6 +616,7 @@ const databaseError = (
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    db_file_validation_reason: boundedFileValidationReason,
     db_retry_reason: retryReason,
     db_error_kind: upstreamHttpError ? "convex_upstream_http_error" : undefined,
     db_upstream_status_code: upstreamHttpError?.statusCode,
