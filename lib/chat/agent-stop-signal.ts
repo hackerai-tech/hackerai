@@ -1,4 +1,5 @@
 type DirectStopSource =
+  | "browser_ownership_lost"
   | "trigger_platform"
   | "active_runtime_budget"
   | "auto_review_circuit_breaker"

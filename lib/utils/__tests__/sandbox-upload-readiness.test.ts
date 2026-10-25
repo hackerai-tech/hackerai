@@ -344,3 +344,36 @@ it("bounds stalled metrics and filters untrusted fields", async () => {
   expect(result).toEqual({ metrics_status: "available", cpu_used_pct: 10 });
   expect(jest.getTimerCount()).toBe(0);
 });
+
+it("retains a wrapped E2B 504 after the acquisition budget is spent", async () => {
+  const { CloudAcquisitionBudgetExhaustedError } =
+    await import("@/lib/ai/tools/utils/cloud-acquisition-budget");
+  const cause = Object.assign(new Error("Cloud sandbox unavailable"), {
+    name: "E2BAcquisitionError",
+    diagnostics: {
+      e2b_phase: "connect",
+      e2b_error_category: "transient",
+      e2b_http_status: 504,
+    },
+  });
+  const ensure = jest
+    .fn()
+    .mockRejectedValue(new CloudAcquisitionBudgetExhaustedError(cause));
+  const result = await uploadSandboxFiles(files, ensure, {
+    retryAfterReconnectOnTransientFailure: true,
+  });
+  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(result.failedCount).toBe(3);
+  expect(result.failureDetails).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        phase: "acquisition",
+        reason: "sandbox_operation_timeout",
+        sandboxReadinessReason: "operation_timeout",
+      }),
+    ]),
+  );
+  expect(getSandboxUploadUserMessage(result)).toBe(
+    "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.",
+  );
+});

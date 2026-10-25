@@ -54,7 +54,10 @@ export class BrowserSessions {
   private closed = false;
   private cleanupPromise?: Promise<void>;
 
-  constructor(private readonly handoffScope?: BrowserHandoffScope) {}
+  constructor(
+    private readonly handoffScope?: BrowserHandoffScope,
+    private readonly onOwnershipLost?: () => void,
+  ) {}
 
   hasHandoffScope(): boolean {
     return !!this.handoffScope;
@@ -239,8 +242,13 @@ export class BrowserSessions {
       // Replaced sandboxes remain in our map for cleanup. Only the latest
       // registered owner can authorize work; stale rows must not block it.
       const currentStates = states.filter((state) => state?.runActive);
-      if (states.length > 0 && currentStates.length === 0)
+      if (states.length > 0 && currentStates.length === 0) {
+        // Fail closed before any action, but let the owning worker settle its
+        // already-produced output/usage as cancellation instead of provider error.
+        this.onOwnershipLost?.();
+        signal?.throwIfAborted();
         throw new Error("Browser session ownership has ended.");
+      }
       if (currentStates.every((state) => state?.state === "agent"))
         return waited;
       // Expired grants become recovery, which still requires an explicit resume.

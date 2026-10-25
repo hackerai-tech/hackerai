@@ -22,6 +22,7 @@ import {
   handleInitialChatAndUserMessage,
   type InitialChatPersistenceStep,
   setActiveTriggerRun,
+  replaceActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
   assertFreeAgentGates,
@@ -397,6 +398,7 @@ type StartedAgentRunAccess = {
 };
 
 export const finalizeStartedAgentRun = async ({
+  expectedRunId = null,
   chatId,
   runId,
   approvalSessionId,
@@ -404,9 +406,10 @@ export const finalizeStartedAgentRun = async ({
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
+  expectedRunId?: string | null;
 }): Promise<StartedAgentRunAccess> => {
   try {
-    const [publicAccessToken, approvalSessionPublicAccessToken, association] =
+    const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
         auth.createPublicToken({
           scopes: { read: { runs: [runId] } },
@@ -421,19 +424,39 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        setActiveTriggerRun({
-          chatId,
-          triggerRunId: runId,
-          approvalSessionId: approvalSessionId ?? null,
-        }),
       ]);
 
-    if (association !== "updated") {
+    const association = await replaceActiveTriggerRun({
+      expectedRunId,
+      chatId,
+      triggerRunId: runId,
+      approvalSessionId: approvalSessionId ?? null,
+    });
+    if (association === "stale") {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "Another Agent run started in this chat. Reconnect to that run before sending again.",
+        { agent_run_association: association },
+      );
+    }
+    if (typeof association === "string") {
       throw new ChatSDKError(
         "not_found:chat",
         "The chat was deleted while the Agent run was starting.",
         { agent_run_association: association },
       );
+    }
+
+    if (association.previousRunId && association.previousRunId !== runId) {
+      // Cancel only the owner displaced by this transaction. Its conditional
+      // cleanup cannot detach the replacement, and persisted output is retained.
+      await cancelAgentTriggerRun(association.previousRunId);
+      if (association.previousApprovalSessionId !== approvalSessionId) {
+        await closeAgentApprovalSession(
+          association.previousApprovalSessionId ?? undefined,
+          "agent-run-replaced",
+        );
+      }
     }
 
     return {
@@ -987,10 +1010,11 @@ export const createAgentTriggerPost =
       diagnosticContext.runId = runId;
       stage = "create_tokens_and_associate_run";
 
-      // Access-token creation and durable association are independent, so
-      // overlap them while treating every post-start failure as terminal.
+      // Claim ownership only after tokens are available, then settle the exact
+      // displaced owner. Concurrent admissions cannot overwrite a newer claim.
       const { publicAccessToken, approvalSessionPublicAccessToken } =
         await finalizeStartedAgentRun({
+          expectedRunId: existingChat?.active_trigger_run_id ?? null,
           chatId,
           runId,
           approvalSessionId,

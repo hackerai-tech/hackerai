@@ -347,6 +347,70 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it.each([undefined, "trigger_crashed_client_saved", "stop"])(
+    "server completion preserves final content over a client snapshot (existing %s)",
+    async (finishReason) => {
+      setupExistingMessage(
+        makeMessage({
+          role: "assistant",
+          trigger_run_id: "run-1",
+          finish_reason: finishReason,
+          parts: [{ type: "text", text: "partial" }],
+        }),
+      );
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        triggerRunId: "run-1",
+        parts: [{ type: "text", text: "complete" }],
+        finishReason: "stop",
+      });
+      if (finishReason === "stop") {
+        expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ parts: expect.anything() }),
+        );
+      } else {
+        expect(mockCtx.db.patch).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "complete" }],
+            finish_reason: "stop",
+          }),
+        );
+      }
+    },
+  );
+
+  it("does not let a late client snapshot replace retained server content", async () => {
+    setupExistingMessage(
+      makeMessage({
+        role: "assistant",
+        trigger_run_id: "run-1",
+        parts: [{ type: "text", text: "retained server content" }],
+      }),
+    );
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      triggerRunId: "run-1",
+      clientSnapshot: true,
+      parts: [{ type: "text", text: "older browser snapshot" }],
+    });
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ parts: expect.anything() }),
+    );
+  });
+
   it("rejects changing an existing message to a different Trigger run", async () => {
     const existing = makeMessage({
       role: "assistant",

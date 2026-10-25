@@ -335,3 +335,36 @@ it("supports browser setup late in a six-hour run but enforces final expiry", as
     "ownership has ended",
   );
 });
+
+it("settles a displaced browser owner as cancellation without executing its queued tool", async () => {
+  const stop = new AbortController();
+  const lost = jest.fn(() => stop.abort());
+  const sessions = new BrowserSessions(
+    {
+      userId: "owner",
+      chatId: "chat",
+      runId: "old",
+      agentId: "parent",
+      serviceKey: "test-key",
+    },
+    lost,
+  );
+  await sessions.prepare({
+    sandboxId: "test",
+    commands: {
+      run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+    },
+  } as unknown as AnySandbox);
+  mockQuery.mockResolvedValue({ runActive: false, state: "agent" });
+  const execute = jest.fn();
+  const guarded = sessions.guardTools(
+    { command: { execute } } as any,
+    stop.signal,
+  );
+  await expect(
+    guarded.command.execute!({}, { toolCallId: "tool", messages: [] } as any),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(lost).toHaveBeenCalledTimes(1);
+  expect(stop.signal.aborted).toBe(true);
+  expect(execute).not.toHaveBeenCalled();
+});
