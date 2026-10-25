@@ -218,7 +218,7 @@ describe("goal controls", () => {
     setMockQueryResult({ ...goal, state: "running", activeRunId: "r1" });
     rerender(<AgentGoalPanel {...props} idle={false} />);
     expect(screen.getByRole("button", { name: "Pause goal" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Delete goal" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear goal" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Pause goal" }));
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
@@ -379,7 +379,7 @@ describe("goal controls", () => {
       kind: "goal",
       chatId: "chat",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Delete goal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear goal" }));
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
         "/api/agent-goal",

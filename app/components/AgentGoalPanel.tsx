@@ -9,6 +9,11 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
@@ -191,16 +196,24 @@ export function AgentGoalPanel({
     }
   }
   const deleteAction = (
-    <Button
-      size={isMobile ? "icon" : "icon-sm"}
-      variant="ghost"
-      disabled={controlling}
-      aria-label="Delete goal"
-      title="Delete goal"
-      onClick={() => control("clear")}
-    >
-      <Trash2 className="size-4" />
-    </Button>
+    <Tooltip open={isMobile ? false : undefined}>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <Button
+            size={isMobile ? "icon" : "icon-sm"}
+            variant="ghost"
+            disabled={controlling}
+            aria-label="Clear goal"
+            onClick={() => control("clear")}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>
+        Clear goal
+      </TooltipContent>
+    </Tooltip>
   );
   const actions = (
     <div
@@ -211,40 +224,56 @@ export function AgentGoalPanel({
         ["queued", "running", "needs_approval", "waiting"].includes(
           goal.state,
         ) && (
-          <Button
-            size={isMobile ? "icon" : "icon-sm"}
-            variant="ghost"
-            disabled={controlling}
-            aria-label="Pause goal"
-            title="Pause goal"
-            onClick={() => control("pause")}
-          >
-            {isMobile ? (
-              <Pause className="size-4" />
-            ) : (
-              <CirclePause className="size-4" />
-            )}
-          </Button>
+          <Tooltip open={isMobile ? false : undefined}>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <Button
+                  size={isMobile ? "icon" : "icon-sm"}
+                  variant="ghost"
+                  disabled={controlling}
+                  aria-label="Pause goal"
+                  onClick={() => control("pause")}
+                >
+                  {isMobile ? (
+                    <Pause className="size-4" />
+                  ) : (
+                    <CirclePause className="size-4" />
+                  )}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={6}>
+              Pause goal
+            </TooltipContent>
+          </Tooltip>
         )}
       {(canResume || (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
-        <Button
-          size={isMobile ? "sm" : "icon-sm"}
-          variant="ghost"
-          className={isMobile ? "px-2 text-xs" : undefined}
-          title="Resume goal"
-          aria-label="Resume goal"
-          disabled={
-            busy ||
-            !canResume ||
-            !idle ||
-            !enabled ||
-            !eligible ||
-            !!disabledReason
-          }
-          onClick={() => submit()}
-        >
-          {isMobile ? "Resume" : <CirclePlay className="size-4" />}
-        </Button>
+        <Tooltip open={isMobile ? false : undefined}>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Button
+                size={isMobile ? "sm" : "icon-sm"}
+                variant="ghost"
+                className={isMobile ? "px-2 text-xs" : undefined}
+                aria-label="Resume goal"
+                disabled={
+                  busy ||
+                  !canResume ||
+                  !idle ||
+                  !enabled ||
+                  !eligible ||
+                  !!disabledReason
+                }
+                onClick={() => submit()}
+              >
+                {isMobile ? "Resume" : <CirclePlay className="size-4" />}
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6}>
+            Resume goal
+          </TooltipContent>
+        </Tooltip>
       )}
       {resumable &&
         goal.runs >= goal.maxRuns &&
@@ -260,25 +289,33 @@ export function AgentGoalPanel({
           </Button>
         )}
       {goal.state !== "achieved" && (
-        <Button
-          size={isMobile ? "icon" : "icon-sm"}
-          variant="ghost"
-          aria-label="Edit goal"
-          title="Edit goal"
-          disabled={controlling}
-          onClick={() => {
-            openingEditor.current = isMobile === true;
-            setMobileOpen(false);
-            if (isMobile) mobileTriggerRef.current?.focus();
-            openSidebar({ kind: "goal", chatId });
-          }}
-        >
-          {isMobile ? (
-            <Pencil className="size-4" />
-          ) : (
-            <Maximize className="size-4" />
-          )}
-        </Button>
+        <Tooltip open={isMobile ? false : undefined}>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Button
+                size={isMobile ? "icon" : "icon-sm"}
+                variant="ghost"
+                aria-label="Edit goal"
+                disabled={controlling}
+                onClick={() => {
+                  openingEditor.current = isMobile === true;
+                  setMobileOpen(false);
+                  if (isMobile) mobileTriggerRef.current?.focus();
+                  openSidebar({ kind: "goal", chatId });
+                }}
+              >
+                {isMobile ? (
+                  <Pencil className="size-4" />
+                ) : (
+                  <Maximize className="size-4" />
+                )}
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6}>
+            Edit goal
+          </TooltipContent>
+        </Tooltip>
       )}
       {isMobile && deleteAction}
     </div>
