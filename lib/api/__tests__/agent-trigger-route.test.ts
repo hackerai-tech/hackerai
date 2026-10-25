@@ -25,6 +25,7 @@ Object.defineProperty(globalThis, "Response", {
 
 const mockCreatePublicToken = jest.fn<any>();
 const mockSetActiveTriggerRun = jest.fn<any>();
+const mockReplaceActiveTriggerRun = jest.fn<any>();
 const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
@@ -78,6 +79,7 @@ jest.mock("@/lib/db/actions", () => ({
   getUserCustomization: jest.fn(),
   handleInitialChatAndUserMessage: mockHandleInitialChatAndUserMessage,
   setActiveTriggerRun: mockSetActiveTriggerRun,
+  replaceActiveTriggerRun: mockReplaceActiveTriggerRun,
 }));
 
 jest.mock("@/lib/api/agent-approval-session", () => ({
@@ -147,6 +149,10 @@ describe("web request correlation at Agent dispatch", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReplaceActiveTriggerRun.mockReset().mockResolvedValue({
+      previousRunId: null,
+      previousApprovalSessionId: null,
+    });
     process.env.AGENT_RUN_CORRELATION_SECRET = "test-only-correlation-secret";
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user-1",
@@ -584,6 +590,10 @@ describe("web request correlation at Agent dispatch", () => {
 describe("Agent trigger route lifecycle", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReplaceActiveTriggerRun.mockReset().mockResolvedValue({
+      previousRunId: null,
+      previousApprovalSessionId: null,
+    });
     mockCreatePublicToken
       .mockResolvedValueOnce("run-token")
       .mockResolvedValueOnce("session-token");
@@ -724,7 +734,7 @@ describe("Agent trigger route lifecycle", () => {
   );
 
   it("closes and cancels a run that cannot be associated after deletion", async () => {
-    mockSetActiveTriggerRun.mockResolvedValue("deleting");
+    mockReplaceActiveTriggerRun.mockResolvedValue("deleting");
 
     await expect(
       finalizeStartedAgentRun({
@@ -747,9 +757,7 @@ describe("Agent trigger route lifecycle", () => {
 
   it("cleans up when the association mutation throws", async () => {
     const associationError = new Error("Convex unavailable");
-    mockSetActiveTriggerRun
-      .mockRejectedValueOnce(associationError)
-      .mockResolvedValueOnce("stale");
+    mockReplaceActiveTriggerRun.mockRejectedValueOnce(associationError);
 
     await expect(
       finalizeStartedAgentRun({
@@ -812,11 +820,16 @@ describe("Agent trigger route lifecycle", () => {
 
   it("waits for goal association before returning its startup handle", async () => {
     let associate!: (value: boolean) => void;
-    mockGoalMutation.mockReturnValueOnce(
-      new Promise<boolean>((resolve) => {
+    let associationStarted!: () => void;
+    const associating = new Promise<void>((resolve) => {
+      associationStarted = resolve;
+    });
+    mockGoalMutation.mockImplementationOnce(() => {
+      associationStarted();
+      return new Promise<boolean>((resolve) => {
         associate = resolve;
-      }),
-    );
+      });
+    });
     const settled = jest.fn();
     const started = finalizeStartedAgentRun({
       chatId: "chat-1",
@@ -824,7 +837,7 @@ describe("Agent trigger route lifecycle", () => {
       approvalSessionId: undefined,
       goal: { userId: "user-1", generation: 2 },
     }).then(settled);
-    await Promise.resolve();
+    await associating;
     expect(settled).not.toHaveBeenCalled();
     expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
       serviceKey: "synthetic",
@@ -838,6 +851,24 @@ describe("Agent trigger route lifecycle", () => {
     await started;
     expect(settled).toHaveBeenCalledWith({ publicAccessToken: "run-token" });
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("does not attach a goal worker when token creation fails", async () => {
+    mockCreatePublicToken
+      .mockReset()
+      .mockRejectedValueOnce(new Error("Token unavailable"));
+    await expect(
+      finalizeStartedAgentRun({
+        chatId: "chat-1",
+        runId: "run-1",
+        approvalSessionId: undefined,
+        goal: { userId: "user-1", generation: 2 },
+      }),
+    ).rejects.toThrow("Token unavailable");
+    expect(mockGoalMutation).not.toHaveBeenCalled();
+    expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
   });
 
   it("cancels a dispatched worker when its goal was replaced before association", async () => {
@@ -857,6 +888,60 @@ describe("Agent trigger route lifecycle", () => {
         expectedRunId: "run-old",
       }),
     );
+  });
+
+  it("cancels the atomically displaced run without clearing the new owner", async () => {
+    mockReplaceActiveTriggerRun.mockResolvedValue({
+      previousRunId: "old-run",
+      previousApprovalSessionId: "old-session",
+    });
+    await finalizeStartedAgentRun({
+      chatId: "chat-1",
+      runId: "run-1",
+      approvalSessionId: "new-session",
+    });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("old-run");
+    expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
+      "old-session",
+      "agent-run-replaced",
+    );
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+  it("cancels the unreturned replacement if cancellation of the old worker fails", async () => {
+    mockReplaceActiveTriggerRun.mockResolvedValue({
+      previousRunId: "old",
+      previousApprovalSessionId: null,
+    });
+    mockCancelAgentTriggerRun
+      .mockRejectedValueOnce(new Error("cancellation unavailable"))
+      .mockResolvedValue(true);
+    await expect(
+      finalizeStartedAgentRun({
+        chatId: "chat-1",
+        runId: "new",
+        approvalSessionId: undefined,
+      }),
+    ).rejects.toThrow("cancellation unavailable");
+    expect(mockCancelAgentTriggerRun.mock.calls.map(([id]) => id)).toEqual([
+      "old",
+      "new",
+    ]);
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRunId: "new", triggerRunId: null }),
+    );
+  });
+
+  it("does not cancel an idempotently returned same run", async () => {
+    mockReplaceActiveTriggerRun.mockResolvedValue({
+      previousRunId: "run-1",
+      previousApprovalSessionId: "session-1",
+    });
+    await finalizeStartedAgentRun({
+      chatId: "chat-1",
+      runId: "run-1",
+      approvalSessionId: "session-1",
+    });
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
   });
 
   it("changes Session external identity with protocol or worker version", () => {

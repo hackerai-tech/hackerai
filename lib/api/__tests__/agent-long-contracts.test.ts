@@ -1404,7 +1404,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("an unassociated started run is closed and canceled before failing", () => {
-    expect(routeSrc).toMatch(/association\s*!==\s*"updated"/);
+    expect(routeSrc).toMatch(/typeof association === "string"/);
     expect(routeSrc).toMatch(/agent_run_association:\s*association/);
     expect(routeSrc).toMatch(
       /closeAgentApprovalSession\([\s\S]*"agent-run-association-failed"/,

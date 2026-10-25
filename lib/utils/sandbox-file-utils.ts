@@ -1595,6 +1595,7 @@ export const getSandboxUploadUserMessage = (
         [
           "CloudAcquisitionTimeoutError",
           "CloudAcquisitionBudgetExhaustedError",
+          "E2BAcquisitionError",
         ].includes(result.failureDetails[0].errorName ?? "")
       ) {
         return "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.";
@@ -1609,6 +1610,12 @@ export const getSandboxUploadUserMessage = (
     case "attachment_write_failed":
       return "The computer could not save the attachment. Check available disk space and filesystem permissions, then try again.";
     default: {
+      if (
+        result.failureDetails?.[0]?.phase === "acquisition" &&
+        result.failureDetails[0].sandboxReadinessReason === "connection_error"
+      ) {
+        return "Cloud connection failed before preparing your attachment. Your workspace is preserved. Try again shortly.";
+      }
       const noun = result.failedCount === 1 ? "attachment" : "attachments";
       return `Failed to upload ${result.failedCount} ${noun} to the computer. Please try again.`;
     }

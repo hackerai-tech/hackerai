@@ -84,6 +84,7 @@ export type CreateToolsRuntimePolicy = {
   environment?: string;
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
+  onBrowserOwnershipLost?: () => void;
 };
 
 export type SandboxSessionUsage = {
@@ -270,6 +271,7 @@ export const createTools = (
               serviceKey,
             }
           : undefined,
+        runtimePolicy.onBrowserOwnershipLost,
       )
     : undefined;
   const context: ToolContext = {

@@ -664,15 +664,28 @@ const createToolMediaRequestRecoveryBody = (
   };
 };
 
+type SandboxPdfRecoveryUnavailableReason =
+  | "unsupported_request_shape"
+  | "no_staged_attachments"
+  | "no_unique_matching_file"
+  | "no_user_message";
+
 const createSandboxPdfRecoveryBody = (
   body: unknown,
   removeAllFileParts = false,
-): { body: unknown; changed: boolean } => {
+): { body: unknown } & (
+  | { changed: true }
+  | { changed: false; unavailableReason: SandboxPdfRecoveryUnavailableReason }
+) => {
   if (!isRecord(body) || !Array.isArray(body.messages)) {
-    return { body, changed: false };
+    return {
+      body,
+      changed: false,
+      unavailableReason: "unsupported_request_shape",
+    };
   }
   if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_staged_attachments" };
   }
 
   let removedFilePart = false;
@@ -713,13 +726,20 @@ const createSandboxPdfRecoveryBody = (
       : { ...message, content };
   });
 
-  if (!removedFilePart || lastUserMessageIndex < 0) {
-    return { body, changed: false };
+  if (!removedFilePart) {
+    return {
+      body,
+      changed: false,
+      unavailableReason: "no_unique_matching_file",
+    };
+  }
+  if (lastUserMessageIndex < 0) {
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
 
   const lastUserMessage = messages[lastUserMessageIndex];
   if (!isRecord(lastUserMessage)) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
   const recoveryInstruction = removeAllFileParts
     ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
@@ -765,12 +785,15 @@ const logPdfParserRecovery = (
   fromEngine: "mistral-ocr" | "cloudflare-ai" | "unknown",
   toEngine: "cloudflare-ai" | "sandbox",
   reason: PdfParserFailure,
+  unavailableReason?: SandboxPdfRecoveryUnavailableReason,
 ) => {
   console.warn(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "warn",
-      event: "openrouter_pdf_parser_recovery",
+      event: unavailableReason
+        ? "openrouter_pdf_parser_recovery_unavailable"
+        : "openrouter_pdf_parser_recovery",
       service: "openrouter",
       environment:
         process.env.TRIGGER_ENV ??
@@ -780,6 +803,7 @@ const logPdfParserRecovery = (
       from_engine: fromEngine,
       to_engine: toEngine,
       reason,
+      ...(unavailableReason && { unavailable_reason: unavailableReason }),
     }),
   );
 };
@@ -1149,6 +1173,12 @@ export const createOpenRouterPatchFetch =
         parserFailure === "generic_parse",
       );
       if (!sandboxBody.changed) {
+        logPdfParserRecovery(
+          "unknown",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
         return wrapResponse(initialResponse);
       }
 
@@ -1169,6 +1199,12 @@ export const createOpenRouterPatchFetch =
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
       const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
       if (!sandboxBody.changed) {
+        logPdfParserRecovery(
+          "cloudflare-ai",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
         return wrapResponse(initialResponse);
       }
 
@@ -1214,6 +1250,12 @@ export const createOpenRouterPatchFetch =
 
     const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
     if (!sandboxBody.changed) {
+      logPdfParserRecovery(
+        "cloudflare-ai",
+        "sandbox",
+        cloudflareFailure,
+        sandboxBody.unavailableReason,
+      );
       return wrapResponse(cloudflareResponse);
     }
 

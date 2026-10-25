@@ -76,13 +76,10 @@ import {
   LEGACY_AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import {
-  stripAgentLongHeartbeatParts,
-  stripAgentLongHeartbeatPartsFromMessages,
-} from "@/lib/chat/agent-long-heartbeat";
+import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
 import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
-import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
+import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/agent-partial-save-snapshot";
 import { toast } from "sonner";
 import {
   addAuthenticatedExceptionStep,
@@ -280,48 +277,6 @@ export function useServerMessages(
     [paginatedMessageResults],
   );
 }
-
-type AgentLongPartialSaveMessage = {
-  id: string;
-  role: "assistant";
-  parts: ChatMessage["parts"];
-  generationStartedAt?: number;
-  generationTimeMs?: number;
-};
-
-const getLatestAgentLongAssistantMessageForPartialSave = (
-  messages: ChatMessage[],
-): AgentLongPartialSaveMessage | undefined => {
-  const message = messages.at(-1);
-  if (message?.role !== "assistant") return undefined;
-
-  const stripped = stripAgentLongHeartbeatParts(message);
-  if (!stripped.parts || stripped.parts.length === 0) return undefined;
-  if (!hasVisibleAssistantContent([stripped])) return undefined;
-
-  const metadata = (
-    stripped as ChatMessage & {
-      metadata?: {
-        generationStartedAt?: unknown;
-        generationTimeMs?: unknown;
-      };
-    }
-  ).metadata;
-
-  return {
-    id: stripped.id,
-    role: "assistant",
-    parts: stripped.parts,
-    generationStartedAt:
-      typeof metadata?.generationStartedAt === "number"
-        ? metadata.generationStartedAt
-        : undefined,
-    generationTimeMs:
-      typeof metadata?.generationTimeMs === "number"
-        ? metadata.generationTimeMs
-        : undefined,
-  };
-};
 
 const ComputerSidebar = dynamic(
   () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
@@ -1602,14 +1557,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
+      const runCorrelation = agentLongRunCorrelationRef.current;
+      if (!runCorrelation) return;
       const partialMessage = getLatestAgentLongAssistantMessageForPartialSave(
         messagesRef.current,
+        runCorrelation.runId,
       );
       if (!partialMessage) return;
 
       const saveKey = `${chatId}:${partialMessage.id}`;
-      const runCorrelation = agentLongRunCorrelationRef.current;
-      if (!runCorrelation) return;
       // Capture the request now: the correlation ref is cleared on completion.
       const requestBody = JSON.stringify({
         chatId,

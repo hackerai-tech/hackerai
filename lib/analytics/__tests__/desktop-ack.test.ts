@@ -3,7 +3,10 @@ import {
   captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
 } from "../client";
-import type { AcknowledgedCommandSettlement } from "@/lib/centrifugo/acknowledged-command-output";
+import {
+  AcknowledgedCommandOutput,
+  type AcknowledgedCommandSettlement,
+} from "@/lib/centrifugo/acknowledged-command-output";
 import { sanitizeDesktopAckEvent } from "../desktop-ack-privacy";
 
 jest.mock("../client", () => ({
@@ -28,6 +31,9 @@ const result: AcknowledgedCommandSettlement = {
   terminalType: "exit",
   terminalAcknowledged: true,
   durationMs: 2000,
+  oldestPendingAgeMs: null,
+  lastAcknowledgementAgeMs: 0,
+  publishInFlightAgeMs: null,
 };
 const originalCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
 beforeEach(() => {
@@ -192,4 +198,116 @@ it("does not let registered properties attribute a successful final to bridge sh
       },
     }).properties,
   ).toEqual({ outcome: "acknowledged", reason: "terminal_ack" });
+});
+
+describe.each([
+  "oldestPendingAgeMs",
+  "lastAcknowledgementAgeMs",
+  "publishInFlightAgeMs",
+])("bounded timing property %s", (key) => {
+  it.each([null, 0, 1250, Number.MAX_SAFE_INTEGER])(
+    "retains numeric/null evidence %p before capture and after SDK enrichment",
+    (value) => {
+      capture.mockReset();
+      startDesktopAckTelemetry({
+        connectionId: "connection",
+        commandId: "command",
+      })({ ...result, [key]: value });
+      expect(capture.mock.calls.at(-1)![0].properties).toHaveProperty(
+        key,
+        value,
+      );
+      expect(
+        sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: {
+            [key]: value,
+            command: "PRIVATE",
+            $current_url: "PRIVATE",
+          },
+        }).properties,
+      ).toEqual({ [key]: value });
+    },
+  );
+
+  it.each([
+    "PRIVATE",
+    "1250",
+    -1,
+    0.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+    undefined,
+    {},
+    [],
+  ])(
+    "drops non-age values %p before capture and after SDK enrichment",
+    (value) => {
+      capture.mockReset();
+      startDesktopAckTelemetry({
+        connectionId: "connection",
+        commandId: "command",
+      })({ ...result, [key]: value } as never);
+      expect(capture.mock.calls.at(-1)![0].properties).not.toHaveProperty(key);
+      expect(
+        sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: { [key]: value },
+        }).properties,
+      ).toEqual({});
+      expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("does not attach registered settlement timing to a start event", () => {
+    expect(
+      sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_started",
+        properties: { [key]: 100 },
+      }).properties,
+    ).toEqual({});
+  });
+});
+
+it("carries sender timing through authenticated capture and final SDK filtering without output", async () => {
+  jest.useFakeTimers();
+  capture.mockReset();
+  try {
+    const settle = startDesktopAckTelemetry({
+      connectionId: "connection",
+      commandId: "command",
+    });
+    const sender = new AcknowledgedCommandOutput(
+      "command",
+      Date.now() + 5000,
+      () => new Promise(() => {}),
+      () => true,
+      settle,
+    );
+    sender.append({ type: "stdout", data: "PRIVATE OUTPUT" });
+    await jest.advanceTimersByTimeAsync(1250);
+    sender.stop();
+    await expect(sender.delivered).rejects.toThrow("completion is unknown");
+    expect(capture).toHaveBeenCalledTimes(2);
+    const final = capture.mock.calls[1][0];
+    const enriched = sanitizeDesktopAckEvent({
+      event: final.event,
+      properties: {
+        ...final.properties,
+        $current_url: "PRIVATE TARGET",
+        command: "PRIVATE COMMAND",
+      },
+      $set: { target: "PRIVATE" },
+    });
+    expect(enriched.properties).toMatchObject({
+      outcome: "incomplete",
+      oldestPendingAgeMs: 1250,
+      lastAcknowledgementAgeMs: null,
+      publishInFlightAgeMs: 1250,
+    });
+    expect(JSON.stringify(enriched)).not.toContain("PRIVATE");
+  } finally {
+    jest.useRealTimers();
+  }
 });

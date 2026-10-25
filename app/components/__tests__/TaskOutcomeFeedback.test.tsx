@@ -66,6 +66,72 @@ describe("unobtrusive task feedback", () => {
     await inView();
     expect(screen.getByRole("button", { name: "Solved my task" })).toBeTruthy();
   });
+  it("advertises context capability on reads and writes and attributes its actual build", async () => {
+    const previous = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    const commit = "a".repeat(40);
+    process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = commit;
+    try {
+      const contextSurvey = {
+        ...survey,
+        survey_kind: "agent_context" as const,
+      };
+      const record = jest.fn(async (args: any) => ({
+        ...contextSurvey,
+        shown_at: Date.now(),
+        ...(args.answer && { answer: args.answer }),
+      }));
+      (useQuery as jest.Mock).mockReturnValue(contextSurvey);
+      (useMutation as jest.Mock).mockReturnValue(record);
+      render(<TaskOutcomeFeedback chatId="c" messageId="m" />);
+      expect(useQuery).toHaveBeenCalledWith(expect.anything(), {
+        chat_id: "c",
+        message_id: "m",
+        context_feedback_version: 1,
+      });
+      await inView();
+      await inView();
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Solved my task" })),
+      );
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "shown",
+          context_feedback_version: 1,
+        }),
+      );
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "viewed",
+          context_feedback_version: 1,
+        }),
+      );
+      expect(record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "answered",
+          answer: "solved",
+          context_feedback_version: 1,
+        }),
+      );
+      expect(
+        record.mock.calls.every(
+          ([args]) => args.context_feedback_version === 1,
+        ),
+      ).toBe(true);
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task_outcome_survey_answered",
+          properties: expect.objectContaining({
+            hackerai_frontend_build_commit: commit,
+            survey_kind: "agent_context",
+          }),
+        }),
+      );
+    } finally {
+      if (previous === undefined)
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = previous;
+    }
+  });
   it("shows immediately in view without stealing focus or adding a timer", async () => {
     const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
     render(

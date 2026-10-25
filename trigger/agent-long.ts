@@ -2985,6 +2985,8 @@ export const agentLongTask = task({
                 environment: ctx.environment.type,
                 signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
+                onBrowserOwnershipLost: () =>
+                  stopSignal.abort("browser_ownership_lost"),
                 ...(subagentsEnabled
                   ? {
                       additionalTools: (toolContext) => ({
@@ -4365,6 +4367,7 @@ export const agentLongTask = task({
                 try {
                   await updateChat({
                     chatId,
+                    expectedActiveTriggerRunId: ctx.run.id,
                     title: generatedTitle,
                     finishReason: state.streamFinishReason,
                     todos: mergedTodos,
@@ -4380,7 +4383,10 @@ export const agentLongTask = task({
                   });
                 }
               } else {
-                await prepareForNewStream({ chatId });
+                await prepareForNewStream({
+                  chatId,
+                  expectedActiveTriggerRunId: ctx.run.id,
+                });
               }
               const accumulatedFiles = getFileAccumulator().getAll();
               const newFileIds = accumulatedFiles.map((file) => file.fileId);
@@ -5492,6 +5498,7 @@ export const agentLongTask = task({
                           try {
                             await updateChat({
                               chatId,
+                              expectedActiveTriggerRunId: ctx.run.id,
                               title: generatedTitle,
                               finishReason: state.streamFinishReason,
                               todos: mergedTodos,
@@ -5508,7 +5515,10 @@ export const agentLongTask = task({
                             });
                           }
                         } else {
-                          await prepareForNewStream({ chatId });
+                          await prepareForNewStream({
+                            chatId,
+                            expectedActiveTriggerRunId: ctx.run.id,
+                          });
                         }
 
                         const accumulatedFiles = getFileAccumulator().getAll();
@@ -5842,7 +5852,9 @@ export const agentLongTask = task({
 
       metadata.set(
         "status",
-        preparationCanceled || triggerSignal.aborted ? "canceled" : "done",
+        preparationCanceled || userStopSignal.signal.aborted
+          ? "canceled"
+          : "done",
       );
       await phLogger.flush().catch(() => {});
     } catch (error) {

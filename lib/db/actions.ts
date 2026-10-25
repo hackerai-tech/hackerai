@@ -597,6 +597,17 @@ const databaseError = (
           : retryReason
             ? `Database temporarily unavailable: ${operation}: ${dbErrorMessage}`
             : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+  const fileValidationReason = getObjectString(
+    dbErrorData,
+    "fileValidationReason",
+  );
+  const boundedFileValidationReason =
+    fileValidationReason &&
+    ["file_missing", "file_lookup_failed", "file_not_owned"].includes(
+      fileValidationReason,
+    )
+      ? fileValidationReason
+      : undefined;
   const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
@@ -605,6 +616,7 @@ const databaseError = (
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    db_file_validation_reason: boundedFileValidationReason,
     db_retry_reason: retryReason,
     db_error_kind: upstreamHttpError ? "convex_upstream_http_error" : undefined,
     db_upstream_status_code: upstreamHttpError?.statusCode,
@@ -1014,6 +1026,7 @@ export async function saveMessage({
   finishReason,
   triggerRunId,
   expectedActiveTriggerRunId,
+  clientSnapshot,
   signal,
   usage,
   updateOnly,
@@ -1038,6 +1051,7 @@ export async function saveMessage({
   finishReason?: string;
   triggerRunId?: string;
   expectedActiveTriggerRunId?: string;
+  clientSnapshot?: boolean;
   signal?: AbortSignal;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
@@ -1149,6 +1163,7 @@ export async function saveMessage({
       finishReason,
       triggerRunId,
       expectedActiveTriggerRunId,
+      ...(clientSnapshot ? { clientSnapshot: true } : {}),
       usage: usageForSave,
       updateOnly,
       isHidden,
@@ -1319,6 +1334,7 @@ export async function updateChat({
   defaultModelSlug,
   sandboxType,
   selectedModel,
+  expectedActiveTriggerRunId,
 }: {
   chatId: string;
   title?: string;
@@ -1332,6 +1348,7 @@ export async function updateChat({
   defaultModelSlug?: "ask" | "agent";
   sandboxType?: string;
   selectedModel?: string;
+  expectedActiveTriggerRunId?: string;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -1342,6 +1359,9 @@ export async function updateChat({
     defaultModelSlug,
     sandboxType,
     selectedModel,
+    ...(expectedActiveTriggerRunId !== undefined
+      ? { expectedActiveTriggerRunId }
+      : {}),
   };
 
   for (let attemptIndex = 0; ; attemptIndex++) {
@@ -1865,6 +1885,26 @@ export async function getUserCustomization({ userId }: { userId: string }) {
   }
 }
 
+export async function replaceActiveTriggerRun(args: {
+  expectedRunId: string | null;
+  chatId: string;
+  triggerRunId: string;
+  approvalSessionId: string | null;
+}) {
+  try {
+    return await getConvexClient().mutation(api.chats.replaceActiveTriggerRun, {
+      serviceKey,
+      ...args,
+    });
+  } catch (error) {
+    throw databaseError("chats.replaceActiveTriggerRun", error, {
+      chat_id: args.chatId,
+      trigger_run_id: args.triggerRunId,
+      expected_run_id: args.expectedRunId ?? undefined,
+    });
+  }
+}
+
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
@@ -1989,11 +2029,20 @@ export async function startStream({
   }
 }
 
-export async function prepareForNewStream({ chatId }: { chatId: string }) {
+export async function prepareForNewStream({
+  chatId,
+  expectedActiveTriggerRunId,
+}: {
+  chatId: string;
+  expectedActiveTriggerRunId?: string;
+}) {
   try {
     await getConvexClient().mutation(api.chatStreams.prepareForNewStream, {
       serviceKey,
       chatId,
+      ...(expectedActiveTriggerRunId !== undefined
+        ? { expectedActiveTriggerRunId }
+        : {}),
     });
     return;
   } catch (error) {

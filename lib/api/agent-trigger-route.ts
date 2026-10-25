@@ -27,6 +27,7 @@ import {
   handleInitialChatAndUserMessage,
   type InitialChatPersistenceStep,
   setActiveTriggerRun,
+  replaceActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
   assertFreeAgentGates,
@@ -418,6 +419,7 @@ type StartedAgentRunAccess = {
 };
 
 export const finalizeStartedAgentRun = async ({
+  expectedRunId = null,
   chatId,
   runId,
   approvalSessionId,
@@ -427,9 +429,10 @@ export const finalizeStartedAgentRun = async ({
   runId: string;
   approvalSessionId: string | undefined;
   goal?: { userId: string; generation: number };
+  expectedRunId?: string | null;
 }): Promise<StartedAgentRunAccess> => {
   try {
-    const [publicAccessToken, approvalSessionPublicAccessToken, association] =
+    const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
         auth.createPublicToken({
           scopes: { read: { runs: [runId] } },
@@ -444,29 +447,51 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        goal
-          ? goalConvex()
-              .mutation(goalApi.agentGoals.associateStartedRun, {
-                serviceKey: goalServiceKey(),
-                chatId,
-                runId,
-                approvalSessionId,
-                ...goal,
-              })
-              .then((associated) => (associated ? "updated" : "stale"))
-          : setActiveTriggerRun({
-              chatId,
-              triggerRunId: runId,
-              approvalSessionId: approvalSessionId ?? null,
-            }),
       ]);
 
-    if (association !== "updated") {
+    // Goal startup has its own generation fence and must not reattach a worker
+    // that already finished. Ordinary sends atomically replace the prior owner.
+    const association = goal
+      ? (await goalConvex().mutation(goalApi.agentGoals.associateStartedRun, {
+          serviceKey: goalServiceKey(),
+          chatId,
+          runId,
+          approvalSessionId,
+          ...goal,
+        }))
+        ? { previousRunId: null, previousApprovalSessionId: null }
+        : "stale"
+      : await replaceActiveTriggerRun({
+          expectedRunId,
+          chatId,
+          triggerRunId: runId,
+          approvalSessionId: approvalSessionId ?? null,
+        });
+    if (association === "stale") {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "Another Agent run started in this chat. Reconnect to that run before sending again.",
+        { agent_run_association: association },
+      );
+    }
+    if (typeof association === "string") {
       throw new ChatSDKError(
         "not_found:chat",
         "The chat was deleted while the Agent run was starting.",
         { agent_run_association: association },
       );
+    }
+
+    if (association.previousRunId && association.previousRunId !== runId) {
+      // Cancel only the owner displaced by this transaction. Its conditional
+      // cleanup cannot detach the replacement, and persisted output is retained.
+      await cancelAgentTriggerRun(association.previousRunId);
+      if (association.previousApprovalSessionId !== approvalSessionId) {
+        await closeAgentApprovalSession(
+          association.previousApprovalSessionId ?? undefined,
+          "agent-run-replaced",
+        );
+      }
     }
 
     return {
@@ -1121,10 +1146,11 @@ export const createAgentTriggerPost =
       diagnosticContext.runId = runId;
       stage = "create_tokens_and_associate_run";
 
-      // Access-token creation and durable association are independent, so
-      // overlap them while treating every post-start failure as terminal.
+      // Claim ownership only after tokens are available, then settle the exact
+      // displaced owner. Concurrent admissions cannot overwrite a newer claim.
       const { publicAccessToken, approvalSessionPublicAccessToken } =
         await finalizeStartedAgentRun({
+          expectedRunId: existingChat?.active_trigger_run_id ?? null,
           chatId,
           runId,
           approvalSessionId,

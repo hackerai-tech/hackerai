@@ -64,6 +64,8 @@ const {
   getActiveTriggerRunsForUser,
   setActiveAgentApprovalPending,
   setActiveTriggerRun,
+  replaceActiveTriggerRun,
+  updateChat,
 } = require("../chats") as typeof import("../chats");
 
 const makeCtx = (
@@ -990,4 +992,107 @@ describe("Agent approval lifecycle guards", () => {
       deletion_started_at: expect.any(Number),
     });
   });
+});
+
+describe("Agent run replacement", () => {
+  it("returns the displaced owner atomically and retains saved chat history", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "old",
+      active_agent_approval_session_id: "old-session",
+    });
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: "new-session",
+      }),
+    ).resolves.toEqual({
+      previousRunId: "old",
+      previousApprovalSessionId: "old-session",
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc",
+      expect.objectContaining({
+        active_trigger_run_id: "new",
+        active_agent_approval_session_id: "new-session",
+      }),
+    );
+    expect(patch.mock.calls[0][1]).not.toHaveProperty("finish_reason");
+  });
+  it("cannot overwrite a replacement run's status with a late client finish", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "new",
+    });
+    await updateChat.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      finishReason: "trigger_crashed_client_saved",
+      expectedActiveTriggerRunId: "old",
+    });
+    expect(patch).not.toHaveBeenCalled();
+  });
+  it("rejects replacement behind the deletion fence", async () => {
+    const { ctx, patch } = makeCtx(
+      { _id: "chat-doc", id: "chat", user_id: "user" },
+      true,
+    );
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: null,
+      }),
+    ).resolves.toBe("deleting");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+it("rejects a concurrent admission that already lost its expected owner", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+    active_trigger_run_id: "winner",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "late",
+      expectedRunId: "old",
+      approvalSessionId: null,
+    }),
+  ).resolves.toBe("stale");
+  expect(patch).not.toHaveBeenCalled();
+});
+
+it("claims an empty slot when the expected previous run finished during startup", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "finished",
+      approvalSessionId: null,
+    }),
+  ).resolves.toEqual({ previousRunId: null, previousApprovalSessionId: null });
+  expect(patch).toHaveBeenCalledWith(
+    "chat-doc",
+    expect.objectContaining({ active_trigger_run_id: "new" }),
+  );
 });

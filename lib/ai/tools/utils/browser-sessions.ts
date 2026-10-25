@@ -4,7 +4,6 @@ import { abortableDelay } from "@/lib/utils/abortable-delay";
 import type { AnySandbox } from "@/types";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
@@ -20,8 +19,6 @@ type BrowserSession = {
   registered: boolean;
   registration?: Promise<void>;
 };
-
-export const BROWSER_HANDOFF_FLAG = "agent-browser-human-handoff";
 
 type BrowserHandoffScope = {
   userId: string;
@@ -56,20 +53,14 @@ export class BrowserSessions {
   private readonly failedSessions = new Set<BrowserSession>();
   private closed = false;
   private cleanupPromise?: Promise<void>;
-  private handoffEnabled?: Promise<boolean>;
 
-  constructor(private readonly handoffScope?: BrowserHandoffScope) {}
+  constructor(
+    private readonly handoffScope?: BrowserHandoffScope,
+    private readonly onOwnershipLost?: () => void,
+  ) {}
 
-  handoffEnabledForRun(): Promise<boolean> {
-    this.handoffEnabled ??= this.handoffScope
-      ? getPostHogBooleanFlagDecisionForUser(
-          BROWSER_HANDOFF_FLAG,
-          this.handoffScope.userId,
-          undefined,
-          { sendFeatureFlagEvents: false },
-        ).then((decision) => decision === true)
-      : Promise.resolve(false);
-    return this.handoffEnabled;
+  hasHandoffScope(): boolean {
+    return !!this.handoffScope;
   }
 
   /** Retry failed setup on the next call, retaining every attempt for cleanup. */
@@ -87,7 +78,7 @@ export class BrowserSessions {
     const sandboxId = sandbox.sandboxId;
     if (!sandboxId)
       throw new Error("Browser session sandbox identity is unavailable.");
-    const gate = this.handoffScope ? await this.handoffEnabledForRun() : false;
+    const gate = this.hasHandoffScope();
     let session = this.sessions.get(sandboxId);
     if (!session) {
       // Short enough for Unix socket paths, random across factories/runs, and
@@ -179,10 +170,6 @@ export class BrowserSessions {
     const scope = this.handoffScope;
     if (!scope || this.closed)
       throw new Error("Browser handoff is unavailable for this run.");
-    const enabled = await withCancellation(this.handoffEnabledForRun(), signal);
-    signal?.throwIfAborted();
-    if (!enabled)
-      throw new Error("Browser handoff is unavailable for this run.");
     const sessions = [...this.sessions.values()].filter((s) => s.registered);
     const states = await withCancellation(
       Promise.all(
@@ -255,8 +242,13 @@ export class BrowserSessions {
       // Replaced sandboxes remain in our map for cleanup. Only the latest
       // registered owner can authorize work; stale rows must not block it.
       const currentStates = states.filter((state) => state?.runActive);
-      if (states.length > 0 && currentStates.length === 0)
+      if (states.length > 0 && currentStates.length === 0) {
+        // Fail closed before any action, but let the owning worker settle its
+        // already-produced output/usage as cancellation instead of provider error.
+        this.onOwnershipLost?.();
+        signal?.throwIfAborted();
         throw new Error("Browser session ownership has ended.");
+      }
       if (currentStates.every((state) => state?.state === "agent"))
         return waited;
       // Expired grants become recovery, which still requires an explicit resume.
