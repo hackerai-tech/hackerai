@@ -1,3 +1,4 @@
+import { persistenceCommandError } from "./persistence-failure";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AnySandbox } from "@/types";
@@ -75,11 +76,10 @@ const runChecked = async (
     ...(stdin !== undefined ? { stdin } : {}),
   });
   if (result.exitCode !== 0) {
-    throw Object.assign(
-      new Error("Private terminal artifact operation failed"),
-      {
-        exitCode: result.exitCode,
-      },
+    throw persistenceCommandError(
+      "Private terminal artifact operation failed",
+      result,
+      true,
     );
   }
   return result.stdout;

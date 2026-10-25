@@ -568,20 +568,48 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new LocalFileRequestError("native_error", message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Receipt is final even if the broker never acknowledges our ACK.
+        // Keep the subscription briefly for delivery, but bound caller cleanup.
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (message.type === "file_error")
+            reject(new LocalFileRequestError("native_error", message.message));
+          else resolve(message as T);
+        };
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(finish, 1000);
+        void Promise.resolve()
+          .then(() =>
+            isolated && subscription
+              ? subscription.publish({
+                  type: "file_response_ack",
+                  requestId,
+                  targetConnectionId: this.connectionInfo.connectionId,
+                })
+              : undefined,
+          )
+          .catch(() => {})
+          .finally(finish);
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
           new LocalFileRequestError(
             "subscription_error",
@@ -631,6 +659,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
+            ...(isolated ? { fileResponseAck: true } : {}),
             path: this.resolveWorkingPath(input.path),
             requestId,
             ...(this.workingDirectory &&

@@ -1059,21 +1059,78 @@ describe("CentrifugoSandbox", () => {
     await jest.advanceTimersByTimeAsync(0);
     const control = mockSubscriptions[1];
     expect(control.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "file_write", operationChannel: true }),
+      expect.objectContaining({
+        type: "file_write",
+        operationChannel: true,
+        fileResponseAck: true,
+      }),
     );
     reply.emit("publication", {
       data: { type: "operation_ready", requestId: FIXED_UUID },
     });
     await jest.advanceTimersByTimeAsync(0);
+    reply.emit("error", {
+      type: "subscribe",
+      error: { code: 1, message: "timeout" },
+    });
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
     reply.emit("subscribed");
     expect(control.publish).toHaveBeenCalledTimes(1);
     reply.emit("publication", {
       data: { type: "file_ok", requestId: FIXED_UUID },
     });
     await expect(pending).resolves.toBeUndefined();
+    expect(reply.publish).toHaveBeenCalledWith({
+      type: "file_response_ack",
+      requestId: FIXED_UUID,
+      targetConnectionId: defaultConnection.connectionId,
+    });
+    expect(reply.publish.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      reply.unsubscribe.mock.invocationCallOrder[0],
+    );
     expect(control.unsubscribe).toHaveBeenCalled();
     expect(reply.unsubscribe).toHaveBeenCalled();
   });
+
+  it.each(["pending", "rejected"])(
+    "settles a received file result when its receipt ACK is %s",
+    async (ackState) => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, files: true, operationChannels: true },
+      });
+      let completed = false;
+      const pending = sandbox.files
+        .write("/tmp/bounded-test", "hello")
+        .then(() => {
+          completed = true;
+        });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      reply.publish.mockImplementation(() =>
+        ackState === "pending"
+          ? new Promise(() => {})
+          : Promise.reject(new Error("ACK unavailable")),
+      );
+      reply.emit("publication", {
+        data: { type: "file_ok", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(completed).toBe(true);
+      await pending;
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(mockClients[0].disconnect).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
 
   it("keeps isolated PTY controls on the session channel", async () => {
     const sandbox = new CentrifugoSandbox(
