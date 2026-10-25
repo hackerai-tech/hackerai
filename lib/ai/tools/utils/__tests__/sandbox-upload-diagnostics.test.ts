@@ -65,6 +65,7 @@ test.each([
   "File not found: /private/403",
   "server returned 403",
   "File not found: /private/Failed to upload file: curl: (22) The requested URL returned error: 403",
+  "File not found: /private/report\ncurl: (22) The requested URL returned error: 403",
   "curl: (22) The requested URL returned error: 403-private-data",
   "curl: (22) The requested URL returned error: 403 https://private.example",
   "curl: (35) SSL connection failed",

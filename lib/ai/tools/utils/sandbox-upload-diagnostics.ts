@@ -25,7 +25,7 @@ export function getUploadFailureDiagnostics(
           ? error.message
           : "";
     const status = text.match(
-      /^(?:Failed to upload file: )?curl: \(22\) The requested URL returned error: ([45]\d{2})\r?$/m,
+      /^(?:Failed to upload file: )?curl: \(22\) The requested URL returned error: ([45]\d{2})(?:\r?\n)?$/,
     );
     if (status) fields.upload_reported_http_status = Number(status[1]);
   } catch {
