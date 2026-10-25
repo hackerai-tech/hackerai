@@ -149,4 +149,76 @@ describe("useChatHandlers regeneration sidebar reconciliation", () => {
     expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
     expect(mockOpenSidebar).not.toHaveBeenCalled();
   });
+
+  it.each(["handleRetry", "handleEditMessage"] as const)(
+    "%s clears a discarded output before starting the replacement response",
+    async (action) => {
+      const messages = [
+        userMessage("user-1", "Question"),
+        fileToolMessage("assistant-1", "tool-removed", "removed output"),
+      ];
+      mockSidebarOpen = true;
+      mockSidebarContent = {
+        path: "/tmp/result.txt",
+        content: "removed output",
+        action: "reading",
+        toolCallId: "tool-removed",
+      };
+      const { result } = renderHandlers(messages);
+
+      await act(async () => {
+        if (action === "handleEditMessage") {
+          await result.current.handleEditMessage("user-1", "Edited question");
+        } else {
+          await result.current.handleRetry();
+        }
+      });
+
+      expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+      expect(mockCloseSidebar.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRegenerate.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it("keeps a surviving selection even when a newer tool survives", async () => {
+    const messages = [
+      userMessage("user-1", "First question"),
+      fileToolMessage("assistant-1", "tool-selected", "selected output"),
+      fileToolMessage("assistant-2", "tool-newer", "newer output"),
+      userMessage("user-2", "Second question"),
+      fileToolMessage("assistant-3", "tool-removed", "removed output"),
+    ];
+    mockSidebarOpen = true;
+    mockSidebarContent = {
+      path: "/tmp/result.txt",
+      content: "selected output",
+      action: "reading",
+      toolCallId: "tool-selected",
+    };
+    const { result } = renderHandlers(messages);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen a closed sidebar", async () => {
+    const { result } = renderHandlers([
+      userMessage("user-1", "First question"),
+      fileToolMessage("assistant-1", "tool-previous", "previous output"),
+      userMessage("user-2", "Second question"),
+      fileToolMessage("assistant-2", "tool-removed", "removed output"),
+    ]);
+
+    await act(async () => {
+      await result.current.handleRegenerate();
+    });
+
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+  });
 });

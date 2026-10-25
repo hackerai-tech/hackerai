@@ -4,8 +4,11 @@ import {
   record,
   reserve,
   reserveExperiment,
+  reserveContext,
+  listContextForReadout,
 } from "../taskOutcomeSurveys";
 import { TASK_OUTCOME_COOLDOWN_MS } from "../../lib/feedback/task-outcome";
+import { AGENT_CONTEXT_FEEDBACK_PHASE } from "../../lib/feedback/agent-context";
 
 jest.mock("../lib/serviceFunctions", () => ({
   mutation: (x: unknown) => x,
@@ -38,8 +41,23 @@ const args = {
   release: "test-release",
 };
 
+const invokeCompatible = (
+  fn: unknown,
+  ctx: unknown,
+  args: Record<string, unknown>,
+) => invoke(fn, ctx, { ...args, context_feedback_version: 1 });
+
 function setup() {
   const rows: any[] = [];
+  const messages: any[] = [
+    {
+      id: "source",
+      chat_id: "chat-1",
+      user_id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "Synthetic history. ".repeat(5000) }],
+    },
+  ];
   const paidStarts: any[] = [
     {
       _id: "paid-1",
@@ -71,11 +89,13 @@ function setup() {
         let matching: any[] =
           table === "chats"
             ? [{ id: "chat-1", user_id: "user-1" }]
-            : table === "paid_start_events"
-              ? paidStarts
-              : table === "revenue_events"
-                ? payments
-                : rows;
+            : table === "messages"
+              ? messages
+              : table === "paid_start_events"
+                ? paidStarts
+                : table === "revenue_events"
+                  ? payments
+                  : rows;
         let direction = "asc";
         const chain: any = {
           withIndex: (_: string, select: (q: any) => unknown) => {
@@ -94,6 +114,11 @@ function setup() {
           },
           first: async () =>
             (direction === "desc" ? matching.at(-1) : matching[0]) ?? null,
+          take: async (n: number) =>
+            (direction === "desc" ? [...matching].reverse() : matching).slice(
+              0,
+              n,
+            ),
           unique: async () => {
             if (matching.length > 1) throw Error("Duplicate");
             return matching[0] ?? null;
@@ -113,8 +138,221 @@ function setup() {
       },
     },
   };
-  return { ctx, rows, paidStarts, payments };
+  return { ctx, rows, paidStarts, payments, messages };
 }
+
+describe("Agent context feedback reservation and result visibility", () => {
+  it("keeps durable readouts service-only and rejects unbounded pages", async () => {
+    const { ctx } = setup();
+    await expect(
+      invoke(listContextForReadout, ctx, {
+        serviceKey: "wrong",
+        from_at: 0,
+        to_at: 100,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).rejects.toThrow("Unauthorized");
+    await expect(
+      invoke(listContextForReadout, ctx, {
+        serviceKey: "test",
+        from_at: 0,
+        to_at: 100,
+        paginationOpts: { numItems: 101, cursor: null },
+      }),
+    ).rejects.toThrow("Invalid readout");
+  });
+  const contextArgs = {
+    ...args,
+    survey_kind: "agent_context",
+    mode: "agent",
+    trigger_run_id: "trigger-1",
+    experiment_key: "agent_pro_context_v1",
+    experiment_variant: "control",
+    selected_model_override: "hackerai-pro",
+    feedback_phase: AGENT_CONTEXT_FEEDBACK_PHASE,
+  };
+  it("withholds context rows and all writes from clients without the capability", async () => {
+    const { ctx, messages, rows } = setup();
+    const row = await invoke(reserveContext, ctx, contextArgs);
+    messages.push({
+      id: args.message_id,
+      chat_id: args.chat_id,
+      user_id: args.user_id,
+      role: "assistant",
+      parts: [{ type: "text", text: "Saved result" }],
+      trigger_run_id: "trigger-1",
+      finish_reason: "stop",
+    });
+    expect(
+      await invoke(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: args.message_id,
+      }),
+    ).toBeNull();
+    expect(
+      await invoke(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+    expect(rows[0]).not.toHaveProperty("shown_at");
+    expect(rows[0]).not.toHaveProperty("answer");
+    expect(rows[0]).not.toHaveProperty("reason");
+  });
+  it.each(["viewed", "dismissed", "answered", "reason"])(
+    "rejects legacy %s writes even with a previously claimed row",
+    async (action) => {
+      const { ctx, rows } = setup();
+      const row = await invoke(reserveContext, ctx, contextArgs);
+      Object.assign(rows[0], { shown_at: Date.now(), answer: "no" });
+      const before = { ...rows[0] };
+      expect(
+        await invoke(record, ctx, {
+          id: row._id,
+          action,
+          answer: "no",
+          reason: "incorrect",
+        }),
+      ).toBeNull();
+      expect(rows[0]).toEqual(before);
+    },
+  );
+  it.each(["control", "test"])(
+    "uses original history for %s before any outcome, without billing enrollment",
+    async (variant) => {
+      const { ctx, rows, paidStarts, payments } = setup();
+      paidStarts.length = 0;
+      payments.length = 0;
+      const row = await invoke(reserveContext, ctx, {
+        ...contextArgs,
+        experiment_variant: variant,
+      });
+      expect(row).toMatchObject({
+        survey_kind: "agent_context",
+        experiment_variant: variant,
+        trigger_run_id: "trigger-1",
+        source_history_chars: 80000,
+        source_has_prior_summary: false,
+      });
+      expect(rows).toHaveLength(1);
+      expect(row).not.toHaveProperty("paid_start_event_id");
+      expect(
+        await invokeCompatible(getForMessage, ctx, {
+          chat_id: args.chat_id,
+          message_id: args.message_id,
+        }),
+      ).toBeNull();
+      expect(
+        await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
+      ).toBeNull();
+      // A failed/unseen result remains selected, never deleted from the denominator.
+      expect(rows).toHaveLength(1);
+    },
+  );
+  it.each(["short", "hidden", "other-owner", "current-placeholder"])(
+    "excludes %s source history",
+    async (condition) => {
+      const { ctx, messages, rows } = setup();
+      if (condition === "short")
+        messages[0].parts = [{ type: "text", text: "hi" }];
+      if (condition === "hidden") messages[0].is_hidden = true;
+      if (condition === "other-owner") messages[0].user_id = "other";
+      if (condition === "current-placeholder") messages[0].id = args.message_id;
+      expect(await invoke(reserveContext, ctx, contextArgs)).toBeNull();
+      expect(rows).toHaveLength(0);
+    },
+  );
+  it("keeps cohort attribution immutable and shares cooldown with other surveys", async () => {
+    const { ctx, rows } = setup();
+    const first = await invoke(reserveContext, ctx, contextArgs);
+    expect(
+      await invoke(reserve, ctx, {
+        ...args,
+        request_id: "other",
+        message_id: "other",
+      }),
+    ).toBeNull();
+    rows[0].last_interaction_at -= TASK_OUTCOME_COOLDOWN_MS + 1;
+    expect(
+      await invoke(reserveContext, ctx, {
+        ...contextArgs,
+        request_id: "next",
+        message_id: "next",
+        trigger_run_id: "next-run",
+        experiment_variant: "test",
+      }),
+    ).toBeNull();
+    expect(rows[0].experiment_variant).toBe(first.experiment_variant);
+  });
+  it.each([
+    { subscription_tier: "free" },
+    { experiment_key: "agent_model_context_v1" },
+    { message_id: "unrelated" },
+    { trigger_run_id: "" },
+  ])("fails closed on invalid paid/selector/run context %j", async (patch) => {
+    const { ctx } = setup();
+    expect(
+      await invoke(reserveContext, ctx, { ...contextArgs, ...patch }),
+    ).toBeNull();
+  });
+  it("asks only after the exact saved result and accepts one answer/reason across devices", async () => {
+    const { ctx, messages, rows } = setup();
+    const row = await invoke(reserveContext, ctx, contextArgs);
+    const result = {
+      id: args.message_id,
+      chat_id: args.chat_id,
+      user_id: args.user_id,
+      role: "assistant",
+      parts: [{ type: "text", text: "Fixture result" }],
+      trigger_run_id: "wrong",
+      finish_reason: "stop",
+    };
+    messages.push(result);
+    expect(
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+    result.trigger_run_id = "trigger-1";
+    expect(
+      await invokeCompatible(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: args.message_id,
+      }),
+    ).toMatchObject({ _id: row._id });
+    expect(
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
+    ).toMatchObject({ shown_at: expect.any(Number) });
+    expect(
+      await invokeCompatible(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+    await invokeCompatible(record, ctx, { id: row._id, action: "viewed" });
+    await invokeCompatible(record, ctx, {
+      id: row._id,
+      action: "answered",
+      answer: "no",
+    });
+    await invokeCompatible(record, ctx, {
+      id: row._id,
+      action: "reason",
+      reason: "incorrect",
+    });
+    expect(
+      await invokeCompatible(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).toBeNull();
+    expect(rows[0]).toMatchObject({
+      answer: "no",
+      reason: "incorrect",
+      viewed_at: expect.any(Number),
+      experiment_variant: "control",
+    });
+    expect(
+      await invokeCompatible(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: args.message_id,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("new paid task outcome feedback", () => {
   beforeEach(() => {

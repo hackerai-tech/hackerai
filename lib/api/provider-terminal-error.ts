@@ -1,4 +1,8 @@
-import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import {
+  extractOpenRouterMetadataFromError,
+  mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
+} from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
   createProviderContentBlockedFinishReasonError,
@@ -85,13 +89,41 @@ export class ProviderTerminalError extends Error {
   ) {
     const details = extractErrorDetails(cause);
     const category = getProviderErrorCategory(details);
-    const model =
-      context.openRouterMetadata?.openrouter_selected_model ?? context.model;
-    const provider =
-      context.openRouterMetadata?.provider_name ??
-      (typeof details.providerName === "string"
+    const errorMetadata = extractOpenRouterMetadataFromError(cause);
+    const errorProvider =
+      errorMetadata.provider_name ??
+      (typeof details.providerName === "string" &&
+      details.providerName.length > 0
         ? details.providerName
-        : providerFromModel(model));
+        : undefined);
+    const failedCallMetadata = {
+      ...errorMetadata,
+      provider_name: errorProvider,
+    };
+    // Stream state can retain the last completed call. Do not mix that call's
+    // provider, model or IDs into a rejection that identifies a different call.
+    const conflictingAttribution = (
+      [
+        "provider_name",
+        "openrouter_generation_id",
+        "openrouter_request_id",
+        "openrouter_upstream_id",
+        "openrouter_selected_model",
+      ] as const
+    ).some(
+      (key) =>
+        failedCallMetadata[key] !== undefined &&
+        context.openRouterMetadata?.[key] !== undefined &&
+        failedCallMetadata[key] !== context.openRouterMetadata[key],
+    );
+    const metadata = mergeOpenRouterMetadata(
+      failedCallMetadata,
+      conflictingAttribution ? undefined : context.openRouterMetadata,
+    );
+    const model = metadata.openrouter_selected_model ?? context.model;
+    const provider =
+      metadata.provider_name ??
+      (conflictingAttribution ? undefined : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
     const localSizeGuard = getLocalOpenRouterRequestSizeGuardDetails(cause);
     const origin = localSizeGuard
@@ -119,12 +151,9 @@ export class ProviderTerminalError extends Error {
     this.requestBytesBefore = localSizeGuard?.requestBytesBefore;
     this.requestBytesAfter = localSizeGuard?.requestBytesAfter;
     this.requestLimitBytes = localSizeGuard?.limitBytes;
-    this.openrouterGenerationId =
-      context.openRouterMetadata?.openrouter_generation_id;
-    this.openrouterRequestId =
-      context.openRouterMetadata?.openrouter_request_id;
-    this.openrouterUpstreamId =
-      context.openRouterMetadata?.openrouter_upstream_id;
+    this.openrouterGenerationId = metadata.openrouter_generation_id;
+    this.openrouterRequestId = metadata.openrouter_request_id;
+    this.openrouterUpstreamId = metadata.openrouter_upstream_id;
   }
 }
 

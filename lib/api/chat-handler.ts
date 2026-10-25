@@ -1,3 +1,5 @@
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
+import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -437,6 +439,12 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
+      const agentModelContextEnabled = await isAgentModelContextEnabled(
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+      );
       const [userCustomization, fetched] = await Promise.all([
         getUserCustomization({ userId }),
         getMessagesByChatId({
@@ -446,6 +454,7 @@ export const createChatHandler = () => {
           newMessages: requestMessages,
           regenerate,
           mode,
+          agentModelContextEnabled,
           useClientMessagesForRegenerate,
         }),
       ]);
@@ -649,6 +658,16 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      selectedModel = resolvePaidProAutoModel({
+        userId,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
       const requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
@@ -659,6 +678,10 @@ export const createChatHandler = () => {
         subscription,
         selectedModel,
         hasImages: requestHasImages,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -831,7 +854,10 @@ export const createChatHandler = () => {
             variant: activeAbliteratedExperiment.variant,
             requestId: assistantMessageId,
           }
-        : (activeFlashRoutingAssignment ??
+        : ((activeFlashRoutingAssignment && {
+            ...activeFlashRoutingAssignment,
+            requestId: assistantMessageId,
+          }) ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
           ));
@@ -927,6 +953,7 @@ export const createChatHandler = () => {
             });
 
             const {
+              cloudNetworkPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -936,6 +963,8 @@ export const createChatHandler = () => {
               getSandboxSessionUsage,
               setCurrentModelName,
               getToolsForModel,
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -1662,6 +1691,8 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
@@ -1689,6 +1720,7 @@ export const createChatHandler = () => {
               },
               trackedProvider,
               currentSystemPrompt,
+              cloudNetworkPrompt,
               tools,
               mode,
               endpoint,
@@ -1701,8 +1733,17 @@ export const createChatHandler = () => {
               systemPromptTokens,
               ctxSystemTokens,
               ctxMaxTokens,
+              agentModelContextEnabled,
               streamStartTime,
-              onModelChunk: () => chatLogger?.markFirstChunk(),
+              onModelChunk: () => {
+                if (
+                  routingExperimentContext &&
+                  routingExperimentContext.firstModelChunkAt === undefined
+                ) {
+                  routingExperimentContext.firstModelChunkAt = Date.now();
+                }
+                chatLogger?.markFirstChunk();
+              },
               onModelStepSelected: (modelName) => {
                 activeModelName = modelName;
                 setCurrentModelName(modelName);
@@ -2424,6 +2465,7 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  responseMessageId: retryMessageId,
                                   cacheHistoryTelemetry:
                                     state.cacheHistoryTelemetry,
                                   usageMeasurement:
@@ -2793,6 +2835,7 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      responseMessageId: assistantMessageId,
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),

@@ -633,6 +633,74 @@ describe("shouldDropExpectedFrontendException", () => {
     });
   });
 
+  describe("browser build identity", () => {
+    const originalBuildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+
+    afterEach(() => {
+      if (originalBuildCommit === undefined) {
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      } else {
+        process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuildCommit;
+      }
+    });
+
+    it("attributes an SDK-only stack to its own build without a deployment hint", () => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "a".repeat(40);
+      const event = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: {
+          $exception_values: ["JSON Parse error: Unterminated string"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    raw_frame: {
+                      filename: "convex/src/browser/sync/web_socket_manager.ts",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      });
+
+      expect(shouldDropExpectedFrontendException(event)).toBe(false);
+      expect(event.properties).toMatchObject({
+        hackerai_exception_build_commit: "a".repeat(40),
+      });
+      expect(event.properties).not.toHaveProperty(
+        "hackerai_exception_deployment_id",
+      );
+    });
+
+    it.each([undefined, "", "unrecognized-build"])(
+      "does not invent an identity for an unknown build (%s)",
+      (buildCommit) => {
+        if (buildCommit === undefined) {
+          delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        } else {
+          process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = buildCommit;
+        }
+        const event = enrichFrontendExceptionEvent({
+          event: "$exception",
+          properties: {},
+        });
+        expect(event.properties).not.toHaveProperty(
+          "hackerai_exception_build_commit",
+        );
+      },
+    );
+
+    it("does not add build metadata to other analytics events", () => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "a".repeat(40);
+      const event = { event: "custom_event", properties: { count: 1 } };
+      expect(enrichFrontendExceptionEvent(event)).toBe(event);
+      expect(event.properties).toEqual({ count: 1 });
+    });
+  });
+
   it("classifies stack overflows across browser wording", () => {
     for (const value of [
       "Maximum call stack size exceeded",

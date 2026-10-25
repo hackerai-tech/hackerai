@@ -192,6 +192,28 @@ describe("atomic chat branching", () => {
     expect(f.ctx.db.insert).not.toHaveBeenCalled();
   });
 
+  it("preserves private takeover context when branching without making it visible", async () => {
+    const f = makeContext([
+      makeMessage(0),
+      {
+        ...makeMessage(1, "Private takeover note"),
+        is_hidden: true,
+        is_browser_handoff: true,
+      } as ReturnType<typeof makeMessage>,
+      makeMessage(2),
+    ]);
+    await branch(f);
+    const note = f.ctx.db.insert.mock.calls.find(
+      ([table, doc]) =>
+        table === "messages" && doc.source_message_id === "message-1",
+    )?.[1];
+    expect(note).toMatchObject({
+      content: "Private takeover note",
+      is_hidden: true,
+      is_browser_handoff: true,
+    });
+  });
+
   it("copies a complete large-message history and remaps its summary atomically", async () => {
     const messages = [
       makeMessage(0, "a".repeat(450_000)),
@@ -221,6 +243,10 @@ describe("atomic chat branching", () => {
         title: "Task title",
         project_id: "project-1",
       }),
+    );
+    expect(f.ctx.db.insert).not.toHaveBeenCalledWith(
+      "engagement_scopes",
+      expect.anything(),
     );
     expect(f.ctx.db.insert).toHaveBeenCalledWith(
       "chat_summaries",

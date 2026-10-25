@@ -22,7 +22,7 @@ const finishPart = {
 function model(
   parts: unknown[],
   fails = false,
-  modelId = "abliterated-model",
+  modelId = "abliterated-model-large-flash",
 ): LanguageModel {
   return {
     specificationVersion: "v3",
@@ -762,7 +762,7 @@ describe("Abliteration stream telemetry", () => {
         moderation_checked: true,
         moderation_eligible: true,
         generation_step: 1,
-        requested_model: "abliterated-model",
+        requested_model: "abliterated-model-large-flash",
       });
     },
   );
@@ -793,8 +793,8 @@ describe("Abliteration stream telemetry", () => {
       moderation_eligible: false,
       moderation_checked: false,
       generation_step: 1,
-      requested_model: "abliterated-model",
-      response_model: "abliterated-model",
+      requested_model: "abliterated-model-large-flash",
+      response_model: "abliterated-model-large-flash",
     });
     expect(telemetry.getRoutingMarker(true)).toEqual({
       version: 1,

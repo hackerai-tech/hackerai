@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { AGENT_CONTEXT_FEEDBACK_PHASE } from "../lib/feedback/agent-context";
 import {
   ABLITERATED_SHORT_FOLLOWUP_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
@@ -69,6 +70,7 @@ export const taskOutcomeFields = {
     v.literal("new_paid"),
     v.literal("model_experiment"),
     v.literal("current_experiment"),
+    v.literal("agent_context"),
   ),
   user_id: v.string(),
   // Existing billing and historical attribution remain unchanged. Only the
@@ -80,6 +82,9 @@ export const taskOutcomeFields = {
   assigned_model: v.optional(v.string()),
   baseline_model: v.optional(v.string()),
   feedback_phase: v.optional(v.string()),
+  trigger_run_id: v.optional(v.string()),
+  source_history_chars: v.optional(v.number()),
+  source_has_prior_summary: v.optional(v.boolean()),
   paid_start_event_id: v.optional(v.id("paid_start_events")),
   paid_started_at: v.optional(v.number()),
   stripe_subscription_id: v.optional(v.string()),
@@ -95,6 +100,23 @@ export const taskOutcomeFields = {
   answered_at: v.optional(v.number()),
   answer: v.optional(taskOutcomeAnswer),
   reason: v.optional(taskOutcomeReason),
+  reason_at: v.optional(v.number()),
+};
+export const contextTaskOutcomeContext = {
+  ...taskOutcomeContext,
+  survey_kind: v.literal("agent_context"),
+  mode: v.literal("agent"),
+  experiment_key: v.union(
+    v.literal("agent_model_context_v1"),
+    v.literal("agent_pro_context_v1"),
+  ),
+  experiment_variant: v.union(v.literal("control"), v.literal("test")),
+  selected_model_override: v.union(
+    v.literal("hackerai-pro"),
+    v.literal("hackerai-max"),
+  ),
+  feedback_phase: v.literal(AGENT_CONTEXT_FEEDBACK_PHASE),
+  trigger_run_id: v.string(),
 };
 export const taskOutcomeDocument = v.object({
   ...taskOutcomeFields,

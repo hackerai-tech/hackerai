@@ -1,3 +1,5 @@
+import { readFailures } from "@/lib/cloud-recovery/store";
+import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import type { AnySandbox, SandboxBootInfo, SubscriptionTier } from "@/types";
 import { randomUUID } from "node:crypto";
@@ -25,6 +27,7 @@ import {
 export type CloudSandboxAcquisitionContext = {
   signal?: AbortSignal;
   onTimeout?: () => void;
+  onFailure?: () => void;
   acquisitionId?: string;
   provider?: CloudSandboxProvider;
   selectionReason?: CloudSandboxSelectionReason;
@@ -116,13 +119,26 @@ export async function ensureCloudSandboxConnection(options: {
       }
       selectionReason = "recovered_workspace";
     }
+    const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
+      ? await readFailures(options.userId)
+      : null;
+    const destinationId =
+      state?.phase === "e2b" ? state.destinationId : failed?.sandboxId;
+    if (
+      failed &&
+      (!options.context?.triggerRegion ||
+        getE2BClusterRouting(failed.region).createCluster.cluster !==
+          getE2BClusterRouting(options.context.triggerRegion).createCluster
+            .cluster ||
+        (state?.phase === "e2b" && state.destinationId !== failed.sandboxId))
+    )
+      throw new CloudWorkspaceUnavailableError();
+    // Ordinary retries must remain pinned to the known failed workspace. A
+    // temporarily empty inventory cannot authorize an empty replacement.
     // Register activity before any provider connect or create. The recovery
     // claim requires this 15-minute activity key to be absent, so it cannot
     // fence an acquisition after lookup but before the provider request.
-    await assertCloudWorkspaceAvailable(
-      options.userId,
-      state?.phase === "e2b" ? state.destinationId : undefined,
-    );
+    await assertCloudWorkspaceAvailable(options.userId, destinationId);
     const result = await ensureSandboxConnection(
       {
         userID: options.userId,
@@ -143,7 +159,7 @@ export async function ensureCloudSandboxConnection(options: {
         triggerRegion: options.context?.triggerRegion,
         acquisitionId,
         triggerRunId: options.context?.triggerRunId,
-        destinationId: state?.phase === "e2b" ? state.destinationId : undefined,
+        destinationId,
       },
     );
     options.reportStage?.("workspace_verification");
@@ -151,12 +167,18 @@ export async function ensureCloudSandboxConnection(options: {
       options.userId,
       result.sandbox.sandboxId,
     );
+    await ensureCloudNetwork(result.sandbox, options.userId, options.signal);
     registerE2BWorkspaceLease(result.sandbox, options.userId);
     options.signal?.throwIfAborted();
     options.setSandbox(result.sandbox);
     recordOutcome("success");
     return { ...result, provider: "e2b" };
   } catch (error) {
+    try {
+      options.context?.onFailure?.();
+    } catch {
+      /* A closed stream cannot mask the acquisition failure. */
+    }
     recordOutcome("error");
     phLogger.event("cloud_sandbox_acquisition_failed", {
       userId: options.userId,
@@ -182,11 +204,64 @@ export async function ensureCloudSandboxConnection(options: {
   }
 }
 
+/**
+ * Keep the cleanup fence until every configured cluster has been checked,
+ * then finalize ownership even when provider cleanup fails. Lifecycle records
+ * are best effort and never contain the persisted ownership state.
+ */
 export async function terminateCloudSandboxesForUser(
   userId: string,
   options: { permanent?: boolean } = {},
 ): Promise<{ total: number; killed: number; alreadyGone: number }> {
-  const cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
+  const cleanupId = randomUUID();
+  const startedAt = Date.now();
+  const recordCleanup = (
+    phase: "claim" | "provider_cleanup" | "finalize",
+    outcome: "started" | "success" | "error",
+    providerCleanupSucceeded?: boolean,
+    claimFailureReason?: CloudWorkspaceUnavailableError["cleanupClaimFailureReason"],
+  ) => {
+    // Diagnostics must not affect ownership, deletion or finalization. Never
+    // include the persisted fence, sandbox identifiers or provider errors.
+    const fields = {
+      userId,
+      cleanup_id: cleanupId,
+      permanent: !!options.permanent,
+      phase,
+      outcome,
+      duration_ms: Math.max(0, Date.now() - startedAt),
+      ...(providerCleanupSucceeded !== undefined
+        ? { provider_cleanup_succeeded: providerCleanupSucceeded }
+        : {}),
+      ...(claimFailureReason !== undefined
+        ? { claim_failure_reason: claimFailureReason }
+        : {}),
+    };
+    try {
+      console.info("Cloud sandbox cleanup lifecycle", fields);
+    } catch {
+      // A failed console sink must not prevent independent event capture.
+    }
+    try {
+      phLogger.event("cloud_sandbox_cleanup_lifecycle", fields);
+    } catch {
+      // Best-effort telemetry only; preserve the cleanup operation's result.
+    }
+  };
+  recordCleanup("claim", "started");
+  let cleanup: Awaited<ReturnType<typeof claimCloudWorkspaceCleanup>>;
+  try {
+    cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
+  } catch (error) {
+    recordCleanup(
+      "claim",
+      "error",
+      undefined,
+      CloudWorkspaceUnavailableError.getCleanupClaimFailureReason(error),
+    );
+    throw error;
+  }
+  recordCleanup("claim", "success");
   let success = false;
   try {
     if (cleanup.migration && !process.env.E2B_API_KEY?.trim())
@@ -245,6 +320,14 @@ export async function terminateCloudSandboxesForUser(
     success = true;
     return totals;
   } finally {
-    await cleanup.finish(success);
+    recordCleanup("provider_cleanup", success ? "success" : "error", success);
+    recordCleanup("finalize", "started", success);
+    try {
+      await cleanup.finish(success);
+      recordCleanup("finalize", "success", success);
+    } catch (error) {
+      recordCleanup("finalize", "error", success);
+      throw error;
+    }
   }
 }

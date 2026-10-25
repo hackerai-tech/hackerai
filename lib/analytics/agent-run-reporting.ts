@@ -1,3 +1,8 @@
+import {
+  AGENT_MODEL_CONTEXT_FLAG,
+  type AgentModelContextVariant,
+  type AgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
 
@@ -86,6 +91,8 @@ export function createAgentRunReporting(context: {
   endpoint: string;
 }) {
   let stage: FailureStage = "setup";
+  let agentModelContextFlag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG;
+  let agentModelContextVariant: AgentModelContextVariant | undefined;
   let failure:
     { stage: FailureStage; kind: FailureKind; category: string } | undefined;
   const captured = new Set<RunEvent>();
@@ -104,6 +111,13 @@ export function createAgentRunReporting(context: {
   }
 
   return {
+    setAgentModelContextVariant(
+      variant: AgentModelContextVariant | undefined,
+      flag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG,
+    ) {
+      agentModelContextFlag = flag;
+      agentModelContextVariant = variant;
+    },
     setStage(next: FailureStage) {
       stage = next;
     },
@@ -134,7 +148,13 @@ export function createAgentRunReporting(context: {
           terminalAbortSource ??= abortSource;
         }
       }
-      once("hackerai-agent_run", capture, args);
+      once(
+        "hackerai-agent_run",
+        capture,
+        agentModelContextVariant
+          ? { ...args, agentModelContextVariant, agentModelContextFlag }
+          : args,
+      );
     },
     captureCost<T>(capture: (args: T) => void, args: T) {
       once("hackerai-usage_cost", capture, args);
@@ -150,6 +170,9 @@ export function createAgentRunReporting(context: {
       const outcome =
         terminalOutcome ?? (kind === "error" ? "error" : "aborted");
       const properties = {
+        ...(agentModelContextVariant && {
+          [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
+        }),
         mode: "agent",
         subscription: context.subscription,
         subscription_tier: context.subscription,

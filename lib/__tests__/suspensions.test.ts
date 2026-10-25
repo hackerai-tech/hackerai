@@ -361,3 +361,109 @@ describe("web suspension-gate transport recovery", () => {
     expect(console.info).not.toHaveBeenCalled();
   });
 });
+
+describe("opt-in history-access transport recovery", () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "info").mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("does not accept an initial clear read that finishes after cancellation", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+    const controller = new AbortController();
+    let finishRead!: (value: never) => void;
+    mockQuery.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const result = assertUserCanAccessChatHistory("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow("canceled");
+    controller.abort(new Error("canceled"));
+    finishRead(null as never);
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(console.info).not.toHaveBeenCalled();
+  });
+
+  it("accepts only an authoritative clear history read after one fetch failure", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(null as never);
+    await expect(
+      assertUserCanAccessChatHistory("user_123", { retryNetworkFailure: true }),
+    ).resolves.toBeUndefined();
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockQuery.mock.calls[1]).toEqual([
+      "getActiveChatAccessBlockByUser",
+      { serviceKey: "test-service-key", userId: "user_123" },
+    ]);
+  });
+
+  it("fails closed after its retry budget is exhausted", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+    const error = new TypeError("fetch failed");
+    mockQuery
+      .mockRejectedValueOnce(error as never)
+      .mockRejectedValueOnce(error as never)
+      .mockResolvedValueOnce(null as never);
+    await expect(
+      assertUserCanAccessChatHistory("user_123", { retryNetworkFailure: true }),
+    ).rejects.toBe(error);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"exhausted"'),
+    );
+  });
+
+  it.each([
+    new Error("fetch failed"),
+    new TypeError("unknown parser failure"),
+    new ChatSDKError("forbidden:chat"),
+  ])("does not retry an application or unknown error: %s", async (error) => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+    mockQuery.mockRejectedValueOnce(error as never);
+    await expect(
+      assertUserCanAccessChatHistory("user_123", { retryNetworkFailure: true }),
+    ).rejects.toBe(error);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a clear retry result after cancellation", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+    const controller = new AbortController();
+    let finishRead!: (value: never) => void;
+    let startedRetry!: () => void;
+    const retryStarted = new Promise<void>((resolve) => {
+      startedRetry = resolve;
+    });
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockImplementationOnce(() => {
+        startedRetry();
+        return new Promise((resolve) => {
+          finishRead = resolve;
+        });
+      });
+    const result = assertUserCanAccessChatHistory("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow("canceled");
+    await retryStarted;
+    controller.abort(new Error("canceled"));
+    finishRead(null as never);
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(console.info).not.toHaveBeenCalled();
+  });
+});

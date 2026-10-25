@@ -34,6 +34,7 @@ export const AUXILIARY_VISION_RECOVERY_TIMEOUT_MS = 120_000;
 // Up to MAX_CONCURRENCY in-flight calls may still settle above this threshold.
 export const AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS = 0.25;
 const LEGACY_AUXILIARY_VISION_SLUGS = [
+  "deepseek/deepseek-v4.1-flash",
   DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
 ] as const;

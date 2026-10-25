@@ -134,11 +134,16 @@ describe("model improvement control", () => {
     );
     expect(save).toHaveBeenCalledWith({ enabled: false });
     expect(screen.getByRole("switch")).toBeDisabled();
+    expect(screen.getByRole("switch")).not.toBeChecked();
+    expect(screen.getByRole("status")).toHaveTextContent("Saving…");
+    expect(toast.success).not.toHaveBeenCalled();
     await user.click(screen.getByRole("switch"));
     expect(save).toHaveBeenCalledTimes(1);
     setMockQueryResult({ enabled: false, updatedAt: 123 });
     await act(async () => request.resolve(null));
     expect(screen.getByRole("switch")).not.toBeChecked();
+    expect(toast.success).toHaveBeenCalledWith("Model improvement disabled.");
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     view.unmount();
     render(<DataControlsTab />);
     expect(screen.getByRole("switch")).not.toBeChecked();
@@ -160,11 +165,58 @@ describe("model improvement control", () => {
         ),
       );
       expect(save).toHaveBeenCalledWith({ enabled: !enabled });
+      expect(toast.success).not.toHaveBeenCalled();
       expect(screen.getByRole("switch")).toHaveAttribute(
         "aria-checked",
         String(enabled),
       );
       expect(screen.getByRole("switch")).toBeEnabled();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Your change wasn't saved. The switch shows your saved preference.",
+      );
+      save.mockImplementationOnce(async () => {
+        setMockQueryResult({ enabled: !enabled, updatedAt: 456 });
+        return null;
+      });
+      await user.click(
+        screen.getByRole("button", { name: "Retry saving preference" }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+      );
+      expect(save).toHaveBeenLastCalledWith({ enabled: !enabled });
+      expect(toast.success).toHaveBeenCalledWith(
+        enabled ? "Model improvement disabled." : "Model improvement enabled.",
+      );
+      expect(screen.getByRole("switch")).toHaveAttribute(
+        "aria-checked",
+        String(!enabled),
+      );
     },
   );
+});
+
+describe("model improvement synchronization", () => {
+  it("reflects changes from another session without writing a default during loading or sign-out", () => {
+    const save = useMutation(
+      api.userCustomization.setModelImprovementPreference,
+    ) as jest.Mock;
+    save.mockClear();
+    setMockQueryResult({ enabled: false, updatedAt: 123 });
+    const view = render(<DataControlsTab />);
+    expect(screen.getByRole("switch")).not.toBeChecked();
+    setMockQueryResult(undefined);
+    view.rerender(<DataControlsTab />);
+    expect(screen.getByRole("switch")).toBeDisabled();
+    setMockQueryResult(null);
+    view.rerender(<DataControlsTab />);
+    expect(screen.getByRole("switch")).toBeDisabled();
+    setMockQueryResult({ enabled: false, updatedAt: 123 });
+    view.rerender(<DataControlsTab />);
+    expect(screen.getByRole("switch")).not.toBeChecked();
+    setMockQueryResult({ enabled: true, updatedAt: 456 });
+    view.rerender(<DataControlsTab />);
+    expect(screen.getByRole("switch")).toBeChecked();
+    expect(save).not.toHaveBeenCalled();
+  });
 });

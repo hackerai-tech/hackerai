@@ -1,3 +1,11 @@
+import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
+import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
+import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
+import {
+  getAgentModelContextVariant,
+  getAgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -13,6 +21,7 @@ import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
+import { selectContextTaskOutcomeSurvey } from "@/lib/feedback/select-context-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
@@ -33,6 +42,7 @@ import {
   generateId,
   type UIMessageStreamWriter,
   UIMessage,
+  convertToModelMessages,
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import {
@@ -118,6 +128,10 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import {
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
   saveMessage,
   updateChat,
@@ -277,7 +291,7 @@ import {
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
-  getNextDeepSeekProDisconnectRetryModel,
+  getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
@@ -594,6 +608,7 @@ type AgentLongErrorSummary = {
   actualSandbox?: string;
   uploadFailureKind?: string;
   uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
+  uploadFailureAcquisitionStage?: CloudAcquisitionStage;
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -797,6 +812,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_reason",
       ),
+      uploadFailureAcquisitionStage:
+        uploadFailurePhase === "acquisition"
+          ? parseCloudAcquisitionStage(
+              errorMetadata?.upload_failure_acquisition_stage,
+            )
+          : undefined,
       uploadFailureCause: getStringMetadata(
         errorMetadata,
         "upload_failure_cause",
@@ -1043,6 +1064,11 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
   if (summary.uploadFailurePhase)
     metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
+  if (summary.uploadFailureAcquisitionStage)
+    metadata.set(
+      "uploadFailureAcquisitionStage",
+      summary.uploadFailureAcquisitionStage,
+    );
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
@@ -1897,10 +1923,52 @@ export const agentLongTask = task({
         country: payload.regionalSubscriptionCountry,
         surface: "agent_worker",
       });
+      const userCustomizationPromise = getUserCustomization({ userId });
+      const maxExtraUsageConfig =
+        selectedModelOverride === "hackerai-max"
+          ? await buildExtraUsageConfig({
+              userId,
+              subscription,
+              userCustomization: await userCustomizationPromise,
+              organizationId,
+            })
+          : undefined;
+      // Resolve Max entitlement before granting its larger history allowance.
+      if (selectedModelOverride === "hackerai-max") {
+        selectedModelOverride =
+          normalizeMaxModelForSubscription(
+            selectedModelOverride,
+            subscription,
+            { extraUsageAvailable: canUseExtraUsage(maxExtraUsageConfig!) },
+          ) ?? undefined;
+      }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
+      const agentModelContextVariant = await getAgentModelContextVariant(
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+      );
+      runReporting.setAgentModelContextVariant(
+        agentModelContextVariant,
+        getAgentModelContextFlag(selectedModelOverride),
+      );
+      const agentModelContextEnabled = agentModelContextVariant === "test";
+      const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
+        posthog,
+        userId,
+        chatId,
+        messageId: assistantMessageId,
+        triggerRunId: ctx.run.id,
+        mode,
+        subscription,
+        selectedModelOverride,
+        variant: agentModelContextVariant,
+        release: ctx.deployment?.version ?? "unknown",
+      });
       const [userCustomization, fetched] = await Promise.all([
-        getUserCustomization({ userId }),
+        userCustomizationPromise,
         getMessagesByChatId({
           chatId,
           userId,
@@ -1908,6 +1976,7 @@ export const agentLongTask = task({
           newMessages: [],
           regenerate,
           mode,
+          agentModelContextEnabled,
         }),
       ]);
       const { chat, fileTokens } = fetched;
@@ -1926,15 +1995,16 @@ export const agentLongTask = task({
             : messages;
       const messagesForAccounting = messagesForProcessing;
       const attachmentCounts = countFileAttachments(messagesForProcessing);
-      const baseExtraUsageConfigPromise = buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
+
       const [projectContext, baseExtraUsageConfig] = await Promise.all([
         projectContextPromise,
-        baseExtraUsageConfigPromise,
+        maxExtraUsageConfig ??
+          buildExtraUsageConfig({
+            userId,
+            subscription,
+            userCustomization,
+            organizationId,
+          }),
       ]);
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
@@ -2070,17 +2140,19 @@ export const agentLongTask = task({
           })
         : undefined;
 
-      const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
-        assignment: abliteratedExperiment,
-        selectedModelOverride,
-        release: ctx.deployment?.version,
-        posthog,
-        userId,
-        chatId,
-        messageId: assistantMessageId,
-        mode,
-        subscription,
-      });
+      const taskOutcomeSurvey =
+        contextTaskOutcomeSurvey ??
+        (await selectTaskOutcomeSurvey({
+          assignment: abliteratedExperiment,
+          selectedModelOverride,
+          release: ctx.deployment?.version,
+          posthog,
+          userId,
+          chatId,
+          messageId: assistantMessageId,
+          mode,
+          subscription,
+        }));
 
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
@@ -2092,6 +2164,16 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      selectedModel = resolvePaidProAutoModel({
+        userId,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
       const requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
@@ -2102,6 +2184,10 @@ export const agentLongTask = task({
         subscription,
         selectedModel,
         hasImages: requestHasImages,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -2433,7 +2519,10 @@ export const agentLongTask = task({
                   variant: activeAbliteratedExperiment.variant,
                   requestId: assistantMessageId,
                 }
-              : (activeFlashRoutingAssignment ??
+              : ((activeFlashRoutingAssignment && {
+                  ...activeFlashRoutingAssignment,
+                  requestId: assistantMessageId,
+                }) ??
                 getDeepSeekV4Pro0813ExperimentContext(
                   activeDeepSeekV4Pro0813Experiment,
                 ));
@@ -2742,6 +2831,7 @@ export const agentLongTask = task({
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
+              cloudNetworkPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -2754,6 +2844,8 @@ export const agentLongTask = task({
               cleanupBrowserSessions: cleanupToolBrowsers,
               setCurrentModelName,
               getToolsForModel,
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -3108,10 +3200,15 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel =
+              !(mode === "agent" && selectedModelOverride === "hackerai-max") &&
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    selectedModel,
+                    mode,
+                    selectedModelOverride,
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -3661,6 +3758,8 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
@@ -3712,6 +3811,7 @@ export const agentLongTask = task({
               },
               trackedProvider,
               currentSystemPrompt,
+              cloudNetworkPrompt,
               tools,
               mode,
               endpoint,
@@ -3724,6 +3824,8 @@ export const agentLongTask = task({
               systemPromptTokens,
               ctxSystemTokens,
               ctxMaxTokens,
+              agentModelContextEnabled,
+              agentModelContextVariant,
               streamStartTime,
               triggerRunId: ctx.run.id,
               contextUsageOn,
@@ -3753,7 +3855,15 @@ export const agentLongTask = task({
                 runTimingTracker.startModelStream();
               },
               onModelStreamFinish: runTimingTracker.finishModelStream,
-              onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onModelChunk: () => {
+                if (
+                  routingExperimentContext &&
+                  routingExperimentContext.firstModelChunkAt === undefined
+                ) {
+                  routingExperimentContext.firstModelChunkAt = Date.now();
+                }
+                runTimingTracker.recordFirstModelChunk();
+              },
               onModelStepSelected: (modelName) => {
                 activeModelName = modelName;
                 terminalRequestedModelSlug =
@@ -3839,12 +3949,14 @@ export const agentLongTask = task({
               const providerError = terminalError
                 ? wrapProviderTerminalError(terminalError, {
                     model: terminalRequestedModelSlug,
-                    openRouterMetadata: state.openRouterMetadata,
+                    openRouterMetadata: state.providerErrorMetadata,
                   })
                 : lastProviderRecoveryError;
 
               return {
-                upstreamProvider: state.openRouterMetadata.provider_name,
+                upstreamProvider: terminalError
+                  ? state.providerErrorMetadata?.provider_name
+                  : state.openRouterMetadata.provider_name,
                 providerErrorProvider: providerError?.provider,
                 providerErrorCategory: providerError?.category,
                 providerErrorStatusCode: providerError?.statusCode,
@@ -3868,7 +3980,7 @@ export const agentLongTask = task({
             }) => {
               const failure = wrapProviderTerminalError(state.providerError, {
                 model: trackedProvider.languageModel(failedModel).modelId,
-                openRouterMetadata: state.openRouterMetadata,
+                openRouterMetadata: state.providerErrorMetadata,
               });
               providerRecoveryAttempts += 1;
               providerRecoveryModels.push(retryModel);
@@ -3983,6 +4095,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               runReporting.captureTerminal(captureAgentCompletionAnalytics, {
+                responseMessageId: retryMessageId,
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
                   usageTracker.measurementProperties(selectedModel),
@@ -4087,6 +4200,7 @@ export const agentLongTask = task({
                 await saveMessage({
                   chatId,
                   userId,
+                  triggerRunId: ctx.run.id,
                   message: processed,
                   extraFileIds: newFileIds,
                   usage: state.streamUsage,
@@ -4528,7 +4642,7 @@ export const agentLongTask = task({
                           state.providerError,
                           {
                             model: selectedModel,
-                            openRouterMetadata: state.openRouterMetadata,
+                            openRouterMetadata: state.providerErrorMetadata,
                           },
                         );
                         triggerLogger.info("Provider recovery decision", {
@@ -4552,9 +4666,8 @@ export const agentLongTask = task({
                           status_code: failure.statusCode,
                           configured_model: selectedModel,
                           served_model:
-                            state.openRouterMetadata
-                              ?.openrouter_selected_model ??
-                            state.responseModel,
+                            state.providerErrorMetadata
+                              ?.openrouter_selected_model,
                           provider: failure.provider,
                           provider_request_id: failure.openrouterRequestId,
                           provider_generation_id:
@@ -4627,7 +4740,8 @@ export const agentLongTask = task({
                               )
                             : shouldRetryWithoutImageToolResults
                               ? selectedModel
-                              : providerContentBlocked
+                              : providerContentBlocked &&
+                                  selectedModelOverride !== "hackerai-max"
                                 ? getContentFilterRetryModel(
                                     selectedModel,
                                     mode,
@@ -4743,6 +4857,7 @@ export const agentLongTask = task({
                             await saveMessage({
                               chatId,
                               userId,
+                              triggerRunId: ctx.run.id,
                               message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
@@ -4816,6 +4931,9 @@ export const agentLongTask = task({
                                       ? prepareProviderDisconnectContinuation(
                                           normalizedRetryMessages,
                                           {
+                                            allowEmptyResponse:
+                                              selectedModelOverride ===
+                                              "hackerai-max",
                                             allowCompletedTail:
                                               isProviderResponseTimeout(
                                                 state.providerError,
@@ -4823,12 +4941,63 @@ export const agentLongTask = task({
                                           },
                                         )
                                       : undefined;
+                                  const nextRecoveryMessages:
+                                    UIMessage[] | undefined = nextContinuation
+                                    ? [
+                                        ...state.finalMessages,
+                                        ...nextContinuation.messages,
+                                        {
+                                          id: generateId(),
+                                          role: "user",
+                                          parts: [
+                                            {
+                                              type: "text",
+                                              text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                            },
+                                          ],
+                                        },
+                                      ]
+                                    : undefined;
+                                  let requiredContextTokens: number | undefined;
+                                  if (
+                                    selectedModelOverride === "hackerai-max" &&
+                                    nextRecoveryMessages
+                                  ) {
+                                    try {
+                                      const raw = await convertToModelMessages(
+                                        nextRecoveryMessages,
+                                        {
+                                          tools: createPromptSerializationTools(
+                                            streamCtx.tools,
+                                          ),
+                                        },
+                                      );
+                                      const projected =
+                                        restoreProviderRecoveryContext(
+                                          state.providerRecoveryContext,
+                                          raw,
+                                        ) ?? raw;
+                                      requiredContextTokens =
+                                        estimateSummaryInputTokens(projected) +
+                                        streamCtx.systemPromptTokens +
+                                        safeCountTokens(
+                                          (await streamCtx.cloudNetworkPrompt?.()) ??
+                                            "",
+                                        );
+                                    } catch {
+                                      // Unknown input size cannot admit the smaller fallback.
+                                    }
+                                  }
                                   const finalRetryModel = nextContinuation
-                                    ? getNextDeepSeekProDisconnectRetryModel({
+                                    ? getNextProviderDisconnectRetryModel({
                                         originalModel: selectedModel,
                                         failedModel: retryModel,
                                         completedRetryCount:
                                           providerRecoveryAttempts,
+                                        selectedModelOverride,
+                                        agentModelContextEnabled,
+                                        subscription,
+                                        requiredContextTokens,
                                       })
                                     : undefined;
 
@@ -4851,20 +5020,7 @@ export const agentLongTask = task({
                                     streamError = undefined;
                                     resetAgentStreamStateForRetry(state);
                                     retryUsedFallbackModel = true;
-                                    state.finalMessages = [
-                                      ...state.finalMessages,
-                                      ...nextContinuation.messages,
-                                      {
-                                        id: generateId(),
-                                        role: "user",
-                                        parts: [
-                                          {
-                                            type: "text",
-                                            text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
-                                          },
-                                        ],
-                                      },
-                                    ];
+                                    state.finalMessages = nextRecoveryMessages!;
                                     const finalRetryStartTime = Date.now();
                                     const preservedFileIds =
                                       getFileAccumulator()
@@ -4876,6 +5032,7 @@ export const agentLongTask = task({
                                       await saveMessage({
                                         chatId,
                                         userId,
+                                        triggerRunId: ctx.run.id,
                                         message,
                                         extraFileIds: preservedFileIds,
                                         model:
@@ -5039,6 +5196,7 @@ export const agentLongTask = task({
                       runReporting.captureTerminal(
                         captureAgentCompletionAnalytics,
                         {
+                          responseMessageId: assistantMessageId,
                           cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                           usageMeasurement:
                             usageTracker.measurementProperties(selectedModel),
@@ -5258,6 +5416,10 @@ export const agentLongTask = task({
                           await saveMessage({
                             chatId,
                             userId,
+                            triggerRunId:
+                              processed.role === "assistant"
+                                ? ctx.run.id
+                                : undefined,
                             message: processed,
                             extraFileIds: newFileIds,
                             model: state.responseModel || configuredModelId,
@@ -5462,7 +5624,7 @@ export const agentLongTask = task({
         }
         throw wrapProviderTerminalError(terminalStreamError, {
           model: terminalRequestedModelSlug,
-          openRouterMetadata: terminalAgentState?.openRouterMetadata,
+          openRouterMetadata: terminalAgentState?.providerErrorMetadata,
         });
       }
 

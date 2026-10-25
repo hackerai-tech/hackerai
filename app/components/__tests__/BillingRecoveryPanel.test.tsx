@@ -8,6 +8,11 @@ const mockInvoice = jest.fn();
 const mockPortal = jest.fn();
 const mockCapture = jest.fn();
 const mockSuccess = jest.fn();
+const mockRecover = jest.fn();
+jest.mock("@/lib/actions/recover-canceled-renewal", () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockRecover(...args),
+}));
 jest.mock("@/lib/billing/client", () => ({
   openRenewalInvoice: (...args: unknown[]) => mockInvoice(...args),
   redirectToBillingPortal: (...args: unknown[]) => mockPortal(...args),
@@ -86,6 +91,60 @@ describe("BillingRecoveryPanel", () => {
       screen.getByText(/Paying an old invoice won’t restart/),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Update card" })).toBeEnabled();
+  });
+
+  it("refreshes billing after Start fresh and lets the user choose a new plan", async () => {
+    const check = jest.fn(async () => ({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      checkoutRequiresReview: false,
+    }));
+    mockRecover.mockResolvedValue(true);
+    draw(
+      {
+        hasActiveSubscription: false,
+        cancelAtPeriodEnd: false,
+        checkoutRequiresReview: true,
+      },
+      check,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    await waitFor(() =>
+      expect(mockSuccess).toHaveBeenCalledWith(
+        "You can now choose a plan and subscribe again.",
+      ),
+    );
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(mockInvoice).not.toHaveBeenCalled();
+    expect(mockPortal).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unresolved or failed recovery blocked without a success message", async () => {
+    const check = jest.fn(async () => ({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      checkoutRequiresReview: true,
+    }));
+    mockRecover.mockResolvedValue(false);
+    draw(
+      {
+        hasActiveSubscription: false,
+        cancelAtPeriodEnd: false,
+        checkoutRequiresReview: true,
+      },
+      check,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "still needs billing review",
+    );
+    expect(mockSuccess).not.toHaveBeenCalled();
+    mockRecover.mockRejectedValue(new Error("Stripe unavailable"));
+    await userEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "couldn't prepare your new subscription",
+    );
+    expect(screen.getByRole("button", { name: "Start fresh" })).toBeEnabled();
   });
 
   it("offers bank authentication through the invoice", () => {

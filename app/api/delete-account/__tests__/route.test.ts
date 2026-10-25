@@ -1,3 +1,5 @@
+import { after } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
 import { POST } from "../route";
 import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
 import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
@@ -16,6 +18,7 @@ const mockMembershipLockRelease = jest.fn();
 const mockConvexQuery = jest.fn().mockResolvedValue("complete");
 
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextResponse: {
     json: jest.fn((body: unknown, init?: { status?: number }) => ({
       status: init?.status ?? 200,
@@ -113,6 +116,10 @@ jest.mock("../../workos", () => ({
       deleteOrganization: jest.fn(),
     },
   },
+}));
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { flush: jest.fn().mockResolvedValue(undefined) },
 }));
 
 const mockGetUserIDWithFreshLoginContext =
@@ -237,6 +244,31 @@ describe("POST /api/delete-account", () => {
     mockCancelSubscription.mockResolvedValue({} as never);
     mockDeleteCustomer.mockResolvedValue({} as never);
   });
+
+  it.each([false, true])(
+    "flushes buffered diagnostics after the response when cleanup fails=%s",
+    async (fails) => {
+      mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+      if (fails)
+        mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+          new Error("cleanup failed"),
+        );
+      const response = await POST(request() as any);
+      expect(response.status).toBe(fails ? 500 : 200);
+      expect(after).toHaveBeenCalledTimes(1);
+      expect(phLogger.flush).not.toHaveBeenCalled();
+      const task = jest.mocked(after).mock.calls[0][0] as () => Promise<void>;
+      let finishFlush!: () => void;
+      const flush = new Promise<void>((resolve) => {
+        finishFlush = resolve;
+      });
+      jest.mocked(phLogger.flush).mockReturnValueOnce(flush);
+      expect(task()).toBe(flush);
+      expect(phLogger.flush).toHaveBeenCalledTimes(1);
+      finishFlush();
+      await flush;
+    },
+  );
 
   it("removes only the caller's membership for shared organizations", async () => {
     mockCancelSubagentsForUserDeletion.mockResolvedValue({

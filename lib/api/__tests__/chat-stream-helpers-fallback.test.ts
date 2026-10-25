@@ -8,6 +8,7 @@
 
 import {
   buildProviderOptions,
+  getFallbackSlugs,
   getContentFilterRetryModel,
   getRetryFallbackModel,
   isAutoModelSelectionForRetry,
@@ -16,6 +17,31 @@ import {
   resolveServedModelForCostAccounting,
   shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
+
+import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
+
+it("bounds expanded Pro input for its real transparent fallback chain", () => {
+  const fallbackModelIds = getFallbackSlugs(DEEPSEEK_1017_MODEL_KEY, "agent", {
+    selectedModelOverride: "hackerai-pro",
+  });
+  const budget = getAgentContextBudget({
+    enabled: true,
+    mode: "agent",
+    subscription: "pro",
+    modelId: DEEPSEEK_1017_SLUG,
+    fallbackModelIds,
+  });
+  expect(budget).toBe(496_000);
+  expect(getSummarizationThresholdTokens(budget)).toBe(476_000);
+  expect(
+    getRetryFallbackModel(DEEPSEEK_1017_MODEL_KEY, "agent", "hackerai-pro"),
+  ).toBe("model-glm-5.3-flash");
+});
 
 jest.mock("@/lib/db/actions", () => ({
   getNotes: jest.fn(),
@@ -82,7 +108,7 @@ const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
 const GLM_FLASH_SLUG = "z-ai/glm-5.3-flash";
-const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
+const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash-1017";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -222,7 +248,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-abliterated",
-        responseModel: "abliterated-model",
+        responseModel: "abliterated-model-large-flash",
       }),
     ).toBe("model-abliterated");
     expect(
@@ -239,10 +265,22 @@ describe("buildProviderOptions fallback chain", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "model-abliterated-large-v2",
-        responseModel: "abliterated-model-large-v2",
+        responseModel: "abliterated-model-large-flash",
       }),
     ).toBe("model-abliterated-large-v2");
   });
+
+  it.each([
+    ["model-abliterated", "abliterated-model"],
+    ["model-abliterated-large-v2", "abliterated-model-large-v2"],
+  ])(
+    "preserves old provider attribution for in-flight %s responses",
+    (modelName, responseModel) => {
+      expect(
+        resolveServedModelForCostAccounting({ modelName, responseModel }),
+      ).toBe(responseModel);
+    },
+  );
 
   it.each(["ask", "agent"] as const)(
     "keeps %s titles on low reasoning",
@@ -404,6 +442,14 @@ describe("buildProviderOptions fallback chain", () => {
       models: [KIMI_K3_SLUG],
       user: "user-1",
     });
+  });
+
+  it("excludes the 1017 snapshot after its canonical ID returned content-filter", () => {
+    expect(
+      getFallbackSlugs("ask-model-free-glm", "ask", {
+        excludedModelSlugs: ["deepseek/deepseek-v4.1-flash-20261017"],
+      }),
+    ).toEqual([DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG]);
   });
 
   it("falls back from the Grok-backed auto agent route through GLM 5.3 then Kimi K3", () => {
@@ -1473,5 +1519,137 @@ describe("resolveServedModelForCostAccounting", () => {
         mode: "agent",
       }),
     ).toBe("agent-model-free");
+  });
+});
+
+describe("Agent Max explicit provider recovery", () => {
+  const snapshot = "model-deepseek-v4.1-flash-1017-pro";
+  it("selects DeepSeek 1017 without admitting an unchecked Grok attempt or changing Ask and non-Max recovery", () => {
+    expect(
+      getRetryFallbackModel("model-glm-5.3", "agent", "hackerai-max"),
+    ).toBe(snapshot);
+    expect(getRetryFallbackModel(snapshot, "agent", "hackerai-max")).toBe(
+      snapshot,
+    );
+    expect(getRetryFallbackModel("model-glm-5.3", "ask", "hackerai-max")).toBe(
+      "model-kimi-k3",
+    );
+    expect(getRetryFallbackModel("model-glm-5.3", "agent")).toBe(
+      "model-kimi-k3",
+    );
+  });
+  it("sends maximum reasoning only on the explicit Max DeepSeek attempt", () => {
+    const options = buildProviderOptions(true, "user", snapshot, "agent", {
+      selectedModelOverride: "hackerai-max",
+    });
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "max",
+    });
+    expect(options.openrouter.models).toBeUndefined();
+    expect(
+      buildProviderOptions(true, "user", snapshot, "ask", {
+        selectedModelOverride: "hackerai-max",
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "high" });
+  });
+  it("keeps a large GLM Max request from inheriting Grok's smaller budget", () => {
+    const options = buildProviderOptions(
+      true,
+      "user",
+      "model-glm-5.3",
+      "agent",
+      { selectedModelOverride: "hackerai-max" },
+    );
+    expect(options.openrouter.models).toBeUndefined();
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+  });
+});
+
+describe("explicit paid Flash tier reasoning", () => {
+  const routes = [DEEPSEEK_1017_MODEL_KEY];
+
+  it.each(routes)(
+    "uses the explicit tier rather than shared alias %s",
+    (model) => {
+      for (const [selection, effort] of [
+        ["hackerai-standard", "high"],
+        ["hackerai-pro", "max"],
+      ] as const) {
+        const options = buildProviderOptions(true, "user", model, "agent", {
+          selectedModelOverride: selection,
+          // A stale lower override must not silently erase the selected tier.
+          reasoningOverride: { enabled: true, effort: "low" },
+          ignoredProviderSlugs: ["together"],
+          hasPdfAttachments: true,
+        }).openrouter;
+        expect(options.reasoning).toEqual({ enabled: true, effort });
+        expect(options.provider).toEqual({
+          require_parameters: true,
+          ignore: ["together"],
+        });
+        expect(options.plugins).toEqual([
+          { id: "file-parser", pdf: { engine: "mistral-ocr" } },
+        ]);
+        expect(options.models).toEqual(
+          getFallbackSlugs(model, "agent", {
+            selectedModelOverride: selection,
+          }),
+        );
+      }
+    },
+  );
+
+  it.each([undefined, "auto"] as const)(
+    "preserves Auto %s on the shared Pro alias",
+    (selection) => {
+      const options = buildProviderOptions(
+        true,
+        "user",
+        "model-deepseek-v4-flash-vision-pro",
+        "agent",
+        {
+          selectedModelOverride: selection,
+        },
+      ).openrouter;
+      expect(options.reasoning).toEqual({ enabled: true, effort: "high" });
+      expect(options.provider).toBeUndefined();
+    },
+  );
+
+  it("preserves high reasoning for allowance rescue on the legacy Pro alias", () => {
+    const options = buildProviderOptions(
+      true,
+      "user",
+      "model-deepseek-v4-flash-vision-pro",
+      "agent",
+      {
+        selectedModelOverride: "hackerai-pro",
+      },
+    ).openrouter;
+    expect(options.reasoning).toEqual({ enabled: true, effort: "high" });
+    expect(options.provider).toBeUndefined();
+  });
+
+  it("keeps Free Ask low and preserves recovery models' own policies", () => {
+    expect(
+      buildProviderOptions(true, "user", DEEPSEEK_1017_MODEL_KEY, "ask", {
+        selectedModelOverride: "hackerai-pro",
+        isFreeAskRequest: true,
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "low" });
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3-flash", "agent", {
+        selectedModelOverride: "hackerai-pro",
+      }).openrouter.reasoning,
+    ).toBeUndefined();
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3", "agent", {
+        selectedModelOverride: "hackerai-pro",
+      }).openrouter.reasoning,
+    ).toEqual({ enabled: true, effort: "high" });
   });
 });

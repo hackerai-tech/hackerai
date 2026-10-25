@@ -30,6 +30,7 @@ import {
   sharedMessageValidator,
 } from "./lib/sharedChatSnapshot";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { invalidateModelHistory } from "./modelHistory";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -285,6 +286,20 @@ const getMessageSaveDiagnostics = (parts: any[]) => {
     data_part_count: dataPartCount,
   };
 };
+
+type MessageFileValidationReason =
+  "file_missing" | "file_lookup_failed" | "file_not_owned";
+
+// Keep the existing public error while distinguishing failed reads from absent rows.
+class MessageFileValidationError extends Error {
+  constructor(readonly reason: MessageFileValidationReason) {
+    super(
+      reason === "file_not_owned"
+        ? "File does not belong to user"
+        : "File not found",
+    );
+  }
+}
 
 const getErrorName = (error: unknown): string =>
   error instanceof Error ? error.name : typeof error;
@@ -630,13 +645,36 @@ export const saveMessage = mutation({
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     triggerRunId: v.optional(v.string()),
+    expectedActiveTriggerRunId: v.optional(v.string()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.literal("stale_run")),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    // Recovery may only write while this exact crashed run still owns the chat.
+    // This check shares the message transaction, so a concurrent new run wins.
+    if (args.expectedActiveTriggerRunId !== undefined) {
+      if (
+        args.triggerRunId !== args.expectedActiveTriggerRunId ||
+        args.role !== "assistant"
+      )
+        throw new Error("Invalid Agent recovery correlation");
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+      if (
+        !chat ||
+        chat.user_id !== args.userId ||
+        chat.active_trigger_run_id !== args.expectedActiveTriggerRunId ||
+        chat.canceled_at !== undefined ||
+        chat.deletion_started_at !== undefined ||
+        (await isUserDeletionFenced(ctx.db, args.userId))
+      )
+        return "stale_run" as const;
+    }
     let failureStage = "start";
     let chatForInsert: Doc<"chats"> | null = null;
 
@@ -646,9 +684,11 @@ export const saveMessage = mutation({
       ): Promise<Doc<"files">[]> => {
         if (!fileIds || fileIds.length === 0) return [];
 
+        const failedReads = new Set<number>();
         const files = await Promise.all(
-          fileIds.map((fileId) =>
+          fileIds.map((fileId, index) =>
             ctx.db.get(fileId).catch((error) => {
+              failedReads.add(index);
               console.error(
                 `Failed to read file ${fileId} while validating ownership:`,
                 error,
@@ -661,10 +701,12 @@ export const saveMessage = mutation({
         for (let i = 0; i < fileIds.length; i++) {
           const file = files[i];
           if (!file) {
-            throw new Error("File not found");
+            throw new MessageFileValidationError(
+              failedReads.has(i) ? "file_lookup_failed" : "file_missing",
+            );
           }
           if (file.user_id !== args.userId) {
-            throw new Error("File does not belong to user");
+            throw new MessageFileValidationError("file_not_owned");
           }
         }
 
@@ -767,6 +809,29 @@ export const saveMessage = mutation({
               }
             }
           }
+        }
+
+        // The retained server stream is authoritative over an earlier browser
+        // snapshot of this same interrupted run. Never replace a final answer.
+        if (
+          args.expectedActiveTriggerRunId &&
+          existingMessage.role === "assistant" &&
+          existingMessage.trigger_run_id === args.expectedActiveTriggerRunId &&
+          existingMessage.finish_reason === "trigger_crashed_client_saved"
+        ) {
+          const base = {
+            ...existingMessage,
+            ...patch,
+            parts: partsForSave,
+            content: undefined,
+          };
+          if (getMessageDocumentSize(base) > MESSAGE_DOCUMENT_TARGET_BYTES)
+            throw new Error("Recovered Agent message is too large to save");
+          patch.parts = partsForSave;
+          patch.content = fitSearchContentToDocument(
+            base,
+            extractTextFromParts(partsForSave),
+          ).content;
         }
 
         // Update usage if provided and not already set (e.g., on abort)
@@ -1063,10 +1128,15 @@ export const saveMessage = mutation({
         return null;
       }
 
+      const fileValidationReason =
+        error instanceof MessageFileValidationError ? error.reason : undefined;
       console.error(
         JSON.stringify({
           level: "error",
           event: "convex_message_save_failed",
+          ...(fileValidationReason && {
+            file_validation_reason: fileValidationReason,
+          }),
           service: "convex",
           timestamp: new Date().toISOString(),
           db_operation: "messages.saveMessage",
@@ -1091,6 +1161,7 @@ export const saveMessage = mutation({
         code: "MESSAGE_SAVE_FAILED",
         message: "Failed to save message",
         failureStage,
+        ...(fileValidationReason && { fileValidationReason }),
         causeName: getErrorName(error),
         causeMessage: getErrorMessage(error),
         causeData,
@@ -1106,6 +1177,29 @@ export const saveMessage = mutation({
         ...getMessageSaveDiagnostics(args.parts),
       });
     }
+  },
+});
+
+/** Check retry admission independently of the client's loaded history pages. */
+export const isUserMessagePersisted = query({
+  args: { chatId: v.string(), messageId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) throw new Error("Unauthorized: User not authenticated");
+    await assertUserCanAccessChatHistory(ctx, user.subject);
+
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+      .first();
+    // A rejected first admission may not have created the chat yet.
+    if (!message) return false;
+    if (message.user_id !== user.subject || message.chat_id !== args.chatId) {
+      throw new Error("Unauthorized: Message does not belong to this chat");
+    }
+    await loadOwnedChat(ctx, args.chatId, user.subject);
+    return message.role === "user";
   },
 });
 
@@ -1695,8 +1789,11 @@ export const getMessagesPageForBackend = query({
       .order("desc")
       .paginate(withMessagePageReadLimit(args.paginationOpts));
 
+    // Takeover notes are private user instructions needed by subsequent runs.
+    // Client history, search and sharing still exclude every hidden message.
     const visiblePage = result.page.filter(
-      (message) => message.is_hidden !== true,
+      (message) =>
+        message.is_hidden !== true || message.is_browser_handoff === true,
     );
     const fileIds = new Set<Id<"files">>();
     for (const message of visiblePage) {
@@ -2145,6 +2242,8 @@ export const branchChat = mutation({
           content: msg.content,
           file_ids: msg.file_ids,
           source_message_id: msg.id,
+          is_hidden: msg.is_hidden,
+          is_browser_handoff: msg.is_browser_handoff,
           update_time: Date.now(),
           model: msg.model,
           mode: msg.mode,

@@ -47,7 +47,6 @@ describe("processChatMessages authorization metadata", () => {
 
   it.each([
     { mode: "ask", subscription: "free" },
-    { mode: "ask", subscription: "pro" },
     { mode: "agent", subscription: "free" },
     { mode: "agent", subscription: "pro" },
   ] as const)(
@@ -80,12 +79,11 @@ describe("processChatMessages authorization metadata", () => {
         .fn()
         .mockResolvedValue({ enabled: true, variant: "test" });
       const legacyInput = { abliterationPosthog: { getFeatureFlagResult } };
-      for (const subscription of [
-        "pro",
-        "pro-plus",
-        "ultra",
-        "team",
-      ] as const) {
+      const subscriptions =
+        mode === "ask"
+          ? (["free"] as const)
+          : (["pro", "pro-plus", "ultra", "team"] as const);
+      for (const subscription of subscriptions) {
         mockModerationsCreate.mockResolvedValue({
           results: [{ categories: {}, category_scores: { illicit: 0 } }],
         });
@@ -104,7 +102,7 @@ describe("processChatMessages authorization metadata", () => {
           allowsAbliterationContinuation: true,
         });
       }
-      expect(mockModerationsCreate).toHaveBeenCalledTimes(4);
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(subscriptions.length);
       expect(getFeatureFlagResult).not.toHaveBeenCalled();
     },
   );
@@ -132,7 +130,7 @@ describe("processChatMessages authorization metadata", () => {
         ],
         mode,
         userId: "user-1",
-        subscription: "pro",
+        subscription: mode === "ask" ? "free" : "pro",
       });
       expect(result.processedMessages).toEqual([textOnly]);
       expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
@@ -158,7 +156,7 @@ describe("processChatMessages authorization metadata", () => {
       messages,
       mode: "ask",
       userId: "user-1",
-      subscription: "pro",
+      subscription: "free",
     });
 
     expect(result.platformAuthorized).toBe(true);

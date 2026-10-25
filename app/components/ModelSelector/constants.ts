@@ -1,54 +1,35 @@
-import type { ChatMode, SelectedModel } from "@/types/chat";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
+import type { SelectedModel } from "@/types/chat";
 
 export interface ModelOption {
   id: SelectedModel;
   label: string;
   /** Short tagline shown in the hover popup (e.g. "Maximum intelligence for complex work") */
   description?: string;
+  /** Models and reasoning shown beneath the description in the hover popup. */
+  poweredBy?: string;
   thinking?: boolean;
 }
-
-export const ASK_MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: "hackerai-standard",
-    label: "HackerAI Standard",
-    description: "Reliable performance for everyday tasks",
-  },
-  {
-    id: "hackerai-pro",
-    label: "HackerAI Pro",
-    description: "Superior performance for most assignments",
-  },
-  {
-    id: "hackerai-max",
-    label: "HackerAI Max",
-    description: "Maximum intelligence for complex work",
-  },
-];
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   {
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
+    poweredBy: "DeepSeek V4.1 Flash 1017 · High reasoning",
     thinking: true,
   },
   {
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
+    poweredBy: "DeepSeek V4.1 Flash 1017 · Max reasoning",
     thinking: true,
   },
   {
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
+    poweredBy: "Z.ai GLM 5.3 (text), DeepSeek V4.1 Flash 1017 (vision)",
     thinking: true,
   },
 ];
-
-export const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
-  const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
-  return options[0].id;
-};

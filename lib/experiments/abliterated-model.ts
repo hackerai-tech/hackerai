@@ -1,3 +1,4 @@
+import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { phLogger } from "@/lib/posthog/server";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
@@ -125,6 +126,7 @@ export async function evaluateAbliteratedModel({
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
   const shortFollowupEligible =
+    subscription === "pro" &&
     !moderationEligible &&
     moderationChecked &&
     allowsAbliterationContinuation &&
@@ -191,12 +193,21 @@ export async function evaluateAbliteratedModel({
       // Only explicit variants enroll. Off, missing and legacy boolean flags
       // must not create a control cohort or silently enable treatment.
       if (variant === "control" || variant === "test") {
+        // Resolve the shipped route before enrollment locks subsequent policies.
+        // Both control and treatment's later steps must use today's baseline.
+        const baselineModel = resolvePaidProAutoModel({
+          userId,
+          subscription,
+          selectedModel,
+          selectedModelOverride,
+          limitRescue,
+        });
         reportDecision("short_followup_continuity", variant);
         return {
           key: ABLITERATED_SHORT_FOLLOWUP_KEY,
           variant,
-          modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
-          baselineModel: selectedModel,
+          modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
+          baselineModel,
           generationStepLimit: 1,
           selectionSource: "history",
           moderationEligible: false,

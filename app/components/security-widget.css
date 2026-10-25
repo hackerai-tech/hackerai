@@ -1,9 +1,10 @@
 @import "@radix-ui/themes/styles.css";
 @import "@workos-inc/widgets/styles.css";
 
-/* Keep WorkOS widget dialogs above HackerAI's z-50 dialog portals. */
-.woswidgets-dialog-overlay {
-  z-index: 60;
+/* WorkOS omits its overlay class on alert dialogs. Keep both above Settings' z-60 portal. */
+.woswidgets-dialog-overlay,
+.rt-AlertDialogOverlay:has(.woswidgets-dialog) {
+  z-index: 70;
 }
 
 /* Keep the embedded WorkOS security card visually aligned with HackerAI. */

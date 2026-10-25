@@ -67,7 +67,10 @@ import {
   PtySessionManager,
   MAX_CONCURRENT_PTYS_PER_CHAT,
 } from "../utils/pty-session-manager";
-import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalCommandDispatchError,
+} from "../utils/local-sandbox-errors";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -709,7 +712,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.exitCode).toBe(0);
     expect(result.result.output).toContain("ok");
     expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
-    expect(run).toHaveBeenCalledTimes(1);
+    // Retention can run separately; the approved user command must run only once.
+    expect(
+      run.mock.calls.filter(([command]) =>
+        command.endsWith("&& bash scripts/test.sh"),
+      ),
+    ).toHaveLength(1);
   });
 
   test("does not acquire a sandbox before reviewing commands without inspectable indirection", async () => {
@@ -1033,7 +1041,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
-  test("injects the idle timeout only for cloud agent-browser commands", async () => {
+  test("injects browser settings and preserves ordinary commands after optional gate failure", async () => {
     const e2b = {
       jupyterUrl: "http://fake",
       sandboxId: "sandbox-browser-env",
@@ -1063,9 +1071,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const prepareBrowser = jest.fn(async () => ({
       AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
       HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+      PATH: "/tmp/hackerai-browser-000000000000000000000000/bin:/usr/bin",
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
+      hasHandoffScope: jest.fn(() => false),
     } as unknown as NonNullable<ToolContext["browserSessions"]>;
     const tool = createRunTerminalCmd(context);
 
@@ -1106,7 +1116,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
     expect(browserCall?.[0]).toContain(
-      "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;",
+      'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
 
     expect(browserCall?.[1]).toMatchObject({
@@ -1114,9 +1124,51 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
         AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
         HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+        PATH: "/tmp/hackerai-browser-000000000000000000000000/bin:/usr/bin",
       },
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
+
+    (context.browserSessions.hasHandoffScope as jest.Mock).mockReturnValue(
+      true,
+    );
+    const gated = await runTool(tool, {
+      command: "echo gated",
+      brief: "check shell gate",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    expect(gated).toMatchObject({ result: { exitCode: 0 } });
+    expect(
+      e2b.commands.run.mock.calls.find(([command]) =>
+        command.includes("echo gated"),
+      )?.[0],
+    ).toContain(
+      'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH";',
+    );
+    prepareBrowser.mockRejectedValueOnce(new Error("gate unavailable"));
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fallback = await runTool(tool, {
+        command: "echo gate",
+        brief: "check ordinary command",
+        is_background: false,
+        timeout: 5,
+        interactive: false,
+      });
+      expect(fallback).toMatchObject({ result: { exitCode: 0 } });
+      expect(warning).toHaveBeenCalledWith(
+        "[run-terminal-cmd] browser gate unavailable",
+      );
+      expect(
+        e2b.commands.run.mock.calls.find(
+          ([command]) => command === "echo gate",
+        )?.[1],
+      ).not.toHaveProperty("envs");
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   test("injects the idle timeout into cloud interactive browser shells", async () => {
@@ -1150,6 +1202,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const prepareBrowser = jest.fn(async () => ({
       AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
       AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+      PATH: "/tmp/hackerai-browser-111111111111111111111111/bin:/usr/bin",
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
@@ -1172,14 +1225,46 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
           AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
           AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
           AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+          PATH: "/tmp/hackerai-browser-111111111111111111111111/bin:/usr/bin",
         },
       }),
     );
     expect(fakeHandle.sendInput).toHaveBeenCalledWith(
       new TextEncoder().encode(
-        "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
+        "source /tmp/hackerai-browser-111111111111111111111111/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-111111111111111111111111/bin/../guard.sh PATH=/tmp/hackerai-browser-111111111111111111111111/bin:\"$PATH\"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
       ),
     );
+  });
+
+  test("reports a definite setup failure when local session capacity is exhausted", async () => {
+    const run = jest.fn();
+    const { context, ptySessionManager } = makeContext({
+      sandbox: {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: { run },
+      },
+    });
+    for (let i = 0; i < MAX_CONCURRENT_PTYS_PER_CHAT; i++) {
+      await ptySessionManager.create("chat-1", {
+        createHandle: async () => makeFakeHandle(i + 1),
+        cols: 80,
+        rows: 24,
+        sandboxIdentity: "local",
+        originalCommand: "sh",
+      });
+    }
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "echo never dispatched",
+      brief: "capacity",
+      is_background: false,
+      interactive: false,
+      timeout: 5,
+    })) as { result: { error?: string; exitCode?: number | null } };
+    expect(run).not.toHaveBeenCalled();
+    expect(result.result.error).toContain("MAX_CONCURRENT_PTYS_PER_CHAT");
+    expect(result.result.error).not.toContain("outcome is unknown");
+    expect(result.result.exitCode).toBe(1);
   });
 
   test.each([false, true])(
@@ -1983,6 +2068,158 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     ptySessionManager.forget("chat-1", result.result.session!);
   });
+
+  test.each(
+    [false, true].flatMap((background) =>
+      ["transient setup", "permanent setup", "ambiguous publish"].map(
+        (kind) => ({ background, kind }),
+      ),
+    ),
+  )(
+    "retries only proven transient pre-publication failures: %j",
+    async ({ background, kind }) => {
+      const retryable = kind === "transient setup";
+      const dispatched = kind === "ambiguous publish";
+      const run = jest
+        .fn()
+        .mockRejectedValueOnce(
+          new LocalCommandDispatchError(new Error(kind), dispatched, retryable),
+        )
+        .mockResolvedValue({
+          stdout: "recovered",
+          stderr: "",
+          exitCode: 0,
+          pid: 4321,
+        });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          commands: { run },
+        },
+      });
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "bounded command",
+        brief: "test dispatch evidence",
+        is_background: background,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { exitCode?: number | null; error?: string; output: string };
+      };
+      expect(run).toHaveBeenCalledTimes(retryable ? 2 : 1);
+      if (retryable) {
+        expect(result.result.error).toBeUndefined();
+        if (background) expect(result.result.output).toContain("PID: 4321");
+        else {
+          expect(result.result.output).toContain("recovered");
+          expect(result.result.exitCode).toBe(0);
+        }
+      } else if (dispatched) {
+        expect(result.result.exitCode).toBeNull();
+        expect(result.result.error).toContain("outcome is unknown");
+      } else {
+        expect(result.result.exitCode).toBe(1);
+        expect(result.result.error).not.toContain("outcome is unknown");
+      }
+    },
+  );
+
+  test.each([false, true])(
+    "does not replay an uncertain local execution (background=%s)",
+    async (background) => {
+      const run = jest
+        .fn()
+        .mockImplementationOnce(async (_command, opts) => {
+          opts?.onStdout?.("already started\n");
+          throw new Error("Centrifugo client error: transport closed");
+        })
+        .mockResolvedValue({ stdout: "replayed", stderr: "", exitCode: 0 });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          commands: { run },
+        },
+      });
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "bounded command",
+        brief: "test recovery",
+        is_background: background,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { output: string; error?: string; exitCode?: number | null };
+      };
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.error).toContain("Do not rerun");
+      if (!background)
+        expect(result.result.output).toContain("already started");
+    },
+  );
+
+  test.each([false, true])(
+    "saves large unknown-outcome output with a closed notification stream: %s",
+    async (closedStream) => {
+      const fullOutput = "received terminal line\n".repeat(30_000);
+      const write = jest.fn(async (_path: string, _data: string) => undefined);
+      const run = jest.fn(async (command, opts) => {
+        if (!command.includes("large bounded output"))
+          return { stdout: "", stderr: "", exitCode: 0 };
+        opts?.onStdout?.(fullOutput);
+        throw new Error("relay failed after output");
+      });
+      const { context } = makeContext({
+        sandbox: {
+          sandboxKind: "centrifugo" as const,
+          isWindows: () => false,
+          supportsNativeFileRelay: () => true,
+          getWorkingDirectory: () => "/project",
+          commands: { run },
+          files: { write, list: jest.fn(async () => []) },
+        },
+      });
+      const originalWriter = context.writer.write.bind(context.writer);
+      const notificationAttempt = jest.fn();
+      context.writer.write = (part) => {
+        if (
+          part.type === "data-terminal" &&
+          String((part.data as { terminal: string }).terminal).includes(
+            "[Full output (",
+          )
+        ) {
+          notificationAttempt();
+          if (closedStream) throw new Error("notification stream closed");
+        }
+        originalWriter(part);
+      };
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "large bounded output",
+        brief: "retain output",
+        is_background: false,
+        interactive: false,
+        timeout: 5,
+      })) as {
+        result: { output: string; error?: string; exitCode?: number | null };
+      };
+      expect(
+        run.mock.calls.filter(([command]) =>
+          command.includes("large bounded output"),
+        ),
+      ).toHaveLength(1);
+      expect(write).toHaveBeenCalledWith(
+        expect.stringContaining(".txt"),
+        fullOutput,
+      );
+      expect(result.result.output).toContain(
+        write.mock.calls.find(([, data]) => data === fullOutput)![0],
+      );
+      expect(notificationAttempt).toHaveBeenCalled();
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.error).toContain("outcome is unknown");
+    },
+  );
 
   test("does not retry a foreground command after its tool timeout resolves", async () => {
     let rejectFirstAttempt!: (error: Error) => void;

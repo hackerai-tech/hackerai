@@ -171,6 +171,7 @@ function SubscriptionOffer({
           )}
           <Button
             variant="outline"
+            disabled={upgradeLoading}
             onClick={() =>
               redirectToPricing({
                 source: "regional_subscription_first",

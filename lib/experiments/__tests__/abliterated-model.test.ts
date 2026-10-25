@@ -18,6 +18,7 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn(), warn: jest.fn() },
 }));
 import {
+  ABLITERATION_LARGE_FLASH_MODEL_ID,
   ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
   ABLITERATION_LARGE_V2_MODEL_ID,
@@ -29,6 +30,7 @@ describe("Abliteration model identity", () => {
   it("recognizes the internal route and provider model IDs", () => {
     expect(isAbliterationModel(ABLITERATION_MODEL_KEY)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_MODEL_ID)).toBe(true);
+    expect(isAbliterationModel(ABLITERATION_LARGE_FLASH_MODEL_ID)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_KEY)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_ID)).toBe(true);
     expect(isAbliterationModel("model-deepseek-v4-flash-0731")).toBe(false);
@@ -326,6 +328,47 @@ describe("paid moderation-gated three-step Abliteration", () => {
             stepIndex: 1,
           }),
         ).toBe(defaults.selectedModel);
+      },
+    );
+
+    it.each(["ask", "agent"] as const)(
+      "excludes every non-Pro tier from %s follow-up enrollment even with a test flag",
+      async (mode) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+        for (const subscription of [
+          "free",
+          "pro-plus",
+          "ultra",
+          "team",
+        ] as const) {
+          expect(
+            await evaluateAbliteratedModel({
+              ...continuity,
+              mode,
+              subscription,
+            }),
+          ).toBeUndefined();
+        }
+        expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["control", "test"] as const)(
+      "uses the shipped Pro/Auto baseline for the %s arm",
+      async (variant) => {
+        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(variant);
+        const assignment = await evaluateAbliteratedModel({
+          ...continuity,
+          selectedModel: "model-deepseek-v4-flash-vision-pro",
+          selectedModelOverride: "auto",
+        });
+        expect(assignment).toMatchObject({
+          baselineModel: "model-deepseek-v4.1-flash-1017-pro",
+          modelKey:
+            variant === "test"
+              ? ABLITERATION_MODEL_KEY
+              : "model-deepseek-v4.1-flash-1017-pro",
+        });
       },
     );
 

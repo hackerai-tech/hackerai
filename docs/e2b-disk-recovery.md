@@ -109,3 +109,145 @@ state is ambiguous.
 
 Use a disposable synthetic sandbox for an end-to-end rehearsal. Never run a
 test against a customer's workspace.
+
+## Customer-confirmed recovery (default off)
+
+The chat error surface can offer one disk-only recovery confirmation for an
+owned workspace after two **distinct ordinary acquisitions** fail to resume the
+same paused sandbox. SDK retries share an acquisition ID. A single failure
+leaves normal retry behavior intact. Successful acquisition clears the failure
+record. New failure records are limited to users assigned the recovery flag and
+identities compatible with the pinned retry path. Existing pins remain intact
+when the rollout is disabled; disabling a feature never authorizes replacement.
+Customer recovery never invokes a model or replays a previous action.
+
+The customer path is deliberately narrower than the operator CLI. It requires:
+
+- A current cloud-enabled subscription, access gates, explicit PostHog assignment,
+  and a server-owned target manifest matching the web and worker environments.
+- Exact user, sandbox, cluster, template and supported version identity; one
+  workspace in that regional inventory; only recognized metadata (extra metadata
+  may represent a preservation hold).
+- No active parent/child Agent resources, recent workspace activity, migration,
+  cleanup, unresolved recovery or uncertain provider action. Cloud Agent admission,
+  acquisition, cached-client lease refresh and cleanup share the durable fence.
+- Independent provider readback of a known boolean `lifecycle.autoResume` and
+  `onTimeout === "pause"`, checked before and after the atomic recovery claim.
+
+Existing auto-resume workspaces can use the same one-shot path. The
+[E2B reboot contract](https://docs.e2b.dev/sandbox/resume-without-memory) refuses
+reboot while a conflicting memory restore is in flight. If inbound traffic has
+already started the sandbox, connect returns that running sandbox without
+rebooting it. The workflow verifies readiness and persistence in either case;
+it does not claim that memory was discarded when the provider returned an
+already-running workspace. It never pauses a newly running workspace simply to
+force the initial reboot, changes lifecycle settings, or creates a replacement.
+Unknown lifecycle, provider conflict or uncertain recovery outcome requires
+support. Validate these provider semantics on disposable sandboxes before
+rollout, including a real inbound-traffic race.
+
+Only definite 400/422 ordinary resume failures and known SDK/application
+connection deadlines can contribute to a recoverable incident. A known deadline
+remains uncertain: wait the full fifteen-minute idle window after its last
+failure, check leases and active work, then independently verify exact paused
+identity and regional inventory. E2B must refuse the single reboot request if an
+old restore is still starting. Cancellation, 409s, 5xx responses and other unknown
+outcomes remain support-only. Uncertainty from one of those failures cannot be
+erased by a later known timeout or definite failure.
+
+Consent is a user-scoped receipt with a random UUID and server-selected target.
+Unconsumed offers expire for confirmation after ten minutes and can be refreshed.
+“Not now” defers; the customer can reopen the warning after reload. Renewal uses
+an atomic compare-and-set and never resets confirmed, executing or failed
+receipts. Only the winner of atomic confirmation dispatches a task; the atomic
+workspace claim consumes confirmed consent before any provider mutation.
+Execution must begin within ten minutes of confirmation. A newer failure after
+successful recovery routes to support without authorizing another reboot. Task
+retries are disabled. Lost dispatch, interruption or uncertain provider mutation
+requires reconciliation, never a customer reset or automatic retry.
+
+The worker rechecks environment/region, assignment, eligibility, billing-backed
+entitlement and access, then shares the operator recovery procedure. It writes a
+unique synthetic probe, reads its bytes, creates a separate snapshot and lists
+snapshots for the exact sandbox to corroborate the backup receipt. It explicitly
+pauses, resumes normally, checks terminal access, top-level metadata and probe
+bytes, removes the probe, pauses again and independently verifies identity
+and lifecycle. It then reconnects normally and checks terminal/file access and
+running identity before recording `verified_ready` and releasing the fence, pin ordinary acquisition to
+the original sandbox and publish completion. Probe persistence proves our test
+bytes survived that cycle; it does not prove historical file completeness.
+
+Failure or interruption retains the durable fence after a claim. Progress and
+backup IDs remain server-side. The UI displays bounded stage names, then asks
+for support if failed or stale; it never clears a fence or retries a reboot.
+A timed-out provider operation must be reconciled against provider reality.
+After verified recovery the customer can start a new request without reloading.
+Completed tool actions and old jobs are never automatically replayed. The
+operator CLI retains its `verified_paused` outcome and final paused state.
+
+The recovery card is a persistent banner while Cloud is selected. It reads
+server state on navigation/reload and refreshes on cloud acquisition failures,
+so a live stream event or opening a menu is not required to rediscover progress
+or a deferred warning.
+Waiting is polled automatically. Support opens a customer-sendable Messenger
+draft with only the opaque incident reference and status; the help center and
+visible reference remain available if Messenger is blocked.
+
+### Configuration and rollout
+
+[HAC-188](https://linear.app/hackerai/issue/HAC-188/customer-confirmed-disk-recovery-for-repeatedly-failing-cloud)
+owns the hypothesis, guardrails, staged rollout, review date and cleanup plan.
+The flag key is `cloud-workspace-customer-recovery`. No flag or runtime
+configuration is enabled by this code change. Missing configuration, a missing
+flag or unavailable evaluation fails closed.
+
+Before any enablement, independently verify Preview (`hackerai-dev`, project 401167) and Production (144137), plus their Vercel, Trigger and designated Convex
+account/deployment selections. Preview should use 100% of the eligible internal
+synthetic test population. Production must remain inactive/0% until separately
+authorized. Do not copy configuration or credentials between environments.
+
+Set `HACKERAI_ENVIRONMENT` and a server-only `CLOUD_DISK_RECOVERY_TARGETS` JSON
+object on **both** the selected Vercel runtime and matching Trigger worker.
+Keys are supported Trigger region names. Each regional entry has exactly:
+
+```json
+{
+  "environment": "preview",
+  "e2bAccount": "dashboard-verified-account",
+  "e2bProject": "dashboard-verified-project",
+  "expectedApiKeyHmacSha256": "64-lowercase-hex-characters",
+  "expectedRedisHost": "verified.upstash.io",
+  "expectedConvexUrl": "https://verified-deployment.convex.cloud",
+  "expectedDomain": "verified-regional-e2b-domain",
+  "expectedPostHogKeyHmacSha256": "64-lowercase-hex-characters"
+}
+```
+
+Use the same fixed-context key proof as the operator path. The PostHog proof is
+HMAC-SHA256 of that runtime's public project key, keyed with its regional E2B
+key. Account/project names are operator attestations; the provider SDK cannot
+independently resolve them. Record authoritative dashboard evidence before
+writing a manifest. Parse/validate the complete JSON and perform sanitized
+readback. A manifest/env change needs a new web deployment and matching worker
+deployment. A flag-only change needs a new status request/Agent run, provided
+both deployed runtimes already have the correct configuration. Disabling the
+flag blocks new confirmations/executions; existing recovery fences remain.
+
+### Acceptance before enabling
+
+Use only a disposable synthetic Preview sandbox. Exercise both supported
+auto-resume settings. In the actual signed-in Preview app, cause two distinct definite ordinary
+resume failures without changing sandbox identity. A single failure must show
+normal retry; repeated eligible failures must show the loss warning and explicit
+confirmation. Decline, reload, concurrent tabs and a lost response must not
+trigger duplicate work. Confirm once and observe backup/verification progress,
+then issue a new bounded command/file request without reloading, in the original
+workspace. Check terminal and known synthetic file bytes across another normal
+pause/resume. Confirm old actions/jobs were not replayed.
+
+Also rehearse known connection deadlines before/after the idle window, unknown
+resume outcomes, unknown lifecycle, inbound auto-resume conflicts, active work,
+recent lease, concurrent recovery, backup/readback failure, probe mismatch and worker
+interruption. These must refuse recovery or retain the exact fence and require
+support. Unit tests and a synthetic browser component harness do not establish
+provider or authenticated Preview acceptance. Do not test customer sandboxes.

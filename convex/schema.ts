@@ -1,3 +1,5 @@
+import { networkPolicy } from "./cloudNetworkValidators";
+import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -188,6 +190,18 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  cloud_network_settings: defineTable({
+    user_id: v.string(),
+    policy: networkPolicy,
+    revision: v.number(),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("applying"),
+      v.literal("failed"),
+    ),
+    token: v.optional(v.string()),
+    leaseUntil: v.optional(v.number()),
+  }).index("by_user_id", ["user_id"]),
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
     "by_visitor",
     ["visitor_id"],
@@ -233,7 +247,37 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
+  // Normal chat/account deletion still cleans these records. No bulk migration.
+  engagement_scopes: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+    active: v.boolean(),
+    revision: v.number(),
+    rules: v.array(scopeRule),
+    restrictions: v.array(v.string()),
+    status: v.union(
+      v.literal("ready"),
+      v.literal("processing"),
+      v.literal("unavailable"),
+      v.literal("ambiguous"),
+    ),
+    clarification: v.string(),
+    clarificationRequested: v.boolean(),
+    source_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+  engagement_scope_events: defineTable({
+    chat_id: v.string(),
+    source_id: v.string(),
+    source_text: v.string(),
+    source_kind: v.union(v.literal("user_message"), v.literal("user_edit")),
+    status: v.union(v.literal("pending"), v.literal("applied")),
+    revision: v.number(),
+    policy: v.optional(scopePolicy),
+  }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
+    // Legacy field retained for existing chat documents only.
+    engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
     title: v.string(),
     user_id: v.string(),
@@ -315,6 +359,40 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
+  // One private cloud Chromium owner per Agent tool factory. Browser paths and
+  // sandbox identifiers are returned only to service-authenticated functions.
+  browser_handoffs: defineTable({
+    session_id: v.string(),
+    user_id: v.string(),
+    chat_id: v.string(),
+    run_id: v.string(),
+    agent_id: v.string(),
+    sandbox_id: v.string(),
+    trigger_region: v.optional(v.string()),
+    directory: v.string(),
+    state: v.union(
+      v.literal("agent"),
+      v.literal("waiting"),
+      v.literal("claiming"),
+      v.literal("human"),
+      v.literal("recovery"),
+      v.literal("resuming"),
+      v.literal("closed"),
+    ),
+    grant: v.optional(v.string()),
+    waiting_for_handoff: v.optional(v.boolean()),
+    grant_expires_at: v.optional(v.number()),
+    controlled_session_name: v.optional(v.string()),
+    input_id: v.optional(v.string()),
+    input_expires_at: v.optional(v.number()),
+    exit_note_ids: v.optional(v.array(v.string())),
+    exposed_at: v.optional(v.number()),
+    expires_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_session_id", ["session_id"])
+    .index("by_chat_and_agent", ["chat_id", "agent_id"]),
+
   // Backend-only bounded replay state. Never copied into shared/branched chats.
   model_history: defineTable({
     chat_id: v.string(),
@@ -379,6 +457,8 @@ export default defineSchema({
     trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
+    // Private takeover context is retained in model history, never client history.
+    is_browser_handoff: v.optional(v.boolean()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
@@ -583,6 +663,7 @@ export default defineSchema({
     .index("by_s3_key", ["s3_key"]),
 
   task_outcome_surveys: defineTable(taskOutcomeFields)
+    .index("by_survey_kind_and_selected_at", ["survey_kind", "selected_at"])
     .index("by_user_id", ["user_id"])
     .index("by_user_id_and_last_interaction_at", [
       "user_id",

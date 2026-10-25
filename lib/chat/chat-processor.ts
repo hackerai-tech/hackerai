@@ -5,7 +5,7 @@ import {
   type SelectedModel,
   type SubscriptionTier,
 } from "@/types";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { assertChatModeAccess, isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import {
@@ -14,7 +14,7 @@ import {
 } from "@/lib/utils/file-utils";
 import {
   isAnthropicModel,
-  resolveTierToProviderKey,
+  resolveAgentTierToProviderKey,
   type ModelName,
 } from "@/lib/ai/providers";
 import {
@@ -24,6 +24,7 @@ import {
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -39,8 +40,10 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
- *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
- *   Ask Pro uses DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
+ *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
+ *   reasoning; explicit Pro uses max reasoning, including images.
+ *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
+ *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
@@ -57,44 +60,35 @@ export function selectModel(
     directGlmVisionEnabled?: boolean;
   } = {},
 ): ModelName {
+  assertChatModeAccess({ mode, subscription });
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
     selectedModel,
     subscription,
     options,
   );
-  // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
-  // it before the legacy media promotions so every paid plan keeps this route.
+  // Resolve explicit Standard before legacy media promotions so text, images
+  // and PDFs retain the same native DeepSeek snapshot on every paid plan.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {
-    return resolveTierToProviderKey(allowedSelectedModel, mode);
+    return resolveAgentTierToProviderKey(allowedSelectedModel);
   }
   // Pro/Pro+ Auto uses GLM Flash for lower-cost direct vision.
   // Other paid image routes retain DeepSeek Vision. The auxiliary treatment
   // is reserved for MiniMax summary recovery after direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
-  const isFreeAsk = !isAgent && subscription === "free";
-  const hasAskImage =
-    !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   // Paid Auto text and PDF turns use DeepSeek V4.1 Flash on every plan.
   const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
-  // Ask Pro and paid Auto retain their existing model selection.
-  if (
-    isAgent &&
-    subscription !== "free" &&
-    allowedSelectedModel === "hackerai-pro"
-  ) {
-    return "model-deepseek-v4-flash-vision-pro";
+  if (subscription !== "free" && allowedSelectedModel === "hackerai-pro") {
+    return resolveAgentTierToProviderKey(allowedSelectedModel);
   }
-  // Direct image routes are unchanged by the Auto text routing: explicit Pro
-  // and Ask Ultra Auto keep Pro vision reasoning, other routes use Standard.
+  // Direct image routes retain Standard vision reasoning for Auto.
   const isAutoSelection =
     !allowedSelectedModel || allowedSelectedModel === "auto";
   const directVisionModel: ModelName =
-    allowedSelectedModel === "hackerai-pro" ||
-    (isAutoSelection && !isAgent && subscription === "ultra")
+    allowedSelectedModel === "hackerai-pro"
       ? "model-deepseek-v4-flash-vision-pro"
       : "model-deepseek-v4-flash-vision";
   if (
@@ -107,40 +101,27 @@ export function selectModel(
     }
     return directVisionModel;
   }
-  const paidAskMediaModel: ModelName = hasAskImage
-    ? "model-grok-4.5"
-    : paidAutoTextModel;
-
-  const autoModel: ModelName = isAgent
-    ? subscription === "free"
-      ? "model-glm-5.3-flash-agent"
+  const autoModel: ModelName =
+    subscription === "free"
+      ? isAgent
+        ? "model-glm-5.3-flash-agent"
+        : "ask-model-free-glm"
       : hasProviderImage
         ? "model-grok-4.5"
-        : paidAutoTextModel
-    : isFreeAsk
-      ? "ask-model-free-glm"
-      : paidAskMediaModel;
+        : paidAutoTextModel;
 
   // Free users always route through the auto router; paid users may pick an
-  // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
+  // entitled Agent tier explicitly.
   if (isAutoSelection || subscription === "free") {
     return autoModel;
   }
 
-  if (allowedSelectedModel === "hackerai-pro") {
-    return hasProviderImage
-      ? "model-grok-4.5-pro"
-      : "model-deepseek-v4-pro-0813";
-  }
-
-  // GLM 5.3 is the Max text model. Keep image requests on the existing
-  // multimodal route because the retired experiment intentionally excluded
-  // image inputs.
+  // The exact snapshot key applies Max reasoning in buildProviderOptions.
   if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
-    return "model-grok-4.6";
+    return DEEPSEEK_1017_MODEL_KEY;
   }
 
-  const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
+  const providerKey = resolveAgentTierToProviderKey(allowedSelectedModel);
   return providerKey ?? autoModel;
 }
 

@@ -675,6 +675,61 @@ describe("setActiveTriggerRun", () => {
 });
 
 describe("saveMessage", () => {
+  it.each([
+    "file_missing",
+    "file_lookup_failed",
+    "file_not_owned",
+    "private-file-name",
+  ])("logs only an allowlisted file validation reason: %s", async (reason) => {
+    const { saveMessage, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const failure = Object.assign(
+      new Error("[Request ID: file-check] Server Error"),
+      {
+        data: {
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "validate_new_message_file_ownership",
+          fileValidationReason: reason,
+        },
+      },
+    );
+    mockMutation.mockRejectedValue(failure as never);
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const error = await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "attachment" }],
+        },
+      }).catch((e: unknown) => e);
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      const diagnostics = mockPhEvent.mock.calls.find(
+        (call) => call[0] === "database_operation_failed",
+      )?.[1];
+      expect(diagnostics).toBeDefined();
+      expect(diagnostics?.db_file_validation_reason).toBe(
+        reason === "private-file-name" ? undefined : reason,
+      );
+      expect(diagnostics?.db_failure_stage).toBe(
+        "validate_new_message_file_ownership",
+      );
+      expect(error).toMatchObject({ type: "bad_request", surface: "database" });
+      const { serializeChatSDKErrorForStream } = await import("@/lib/errors");
+      const wireError = serializeChatSDKErrorForStream(
+        error as import("@/lib/errors").ChatSDKError,
+      );
+      expect(wireError).toContain(
+        "Something went wrong. Please try again later.",
+      );
+      expect(wireError).not.toContain(reason);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("forwards the durable Trigger run ID to Convex", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
 
@@ -1366,6 +1421,97 @@ describe("getMessagesByChatId", () => {
     }
   });
 
+  it.each([false, true])(
+    "merges an unpersisted retry without replaying saved client history (local files: %s)",
+    async (localFiles) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const oldUser = {
+        id: "old-user",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "stored prompt" }],
+      };
+      const oldAssistant = {
+        id: "old-assistant",
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: "stored answer" }],
+      };
+      const newUser = {
+        id: "pending-user",
+        role: "user" as const,
+        parts: [
+          { type: "text" as const, text: "new request" },
+          ...(localFiles
+            ? [
+                {
+                  type: "file" as const,
+                  mediaType: "text/plain",
+                  url: "",
+                  storage: "local-desktop",
+                  localAttachmentId: "fixture",
+                  localPath: "/fixtures/notes.txt",
+                },
+              ]
+            : []),
+        ],
+      };
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [oldAssistant, oldUser],
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        mode: "ask",
+        regenerate: false,
+        newMessages: [
+          { ...oldUser, parts: [{ type: "text", text: "stale client copy" }] },
+          oldAssistant,
+          newUser,
+          newUser,
+        ],
+        useClientMessagesForRegenerate: true,
+      });
+      expect(result.truncatedMessages).toEqual([
+        oldUser,
+        oldAssistant,
+        newUser,
+      ]);
+    },
+  );
+
+  it("does not append client history older than the fetched page", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const message = (id: string) => ({
+      id,
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: id }],
+    });
+    const older = message("older-client-row");
+    const stored = message("latest-stored-row");
+    const pending = message("pending-row");
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [stored],
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      mode: "ask",
+      regenerate: false,
+      newMessages: [older, stored, pending],
+    });
+    expect(result.truncatedMessages).toEqual([stored, pending]);
+  });
+
   it("retries transient chat history page fetches before falling back", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const existingMessage = {
@@ -1943,6 +2089,96 @@ it("persists server routing markers alongside usage only for assistant messages"
   expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
 });
 
+describe("initial chat persistence diagnostics", () => {
+  const messages = [
+    {
+      id: "message-1",
+      parts: [{ type: "text" as const, text: "private-canary" }],
+    },
+  ];
+
+  it.each([
+    ["save_chat", null, false, "chats:saveChat"],
+    [
+      "reset_stream",
+      { user_id: "user-1" },
+      true,
+      "chatStreams:prepareForNewStream",
+    ],
+    ["save_user_message", { user_id: "user-1" }, false, "messages:saveMessage"],
+  ] as const)(
+    "reports %s while that persistence operation is still waiting",
+    async (step, chat, regenerate, operation) => {
+      const { handleInitialChatAndUserMessage, mockMutation } =
+        await loadSaveMessageWithMocks();
+      let finish!: (value: any) => void;
+      mockMutation.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onPersistenceStep = jest.fn();
+      let settled = false;
+      const pending = handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat,
+        regenerate,
+        onPersistenceStep,
+      }).then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(onPersistenceStep.mock.calls).toEqual([[step]]);
+      const { getFunctionName } = await import("convex/server");
+      expect(getFunctionName(mockMutation.mock.calls[0]![0] as any)).toBe(
+        operation,
+      );
+      finish({ id: "message-1" });
+      await pending;
+      expect(settled).toBe(true);
+    },
+  );
+
+  it("persists the selected environment with the first task write", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await handleInitialChatAndUserMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      messages,
+      chat: null,
+      sandboxType: "desktop",
+    });
+    expect(mockMutation.mock.calls[0][1]).toEqual(
+      expect.objectContaining({ sandboxType: "desktop" }),
+    );
+  });
+
+  it("persists the chat and message in order even if diagnostic reporting throws", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await expect(
+      handleInitialChatAndUserMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        messages,
+        chat: null,
+        onPersistenceStep: () => {
+          throw new Error("diagnostic unavailable");
+        },
+      }),
+    ).resolves.toBeUndefined();
+    const { getFunctionName } = await import("convex/server");
+    expect(
+      mockMutation.mock.calls.map(([fn]) => getFunctionName(fn as any)),
+    ).toEqual(["chats:saveChat", "messages:saveMessage"]);
+  });
+});
+
 describe("regenerated chat initialization", () => {
   const args = {
     chatId: "chat-1",
@@ -1993,10 +2229,16 @@ describe("regenerated chat initialization", () => {
   it("does not clear another owner's cancellation state", async () => {
     const { handleInitialChatAndUserMessage, mockMutation } =
       await loadSaveMessageWithMocks();
+    const onPersistenceStep = jest.fn();
     await expect(
-      handleInitialChatAndUserMessage({ ...args, userId: "other-user" }),
+      handleInitialChatAndUserMessage({
+        ...args,
+        userId: "other-user",
+        onPersistenceStep,
+      }),
     ).rejects.toThrow();
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(onPersistenceStep).not.toHaveBeenCalled();
   });
 
   it("stops initialization when cancellation cleanup fails", async () => {
@@ -2005,5 +2247,40 @@ describe("regenerated chat initialization", () => {
     mockMutation.mockRejectedValue(new Error("Unavailable"));
     await expect(handleInitialChatAndUserMessage(args)).rejects.toThrow();
     expect(mockMutation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("saveMessage cancellation", () => {
+  it("aborts a retry wait before a second mutation is sent", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    mockMutation.mockRejectedValue(new TypeError("fetch failed") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const pending = saveMessage({
+        chatId: "chat",
+        userId: "owner",
+        message: {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "progress" }],
+        },
+        signal: controller.signal,
+      });
+      const rejected = expect(pending).rejects.toBeDefined();
+      for (let i = 0; i < 20 && warn.mock.calls.length === 0; i++)
+        await Promise.resolve();
+      expect(warn).toHaveBeenCalled();
+      controller.abort(new Error("fixture deadline"));
+      await rejected;
+      await jest.runOnlyPendingTimersAsync();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      jest.useRealTimers();
+    }
   });
 });

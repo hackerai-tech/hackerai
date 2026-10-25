@@ -27,6 +27,7 @@ describe("subagent profiles", () => {
         { objective: "Test a browser flow" },
       );
       expect(instructions).toContain("<agent_browser>");
+      expect(instructions).toContain("<target_request_limits>");
       expect(instructions).toContain("Tabs within one session share cookies");
       expect(instructions).toContain(
         "Only when HACKERAI_BROWSER_STATE_DIR is set",
@@ -54,6 +55,7 @@ describe("subagent profiles", () => {
     }
     expect(profile.allowedToolNames).toEqual([
       "run_terminal_cmd",
+      "browser_handoff",
       "interact_terminal_session",
       "get_terminal_files",
       "file",

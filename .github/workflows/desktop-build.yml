@@ -8,6 +8,8 @@ on:
       - "packages/desktop/**"
       - ".github/workflows/desktop-build.yml"
       - ".github/scripts/prepare-desktop-release.sh"
+      - ".github/scripts/*universal-dmg.sh"
+      - ".github/scripts/redact-notary-output.py"
     tags:
       - "desktop-v*"
   workflow_dispatch:
@@ -115,7 +117,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22.23.4
 
       - name: Get pnpm store directory
         shell: bash
@@ -483,43 +485,27 @@ jobs:
 
           hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
 
+      - name: Archive pending universal DMG
+        run: |
+          bash .github/scripts/archive-universal-dmg.sh \
+            "$PWD/HackerAI-universal.dmg" "$PWD/universal-notary-recovery.tar.gz"
+
+      - name: Upload notarization recovery artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notarization-recovery-universal-attempt-${{ github.run_attempt }}
+          path: universal-notary-recovery.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Notarize universal DMG
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
-            echo "::error::Notarization credentials not configured!"
-            exit 1
-          fi
-
-          echo "Notarizing universal DMG..."
-          SUBMIT_OUTPUT=$(xcrun notarytool submit HackerAI-universal.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait 2>&1) || {
-            echo "::error::Notarization failed!"
-            echo "$SUBMIT_OUTPUT"
-
-            SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep -o 'id: [a-f0-9-]*' | head -1 | cut -d' ' -f2)
-            if [ -n "$SUBMISSION_ID" ]; then
-              echo "Fetching notarization log..."
-              xcrun notarytool log "$SUBMISSION_ID" \
-                --apple-id "$APPLE_ID" \
-                --password "$APPLE_PASSWORD" \
-                --team-id "$APPLE_TEAM_ID" || true
-            fi
-            exit 1
-          }
-
-          echo "$SUBMIT_OUTPUT"
-          echo "Stapling notarization ticket to DMG..."
-          xcrun stapler staple HackerAI-universal.dmg
-
-          echo "Verifying notarization..."
-          spctl --assess --type open --context context:primary-signature -v HackerAI-universal.dmg || true
+          bash .github/scripts/notarize-universal-dmg.sh \
+            "$PWD/HackerAI-universal.dmg" "$RUNNER_TEMP/universal-dmg-notary.txt"
 
       - name: Upload universal artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

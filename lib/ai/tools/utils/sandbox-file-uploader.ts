@@ -18,6 +18,7 @@ import {
   type S3StorageRegion,
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
+import { getLocalFileRequestFailure } from "./local-sandbox-errors";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
@@ -37,6 +38,12 @@ export type UploadedFileInfo = {
   s3Key?: string;
   sizeBytes: number;
 };
+
+export type GeneratedFileUploadPhase =
+  "file_metadata" | "upload_url" | "transfer" | "file_registration";
+
+export type NativeStatFailureReason =
+  "stat_failed" | "file_missing" | "not_regular_file" | "invalid_file_size";
 
 /**
  * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
@@ -91,8 +98,14 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function shouldTryWindowsFileSizeFallback(sandbox: AnySandbox): boolean {
-  return isCentrifugoSandbox(sandbox) && sandbox.isWindows();
+async function shouldUseWindowsFileSizeCommand(
+  sandbox: AnySandbox,
+): Promise<boolean> {
+  return (
+    isCentrifugoSandbox(sandbox) &&
+    (await sandbox.detectShell()) === "cmd" &&
+    sandbox.isWindows()
+  );
 }
 
 function formatUnsupportedWindowsPathCharacter(character: string): string {
@@ -122,14 +135,8 @@ function assertWindowsFileSizeFallbackPathSafe(fullPath: string): void {
 function formatFileSizeFailure(
   fullPath: string,
   statResult: SandboxCommandResult,
-  winResult?: SandboxCommandResult,
 ): Error {
-  const details = [
-    statResult.stderr,
-    statResult.stdout,
-    winResult?.stderr,
-    winResult?.stdout,
-  ]
+  const details = [statResult.stderr, statResult.stdout]
     .map((value) => value?.trim())
     .filter(Boolean)
     .join("; ");
@@ -144,26 +151,63 @@ function formatFileSizeFailure(
 async function getSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
+  onNativeStatFailure?: (
+    reason: NativeStatFailureReason,
+  ) => void | Promise<void>,
 ): Promise<number> {
   if (isCentrifugoSandbox(sandbox) && sandbox.supportsNativeFileRelay?.()) {
     // Desktop already provides shell-independent metadata. A POSIX stat or
     // cmd.exe fallback can fail even when the native bridge can read the file.
     // Preserve native errors instead of bypassing them through another adapter.
-    const metadata = await sandbox.files.stat(fullPath);
-    if (metadata.kind === "missing") {
-      throw new Error(`File not found: ${fullPath}`);
+    let failureReason: NativeStatFailureReason = "stat_failed";
+    try {
+      const metadata = await sandbox.files.stat(fullPath);
+      if (metadata.kind === "missing") {
+        failureReason = "file_missing";
+        throw new Error(`File not found: ${fullPath}`);
+      }
+      if (metadata.kind !== "file") {
+        failureReason = "not_regular_file";
+        throw new Error(`Cannot upload ${fullPath}: not a regular file`);
+      }
+      if (
+        typeof metadata.sizeBytes !== "number" ||
+        !Number.isSafeInteger(metadata.sizeBytes) ||
+        metadata.sizeBytes < 0
+      ) {
+        failureReason = "invalid_file_size";
+        throw new Error("Desktop file bridge returned an invalid file size");
+      }
+      return metadata.sizeBytes;
+    } catch (error) {
+      if (onNativeStatFailure) {
+        try {
+          void Promise.resolve(onNativeStatFailure(failureReason)).catch(
+            () => {},
+          );
+        } catch {
+          // Optional observers must preserve the original native failure.
+        }
+      }
+      try {
+        logger.warn("sandbox_generated_file_native_stat_failed", {
+          event: "sandbox_generated_file_native_stat_failed",
+          service: "chat-handler",
+          ...getSandboxLogFields(sandbox),
+          failure_reason: failureReason,
+          ...(failureReason === "stat_failed" && {
+            native_stat_error_category: getLocalFileRequestFailure(error),
+          }),
+        });
+      } catch {
+        // Diagnostics must preserve the original metadata failure.
+      }
+      throw error;
     }
-    if (metadata.kind !== "file") {
-      throw new Error(`Cannot upload ${fullPath}: not a regular file`);
-    }
-    if (
-      typeof metadata.sizeBytes !== "number" ||
-      !Number.isSafeInteger(metadata.sizeBytes) ||
-      metadata.sizeBytes < 0
-    ) {
-      throw new Error("Desktop file bridge returned an invalid file size");
-    }
-    return metadata.sizeBytes;
+  }
+
+  if (await shouldUseWindowsFileSizeCommand(sandbox)) {
+    return getWindowsSandboxFileSize(sandbox, fullPath);
   }
 
   const quotedPath = shellQuote(fullPath);
@@ -196,30 +240,36 @@ async function getSandboxFileSize(
     statResult = commandResult;
   }
 
-  let fileSize = parseInt(statResult.stdout.trim(), 10);
+  const fileSize = parseInt(statResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && statResult.exitCode === 0) {
     return fileSize;
   }
 
-  if (!shouldTryWindowsFileSizeFallback(sandbox)) {
-    logger.error("sandbox_generated_file_size_failed", undefined, {
-      event: "sandbox_generated_file_size_failed",
-      service: "chat-handler",
-      ...getSandboxLogFields(sandbox),
-      file_name: getFileNameFromPath(fullPath),
-      file_path: fullPath,
-      stat_exit_code: statResult.exitCode,
-      stat_stderr: statResult.stderr?.slice(0, 500),
-      stat_stdout: statResult.stdout?.slice(0, 500),
-    });
-    throw formatFileSizeFailure(fullPath, statResult);
-  }
+  logger.error("sandbox_generated_file_size_failed", undefined, {
+    event: "sandbox_generated_file_size_failed",
+    service: "chat-handler",
+    ...getSandboxLogFields(sandbox),
+    file_name: getFileNameFromPath(fullPath),
+    file_path: fullPath,
+    stat_exit_code: statResult.exitCode,
+    stat_stderr: statResult.stderr?.slice(0, 500),
+    stat_stdout: statResult.stdout?.slice(0, 500),
+  });
+  throw formatFileSizeFailure(fullPath, statResult);
+}
+
+async function getWindowsSandboxFileSize(
+  sandbox: AnySandbox,
+  fullPath: string,
+): Promise<number> {
+  const commandOptions = buildSandboxCommandOptions(sandbox);
 
   assertWindowsFileSizeFallbackPathSafe(fullPath);
 
-  // Windows cmd.exe fallback: delayed expansion avoids reparsing path
-  // metacharacters such as & after the command has been parsed.
-  const winCommand = `setlocal EnableDelayedExpansion && for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI`;
+  // The relay may set env vars earlier in the same cmd.exe /C command.
+  // Enable delayed expansion in a child: inline SETLOCAL has no effect outside
+  // a batch file. Keep the path in env so shell metacharacters remain data.
+  const winCommand = `cmd /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
   let winResult: SandboxCommandResult;
   try {
     winResult = await sandbox.commands.run(winCommand, {
@@ -244,9 +294,6 @@ async function getSandboxFileSize(
           ...getSandboxLogFields(sandbox),
           file_name: getFileNameFromPath(fullPath),
           file_path: fullPath,
-          stat_exit_code: statResult.exitCode,
-          stat_stderr: statResult.stderr?.slice(0, 500),
-          stat_stdout: statResult.stdout?.slice(0, 500),
           error: errorToLog(error),
         },
       );
@@ -254,7 +301,7 @@ async function getSandboxFileSize(
     }
     winResult = commandResult;
   }
-  fileSize = parseInt(winResult.stdout.trim(), 10);
+  const fileSize = parseInt(winResult.stdout.trim(), 10);
   if (!isNaN(fileSize) && winResult.exitCode === 0) {
     return fileSize;
   }
@@ -265,14 +312,11 @@ async function getSandboxFileSize(
     ...getSandboxLogFields(sandbox),
     file_name: getFileNameFromPath(fullPath),
     file_path: fullPath,
-    stat_exit_code: statResult.exitCode,
-    stat_stderr: statResult.stderr?.slice(0, 500),
-    stat_stdout: statResult.stdout?.slice(0, 500),
     windows_exit_code: winResult.exitCode,
     windows_stderr: winResult.stderr?.slice(0, 500),
     windows_stdout: winResult.stdout?.slice(0, 500),
   });
-  throw formatFileSizeFailure(fullPath, statResult, winResult);
+  throw formatFileSizeFailure(fullPath, winResult);
 }
 
 function assertSandboxFileSizeAllowed(fileName: string, size: number): void {
@@ -397,6 +441,9 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         media_type: mediaType,
         error: errorToLog(error),
       });
+      // The Windows adapter already selected its available HTTP client. The
+      // fallback below requires a POSIX shell and cannot recover that failure.
+      if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) throw error;
     }
   }
 
@@ -457,7 +504,22 @@ export async function uploadSandboxFileToConvex(args: {
   mediaType?: string;
   name?: string;
   storageRegion?: S3StorageRegion;
+  onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
+  onNativeStatFailure?: (
+    reason: NativeStatFailureReason,
+  ) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
+  const recordPhase = (phase: GeneratedFileUploadPhase) => {
+    try {
+      if (args.onPhase) {
+        void Promise.resolve(args.onPhase(phase)).catch(() => {
+          // An async observer must not create an unhandled rejection either.
+        });
+      }
+    } catch {
+      // Optional diagnostics must not affect the upload or its original error.
+    }
+  };
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
       "NEXT_PUBLIC_CONVEX_URL is required for sandbox file uploads",
@@ -474,7 +536,12 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
   const name = args.name || getFileNameFromPath(fullPath);
-  const fileSize = await getSandboxFileSize(sandbox, fullPath);
+  recordPhase("file_metadata");
+  const fileSize = await getSandboxFileSize(
+    sandbox,
+    fullPath,
+    args.onNativeStatFailure,
+  );
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
       event: "sandbox_generated_file_too_large",
@@ -494,6 +561,7 @@ export async function uploadSandboxFileToConvex(args: {
   let s3Key: string;
   let storageLocation: S3StorageLocation;
   try {
+    recordPhase("upload_url");
     const generatedUrl = args.storageRegion
       ? await generateS3UploadUrl(
           name,
@@ -526,6 +594,7 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   try {
+    recordPhase("transfer");
     await uploadGeneratedFileFromSandboxToUrl({
       sandbox,
       fullPath,
@@ -553,6 +622,7 @@ export async function uploadSandboxFileToConvex(args: {
   }
 
   try {
+    recordPhase("file_registration");
     const saved = await convex.action(
       api.fileActions.saveSandboxGeneratedFile,
       {

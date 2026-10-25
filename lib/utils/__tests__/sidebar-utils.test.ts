@@ -1,4 +1,9 @@
-import { extractSidebarContentFromMessage } from "../sidebar-utils";
+import {
+  extractSidebarContentFromMessage,
+  isSameSidebarContent,
+  reconcileSidebarContentAfterRegeneration,
+} from "../sidebar-utils";
+import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
   it("shows the generated command while automatic review is still pending", () => {
@@ -474,5 +479,75 @@ describe("report tool sidebar history", () => {
       kind: "tool-error",
       toolCallId: "malformed",
     });
+  });
+});
+
+describe("subagent sidebar reconciliation after regeneration", () => {
+  const parentMessage = {
+    id: "parent-message",
+    role: "assistant",
+    parts: [
+      {
+        type: "tool-create_agent",
+        toolCallId: "create-agent",
+        state: "output-available",
+        input: { task: "Check fixture" },
+        output: { agent_id: "child-agent" },
+      },
+    ],
+  };
+  const childSelection: SidebarContent = {
+    command: "pwd",
+    output: "/tmp",
+    isExecuting: false,
+    toolCallId: "child-tool",
+    origin: {
+      kind: "subagent",
+      subagentId: "child-agent",
+      returnContent: {
+        kind: "subagents",
+        parentMessageId: "parent-message",
+        toolCallId: "create-agent",
+      },
+    },
+  };
+
+  it("preserves a child output when its parent tool survives", () => {
+    expect(
+      reconcileSidebarContentAfterRegeneration([parentMessage], childSelection),
+    ).toBe(childSelection);
+  });
+
+  it("clears a child output when its parent response is discarded", () => {
+    expect(
+      reconcileSidebarContentAfterRegeneration([], childSelection),
+    ).toBeNull();
+  });
+});
+
+describe("finding sidebar selection identity", () => {
+  const receipt: SidebarContent = {
+    findingId: "finding-1",
+    title: "Saved finding",
+    target: "authorized lab",
+    severity: "medium",
+    cvssScore: 5.3,
+    isExecuting: false,
+    toolCallId: "report-call",
+  };
+
+  it("matches a finding opened without a tool receipt", () => {
+    expect(isSameSidebarContent(receipt, { ...receipt, toolCallId: "" })).toBe(
+      true,
+    );
+  });
+
+  it("does not match a discarded tool receipt for the same finding", () => {
+    expect(
+      isSameSidebarContent(receipt, {
+        ...receipt,
+        toolCallId: "discarded-call",
+      }),
+    ).toBe(false);
   });
 });

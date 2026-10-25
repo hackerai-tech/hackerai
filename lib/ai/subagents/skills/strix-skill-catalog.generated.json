@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "d8c00a8f4ebadec265582fb777081067a35f79d3",
+  "sourceCommit": "200a501f15a24a4152f92897a6b72af238ee69ef",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -8,10 +8,10 @@
       "filename": "counterevidence",
       "name": "counterevidence",
       "description": "Closure discipline for security findings — what counts as proof of safety, what does not, and how to record an unresolved candidate instead of silently dropping it",
-      "contentBytes": 8942,
+      "contentBytes": 9038,
       "internal": true,
       "sourcePath": "analysis/counterevidence.md",
-      "sourceSha256": "3e729859564e68859eb588862d3c20a1fd65d88b49418b3e0e18f34eebae1d2d"
+      "sourceSha256": "21f3edf62e0d0aca00f0835e4ebd33bd2efd85d0890cc644649f99a7394691d4"
     },
     {
       "id": "analysis/fix_verification",
@@ -41,10 +41,10 @@
       "filename": "source_aware_discovery",
       "name": "source_aware_discovery",
       "description": "Enumeration discipline for reading code — which locations to keep as separate candidates, which safe siblings prove nothing, and the per-family sweeps that are routinely missed",
-      "contentBytes": 10541,
+      "contentBytes": 10648,
       "internal": true,
       "sourcePath": "analysis/source_aware_discovery.md",
-      "sourceSha256": "5d0b9818f54b194b0b183926465c123aff19b53080e688dee78e3436316811cf"
+      "sourceSha256": "e91219d685215d5daaa1293214df927949d11568ab95be083482ef7bee0d6f42"
     },
     {
       "id": "cloud/aws",
@@ -96,10 +96,10 @@
       "filename": "root_agent",
       "name": "root-agent",
       "description": "Orchestration layer that coordinates specialized subagents for security assessments",
-      "contentBytes": 5875,
+      "contentBytes": 5911,
       "internal": true,
       "sourcePath": "coordination/root_agent.md",
-      "sourceSha256": "1405ce4ba9fc38862195c7e65de2f6a1768f02a0490cdf8cb153137ee667834c"
+      "sourceSha256": "fe5ba2d54a231e563ff925f1f0389238096cc688cef3715df2ab6769f79f26aa"
     },
     {
       "id": "coordination/source_aware_whitebox",
@@ -261,10 +261,10 @@
       "filename": "diff",
       "name": "diff",
       "description": "Methodology for diff-scoped review of a pull request, commit, or branch — what counts as in scope, how far to follow a change, and what not to report",
-      "contentBytes": 3675,
+      "contentBytes": 3900,
       "internal": true,
       "sourcePath": "scan_modes/diff.md",
-      "sourceSha256": "a7b6ab15cd0ed411449f7813ba272cb95c34d79a897b48fed9cbb59583fd40a6"
+      "sourceSha256": "77161a9f265e706e488aa7a6160c3a55553c06a14a90cd8f9cd36c4ac6e74d83"
     },
     {
       "id": "scan_modes/quick",
@@ -667,11 +667,11 @@
       "category": "vulnerabilities",
       "filename": "xss",
       "name": "xss",
-      "description": "XSS testing covering reflected, stored, and DOM-based vectors with CSP bypass techniques",
-      "contentBytes": 7786,
+      "description": "XSS and HTML injection testing covering reflected, stored, DOM-based, and normalization-dependent vectors",
+      "contentBytes": 9461,
       "internal": false,
       "sourcePath": "vulnerabilities/xss.md",
-      "sourceSha256": "3eba51fd17b527eccaad21a9f1a07aa638ffd61d85f573c49360229e068bcc97"
+      "sourceSha256": "109a167107153d6d0c24c187948a4a05a6408785866f952f5ec070d19c3b68a8"
     },
     {
       "id": "vulnerabilities/xxe",

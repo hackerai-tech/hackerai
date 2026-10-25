@@ -1,4 +1,9 @@
 import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+  DEEPSEEK_1017_CANONICAL_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
+import {
   ABLITERATION_LARGE_V2_MODEL_KEY,
   ABLITERATION_MODEL_KEY,
   isAbliterationModel,
@@ -28,7 +33,6 @@ import type {
   UserCustomization,
 } from "@/types";
 import {
-  DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
   GLM_5_3_SLUG,
   GROK_4_5_SLUG,
@@ -444,6 +448,7 @@ export async function runSummarizationStep(options: {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   providerInputTokens?: number;
+  preparedInputTokens?: number;
   chatSystemPrompt: string;
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
@@ -474,6 +479,7 @@ export async function runSummarizationStep(options: {
     ensureSandbox: options.ensureSandbox,
     systemPromptTokens: options.systemPromptTokens,
     providerInputTokens: options.providerInputTokens ?? 0,
+    preparedInputTokens: options.preparedInputTokens,
     chatSystemPrompt: options.chatSystemPrompt,
     tools: options.tools,
     providerOptions: options.providerOptions,
@@ -675,6 +681,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-vision": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  [DEEPSEEK_1017_MODEL_KEY]: DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -708,6 +715,8 @@ export function isAutoModelSelectionForRetry({
   return (
     !selectedModelOverride ||
     selectedModelOverride === "auto" ||
+    (selectedModelOverride === "hackerai-max" &&
+      selectedModel === DEEPSEEK_1017_MODEL_KEY) ||
     AUTO_MODEL_KEYS.has(selectedModel) ||
     EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
   );
@@ -724,13 +733,15 @@ export function isExplicitDeepSeekProSelectionForRetry({
 }): boolean {
   return (
     selectedModelOverride === "hackerai-pro" &&
-    (EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
+    (selectedModel === DEEPSEEK_1017_MODEL_KEY ||
+      EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
       (mode === "agent" &&
         selectedModel === "model-deepseek-v4-flash-vision-pro"))
   );
 }
 
 const HIGH_REASONING_MODELS = [
+  DEEPSEEK_1017_MODEL_KEY,
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -748,6 +759,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
+  /** Max uses explicit recovery so each model gets its own reasoning policy. */
+  selectedModelOverride?: SelectedModel;
   /** Preserve the authenticated free Ask policy across model retries. */
   isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
@@ -788,8 +801,13 @@ const getFallbackKeys = (
 /** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
-  _mode: ChatMode,
+  mode: ChatMode,
+  selectedModelOverride?: SelectedModel,
 ): ModelName {
+  if (mode === "agent" && selectedModelOverride === "hackerai-max") {
+    // Grok is admitted only by the context-aware final recovery decision.
+    return DEEPSEEK_1017_MODEL_KEY;
+  }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
     return "model-deepseek-v4-pro-0813";
   }
@@ -803,6 +821,7 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-flash-vision";
   }
   if (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
@@ -932,9 +951,13 @@ const resolveSlug = (modelName: string): string | undefined => {
  */
 export function getFallbackSlugs(
   modelName?: string,
-  _mode?: ChatMode,
+  mode?: ChatMode,
   options: FallbackOptions = {},
 ): string[] {
+  // Transparent fallbacks share reasoning options and can lower context capacity.
+  // Max instead uses bounded, context-checked app-side recovery attempts.
+  if (mode === "agent" && options.selectedModelOverride === "hackerai-max")
+    return [];
   const fallbackKeys = getFallbackKeys(modelName);
   const excludedModelSlugs = options.excludedModelSlugs ?? [];
   return (
@@ -952,6 +975,8 @@ export function getFallbackSlugs(
 
 const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
+  [DEEPSEEK_1017_SLUG]: DEEPSEEK_1017_MODEL_KEY,
+  [DEEPSEEK_1017_CANONICAL_SLUG]: DEEPSEEK_1017_MODEL_KEY,
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
   // Historical provider responses keep their original rates even though the
@@ -968,7 +993,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
-  [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
+  // Keep historical responses separate from the active 1017 snapshot above.
+  "deepseek/deepseek-v4.1-flash": "model-deepseek-v4-flash-vision",
   "deepseek/deepseek-v4.1-flash-20260910": "model-deepseek-v4-flash-vision",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
@@ -1074,6 +1100,15 @@ export function buildProviderOptions(
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
+  // Only explicit tier requests on the snapshot use this policy. The legacy
+  // vision aliases also serve allowance rescue and retain their own defaults.
+  const isExplicitPaidFlashTier =
+    mode === "agent" &&
+    modelName === DEEPSEEK_1017_MODEL_KEY &&
+    (modelId === DEEPSEEK_1017_SLUG ||
+      modelId === DEEPSEEK_1017_CANONICAL_SLUG) &&
+    (options.selectedModelOverride === "hackerai-standard" ||
+      options.selectedModelOverride === "hackerai-pro");
   const baseProviderRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
@@ -1091,37 +1126,51 @@ export function buildProviderOptions(
       }
     : baseProviderRouting;
   // GLM titles need mandatory reasoning, kept low for the small output budget.
-  const reasoning = isTitleGeneration
-    ? { enabled: true, effort: "low" }
-    : isStandardGlmFlashVision
+  const reasoning = isExplicitPaidFlashTier
+    ? {
+        enabled: true,
+        effort:
+          options.selectedModelOverride === "hackerai-pro" ? "max" : "high",
+      }
+    : modelName === DEEPSEEK_1017_MODEL_KEY
       ? {
           enabled: true,
-          effort: "high",
+          effort:
+            mode === "agent" && options.selectedModelOverride === "hackerai-max"
+              ? "max"
+              : "high",
         }
-      : isMediumGrok45Vision
-        ? {
-            enabled: true,
-            effort: "medium",
-          }
-        : routesThroughHighReasoningModel
-          ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-            ? options.reasoningOverride
-            : {
+      : isTitleGeneration
+        ? { enabled: true, effort: "low" }
+        : isStandardGlmFlashVision
+          ? {
+              enabled: true,
+              effort: "high",
+            }
+          : isMediumGrok45Vision
+            ? {
                 enabled: true,
-                effort: "high",
+                effort: "medium",
               }
-          : (options.reasoningOverride ??
-            (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-              ? {
-                  enabled: true,
-                  effort: "high",
-                }
-              : isReasoningModel
-                ? {
+            : routesThroughHighReasoningModel
+              ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+                ? options.reasoningOverride
+                : {
                     enabled: true,
-                    ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                    effort: "high",
                   }
-                : { enabled: false }));
+              : (options.reasoningOverride ??
+                (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+                  ? {
+                      enabled: true,
+                      effort: "high",
+                    }
+                  : isReasoningModel
+                    ? {
+                        enabled: true,
+                        ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                      }
+                    : { enabled: false }));
 
   return {
     openrouter: {
@@ -1141,7 +1190,12 @@ export function buildProviderOptions(
       ...(userId && { user: userId }),
       ...(isDeepSeekV4 &&
         options.cacheSessionId && { session_id: options.cacheSessionId }),
-      ...(providerRouting && { provider: providerRouting }),
+      ...((providerRouting || isExplicitPaidFlashTier) && {
+        provider: {
+          ...providerRouting,
+          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+        },
+      }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
@@ -1497,25 +1551,7 @@ export function assertFreeAgentGates(args: {
   }
 }
 
-/**
- * Paid plans are Agent-only. Enforce this at the API boundary so stale clients
- * and direct requests cannot restore the removed paid Ask path.
- */
-export function assertChatModeAccess(args: {
-  mode: unknown;
-  subscription: SubscriptionTier;
-}): void {
-  if (args.mode !== "ask" && args.mode !== "agent") {
-    throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
-  }
-
-  if (args.mode !== "ask" || args.subscription === "free") return;
-
-  throw new ChatSDKError(
-    "forbidden:chat",
-    "Paid plans use Agent mode. Ask mode is only available on the free plan.",
-  );
-}
+export { assertChatModeAccess } from "@/lib/utils/mode-helpers";
 
 /**
  * Build the extra-usage config for paid users with `extra_usage_enabled`.

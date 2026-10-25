@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
@@ -7,6 +7,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
+import { phLogger } from "@/lib/posthog/server";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
@@ -456,6 +457,8 @@ export const POST = async (req: NextRequest) => {
     );
 
     stage = "terminate_cloud_sandboxes";
+    // Keep below-threshold lifecycle events on both success and failure paths.
+    after(() => phLogger.flush());
     await terminateCloudSandboxesForUser(userId, { permanent: true });
 
     // Own app-data cleanup on the server so account deletion does not depend

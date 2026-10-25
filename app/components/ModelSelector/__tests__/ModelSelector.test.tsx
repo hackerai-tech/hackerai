@@ -77,7 +77,7 @@ describe("ModelSelector", () => {
   });
 
   it("shows model choices immediately while Auto is selected", () => {
-    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
 
@@ -96,7 +96,7 @@ describe("ModelSelector", () => {
   });
 
   it.each(["ask", "agent"] as const)(
-    "shows capability descriptions without provider names in %s mode",
+    "shows model names alongside capability descriptions on hover in %s mode",
     async (mode) => {
       mockMaxEntitlement = {
         extraUsageAvailable: false,
@@ -108,13 +108,27 @@ describe("ModelSelector", () => {
       render(<ModelSelector value="auto" onChange={jest.fn()} mode={mode} />);
       fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
 
+      await user.hover(
+        screen.getByRole("button", { name: /HackerAI Standard/i }),
+      );
+      expect(
+        await screen.findAllByText(
+          "Powered by DeepSeek V4.1 Flash 1017 · High reasoning",
+        ),
+      ).not.toHaveLength(0);
+      await user.unhover(
+        screen.getByRole("button", { name: /HackerAI Standard/i }),
+      );
+
       await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
       expect(
         await screen.findAllByText("Superior performance for most assignments"),
       ).not.toHaveLength(0);
       expect(
-        screen.queryByText(/Powered by|DeepSeek|GLM|Z\.ai/i),
-      ).not.toBeInTheDocument();
+        await screen.findAllByText(
+          "Powered by DeepSeek V4.1 Flash 1017 · Max reasoning",
+        ),
+      ).not.toHaveLength(0);
 
       await user.unhover(screen.getByRole("button", { name: /HackerAI Pro/i }));
       await user.hover(screen.getByRole("button", { name: /HackerAI Max/i }));
@@ -122,15 +136,28 @@ describe("ModelSelector", () => {
         await screen.findAllByText("Maximum intelligence for complex work"),
       ).not.toHaveLength(0);
       expect(
-        screen.queryByText(/Powered by|DeepSeek|GLM|Z\.ai/i),
-      ).not.toBeInTheDocument();
+        await screen.findAllByText(
+          "Powered by Z.ai GLM 5.3 (text), DeepSeek V4.1 Flash 1017 (vision)",
+        ),
+      ).not.toHaveLength(0);
     },
   );
+
+  it("keeps Agent tiers locked as upgrades in Free Ask", () => {
+    mockSubscription = "free";
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Model$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(mockRedirectToPricing).toHaveBeenCalled();
+  });
 
   it("selects Auto as a first-class option", () => {
     const onChange = jest.fn();
     render(
-      <ModelSelector value="hackerai-pro" onChange={onChange} mode="ask" />,
+      <ModelSelector value="hackerai-pro" onChange={onChange} mode="agent" />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
@@ -141,19 +168,6 @@ describe("ModelSelector", () => {
     );
 
     expect(onChange).toHaveBeenCalledWith("auto");
-  });
-
-  it("selects HackerAI Pro in ask mode without a high-cost warning", () => {
-    const onChange = jest.fn();
-    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
-
-    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /HackerAI Pro/i }));
-
-    expect(
-      screen.queryByTestId("high-cost-model-warning"),
-    ).not.toBeInTheDocument();
-    expect(onChange).toHaveBeenCalledWith("hackerai-pro");
   });
 
   it("selects HackerAI Pro in agent mode without a high-cost warning", () => {
