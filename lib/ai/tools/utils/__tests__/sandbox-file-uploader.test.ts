@@ -679,6 +679,36 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
+  test("retains diagnostic status from a command error message when stderr is empty", async () => {
+    const sandbox = makeSandbox(1234, true);
+    const originalRun = sandbox.commands.run.getMockImplementation()!;
+    const error = Object.assign(
+      new Error("curl: (22) The requested URL returned error: 403"),
+      { exitCode: 22, stderr: "" },
+    );
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (command.includes("curl -fsSL -X PUT")) throw error;
+      return originalRun(command);
+    });
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/report.txt",
+      }),
+    ).rejects.toThrow("curl: (22) The requested URL returned error: 403");
+    const event = consoleErrorSpy.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .find((value) => value.event === "sandbox_generated_file_upload_failed");
+    expect(event).toMatchObject({
+      upload_reported_http_status: 403,
+      exit_code: 22,
+    });
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+    expect(mockConvexAction).not.toHaveBeenCalled();
+  });
+
   test("reports command upload stderr instead of a bare exit status", async () => {
     const sandbox = makeSandbox(1234, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(

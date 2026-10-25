@@ -493,7 +493,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       file_path: fullPath,
       media_type: mediaType,
       exit_code: result.exitCode,
-      ...getUploadFailureDiagnostics(uploadUrl, result.stderr),
+      ...getUploadFailureDiagnostics(uploadUrl, result.stderr || result.stdout),
       stderr: result.stderr?.slice(0, 500),
       stdout: result.stdout?.slice(0, 500),
     });
