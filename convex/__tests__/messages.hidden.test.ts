@@ -445,6 +445,56 @@ describe("saveMessage — is_hidden handling", () => {
     );
   });
 
+  it.each([
+    ["user", "stop", "stop", false],
+    ["assistant", "aborted", "stop", false],
+    ["assistant", "stop", "aborted", true],
+    ["assistant", "", "stop", true],
+  ] as const)(
+    "bases seed eligibility on persisted %s/%s when the update requests %s",
+    async (role, storedFinishReason, requestedFinishReason, shouldSeed) => {
+      const existing = makeMessage({
+        id: "updated-response",
+        role,
+        finish_reason: storedFinishReason,
+      });
+      setupExistingMessage(existing);
+      const { saveMessage } = await import("../messages");
+      await saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "updated-response",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: [{ type: "text", text: "completed response" }],
+        finishReason: requestedFinishReason,
+        usage: {
+          abliterationRouting: {
+            version: 1,
+            source: "moderation",
+            completed: true,
+          },
+        },
+      });
+      const messagePatch = mockCtx.db.patch.mock.calls.find(
+        ([id]: [string]) => id === existing._id,
+      )?.[1];
+      expect({ ...existing, ...messagePatch }).toMatchObject({
+        role,
+        finish_reason: storedFinishReason || requestedFinishReason,
+      });
+      const seedPatch = mockCtx.db.patch.mock.calls.find(
+        ([id, patch]: [string, Record<string, unknown>]) =>
+          id === "chat-doc-1" && "abliteration_seed_count" in patch,
+      )?.[1];
+      if (shouldSeed) {
+        expect(seedPatch).toMatchObject({ abliteration_seed_count: 1 });
+      } else {
+        expect(seedPatch).toBeUndefined();
+      }
+    },
+  );
+
   it("never seeds from hidden, incomplete, inherited, or already recorded responses", async () => {
     const { saveMessage } = await import("../messages");
     for (const [id, finishReason, source, isHidden] of [

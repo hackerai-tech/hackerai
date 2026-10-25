@@ -895,9 +895,9 @@ export const saveMessage = mutation({
             isHidden: existingMessage.is_hidden,
           }) &&
           isCompletedAbliterationSeed({
-            id: args.id,
-            role: args.role,
-            finishReason: args.finishReason ?? existingMessage.finish_reason,
+            id: existingMessage.id,
+            role: existingMessage.role,
+            finishReason: existingMessage.finish_reason || args.finishReason,
             usage: patch.usage ?? existingMessage.usage,
             isHidden: args.isHidden ?? existingMessage.is_hidden,
           });
