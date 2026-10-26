@@ -195,8 +195,10 @@ export async function ensureCloudNetwork(
   userId: string,
   signal?: AbortSignal,
 ) {
-  const settings = await readNetworkSettings(userId);
-  if (!settings) return;
+  const saved = await readNetworkSettings(userId);
+  // An unsaved setting still promises Internet access in the UI; it must not
+  // silently inherit stale provider restrictions from a reused workspace.
+  const settings = saved ?? defaultNetworkSettings();
   if (settings.status === "ready" && checked.get(sandbox) === settings.revision)
     return;
   // Parent and delegated runs may acquire the same workspace concurrently.
@@ -213,9 +215,10 @@ export async function ensureCloudNetwork(
         verificationSignal,
       )
     ) {
-      const current = await readNetworkSettings(userId);
+      const current =
+        (await readNetworkSettings(userId)) ?? defaultNetworkSettings();
       if (
-        current?.status === "ready" &&
+        current.status === "ready" &&
         current.revision === settings.revision
       ) {
         verificationSignal.throwIfAborted();
@@ -224,7 +227,12 @@ export async function ensureCloudNetwork(
       }
     }
   }
-  await applyNetwork(userId, undefined, sandbox, signal);
+  await applyNetwork(
+    userId,
+    saved ? undefined : { policy: DEFAULT_NETWORK_POLICY, expectedRevision: 0 },
+    sandbox,
+    signal,
+  );
 }
 export const defaultNetworkSettings = (): NetworkSettings => ({
   policy: DEFAULT_NETWORK_POLICY,

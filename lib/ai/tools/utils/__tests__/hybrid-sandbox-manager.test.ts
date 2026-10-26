@@ -1114,6 +1114,10 @@ describe("HybridSandboxManager reset cleanup", () => {
     };
     const replacement = Object.assign(new Sandbox(), {
       sandboxId: "sandbox-2",
+      getInfo: jest.fn(async () => ({
+        metadata: { userID: "user-1" },
+        network: { allowOut: [], denyOut: [] },
+      })),
     });
     sandboxApi.list.mockReturnValue({
       nextItems: jest.fn(async () => [
