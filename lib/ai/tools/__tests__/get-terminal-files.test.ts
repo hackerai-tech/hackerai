@@ -1070,6 +1070,35 @@ describe("get_terminal_files", () => {
       );
     },
   );
+  it("retains a durably stored in-flight upload after cancellation without starting another file", async () => {
+    const controller = new AbortController();
+    const context = makeContext();
+    mockUploadSandboxFileToConvex.mockImplementationOnce(async () => {
+      controller.abort(new Error("Canceled"));
+      return {
+        url: "https://files.example/one.txt",
+        fileId: "stored-first" as never,
+        name: "one.txt",
+        mediaType: "text/plain",
+        tokens: 0,
+        sizeBytes: 1,
+      };
+    });
+    const result = await runTool(
+      createGetTerminalFiles(context),
+      { files: ["/one.txt", "/two.txt"] },
+      controller.signal,
+    );
+    expect(result).toMatchObject({
+      files: [{ path: "/one.txt" }],
+      deliveryReceipts: [{ fileId: "stored-first", storageStatus: "stored" }],
+      failedFiles: [{ path: "/two.txt" }],
+    });
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+    expect(context.fileAccumulator.add).toHaveBeenCalledTimes(1);
+    expect(context.writer.write).toHaveBeenCalledTimes(1);
+  });
+
   it("does not acquire a sandbox for a delivery canceled before execution", async () => {
     const controller = new AbortController();
     controller.abort(new Error("Canceled"));

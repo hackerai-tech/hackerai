@@ -310,6 +310,9 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               abortSignal?.throwIfAborted();
               currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
+              // A returned upload has already been durably registered. Keep its
+              // receipt even if cancellation arrived in flight; the outer loop
+              // stops subsequent files without hiding the completed side effect.
               currentPhase = "finalization";
 
               context.fileAccumulator.add({
