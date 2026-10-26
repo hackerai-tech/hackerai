@@ -207,6 +207,14 @@ backfilled. Signup events mean eligible attributed signups, not every account
 that opened a link. The ordered funnel uses the same influencer at every step
 and a 30-day visit-to-payment window; recent cohorts are still incomplete.
 
+Anonymous visit analytics is capped at 30 admitted visits per network source and
+300 across all partner links per minute. Redirects and signed attribution cookies
+still work when a limit is reached or Redis is unavailable; optional visit counts
+and delivery are skipped. Source keys use a per-minute HMAC of the Vercel-provided
+address, expire after two minutes, and never store the raw address. Missing or
+untrusted addresses share one source budget. These limits can undercount bursts
+from shared networks; visit analytics is not an exact traffic ledger.
+
 Consent denial prevents visitor cookies and link events. Withdrawal through
 privacy settings clears influencer cookies, records an opt-out for signed
 visitor IDs and the signed-in account’s persisted attribution (including expired

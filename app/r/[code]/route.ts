@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
+import { allowInfluencerVisitAnalytics } from "@/lib/influencers/visit-rate-limit";
 import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -83,6 +84,7 @@ export async function GET(
     const visitedAt = Date.now();
     after(async () => {
       try {
+        if (!(await allowInfluencerVisitAnalytics(req))) return;
         const client = getConvexClient();
         await client.mutation(api.influencers.recordLinkOpen, {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
