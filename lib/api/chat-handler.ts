@@ -2066,9 +2066,7 @@ export const createChatHandler = () => {
                       !hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
                       )
-                        ? prepareProviderDisconnectContinuation(messages, {
-                            allowCompletedTail: true,
-                          })
+                        ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
@@ -2316,9 +2314,7 @@ export const createChatHandler = () => {
                         ) {
                           const continuation =
                             emptyResponseContinuation ??
-                            prepareProviderDisconnectContinuation(messages, {
-                              allowCompletedTail: true,
-                            });
+                            prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
                             usageTracker.resetModelLeg();
                           }

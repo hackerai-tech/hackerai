@@ -146,7 +146,7 @@ export type ProviderDisconnectContinuation = {
 };
 
 export type ProviderDisconnectContinuationRejection =
-  "missing_assistant" | "missing_step_boundary" | "no_tail_to_trim";
+  "missing_assistant" | "missing_step_boundary";
 
 const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
@@ -224,11 +224,9 @@ export const getNextProviderDisconnectRetryModel = ({
 export const prepareProviderDisconnectContinuation = (
   messages: UIMessage[],
   {
-    allowCompletedTail = false,
     allowEmptyResponse = false,
     onRejected,
   }: {
-    allowCompletedTail?: boolean;
     allowEmptyResponse?: boolean;
     onRejected?: (reason: ProviderDisconnectContinuationRejection) => void;
   } = {},
@@ -272,8 +270,8 @@ export const prepareProviderDisconnectContinuation = (
       : lastStepStartIndex,
   );
   const removedPartCount = parts.length - preserveUntil;
-  if (removedPartCount <= 0 && !allowCompletedTail)
-    return reject("no_tail_to_trim");
+  // A completed tool can be the last part when the next provider request fails
+  // before emitting a new step. Its result is durable even with no tail to trim.
 
   const preservedParts = parts.slice(0, preserveUntil);
   let preservedUnknownToolCount = 0;
