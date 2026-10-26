@@ -253,6 +253,16 @@ describe("disk-only recovery", () => {
       expect.not.objectContaining({ onResume: "reboot" }),
     );
     expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ retries: 0 }),
+    );
+    expect(getInfo).toHaveBeenCalledWith(
+      auth.sandboxId,
+      expect.objectContaining({ retries: 3, requestTimeoutMs: 30_000 }),
+    );
+    expect(Sandbox.listSnapshots).toHaveBeenCalledWith(
+      expect.objectContaining({ retries: 3, requestTimeoutMs: 30_000 }),
+    );
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
         step: "backup_created",
@@ -260,6 +270,7 @@ describe("disk-only recovery", () => {
       }),
     );
     expect(pause).toHaveBeenCalledTimes(2);
+    expect(pause).toHaveBeenCalledWith(expect.objectContaining({ retries: 0 }));
     expect(finish).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(2);
     expect(remove).toHaveBeenCalledTimes(1);

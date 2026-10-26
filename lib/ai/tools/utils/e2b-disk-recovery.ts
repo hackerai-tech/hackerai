@@ -207,6 +207,8 @@ export async function recoverE2BDiskOnly(
   const getInfo = () =>
     Sandbox.getInfo(auth.sandboxId, {
       ...connectionOptions,
+      // Read-only verification can retry within the SDK's request deadline.
+      retries: 3,
       requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
     });
   const assertTarget = async () => {
@@ -319,6 +321,7 @@ export async function recoverE2BDiskOnly(
       );
     const backups = Sandbox.listSnapshots({
       ...connectionOptions,
+      retries: 3,
       sandboxId: auth.sandboxId,
       requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
     });
