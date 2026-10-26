@@ -89,4 +89,38 @@ describe("TerminalCodeBlock streaming progress", () => {
       "new visible chunk",
     );
   });
+
+  it.each([
+    ["replacement", false],
+    ["appended chunks", true],
+  ])(
+    "handles a pending highlight when the next batch contains %s",
+    async (kind, retainPartialOutput) => {
+      const prefix = `pending output for ${kind}`;
+      const nextOutput = retainPartialOutput
+        ? `${prefix} plus another chunk`
+        : "replacement output";
+      let finishRender!: (html: string) => void;
+      jest.mocked(codeToHtml).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRender = resolve;
+          }),
+      );
+      const { container, rerender } = render(terminal(prefix));
+      await advance(150);
+      rerender(terminal(nextOutput));
+
+      // Resolve before the next batch fires. Appended chunks must not starve
+      // an in-flight snapshot, but replacement content must invalidate it.
+      await act(async () => {
+        finishRender(`<pre><code>${prefix}</code></pre>`);
+      });
+      expect(container.querySelector("code")?.textContent ?? "").toBe(
+        retainPartialOutput ? prefix : "",
+      );
+      await advance(150);
+      expect(container.querySelector("code")).toHaveTextContent(nextOutput);
+    },
+  );
 });

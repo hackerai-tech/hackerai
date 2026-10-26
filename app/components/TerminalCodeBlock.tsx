@@ -96,6 +96,9 @@ const AnsiCodeBlock = ({
 
   const scheduleRender = useCallback(
     (code: string) => {
+      // A replacement invalidates an old highlight immediately. Appended output
+      // may still display its in-flight prefix while the next batch is pending.
+      if (!code.startsWith(pendingCodeRef.current)) cacheKeyRef.current = "";
       pendingCodeRef.current = code;
       // Keep the first chunk's deadline. Restarting it on every update can
       // leave the terminal blank until a continuous stream finally stops.
