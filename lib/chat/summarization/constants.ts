@@ -59,12 +59,11 @@ export const SUMMARY_PRIOR_CHECKPOINT_MAX_TOKENS = 16_000;
 export const SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS = 1024;
 export const SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS = 512;
 
-// A single Agent stream may compact repeatedly as tool work grows. Keep this
-// bounded so a provider whose fixed prompt/tool overhead cannot be reduced does
-// not enter an endless summarize/retry loop. Once exhausted, the existing
-// client-driven context-limit continuation can request a fresh backend run
-// while the web client remains connected.
-export const MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM = 8;
+// Bound consecutive compactions that fail to make progress. Effective
+// compactions may recur as new Agent work grows the context over a long run.
+// A provider with irreducible fixed prompt/tool overhead still stops after
+// this many unproductive attempts and can use client-driven continuation.
+export const MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM = 8;
 
 // A replacement checkpoint must remove at least 10% of serialized context.
 export const ROLLING_COMPACTION_MAX_SIZE_RATIO = 0.9;

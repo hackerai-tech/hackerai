@@ -149,7 +149,7 @@ import {
 } from "@/lib/token-utils";
 import {
   getSummarizationThresholdTokens,
-  MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
@@ -1059,9 +1059,11 @@ export async function createAgentStream(
   );
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
   let compactionAttemptCount = 0;
+  let unproductiveCompactionCount = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
-    compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+    unproductiveCompactionCount <
+    MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
   let toolHistoryRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
@@ -1482,6 +1484,7 @@ export async function createAgentStream(
           previous_provider_input_tokens: state.lastStepInputTokens,
           max_tokens: activeContextBudget,
           compaction_attempt_count: compactionAttemptCount,
+          unproductive_compaction_count: unproductiveCompactionCount,
         }),
       );
       throw new AgentContextBudgetError(
@@ -1504,6 +1507,7 @@ export async function createAgentStream(
     await ctx.checkBudgetBeforeStep?.();
     abortSignal.throwIfAborted();
     compactionAttemptCount++;
+    unproductiveCompactionCount++;
     const result = await compactModelMessagesInRun({
       compactionPolicy,
       // Use the existing bounded summary projection even for expanded Max.
@@ -1580,6 +1584,8 @@ export async function createAgentStream(
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
+    // The replacement request was accepted, so this recovery made progress.
+    unproductiveCompactionCount = 0;
     // Keep the canonical transcript untouched. Future SDK steps project from
     // this checkpoint, so already completed tools are not submitted again.
     historyEnabled = false;
@@ -2185,10 +2191,12 @@ export async function createAgentStream(
 
             if (result.summarizationAttempted) {
               compactionAttemptCount++;
+              unproductiveCompactionCount++;
               lastCompactionRawMessageCount = rawModelMessages.length;
             }
 
             if (result.needsSummarization && result.summarizedMessages) {
+              unproductiveCompactionCount = 0;
               ctx.summarizationTracker.recordSummarization(
                 steps.length,
                 result.summarizationUsage,
@@ -2315,6 +2323,7 @@ export async function createAgentStream(
             // provider step advances the cursor and can become eligible again.
           } else {
             compactionAttemptCount++;
+            unproductiveCompactionCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               compactionPolicy,
@@ -2408,6 +2417,7 @@ export async function createAgentStream(
                   }),
                 );
               } else {
+                unproductiveCompactionCount = 0;
                 ctx.summarizationTracker.recordSummarization(
                   steps.length,
                   inRunResult.summarizationUsage,

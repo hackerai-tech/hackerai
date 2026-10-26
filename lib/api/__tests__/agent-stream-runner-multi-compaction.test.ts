@@ -13,7 +13,7 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.structuredClone = originalClone;
 });
-import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
+import { MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
@@ -5137,7 +5137,7 @@ describe("createAgentStream repeated compaction", () => {
     ];
     for (
       let index = 4;
-      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+      index <= MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
       index++
     ) {
       const nextStep: ModelMessage = {
@@ -5156,14 +5156,31 @@ describe("createAgentStream repeated compaction", () => {
     }
 
     expect(tracker.summarizationCount).toBe(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
     );
     expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
     );
     state.lastStepInputTokens = 300_000;
-    expect(stream.stopWhen[1]()).toBe(true);
-    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    expect(stream.stopWhen[1]()).toBe(false);
+    expect(state.stoppedDueToTokenExhaustion).toBe(false);
+
+    const nextStep: ModelMessage = {
+      role: "assistant",
+      content: "new evidence after eight useful compactions ".repeat(1_000),
+    };
+    accumulatedRaw.push(nextStep);
+    accumulatedSteps.push({
+      toolResults: [],
+      response: { messages: [nextStep] },
+    });
+    await stream.prepareStep({
+      steps: accumulatedSteps,
+      messages: accumulatedRaw,
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
+    );
   });
 
   it("retains the latest completed tool pair across rolling compaction", async () => {
@@ -5351,7 +5368,7 @@ describe("createAgentStream repeated compaction", () => {
       const steps: Array<Record<string, unknown>> = [];
       for (
         let index = 1;
-        index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+        index <= MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
         index++
       ) {
         const step: ModelMessage = {
@@ -5364,7 +5381,7 @@ describe("createAgentStream repeated compaction", () => {
       }
 
       expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-        MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
       );
       expect(tracker.summarizationCount).toBe(0);
       expect(tracker.recordSummarization).not.toHaveBeenCalled();
