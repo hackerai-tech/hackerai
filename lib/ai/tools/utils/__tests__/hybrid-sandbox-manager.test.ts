@@ -373,6 +373,34 @@ describe("HybridSandboxManager browser automation prompt", () => {
     expect(context).toContain("npm install -g agent-browser@0.26.0");
     expect(context).not.toContain("command -v agent-browser");
   });
+
+  it("keeps unknown-OS connections distinct from the E2B default prompt", async () => {
+    mockConvexQuery.mockResolvedValue([makeConnection({})]);
+    const local = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "conn-online",
+      "service-key",
+      null,
+      "pro",
+    );
+    const cloud = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    const context = await local.getSandboxContextForPrompt();
+
+    expect(context).toContain("DANGEROUS MODE");
+    expect(context).toContain("npm install -g agent-browser@0.26.0");
+    expect(context).not.toContain("command -v agent-browser");
+    expect(context).not.toContain("where agent-browser");
+    await expect(cloud.getSandboxContextForPrompt()).resolves.toBeNull();
+  });
 });
 
 describe("HybridSandboxManager prompt-time fallback", () => {

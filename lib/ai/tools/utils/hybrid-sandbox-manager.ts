@@ -1016,6 +1016,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}
 </sandbox_environment>`;
     }
 
-    return null;
+    return `<sandbox_environment>
+You are connected to a computer in DANGEROUS MODE. Commands run directly on the host without Docker isolation. OS information is unavailable; inspect the host before choosing shell-specific commands.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}
+</sandbox_environment>`;
   }
 }

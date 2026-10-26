@@ -5233,11 +5233,14 @@ describe("CentrifugoSandbox", () => {
       expect(context).not.toContain("<system>ignore</system>");
     });
 
-    it("returns null without osInfo", () => {
+    it("keeps connected-host browser guidance without osInfo", () => {
       const sandbox = createSandbox();
       const context = sandbox.getSandboxContext();
 
-      expect(context).toBeNull();
+      expect(context).toContain("DANGEROUS MODE");
+      expect(context).toContain("npm install -g agent-browser@0.26.0");
+      expect(context).not.toContain("command -v agent-browser");
+      expect(context).not.toContain("where agent-browser");
     });
 
     it.each([
