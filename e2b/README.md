@@ -110,7 +110,13 @@ old snapshot also cannot establish that a new agent was installed.
    and has no customer-visible confirmation signal; do not label it enabled.
 4. Time a harmless command, write/read synthetic bytes, flush those bytes, pause,
    resume normally once, and verify the exact bytes again. On this disposable
-   sandbox only, also rehearse a cold reboot and explicit pause. A failed reboot
+   sandbox only, also rehearse a cold reboot and explicit pause. After **each**
+   normal or cold-boot resume, repeat the serving-executable check from step 3,
+   record that transition's version and require it to be at least `0.10.0`.
+   E2B can upgrade envd during either transition; a pre-resume version does not
+   establish the version that served the resumed workspace. An unavailable
+   post-resume check leaves that transition's version acceptance unresolved.
+   A failed reboot
    preserves the original snapshot; a successful reboot loses running processes
    and unflushed writes, and partial files are possible. The next pause replaces
    the saved state with the rebooted state. With `onTimeout: "pause"`, timeout
@@ -168,7 +174,9 @@ repository does not automatically replace an old workspace because of its versio
    never remove `-n` from that verification command. Handle excluded files and
    baseline destination files explicitly, not by ignoring mismatches.
 5. Flush and pause the destination, normally reconnect, and compare the full
-   destination content manifest again. Run a bounded synthetic tool request from
+   manifest for the agreed data scope again; verify excluded paths and permitted
+   baseline files against their explicit allowlist. Repeat the serving-executable
+   version check after reconnect, since resume can upgrade envd. Run a bounded synthetic tool request from
    the intended web/Trigger path, verify completion and saved response after reload.
    Require verified hashes, metadata, persistence and actual application routing
    before a separately authorized atomic workspace-pin cutover. The synthetic
