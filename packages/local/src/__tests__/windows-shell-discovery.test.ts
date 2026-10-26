@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -79,6 +80,19 @@ describe("Windows shell discovery", () => {
         writeFileSync(join(gitBin, "bash.exe"), "");
         process.chdir(project);
         process.env.PATH = gitCmd;
+
+        const systemWhere = join(
+          process.env.SystemRoot!,
+          "System32",
+          "where.exe",
+        );
+        const discoveredGit = execFileSync(systemWhere, ["$PATH:git.exe"], {
+          encoding: "utf8",
+          windowsHide: true,
+        }).trim();
+        expect(discoveredGit.toLowerCase()).toBe(
+          join(gitCmd, "git.exe").toLowerCase(),
+        );
 
         const realFs = jest.requireActual<typeof import("fs")>("fs");
         let utils: typeof import("../utils") | undefined;
