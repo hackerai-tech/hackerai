@@ -307,7 +307,7 @@ export const getAgentAutoReviewInspectionKind = (
     return "filesystem_delete";
   }
   if (
-    /(?:^|[;&|\s])(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+[^-]|(?:npm|pnpm|yarn|bun)\s+[^\s]+)/iu.test(
+    /(?:^|[;&|\s])(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+\S+|(?:npm|pnpm|yarn|bun)\s+\S+)/iu.test(
       command,
     )
   ) {

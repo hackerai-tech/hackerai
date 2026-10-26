@@ -412,6 +412,7 @@ describe("Agent Auto review", () => {
       "env -S 'bash scripts/link.sh'",
       "bash -v scripts/link.sh",
       "env bash -v scripts/link.sh",
+      "bash -v scripts/link.sh && echo done",
     ]) {
       const runModel = jest.fn();
       await expect(
@@ -613,6 +614,7 @@ describe("Agent Auto review", () => {
     "env ./scripts/link.sh\n",
     "env -S 'bash scripts/link.sh'\n",
     "bash -v scripts/link.sh\n",
+    "bash -v scripts/link.sh && echo done\n",
   ])("requires human review for indirect terminal input %s", async (input) => {
     const runModel = jest.fn();
     await expect(

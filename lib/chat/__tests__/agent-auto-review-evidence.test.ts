@@ -85,6 +85,7 @@ describe("Agent Auto review terminal evidence", () => {
     ["bash -v scripts/link.sh", "script"],
     ["python3 -v x.py", "script"],
     ["env bash -v scripts/link.sh", "script"],
+    ["bash -v scripts/link.sh && echo done", "script"],
     ["sh -c 'rm -rf build'", "script"],
     ["sudo -u root rm -rf build", "filesystem_delete"],
     ["git status", null],
