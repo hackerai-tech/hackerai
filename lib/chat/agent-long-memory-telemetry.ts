@@ -42,6 +42,7 @@ type MemoryCheckpointEvent = {
     "initial" | "forced" | "heap_growth" | "interval" | "periodic";
   rss_bytes: number;
   rss_high_water_bytes: number;
+  process_rss_os_high_water_bytes?: number;
   heap_total_bytes: number;
   heap_used_bytes: number;
   heap_used_high_water_bytes: number;
@@ -66,6 +67,17 @@ type AgentLongMemoryTelemetryOptions = {
 
 const finiteNonNegative = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+
+const readProcessRssOsHighWaterBytes = (): number | undefined => {
+  try {
+    // Node reports OS maxRSS in KiB for the process lifetime. It can include
+    // previous runs in a reused process and is not a container/kill-time peak.
+    const bytes = process.resourceUsage().maxRSS * 1024;
+    return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 export class AgentLongMemoryTelemetry {
   private readonly now: () => number;
@@ -146,6 +158,7 @@ export class AgentLongMemoryTelemetry {
 
       if (!reason) return false;
 
+      const processRssOsHighWater = readProcessRssOsHighWaterBytes();
       this.options.emit({
         level: "info",
         event: "agent_long_memory_checkpoint",
@@ -163,6 +176,9 @@ export class AgentLongMemoryTelemetry {
         checkpoint_reason: reason,
         rss_bytes: rss,
         rss_high_water_bytes: this.rssHighWater,
+        ...(processRssOsHighWater === undefined
+          ? {}
+          : { process_rss_os_high_water_bytes: processRssOsHighWater }),
         heap_total_bytes: heapTotal,
         heap_used_bytes: heapUsed,
         heap_used_high_water_bytes: this.heapUsedHighWater,
