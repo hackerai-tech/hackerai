@@ -4,7 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  realpathSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "fs";
@@ -73,6 +73,8 @@ describe("Windows shell discovery", () => {
       const gitCmd = join(root, "portable", "Git", "cmd");
       const gitBin = join(root, "portable", "Git", "bin");
       const marker = join(root, "where-ran.txt");
+      const gitMarker = `git-${root}`;
+      const bashMarker = `bash-${root}`;
       const oldCwd = process.cwd();
       try {
         mkdirSync(project, { recursive: true });
@@ -82,8 +84,8 @@ describe("Windows shell discovery", () => {
           join(project, "where.bat"),
           `@echo off\r\necho ran > "${marker}"\r\n`,
         );
-        writeFileSync(join(gitCmd, "git.exe"), "");
-        writeFileSync(join(gitBin, "bash.exe"), "");
+        writeFileSync(join(gitCmd, "git.exe"), gitMarker);
+        writeFileSync(join(gitBin, "bash.exe"), bashMarker);
         process.chdir(project);
         // Windows runners may carry both PATH and Path. Give where.exe one
         // unambiguous search path without changing the Jest process environment.
@@ -104,9 +106,7 @@ describe("Windows shell discovery", () => {
           windowsHide: true,
           env: childEnv,
         }).trim();
-        expect(realpathSync(discoveredGit).toLowerCase()).toBe(
-          realpathSync(join(gitCmd, "git.exe")).toLowerCase(),
-        );
+        expect(readFileSync(discoveredGit, "utf8")).toBe(gitMarker);
 
         const realFs = jest.requireActual<typeof import("fs")>("fs");
         let utils: typeof import("../utils") | undefined;
@@ -125,9 +125,7 @@ describe("Windows shell discovery", () => {
           utils = require("../utils");
         });
 
-        expect(realpathSync(utils!.findGitBash()!).toLowerCase()).toBe(
-          realpathSync(join(gitBin, "bash.exe")).toLowerCase(),
-        );
+        expect(readFileSync(utils!.findGitBash()!, "utf8")).toBe(bashMarker);
         expect(existsSync(marker)).toBe(false);
       } finally {
         process.chdir(oldCwd);
