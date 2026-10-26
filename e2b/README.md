@@ -97,7 +97,8 @@ old snapshot also cannot establish that a new agent was installed.
 3. Under separately authorized disposable validation, create a **new synthetic**
    sandbox using that exact `templateId:buildId` reference, the same regional key
    and domain, a bounded lifetime, SDK retries disabled, and unique QA metadata.
-   Record the sandbox ID immediately. Read `Sandbox.getInfo()` for template ID,
+   Record the sandbox ID immediately and use that exact ID for every later
+   connect, pause, reboot and cleanup; never replace a failed sandbox. Read `Sandbox.getInfo()` for template ID,
    CPU, memory and **template build-time** `envdVersion`. Run
    `/usr/bin/envd -version` inside that already-running disposable sandbox to
    record the installed binary. Verify the **serving** executable separately via
@@ -105,25 +106,30 @@ old snapshot also cannot establish that a new agent was installed.
    service PID is unchanged after the check. Require serving envd at least
    `0.10.0`; keep all three observations separate. Live upgrades can execute
    `/usr/bin/envd.next` while the original installed binary remains older. If the
-   serving check is unavailable, actual version and readiness remain unknown. A new rebuild should supply the current provider-managed agent, but
+   serving check is unavailable, actual version and readiness remain unknown.
+   A new rebuild should supply the current provider-managed agent, but
    the observed version must pass this check. Provider rollout is still required
    and has no customer-visible confirmation signal; do not label it enabled.
-4. Time a harmless command, write/read synthetic bytes, flush those bytes, pause,
-   resume normally once, and verify the exact bytes again. On this disposable
-   sandbox only, also rehearse a cold reboot and explicit pause. After **each**
-   normal or cold-boot resume, repeat the serving-executable check from step 3,
-   record that transition's version and require it to be at least `0.10.0`.
+4. Time a harmless command, write/read known synthetic bytes and flush them.
+   Exercise these transitions in order on the same disposable sandbox: pause
+   then normal resume; pause then cold reboot; explicit pause of the rebooted
+   state then another normal resume. After **each** resume, including cold reboot,
+   require the returned sandbox ID to match the recorded ID, verify ownership,
+   region and template through the selected regional API, run a harmless command,
+   and read the exact flushed synthetic bytes for equality. Repeat the serving-
+   executable check from step 3, record that transition's version and require
+   it to be at least `0.10.0`. Any identity, byte, command or version failure,
+   including an unavailable result, blocks candidate acceptance; reconcile the
+   exact sandbox before continuing and never automatically retry a reboot.
    E2B can upgrade envd during either transition; a pre-resume version does not
    establish the version that served the resumed workspace. An unavailable
    post-resume check leaves that transition's version acceptance unresolved.
-   A failed reboot
-   preserves the original snapshot; a successful reboot loses running processes
+   A failed reboot preserves the original snapshot; a successful reboot loses running processes
    and unflushed writes, and partial files are possible. The next pause replaces
    the saved state with the rebooted state. With `onTimeout: "pause"`, timeout
    performs that pause automatically, even if the application is fenced or its
    worker has failed. There is no API rollback to the earlier memory snapshot.
-   Collect timestamped
-   `getMetrics()` samples during a bounded representative workload; absence of
+   Collect timestamped `getMetrics()` samples during a bounded representative workload; absence of
    metrics is unknown. Check tool versions and the existing trust-store gates.
    Record readiness durations, observed envd, allocated resources and persistence
    results. Do not infer a memory-download or CPU-starvation cause from a timeout.
@@ -164,7 +170,10 @@ repository does not automatically replace an old workspace because of its versio
    the original source and all historical snapshots. A post-reboot backup cannot
    restore the original memory or unflushed writes.
 4. Create a fresh destination from the **validated exact build** in the same
-   authorized environment/region. Verify ownership and actual envd before copying.
+   authorized environment/region. Immediately record its sandbox ID and exact
+   build reference; use only that destination ID for subsequent operations.
+   Verify ownership, region, template and serving envd `>=0.10.0` before copying;
+   an unavailable check blocks progress. Never substitute another sandbox.
    Copy only the agreed data scope, preserving required metadata; never overwrite
    the provider agent with source system files. Generate the destination manifest
    and require an exact match to the source. Re-read the source manifest to detect
@@ -173,12 +182,18 @@ repository does not automatically replace an old workspace because of its versio
    content and metadata differences; keep its path-bearing output private and
    never remove `-n` from that verification command. Handle excluded files and
    baseline destination files explicitly, not by ignoring mismatches.
-5. Flush and pause the destination, normally reconnect, and compare the full
+5. Flush and pause the destination, then normally reconnect to its recorded ID.
+   Require the returned sandbox ID to match exactly and independently verify
+   owner, region and template before accessing data or considering cutover.
+   Compare the full
    manifest for the agreed data scope again; verify excluded paths and permitted
    baseline files against their explicit allowlist. Repeat the serving-executable
-   version check after reconnect, since resume can upgrade envd. Run a bounded synthetic tool request from
+   version check after reconnect, since resume can upgrade envd. Require serving
+   envd `>=0.10.0`; an older, invalid, unknown or unavailable result blocks cutover.
+   Run a bounded synthetic tool request from
    the intended web/Trigger path, verify completion and saved response after reload.
-   Require verified hashes, metadata, persistence and actual application routing
+   Require exact destination identity, serving version, verified hashes, metadata,
+   persistence and actual application routing
    before a separately authorized atomic workspace-pin cutover. The synthetic
    probe in disk recovery alone is insufficient evidence for migration.
 6. Keep the old source paused and retained through acceptance. Do not delete,
