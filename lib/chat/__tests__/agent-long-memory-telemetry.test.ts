@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
 
 import { AgentLongMemoryTelemetry } from "../agent-long-memory-telemetry";
 import type {
@@ -41,7 +41,12 @@ const retention: ProviderRequestRetentionDiagnostics = {
 };
 
 describe("AgentLongMemoryTelemetry", () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it("emits an initial privacy-safe provider checkpoint", () => {
+    jest.spyOn(process, "resourceUsage").mockReturnValue({
+      maxRSS: 512 * 1024,
+    } as NodeJS.ResourceUsage);
     const emit = jest.fn();
     const telemetry = new AgentLongMemoryTelemetry({
       runId: "run_123",
@@ -81,6 +86,7 @@ describe("AgentLongMemoryTelemetry", () => {
       checkpoint_reason: "initial",
       rss_bytes: 300 * MIB,
       rss_high_water_bytes: 300 * MIB,
+      process_rss_os_high_water_bytes: 512 * MIB,
       heap_total_bytes: 250 * MIB,
       heap_used_bytes: 200 * MIB,
       heap_used_high_water_bytes: 200 * MIB,
@@ -94,6 +100,87 @@ describe("AgentLongMemoryTelemetry", () => {
     expect(JSON.stringify(emit.mock.calls)).not.toContain("prompt");
     expect(JSON.stringify(emit.mock.calls)).not.toContain("target");
   });
+
+  it("keeps the OS process peak distinct from sampled run highs without adding checkpoints", () => {
+    const readResourceUsage = jest
+      .spyOn(process, "resourceUsage")
+      .mockReturnValue({ maxRSS: 900 * 1024 } as NodeJS.ResourceUsage);
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_123",
+      chatId: "chat_123",
+      userId: "user_123",
+      emit,
+      now: () => 1_000,
+      readMemory: () => ({
+        rss: 300 * MIB,
+        heapTotal: 250 * MIB,
+        heapUsed: 200 * MIB,
+        external: 0,
+        arrayBuffers: 0,
+      }),
+      readHeapLimit: () => 416 * MIB,
+    });
+
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(readResourceUsage).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rss_bytes: 300 * MIB,
+        rss_high_water_bytes: 300 * MIB,
+        process_rss_os_high_water_bytes: 900 * MIB,
+      }),
+    );
+  });
+
+  it("retains the original checkpoint if the OS peak read fails", () => {
+    jest.spyOn(process, "resourceUsage").mockImplementation(() => {
+      throw new Error("unavailable resource usage");
+    });
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_123",
+      chatId: "chat_123",
+      userId: "user_123",
+      emit,
+    });
+
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      true,
+    );
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "run_failed",
+        checkpoint_reason: "initial",
+      }),
+    );
+    expect(emit.mock.calls[0][0]).not.toHaveProperty(
+      "process_rss_os_high_water_bytes",
+    );
+  });
+
+  it.each([0, Number.NaN, Number.MAX_VALUE])(
+    "omits an unusable OS peak (%s) while retaining the checkpoint",
+    (maxRSS) => {
+      jest
+        .spyOn(process, "resourceUsage")
+        .mockReturnValue({ maxRSS } as NodeJS.ResourceUsage);
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_123",
+        chatId: "chat_123",
+        userId: "user_123",
+        emit,
+      });
+
+      expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+      expect(emit.mock.calls[0][0]).not.toHaveProperty(
+        "process_rss_os_high_water_bytes",
+      );
+    },
+  );
 
   it("emits only after meaningful heap growth", () => {
     let heapUsed = 100 * MIB;
