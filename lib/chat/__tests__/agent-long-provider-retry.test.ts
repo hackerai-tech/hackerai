@@ -16,6 +16,60 @@ import {
 import type { UIMessage } from "ai";
 
 describe("prepareProviderDisconnectContinuation", () => {
+  it.each([
+    [[], "missing_assistant"],
+    [
+      [
+        {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "private output" }],
+        },
+      ],
+      "missing_step_boundary",
+    ],
+    [
+      [
+        {
+          id: "assistant",
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            {
+              type: "tool-save",
+              toolCallId: "saved",
+              state: "output-available",
+              input: { private: "input" },
+              output: { private: "result" },
+            },
+          ],
+        },
+      ],
+      "no_tail_to_trim",
+    ],
+  ])(
+    "explains a rejected transcript without exposing its contents (%s)",
+    (messages, reason) => {
+      const onRejected = jest.fn();
+      const options = { allowCompletedTail: false, onRejected };
+
+      expect(
+        prepareProviderDisconnectContinuation(messages as UIMessage[], options),
+      ).toBeUndefined();
+      expect(onRejected.mock.calls).toEqual([[reason]]);
+    },
+  );
+
+  it("keeps the existing rejection when diagnostic collection throws", () => {
+    const options = {
+      allowCompletedTail: false,
+      onRejected: () => {
+        throw new Error("diagnostics unavailable");
+      },
+    };
+    expect(prepareProviderDisconnectContinuation([], options)).toBeUndefined();
+  });
+
   it("leaves provider-executed pending calls under provider ownership", () => {
     const pending = {
       type: "tool-search",

@@ -293,6 +293,7 @@ import {
   isTerminalEmptyAssistantResponse,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  type ProviderDisconnectContinuationRejection,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
@@ -4531,6 +4532,9 @@ export const agentLongTask = task({
                             message.role !== "assistant" ||
                             (message.parts?.length ?? 0) > 0,
                         );
+                      let continuationRejection:
+                        | ProviderDisconnectContinuationRejection
+                        | "not_evaluated" = "not_evaluated";
                       const providerDisconnectContinuation =
                         (hasTerminalProviderStreamError ||
                           terminalEmptyResponse) &&
@@ -4548,6 +4552,9 @@ export const agentLongTask = task({
                           ? prepareProviderDisconnectContinuation(
                               normalizedFinishedMessages,
                               {
+                                onRejected: (reason) => {
+                                  continuationRejection = reason;
+                                },
                                 allowCompletedTail:
                                   terminalEmptyResponse ||
                                   shouldRecoverAbliterationStreamError ||
@@ -4681,6 +4688,10 @@ export const agentLongTask = task({
                           terminal_empty_response: terminalEmptyResponse,
                           has_safe_continuation:
                             shouldContinueAfterProviderDisconnect,
+                          continuation_preparation:
+                            providerDisconnectContinuation
+                              ? "prepared"
+                              : continuationRejection,
                           ...getProviderOutputDiagnostics(
                             lastAssistantMessageParts,
                           ),
