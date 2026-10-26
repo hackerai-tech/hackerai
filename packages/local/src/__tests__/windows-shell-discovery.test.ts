@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -97,8 +104,8 @@ describe("Windows shell discovery", () => {
           windowsHide: true,
           env: childEnv,
         }).trim();
-        expect(discoveredGit.toLowerCase()).toBe(
-          join(gitCmd, "git.exe").toLowerCase(),
+        expect(realpathSync(discoveredGit).toLowerCase()).toBe(
+          realpathSync(join(gitCmd, "git.exe")).toLowerCase(),
         );
 
         const realFs = jest.requireActual<typeof import("fs")>("fs");
@@ -118,7 +125,9 @@ describe("Windows shell discovery", () => {
           utils = require("../utils");
         });
 
-        expect(utils!.findGitBash()).toBe(join(gitBin, "bash.exe"));
+        expect(realpathSync(utils!.findGitBash()!).toLowerCase()).toBe(
+          realpathSync(join(gitBin, "bash.exe")).toLowerCase(),
+        );
         expect(existsSync(marker)).toBe(false);
       } finally {
         process.chdir(oldCwd);
