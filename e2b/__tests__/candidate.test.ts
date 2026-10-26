@@ -40,6 +40,10 @@ it.each(["us-dev", "us-prod", "eu-dev", "eu-prod"])(
       expect.objectContaining({
         apiKey: target.startsWith("eu") ? env.E2B_EU_API_KEY : env.E2B_API_KEY,
         domain: target.startsWith("eu") ? "e2b-juliett.dev" : "e2b.dev",
+        apiUrl: target.startsWith("eu")
+          ? "https://api.e2b-juliett.dev"
+          : "https://api.e2b.dev",
+        debug: false,
         skipCache: true,
         cpuCount: 4,
         memoryMB: 4096,
@@ -62,6 +66,14 @@ it("refuses a missing regional key rather than falling back to the US project", 
   await expect(
     buildCandidate("eu-dev", tag, { E2B_API_KEY: "test" }),
   ).rejects.toThrow();
+  expect(build).not.toHaveBeenCalled();
+});
+
+it("rejects malformed regional hosts before sending credentials", async () => {
+  await expect(
+    buildCandidate("eu-dev", tag, { ...env, E2B_EU_DOMAIN: "host/path" }),
+  ).rejects.toThrow();
+  expect(tags).not.toHaveBeenCalled();
   expect(build).not.toHaveBeenCalled();
 });
 

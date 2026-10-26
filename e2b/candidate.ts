@@ -22,11 +22,21 @@ export async function buildCandidate(
   const domain = eu
     ? env.E2B_EU_DOMAIN?.trim() || "e2b-juliett.dev"
     : "e2b.dev";
+  if (!/^[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}$/.test(domain))
+    throw new Error("Expected a regional E2B hostname, without a URL or port");
   if (eu && env.E2B_EU_TEMPLATE?.trim() && env.E2B_EU_TEMPLATE.trim() !== name)
     throw new Error(
       "Custom EU template aliases require an explicit operator build",
     );
-  const options = { apiKey, domain, retries: 0, requestTimeoutMs: 30_000 };
+  const options = {
+    apiKey,
+    domain,
+    // E2B_API_URL and E2B_DEBUG otherwise override the SDK's domain routing.
+    apiUrl: `https://api.${domain}`,
+    debug: false,
+    retries: 0,
+    requestTimeoutMs: 30_000,
+  };
   // Require an existing template so an incorrect project cannot silently seed
   // a new one. Account/project identity must still be verified by the operator.
   const before = await Template.getTags(name, options);
