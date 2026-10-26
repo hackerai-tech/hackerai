@@ -131,8 +131,11 @@ it("dismisses attention into compact access, preserves dismissal on reload, and 
   mockSession = { ...mockSession, updatedAt: 3 };
   reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   expect(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
+  );
   mockSession = { state: "waiting", sessionId: "new-session", updatedAt: 3 };
-  reloaded.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+  reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   expect(screen.getByRole("status")).toHaveTextContent(
     "Agent needs your input",
   );
