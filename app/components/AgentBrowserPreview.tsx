@@ -49,6 +49,7 @@ export function AgentBrowserPreview({
   liveSelection,
   browserRequested = false,
   takeoverRequest,
+  onTakeoverRequestConsumed,
   runActive = false,
   onJumpToLive,
   onContinue,
@@ -59,6 +60,7 @@ export function AgentBrowserPreview({
   liveSelection: boolean;
   browserRequested?: boolean;
   takeoverRequest?: { requestId: string; sessionId: string };
+  onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
@@ -455,15 +457,18 @@ export function AgentBrowserPreview({
       (effectiveState !== "waiting" && effectiveState !== "recovery")
     ) {
       consumedTakeoverRequest.current = takeoverRequest.requestId;
+      onTakeoverRequestConsumed?.(takeoverRequest.requestId);
       return;
     }
     if (!canTake || busy) return;
     // A fresh frame and the same waiting session must still match the click.
     // Consume before posting: a failed request needs another explicit click.
     consumedTakeoverRequest.current = takeoverRequest.requestId;
+    onTakeoverRequestConsumed?.(takeoverRequest.requestId);
     void takeControl();
   }, [
     takeoverRequest,
+    onTakeoverRequestConsumed,
     session,
     activeSessionId,
     human,

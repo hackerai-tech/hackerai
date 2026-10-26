@@ -96,6 +96,7 @@ interface ComputerSidebarProps {
   browserChatId?: string;
   browserAgentId?: string;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  onTakeoverRequestConsumed?: (requestId: string) => void;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -336,6 +337,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   browserChatId,
   browserAgentId = "parent",
   onBrowserContinue,
+  onTakeoverRequestConsumed,
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -730,6 +732,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             {sidebarOpen && browserChatId && (
               <AgentBrowserPreview
                 onVisibilityChange={setBrowserPreviewVisible}
+                onTakeoverRequestConsumed={onTakeoverRequestConsumed}
                 takeoverRequest={
                   isSidebarTerminal(sidebarContent)
                     ? sidebarContent.browserTakeoverRequest
@@ -1445,8 +1448,13 @@ export const ComputerSidebar: React.FC<{
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
 }> = ({ chatId, messages, status, onBrowserContinue }) => {
-  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
-    useGlobalState();
+  const {
+    sidebarOpen,
+    sidebarContent,
+    closeSidebar,
+    openSidebar,
+    consumeBrowserTakeoverRequest,
+  } = useGlobalState();
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (
@@ -1476,6 +1484,7 @@ export const ComputerSidebar: React.FC<{
   return (
     <ComputerSidebarBase
       onBrowserContinue={onBrowserContinue}
+      onTakeoverRequestConsumed={consumeBrowserTakeoverRequest}
       sidebarOpen={sidebarOpen}
       browserChatId={chatId}
       sidebarContent={sidebarContent}

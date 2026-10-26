@@ -1398,3 +1398,31 @@ it("does not retry a failed requested takeover until another user action", async
   await takeControl();
   expect(actions.filter((body) => body.action === "take")).toHaveLength(2);
 });
+
+it("discards consumed click intent before a failed viewer is remounted", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  handleAction = async () =>
+    response({ error: "Connection interrupted" }, false);
+  function Host({ show }: { show: boolean }) {
+    const [request, setRequest] = React.useState<
+      { requestId: string; sessionId: string } | undefined
+    >({ requestId: "click-1", sessionId: "session-a" });
+    return show ? (
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={request}
+        onTakeoverRequestConsumed={() => setRequest(undefined)}
+      />
+    ) : null;
+  }
+  const view = render(<Host show />);
+  await act(async () => {});
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  view.rerender(<Host show={false} />);
+  view.rerender(<Host show />);
+  await act(async () => {});
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+});
