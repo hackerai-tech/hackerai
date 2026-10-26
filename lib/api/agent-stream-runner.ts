@@ -2196,7 +2196,6 @@ export async function createAgentStream(
             }
 
             if (result.needsSummarization && result.summarizedMessages) {
-              unproductiveCompactionCount = 0;
               ctx.summarizationTracker.recordSummarization(
                 steps.length,
                 result.summarizationUsage,
@@ -2260,6 +2259,14 @@ export async function createAgentStream(
                   ? [{ role: "user" as const, content: parentGate.reminder }]
                   : []),
               ];
+              if (
+                isRollingCompactionEffective(
+                  rawModelMessages,
+                  summarizedModelMessages,
+                )
+              ) {
+                unproductiveCompactionCount = 0;
+              }
               rollingContextCheckpoint = {
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,

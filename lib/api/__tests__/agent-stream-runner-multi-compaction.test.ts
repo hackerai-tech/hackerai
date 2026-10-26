@@ -5412,4 +5412,66 @@ describe("createAgentStream repeated compaction", () => {
       expect(state.stoppedDueToTokenExhaustion).toBe(true);
     },
   );
+
+  it("does not reset the guard for a startup summary that fails to shrink context", async () => {
+    const oversizedSummary = uiMessage(
+      "ineffective-startup-summary",
+      "summary overhead ".repeat(4_000),
+    );
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [oversizedSummary],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const initialRaw: ModelMessage[] = [
+      { role: "user", content: "short initial history" },
+    ];
+    const state = initAgentStreamState(
+      [uiMessage("original-ineffective", "short initial history")],
+      { usedTokens: 200_000, maxTokens: 200_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        ctxMaxTokens: 200_000,
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    await stream.prepareStep({ steps: [], messages: initialRaw });
+    const rawMessages = [...initialRaw];
+    const steps: Array<Record<string, unknown>> = [];
+    for (
+      let index = 1;
+      index < MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+      index++
+    ) {
+      const step: ModelMessage = {
+        role: "assistant",
+        content: `new cursor ${index}`,
+      };
+      rawMessages.push(step);
+      steps.push({ toolResults: [], response: { messages: [step] } });
+      await stream.prepareStep({ steps, messages: rawMessages });
+    }
+
+    state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(true);
+    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
 });
