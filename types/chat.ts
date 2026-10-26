@@ -284,7 +284,12 @@ export interface SidebarTerminal {
   exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
-    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
+    | "reviewing"
+    | "awaiting_approval"
+    | "executing"
+    | "completed"
+    | "failed"
+    | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;

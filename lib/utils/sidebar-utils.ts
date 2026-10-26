@@ -177,6 +177,7 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -277,6 +278,7 @@ export function extractSidebarContentFromMessage(
       const command = part.input.command || part.input.brief || "";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),

@@ -136,6 +136,7 @@ export function getActionText(content: SidebarContent): string {
   }
 
   if (isSidebarTerminal(content)) {
+    if (content.executionPhase === "stopped") return "Stopped command";
     if (content.executionPhase === "reviewing") return "Reviewing";
     if (content.executionPhase === "awaiting_approval") {
       return "Awaiting approval";

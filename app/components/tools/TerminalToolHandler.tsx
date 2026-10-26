@@ -112,6 +112,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const executionPhase = getTerminalExecutionPhase({
     toolState: state,
     autoReviewStatus: streamedAutoReviewLifecycle?.status,
+    errorText,
   });
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
