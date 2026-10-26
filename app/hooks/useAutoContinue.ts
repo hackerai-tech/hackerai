@@ -8,10 +8,12 @@ import {
   type ScopedDataUIPart,
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
+import {
+  AUTO_CONTINUE_PROMPT,
+  MAX_AUTO_CONTINUES,
+} from "@/lib/chat/agent-auto-continue-policy";
 
-export const MAX_AUTO_CONTINUES = 1;
-export const AUTO_CONTINUE_PROMPT =
-  "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
+export { AUTO_CONTINUE_PROMPT, MAX_AUTO_CONTINUES };
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
 
 export interface UseAutoContinueParams {
