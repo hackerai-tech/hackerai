@@ -58,7 +58,6 @@ import {
   getCategoryColor,
   getLanguageFromPath,
   getActionText,
-  getSidebarIcon,
   getToolName,
   getDisplayTarget,
 } from "./computer-sidebar-utils";
@@ -544,7 +543,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     sidebarContent;
 
   const actionText = getActionText(displayContent);
-  const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
   const headerTitle = isFinding
@@ -697,33 +695,39 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             </div>
 
             {/* Action Status */}
-            <div className="flex items-center gap-2 mt-2">
-              <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                {icon}
+            <div className="mt-2 flex min-w-0 flex-col gap-1 text-xs text-muted-foreground desktop:flex-row desktop:items-center desktop:gap-2">
+              <div
+                className="shrink-0 whitespace-nowrap"
+                title={
+                  isToolError
+                    ? `${toolName} needs attention`
+                    : `HackerAI is using ${toolName}`
+                }
+              >
+                {isToolError ? (
+                  <>
+                    <span className="text-foreground">{toolName}</span> needs
+                    attention
+                  </>
+                ) : (
+                  <>
+                    HackerAI is using{" "}
+                    <span className="text-foreground">{toolName}</span>
+                  </>
+                )}
               </div>
-              <div className="flex-1 flex flex-col gap-1 min-w-0">
-                <div className="text-[12px] text-muted-foreground">
-                  {isToolError ? (
-                    <>
-                      <span className="text-foreground">{toolName}</span> needs
-                      attention
-                    </>
-                  ) : (
-                    <>
-                      HackerAI is using{" "}
-                      <span className="text-foreground">{toolName}</span>
-                    </>
-                  )}
-                </div>
-                <div
-                  title={`${actionText} ${displayTarget}`}
-                  className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                >
-                  {actionText}
-                  <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>{displayTarget}</code>
-                  </span>
-                </div>
+              <div
+                aria-hidden="true"
+                className="hidden h-3 w-px shrink-0 bg-border desktop:block"
+              />
+              <div
+                title={`${actionText} ${displayTarget}`}
+                className="min-w-0 truncate desktop:flex-1"
+              >
+                {actionText}
+                {displayTarget && (
+                  <code className="ml-1 font-mono">{displayTarget}</code>
+                )}
               </div>
             </div>
 
