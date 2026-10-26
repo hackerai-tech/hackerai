@@ -53,6 +53,66 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
+  it("delegates Windows directory setup to the file adapter", async () => {
+    const sandbox = {
+      ...createSandbox({ sandboxKind: "centrifugo" }),
+      isWindows: () => true,
+    };
+    sandbox.commands.run.mockRejectedValue(new Error("POSIX mkdir is invalid"));
+    expect(await saveFullOutputToFile(sandbox as any, "output")).not.toBeNull();
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["saved", "recovered", "failed"] as const)(
+    "emits one eligible save outcome for %s, with bounded client context",
+    async (result) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo", nativeFileRelay: true }),
+        supportsCommandStdin: () => false,
+        getConnectionInfo: () => ({
+          isDesktop: true,
+          name: "PRIVATE host",
+          osInfo: { platform: "darwin", hostname: "PRIVATE hostname" },
+          capabilities: {
+            files: true,
+            commandStdin: false,
+            operationChannels: true,
+          },
+        }),
+      };
+      if (result !== "saved")
+        sandbox.files.write.mockRejectedValueOnce(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      if (result === "failed")
+        sandbox.files.write.mockRejectedValue(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output");
+        const outcomes = event.mock.calls.filter(
+          ([name]) => name === "terminal_output_persistence_result",
+        );
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0][1]).toMatchObject({
+          result,
+          client_surface: "desktop",
+          client_platform: "darwin",
+          native_file_relay: true,
+          command_stdin: false,
+        });
+        if (result !== "saved")
+          expect(outcomes[0][1]).toMatchObject({
+            local_file_failure: "dispatch_error",
+          });
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+      } finally {
+        event.mockRestore();
+      }
+    },
+  );
   it("does not retry canceled native persistence or classify transport text as filesystem permission", async () => {
     expect(
       classifyTerminalOutputPersistenceFailure(
@@ -370,6 +430,47 @@ describe("saveFullOutputToFile", () => {
     warnSpy.mockRestore();
     eventSpy.mockRestore();
   });
+
+  it.each(["size_mismatch", "probe_failed"] as const)(
+    "does not replay an uncertain write after %s",
+    async (verification) => {
+      const sandbox = createSandbox({
+        sandboxKind: "centrifugo",
+        nativeFileRelay: true,
+        statSizeBytes: 1,
+      });
+      sandbox.files.write.mockRejectedValueOnce(
+        new LocalFileRequestError("timeout", "PRIVATE output path"),
+      );
+      if (verification === "probe_failed")
+        (sandbox.files.stat as jest.Mock<any>).mockRejectedValueOnce(
+          new LocalFileRequestError("relay_unsubscribed", "PRIVATE host"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        expect(await saveFullOutputToFile(sandbox as any, "output")).toBeNull();
+        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+        expect(
+          event.mock.calls.filter(
+            ([name]) => name === "terminal_output_persistence_result",
+          ),
+        ).toHaveLength(1);
+        expect(event).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            timeout_verification: verification,
+            ...(verification === "probe_failed"
+              ? { verification_failure_category: "relay_unavailable" }
+              : {}),
+          }),
+        );
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+      } finally {
+        event.mockRestore();
+      }
+    },
+  );
 
   it("accepts a completed desktop write whose timeout only lost the ack", async () => {
     const output = "full output";

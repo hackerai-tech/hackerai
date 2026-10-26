@@ -1,3 +1,4 @@
+import { persistenceCommandError } from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -1818,7 +1819,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
@@ -2395,22 +2396,25 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
           // Decode and clean up temp file
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
         }
       } else {
         const literalCommand = isBinary
@@ -2425,7 +2429,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             signal,
           });
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
           return;
         }
@@ -2447,7 +2451,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
         }
       }

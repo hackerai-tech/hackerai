@@ -1393,6 +1393,33 @@ describe("CentrifugoSandbox", () => {
       expect(jest.getTimerCount()).toBe(0);
     });
 
+    it("does not mask a Windows decode failure with successful cleanup", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      (sandbox as any).shellKind = "cmd";
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => ({
+          stdout: "",
+          stderr: command.startsWith("certutil")
+            ? "PRIVATE: Access denied"
+            : "",
+          // cmd.exe returns the last command's status when commands use &.
+          exitCode:
+            command.startsWith("certutil") && !command.includes(" & del")
+              ? 5
+              : 0,
+        }));
+      await expect(
+        sandbox.files.write("C:\\temp\\result.txt", "output"),
+      ).rejects.toMatchObject({
+        persistenceCategory: "permission",
+        exitCode: 5,
+      });
+      expect(
+        run.mock.calls.some(([command]) => command.startsWith("del")),
+      ).toBe(true);
+    });
+
     it.each(["directory", "chunk"])(
       "stops legacy Windows script staging during the first %s command",
       async (stage) => {
@@ -3526,7 +3553,12 @@ describe("CentrifugoSandbox", () => {
         (sandbox as any).commands.run = jest.fn(async (command: string) => {
           if (command.startsWith("printf") && ++writes === 2) {
             if (reason === "cancel") controller.abort();
-            else return { stdout: "", stderr: "disk full", exitCode: 1 };
+            else
+              return {
+                stdout: "",
+                stderr: "No space left on device",
+                exitCode: 1,
+              };
           }
           return { stdout: "", stderr: "", exitCode: 0 };
         });
@@ -3534,7 +3566,11 @@ describe("CentrifugoSandbox", () => {
           sandbox.files.write("/tmp/partial", "x".repeat(100_000), {
             signal: controller.signal,
           }),
-        ).rejects.toThrow(reason === "failure" ? "disk full" : undefined);
+        ).rejects.toMatchObject(
+          reason === "failure"
+            ? { persistenceCategory: "no_space", exitCode: 1 }
+            : { name: "AbortError" },
+        );
         expect(writes).toBe(2);
       },
     );
