@@ -410,9 +410,9 @@ export type ProviderErrorCategory =
   | "unknown";
 
 const PROVIDER_STREAM_TERMINATION_PATTERN =
-  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 const PROVIDER_STREAM_DISCONNECT_PATTERN =
-  /terminated|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 
 const parseHttpStatus = (value: unknown): number | undefined => {
   const code =
