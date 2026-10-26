@@ -7,7 +7,10 @@ import {
   type GeneratedFileUploadPhase,
   type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
-import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  getLocalFileRequestFailure,
+  isLocalCommandRelayUnsubscribedError,
+} from "./utils/local-sandbox-errors";
 import {
   getSandboxLogFields,
   isCentrifugoSandbox,
@@ -174,20 +177,29 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onNativeStatFailure: observeNativeStatFailure,
             });
           } catch (error) {
+            const nativeMetadataRelayRejected =
+              currentPhase === "file_metadata" &&
+              getLocalFileRequestFailure(error) === "relay_unsubscribed";
             if (
+              abortSignal?.aborted ||
+              relayRecoveryAttempted ||
               !isCentrifugoSandbox(sandbox) ||
-              !isLocalCommandRelayUnsubscribedError(error) ||
+              (!isLocalCommandRelayUnsubscribedError(error) &&
+                !nativeMetadataRelayRejected) ||
               !sandboxManager.recoverLocalConnection
             ) {
               throw error;
             }
 
+            // One recovery budget covers every file and candidate path in
+            // this call, including a failed reconnect.
             relayRecoveryAttempted = true;
             currentPhase = "relay_recovery";
             await sandboxManager.recoverLocalConnection(
               sandbox.getConnectionId(),
               "command_relay_unsubscribed",
             );
+            abortSignal?.throwIfAborted();
             const { sandbox: recoveredSandbox } =
               await getSandboxWithFallbackGuard({ sandboxManager });
             observeSandboxType(recoveredSandbox);
@@ -196,6 +208,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 "The selected local sandbox changed during file recovery. Reconnect it and try again.",
               );
             }
+            abortSignal?.throwIfAborted();
             sandbox = recoveredSandbox;
             relayRecoverySucceeded = true;
             // Relay presence rejected the first command before publication.
