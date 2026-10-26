@@ -19,6 +19,13 @@ upgrade the sandbox's template/envd. For an envd upgrade, follow the
    sandbox version from the existing workspace record and E2B inventory. The
    command checks these values again through the selected regional E2B key.
    Keep migration and preservation fences intact.
+   The provider-reported envd must be a stable version at least `0.5.0`, the
+   [documented prerequisite for independent snapshots](https://docs.e2b.dev/sandbox/snapshots).
+   Recovery refuses an older, missing or prerelease version before reboot, and
+   rechecks after fencing. This is a snapshot capability floor, not an envd
+   automatic-update floor or a promise that snapshot creation will succeed.
+   A source below it requires a separately approved preservation/recovery plan;
+   rebuilding a template does not upgrade that source in place.
 3. Stop new Agent/chat work and other app connections for this user. Quiesce
    inbound traffic to the sandbox, since `autoResume: true` can start it even
    without an app connect. Wait for the Redis workspace activity key to expire

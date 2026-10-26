@@ -63,6 +63,7 @@ const auth = {
 };
 const info = {
   sandboxId: auth.sandboxId,
+  envdVersion: "0.5.0",
   state: "paused",
   metadata: {
     userID: auth.userId,
@@ -166,6 +167,30 @@ describe("operator authorization", () => {
 });
 
 describe("disk-only recovery", () => {
+  it.each(["0.4.99", "0.5.0-rc.1", "unknown", undefined])(
+    "refuses recovery before reboot when snapshot support is unverified (%s)",
+    async (envdVersion) => {
+      getInfo.mockResolvedValueOnce({ ...info, envdVersion } as never);
+      await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+        stage: "capability",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks snapshot support after acquiring the durable fence", async () => {
+    getInfo
+      .mockResolvedValueOnce(info as never)
+      .mockResolvedValueOnce({ ...info, envdVersion: "0.4.99" } as never);
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "identity",
+    });
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+
   it("never touches the provider for an idempotent completed request", async () => {
     result.mockResolvedValue({
       token: auth.idempotencyKey,

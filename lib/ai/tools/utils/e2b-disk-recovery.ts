@@ -133,6 +133,28 @@ function assertIdentity(
     );
 }
 
+function assertSnapshotSupport(version: string): void {
+  // This is the documented snapshot prerequisite, NOT the unknown minimum for
+  // automatic envd updates: https://docs.e2b.dev/sandbox/snapshots
+  // Unknown/prerelease versions need operator review before discarding memory.
+  const match =
+    typeof version === "string"
+      ? /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[a-zA-Z0-9.-]{1,64})?$/.exec(
+          version,
+        )
+      : null;
+  const parts = match?.slice(1, 4).map(Number);
+  if (
+    !parts ||
+    !parts.every(Number.isSafeInteger) ||
+    !(parts[0] > 0 || parts[1] >= 5)
+  )
+    throw new DiskRecoveryError(
+      "capability",
+      "Recovery requires verified snapshot support: stable envd 0.5.0 or newer",
+    );
+}
+
 async function observeWorkspace(
   sandbox: Sandbox,
   key: string,
@@ -214,6 +236,7 @@ export async function recoverE2BDiskOnly(
   const assertTarget = async () => {
     const info = await getInfo();
     assertIdentity(info, auth);
+    assertSnapshotSupport(info.envdVersion);
     if (
       customer &&
       (typeof info.lifecycle?.autoResume !== "boolean" ||
