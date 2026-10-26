@@ -345,6 +345,7 @@ export async function confirmRecovery(
   userId: string,
   token: string,
   confirmed: boolean,
+  organizationId?: string,
 ) {
   if (!(await enabled(userId))) throw new RecoveryUnavailable();
   const consent = await readConsent(userId);
@@ -352,8 +353,12 @@ export async function confirmRecovery(
   if (consent.status !== "offered") return null;
   if (Date.now() - consent.issuedAt > 10 * 60000)
     throw new RecoveryUnavailable();
-  if (confirmed) await assertEligible(userId, consent);
-  if (!(await decideConsent(userId, consent, confirmed))) return null;
+  if (confirmed) {
+    if (!organizationId) throw new RecoveryUnavailable();
+    await assertEligible(userId, consent);
+  }
+  if (!(await decideConsent(userId, consent, confirmed, organizationId)))
+    return null;
   return confirmed ? consent : null;
 }
 export async function executeCustomerRecovery(
@@ -375,7 +380,13 @@ export async function executeCustomerRecovery(
     if (Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000)
       throw new RecoveryUnavailable();
     const auth = await assertEligible(userId, consent);
-    const entitlement = await getCurrentAgentEntitlementContext({ userId });
+    // Bind billing authority to the authenticated session that granted consent.
+    // Legacy receipts without that binding cannot authorize provider work.
+    if (!consent.organizationId) throw new RecoveryUnavailable();
+    const entitlement = await getCurrentAgentEntitlementContext({
+      userId,
+      organizationId: consent.organizationId,
+    });
     if (entitlement.subscription === "free") throw new RecoveryUnavailable();
     await assertUserCanMakeCostIncurringRequest(userId);
     await recoverE2BDiskOnly(auth, {
