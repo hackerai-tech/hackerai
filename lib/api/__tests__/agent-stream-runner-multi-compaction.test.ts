@@ -5474,4 +5474,117 @@ describe("createAgentStream repeated compaction", () => {
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
+
+  it("allows compaction after a smaller provider rejection recovery", async () => {
+    const sdk = jest.requireActual("ai");
+    const wrap = jest.mocked(require("ai").wrapLanguageModel);
+    wrap.mockImplementation(sdk.wrapLanguageModel);
+    try {
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const rejected = Object.assign(new Error("request too large"), {
+        statusCode: 413,
+      });
+      const doStream = jest
+        .fn()
+        .mockRejectedValueOnce(rejected)
+        .mockResolvedValue({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+        });
+      const model = {
+        specificationVersion: "v3",
+        provider: "test",
+        modelId: "test-model",
+        supportedUrls: {},
+        doGenerate: jest.fn(),
+        doStream,
+      };
+      const initialRaw: ModelMessage[] = [
+        { role: "user", content: "old context ".repeat(2_000) },
+      ];
+      const state = initAgentStreamState(
+        [uiMessage("old-context", "old context ".repeat(2_000))],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      state.lastStepInputTokens = 300_000;
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          trackedProvider: { languageModel: () => model },
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+      const rawMessages = [...initialRaw];
+      const steps: Array<Record<string, unknown>> = [];
+      for (
+        let index = 0;
+        index < MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+        index++
+      ) {
+        if (index > 0) {
+          const step: ModelMessage = {
+            role: "assistant",
+            content: `new evidence ${index}`,
+          };
+          rawMessages.push(step);
+          steps.push({ toolResults: [], response: { messages: [step] } });
+        }
+        await stream.prepareStep({ steps, messages: rawMessages });
+      }
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
+      );
+
+      mockCompactModelMessagesInRun.mockResolvedValueOnce({
+        summaryMessage: uiMessage("provider-summary", "Keep verified facts."),
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      const prompt = [
+        { role: "system", content: "system" },
+        {
+          role: "user",
+          content: [{ type: "text", text: "old context ".repeat(2_000) }],
+        },
+      ];
+      await (stream.model as typeof model).doStream({ prompt });
+      expect(doStream).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(doStream.mock.calls[1][0].prompt)).toContain(
+        "Keep verified facts.",
+      );
+
+      mockCompactModelMessagesInRun.mockResolvedValueOnce({
+        summaryMessage: uiMessage(
+          "later-summary",
+          "Continue with new evidence.",
+        ),
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      const next: ModelMessage = {
+        role: "assistant",
+        content: "new evidence after provider recovery",
+      };
+      rawMessages.push(next);
+      steps.push({ toolResults: [], response: { messages: [next] } });
+      await stream.prepareStep({ steps, messages: rawMessages });
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM + 1,
+      );
+    } finally {
+      wrap.mockImplementation(({ model }: any) => model);
+    }
+  });
 });
