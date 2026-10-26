@@ -6,6 +6,7 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
@@ -78,6 +79,36 @@ describe("agent status route", () => {
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
 
+  it("reports a crashed run as terminal when its replay cannot fit, without detaching saved recovery state", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    mockRecover.mockRejectedValueOnce(
+      new AgentCrashRecoveryReplayLimitError() as never,
+    );
+
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "CRASHED",
+      terminal: true,
+      recovery: "blocked",
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+  });
+
   it("does not confuse a missing retained stream with a missing run", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");
     const { ApiError } = await import("@trigger.dev/sdk");
@@ -100,6 +131,28 @@ describe("agent status route", () => {
       { status: 404 },
     );
     mockRecover.mockRejectedValueOnce(error as never);
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("does not convert an untyped recovery failure with the same message into a terminal result", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    mockRecover.mockRejectedValueOnce(
+      new Error("Agent crash recovery replay budget exceeded") as never,
+    );
     await expect(
       createAgentStatusPost({ endpoint: "/api/agent" })(
         requestFor("chat-1", "run-1"),
