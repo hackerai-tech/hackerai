@@ -222,6 +222,23 @@ it("keeps discovery hidden when a chat preference is malformed", () => {
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
+it.each(["availableHidden", "browserDiscovered"])(
+  "migrates a saved %s preference across chats",
+  (field) => {
+    localStorage.setItem(
+      "browser-reminder:v1:chat",
+      JSON.stringify({ [field]: true }),
+    );
+    const view = render(
+      <BrowserHandoffEntry chatId="chat" messages={messages} />,
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(localStorage.getItem("browser-reminder:discovered:v1")).toBe("true");
+    view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  },
+);
+
 it("keeps acknowledged takeover transitions quiet while surfacing recovery", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const view = render(

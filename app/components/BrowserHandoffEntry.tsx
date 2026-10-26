@@ -33,6 +33,7 @@ export function BrowserHandoffEntry({
   useEffect(() => {
     const readPreference = () => {
       let browserDiscovered = false;
+      let discoveredInChat = false;
       let dismissedAttention: string | null = null;
       let acknowledgedSession: string | null = null;
       try {
@@ -42,7 +43,8 @@ export function BrowserHandoffEntry({
       }
       try {
         const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
-        browserDiscovered ||= saved?.availableHidden === true;
+        discoveredInChat =
+          saved?.availableHidden === true || saved?.browserDiscovered === true;
         acknowledgedSession =
           typeof saved?.acknowledgedSession === "string"
             ? saved.acknowledgedSession
@@ -53,6 +55,14 @@ export function BrowserHandoffEntry({
             : null;
       } catch {
         // Storage may be unavailable. Dismissal still works for this mount.
+      }
+      if (discoveredInChat && !browserDiscovered) {
+        browserDiscovered = true;
+        try {
+          localStorage.setItem(discoveryKey, "true");
+        } catch {
+          // The per-chat preference still hides the notice in this chat.
+        }
       }
       setPreference({
         chatId,
