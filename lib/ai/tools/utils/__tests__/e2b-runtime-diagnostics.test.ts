@@ -113,6 +113,46 @@ it("does not wake a paused sandbox to check the actual version", async () => {
   expect(run).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["0.6.12", "0.10.2", true],
+  ["0.10.2", "0.6.12", false],
+  ["0.10.2", null, null],
+])(
+  "uses the serving version when installed=%s and serving=%s",
+  async (installed, serving, expected) => {
+    const run = jest.fn().mockImplementation(async (command) => {
+      if (command === "/usr/bin/envd -version")
+        return { exitCode: 0, stdout: installed };
+      return serving
+        ? { exitCode: 0, stdout: serving }
+        : { exitCode: 1, stdout: "" };
+    });
+    const value = await readE2BRuntimeDiagnostics(
+      { ...info, state: "running" },
+      {},
+      {
+        sandboxId: info.sandboxId,
+        commands: { run },
+      } as never,
+    );
+    expect(value).toMatchObject({
+      installedEnvdVersion: installed,
+      runtimeEnvdVersion: serving,
+      runtimeMeetsReadinessMinimum: expected,
+      runtimeVersionCheck: serving ? "observed" : "unavailable",
+      readinessSafeguardRollout: "unknown",
+    });
+    expect(run).toHaveBeenCalledWith(
+      expect.stringContaining('"/proc/$pid/exe" -version'),
+      expect.objectContaining({
+        user: "root",
+        timeoutMs: 2_000,
+        requestTimeoutMs: 2_000,
+      }),
+    );
+  },
+);
+
 it.each(["failure", "invalid"])(
   "leaves runtime capability unknown on %s, without falling back to new build-time metadata",
   async (failure) => {

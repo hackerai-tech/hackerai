@@ -28,6 +28,18 @@ const observedVersion = (value: unknown): string | null =>
     ? value
     : null;
 
+// Live upgrades exec /usr/bin/envd.next, so /usr/bin/envd may be stale.
+// Read only systemd's service PID and that process's executable, never its
+// environment. A missing service, inaccessible executable or PID change fails
+// closed. /proc/PID/exe also identifies an unlinked image after another upgrade.
+const SERVING_ENVD_VERSION = [
+  "pid=$(systemctl show envd.service --property=MainPID --value) || exit 1",
+  'case "$pid" in ""|*[!0-9]*|0|1) exit 1 ;; esac',
+  'version=$("/proc/$pid/exe" -version) || exit 1',
+  '[ "$pid" = "$(systemctl show envd.service --property=MainPID --value)" ] || exit 1',
+  'printf "%s\\n" "$version"',
+].join("\n");
+
 /** Never wake a paused sandbox for diagnostics. Runtime checks need an already connected instance. */
 export async function readE2BRuntimeDiagnostics(
   info: SandboxInfo,
@@ -43,22 +55,30 @@ export async function readE2BRuntimeDiagnostics(
     retries: 0,
     requestTimeoutMs: 2_000,
   }).catch(() => []);
+  let installedEnvdVersion: string | null = null;
   let runtimeEnvdVersion: string | null = null;
   let runtimeVersionCheck:
     "not_checked_paused" | "not_checked" | "unavailable" | "observed" =
     info.state === "paused" ? "not_checked_paused" : "not_checked";
   if (info.state === "running" && connected?.sandboxId === info.sandboxId) {
     runtimeVersionCheck = "unavailable";
-    const command = await connected.commands
-      .run("/usr/bin/envd -version", {
-        timeoutMs: 2_000,
-        requestTimeoutMs: 2_000,
-      })
-      .catch(() => null);
-    if (command?.exitCode === 0 && typeof command.stdout === "string") {
-      runtimeEnvdVersion = observedVersion(command.stdout.trim());
-      if (runtimeEnvdVersion) runtimeVersionCheck = "observed";
-    }
+    const readVersion = async (command: string, user?: string) => {
+      const result = await connected.commands
+        .run(command, {
+          timeoutMs: 2_000,
+          requestTimeoutMs: 2_000,
+          ...(user && { user }),
+        })
+        .catch(() => null);
+      return result?.exitCode === 0 && typeof result.stdout === "string"
+        ? observedVersion(result.stdout.trim())
+        : null;
+    };
+    [installedEnvdVersion, runtimeEnvdVersion] = await Promise.all([
+      readVersion("/usr/bin/envd -version"),
+      readVersion(SERVING_ENVD_VERSION, "root"),
+    ]);
+    if (runtimeEnvdVersion) runtimeVersionCheck = "observed";
   }
   const metrics = await metricsRequest;
   const latest = metrics
@@ -68,6 +88,7 @@ export async function readE2BRuntimeDiagnostics(
     Number.isFinite(value) && value >= 0 ? value : null;
   return {
     templateBuildEnvdVersion: observedVersion(info.envdVersion),
+    installedEnvdVersion,
     runtimeEnvdVersion,
     runtimeVersionCheck,
     // Meeting the binary minimum does not prove E2B has enabled its rollout.

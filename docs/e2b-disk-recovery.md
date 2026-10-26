@@ -108,16 +108,20 @@ original memory cannot be restored into the running rebooted sandbox. The
 ready-state snapshot ID is a backup of the recovered state, not a pre-reboot
 rollback point, replacement workspace or authorization to create one.
 
-The result separates `templateBuildEnvdVersion` from `runtimeEnvdVersion`, with
+The result separates `templateBuildEnvdVersion`, `installedEnvdVersion` and
+`runtimeEnvdVersion`, with
 allocated CPU/memory, lifecycle timeout behavior, expiry, connect
 duration, and the most recent resource sample from the preceding five minutes,
 before and after recovery. The metrics lookup has a two-second timeout and no
 retries; missing samples are `null`, not evidence of low pressure. Sampling uses
 the control-plane API and does not resume the paused sandbox. Only after recovery
-has connected and verified the running sandbox does a bounded
-`/usr/bin/envd -version` command inspect its actual agent. Failure leaves the
-runtime version and readiness minimum unknown; build-time metadata is never a
-fallback. An actual version at least `0.10.0` meets the binary minimum for the
+has connected and verified the running sandbox do bounded commands inspect envd.
+`/usr/bin/envd -version` records the installed binary. A separate check reads
+`envd.service`'s systemd MainPID and runs `/proc/PID/exe -version` as root, then
+confirms the service PID did not change. This identifies the serving executable
+even after a live upgrade into `envd.next`; it reads no process environment or
+customer files. Failure leaves the runtime version and readiness minimum unknown;
+neither the installed binary nor build-time metadata is a fallback. An actual version at least `0.10.0` meets the binary minimum for the
 readiness safeguard, but provider rollout remains unknown. These observations
 do not identify the provider's internal readiness stage or establish why a
 previous resume failed. No paths, file names, contents, environment values or

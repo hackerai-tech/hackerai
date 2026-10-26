@@ -103,7 +103,8 @@ beforeEach(() => {
   pause.mockResolvedValue(true);
   snapshot.mockResolvedValue({ snapshotId: "backup-1" });
   run.mockImplementation(async (command) =>
-    command === "/usr/bin/envd -version"
+    command === "/usr/bin/envd -version" ||
+    command.includes("systemctl show envd.service")
       ? { exitCode: 0, stdout: "0.10.2\n" }
       : { exitCode: 0 },
   );

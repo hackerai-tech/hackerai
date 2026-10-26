@@ -100,9 +100,12 @@ old snapshot also cannot establish that a new agent was installed.
    Record the sandbox ID immediately. Read `Sandbox.getInfo()` for template ID,
    CPU, memory and **template build-time** `envdVersion`. Run
    `/usr/bin/envd -version` inside that already-running disposable sandbox to
-   verify the **actual** binary is at least `0.10.0`; keep both observations
-   separate. If the command is unavailable, actual version and readiness remain
-   unknown. A new rebuild should supply the current provider-managed agent, but
+   record the installed binary. Verify the **serving** executable separately via
+   systemd's `envd.service` MainPID and `/proc/PID/exe -version`, confirming the
+   service PID is unchanged after the check. Require serving envd at least
+   `0.10.0`; keep all three observations separate. Live upgrades can execute
+   `/usr/bin/envd.next` while the original installed binary remains older. If the
+   serving check is unavailable, actual version and readiness remain unknown. A new rebuild should supply the current provider-managed agent, but
    the observed version must pass this check. Provider rollout is still required
    and has no customer-visible confirmation signal; do not label it enabled.
 4. Time a harmless command, write/read synthetic bytes, flush those bytes, pause,
@@ -180,3 +183,6 @@ Provider references: [template builds](https://docs.e2b.dev/template/build),
 [tags and exact builds](https://docs.e2b.dev/template/tags),
 [resource metrics](https://docs.e2b.dev/sandbox/metrics), and
 [reboot semantics](https://docs.e2b.dev/sandbox/resume-without-memory).
+
+The serving-version distinction follows E2B's [live-upgrade implementation](https://github.com/e2b-dev/runtime/blob/f551e44addb4acce285aa290fba39c260dd522fe/packages/envd/internal/services/process/upgrade.go#L100)
+and [systemd service](https://github.com/e2b-dev/runtime/blob/f551e44addb4acce285aa290fba39c260dd522fe/packages/orchestrator/pkg/template/build/core/rootfs/files/envd.service.tpl).
