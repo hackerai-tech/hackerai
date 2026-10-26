@@ -1,6 +1,7 @@
 import { serialize, deserialize } from "node:v8";
 import { ReadableStream } from "node:stream/web";
 import { recoverCrashedAgentRun } from "../agent-crash-recovery";
+import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 
 const mockHistoryAccess = jest.fn();
 jest.mock("@/lib/suspensions", () => ({
@@ -121,11 +122,13 @@ it("does not persist a prefix when the retained stream fails", async () => {
 it("does not save a partial replay when its request-wide byte budget is exceeded", async () => {
   mockRead.mockResolvedValue(
     stream([
-      ...text("first", "ok"),
-      ...text("second", "x".repeat(8 * 1024 * 1024)),
+      ...text("first", "x".repeat(4 * 1024 * 1024)),
+      ...text("second", "x".repeat(4 * 1024 * 1024)),
     ]),
   );
-  await expect(recoverCrashedAgentRun(input)).rejects.toThrow();
+  await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
+    AgentCrashRecoveryReplayLimitError,
+  );
   expect(mockSave).not.toHaveBeenCalled();
 });
 
