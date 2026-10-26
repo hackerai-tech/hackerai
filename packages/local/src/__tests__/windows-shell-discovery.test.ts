@@ -67,7 +67,6 @@ describe("Windows shell discovery", () => {
       const gitBin = join(root, "portable", "Git", "bin");
       const marker = join(root, "where-ran.txt");
       const oldCwd = process.cwd();
-      const oldPath = process.env.PATH;
       try {
         mkdirSync(project, { recursive: true });
         mkdirSync(gitCmd, { recursive: true });
@@ -79,7 +78,14 @@ describe("Windows shell discovery", () => {
         writeFileSync(join(gitCmd, "git.exe"), "");
         writeFileSync(join(gitBin, "bash.exe"), "");
         process.chdir(project);
-        process.env.PATH = gitCmd;
+        // Windows runners may carry both PATH and Path. Give where.exe one
+        // unambiguous search path without changing the Jest process environment.
+        const childEnv = Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([key]) => key.toLowerCase() !== "path",
+          ),
+        );
+        childEnv.Path = gitCmd;
 
         const systemWhere = join(
           process.env.SystemRoot!,
@@ -89,6 +95,7 @@ describe("Windows shell discovery", () => {
         const discoveredGit = execFileSync(systemWhere, ["$PATH:git.exe"], {
           encoding: "utf8",
           windowsHide: true,
+          env: childEnv,
         }).trim();
         expect(discoveredGit.toLowerCase()).toBe(
           join(gitCmd, "git.exe").toLowerCase(),
@@ -104,6 +111,10 @@ describe("Windows shell discovery", () => {
                 ? false
                 : realFs.existsSync(path),
           }));
+          jest.doMock("child_process", () => ({
+            execFileSync: (file: string, args: string[]) =>
+              execFileSync(file, args, { encoding: "utf8", env: childEnv }),
+          }));
           utils = require("../utils");
         });
 
@@ -111,8 +122,6 @@ describe("Windows shell discovery", () => {
         expect(existsSync(marker)).toBe(false);
       } finally {
         process.chdir(oldCwd);
-        if (oldPath === undefined) delete process.env.PATH;
-        else process.env.PATH = oldPath;
         rmSync(root, { recursive: true, force: true });
       }
     },
