@@ -520,18 +520,23 @@ export const getProviderErrorCategory = (
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
+  const fallbackStatusCode = parseHttpStatus(details.errorCode);
+  if (fallbackStatusCode === 429) return "rate_limited";
+  if (
+    fallbackStatusCode != null &&
+    fallbackStatusCode >= 400 &&
+    fallbackStatusCode < 500
+  )
+    return "provider_4xx";
+
   const message = getProviderMessageText(details);
   if (PROVIDER_STREAM_TERMINATION_PATTERN.test(message)) {
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
 
-  const fallbackStatusCode = parseHttpStatus(details.errorCode);
-  if (fallbackStatusCode === 429) return "rate_limited";
   if (fallbackStatusCode != null && fallbackStatusCode >= 500)
     return "provider_5xx";
-  if (fallbackStatusCode != null && fallbackStatusCode >= 400)
-    return "provider_4xx";
 
   return "unknown";
 };

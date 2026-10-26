@@ -505,6 +505,17 @@ describe("provider error classification", () => {
     ).toBe(false);
   });
 
+  it.each([400, 401, 403, 429])(
+    "keeps numeric %s codes ahead of disconnect wording",
+    (code) => {
+      const error = { code, message: "read ECONNRESET" };
+      expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+        code === 429 ? "rate_limited" : "provider_4xx",
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(false);
+    },
+  );
+
   it("allows transient 5xx failures without requiring provider-specific wording", () => {
     expect(
       isRetriableProviderStreamDisconnectError(
