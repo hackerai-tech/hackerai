@@ -1,5 +1,5 @@
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
+import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -439,8 +439,7 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const agentModelContextEnabled = await isAgentModelContextEnabled(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,

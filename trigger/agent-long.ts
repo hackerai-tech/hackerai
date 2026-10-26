@@ -3,7 +3,7 @@ import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import {
-  getAgentModelContextVariant,
+  isExpandedAgentContextEligible,
   getAgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
@@ -1944,17 +1944,19 @@ export const agentLongTask = task({
       }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const agentModelContextVariant = await getAgentModelContextVariant(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,
       );
+      // Keep attribution compatible with historical records and feedback selection.
+      const agentModelContextVariant = agentModelContextEnabled
+        ? ("test" as const)
+        : undefined;
       runReporting.setAgentModelContextVariant(
         agentModelContextVariant,
         getAgentModelContextFlag(selectedModelOverride),
       );
-      const agentModelContextEnabled = agentModelContextVariant === "test";
       const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
         posthog,
         userId,
