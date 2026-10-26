@@ -387,13 +387,20 @@ it.each([
   },
 );
 
-it.each(["504", "idle_timeout", "response_timeout"])(
+it.each(["504", "read_econnreset", "idle_timeout", "response_timeout"])(
   "recovers %s after tool execution through real SDK/UI streams without executing the tool twice",
   async (failureMode) => {
-    if (failureMode !== "504") jest.useFakeTimers();
+    const watchdogFailure =
+      failureMode === "idle_timeout" || failureMode === "response_timeout";
+    if (watchdogFailure) jest.useFakeTimers();
     const execute = jest.fn(async () => ({ saved: true }));
     const tools = { save: tool({ inputSchema: z.object({}), execute }) };
-    const upstreamError = { code: 504, message: "The operation was aborted" };
+    const upstreamError =
+      failureMode === "read_econnreset"
+        ? new TypeError("fetch failed", {
+            cause: new Error("read ECONNRESET"),
+          })
+        : { code: 504, message: "The operation was aborted" };
     const primary = jest
       .fn()
       .mockResolvedValueOnce(
@@ -448,7 +455,7 @@ it.each(["504", "idle_timeout", "response_timeout"])(
       }))
         partial = message;
     })();
-    if (failureMode !== "504") await jest.advanceTimersByTimeAsync(1100);
+    if (watchdogFailure) await jest.advanceTimersByTimeAsync(1100);
     await readInitial;
     expect(execute).toHaveBeenCalledTimes(1);
     expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
@@ -461,23 +468,23 @@ it.each(["504", "idle_timeout", "response_timeout"])(
     expect(continuation?.preservedCompletedToolCount).toBe(1);
     if (failureMode === "response_timeout") {
       expect(continuation?.removedPartCount).toBe(0);
-      const decision = {
-        userCancelled: false,
-        unrecoverableVision: false,
-        alreadyRetried: false,
-        streamAborted: false,
-        loopRecovery: false,
-        hasCandidate: Boolean(continuation),
-        modelEligible: Boolean(continuation),
-      };
-      expect(decideProviderRecovery(decision).attempt).toBe(true);
-      expect(
-        decideProviderRecovery({ ...decision, userCancelled: true }).reason,
-      ).toBe("user_cancelled");
-      expect(
-        decideProviderRecovery({ ...decision, alreadyRetried: true }).reason,
-      ).toBe("retry_budget_exhausted");
     }
+    const decision = {
+      userCancelled: false,
+      unrecoverableVision: false,
+      alreadyRetried: false,
+      streamAborted: false,
+      loopRecovery: false,
+      hasCandidate: Boolean(continuation),
+      modelEligible: Boolean(continuation),
+    };
+    expect(decideProviderRecovery(decision).attempt).toBe(true);
+    expect(
+      decideProviderRecovery({ ...decision, userCancelled: true }).reason,
+    ).toBe("user_cancelled");
+    expect(
+      decideProviderRecovery({ ...decision, alreadyRetried: true }).reason,
+    ).toBe("retry_budget_exhausted");
     const messages = await convertToModelMessages(continuation!.messages, {
       tools,
     });
