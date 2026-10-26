@@ -61,9 +61,15 @@ existing 4 vCPU / 4096 MiB allocation. A rebuild is the upgrade mechanism, but
 does not prove which agent the hosted regional service supplied. Record and
 verify its actual version before accepting the build. Do not infer an automatic
 update minimum from the SDK package version or the application's `sandboxVersion`.
+Automatic updates require an actual running envd of at least `0.6.12`, but rollout
+is gradual: eligibility is not a delivery guarantee for any particular sandbox,
+and there is no customer-visible eligibility indicator. The readiness safeguard
+requires actual envd `>=0.10.0` **and** provider rollout; the version alone cannot
+prove the safeguard is enabled. Rebuild and verify rather than waiting for an
+eventual update to an existing workspace.
 
-Rebuilding changes new sandboxes only. Existing running/paused workspaces and
-snapshots retain their environment. Disk-only reboot is recovery within the same
+Rebuilding changes new sandboxes only. It does not update existing running/paused
+workspaces or snapshots. Disk-only reboot is recovery within the same
 workspace, not an envd upgrade. Copying an old root filesystem or starting from an
 old snapshot also cannot establish that a new agent was installed.
 
@@ -91,14 +97,23 @@ old snapshot also cannot establish that a new agent was installed.
 3. Under separately authorized disposable validation, create a **new synthetic**
    sandbox using that exact `templateId:buildId` reference, the same regional key
    and domain, a bounded lifetime, SDK retries disabled, and unique QA metadata.
-   Record the sandbox ID immediately. Read `Sandbox.getInfo()` for `envdVersion`,
-   template ID, CPU and memory. Compare the observed envd with the currently
-   provider-confirmed recommended version for that region; if the recommended
-   version or automatic-update floor is unknown, record it as unresolved. A
-   newer-looking version alone is not proof of the required readiness fix.
+   Record the sandbox ID immediately. Read `Sandbox.getInfo()` for template ID,
+   CPU, memory and **template build-time** `envdVersion`. Run
+   `/usr/bin/envd -version` inside that already-running disposable sandbox to
+   verify the **actual** binary is at least `0.10.0`; keep both observations
+   separate. If the command is unavailable, actual version and readiness remain
+   unknown. A new rebuild should supply the current provider-managed agent, but
+   the observed version must pass this check. Provider rollout is still required
+   and has no customer-visible confirmation signal; do not label it enabled.
 4. Time a harmless command, write/read synthetic bytes, flush those bytes, pause,
    resume normally once, and verify the exact bytes again. On this disposable
-   sandbox only, also rehearse a cold reboot and explicit pause. Collect timestamped
+   sandbox only, also rehearse a cold reboot and explicit pause. A failed reboot
+   preserves the original snapshot; a successful reboot loses running processes
+   and unflushed writes, and partial files are possible. The next pause replaces
+   the saved state with the rebooted state. With `onTimeout: "pause"`, timeout
+   performs that pause automatically, even if the application is fenced or its
+   worker has failed. There is no API rollback to the earlier memory snapshot.
+   Collect timestamped
    `getMetrics()` samples during a bounded representative workload; absence of
    metrics is unknown. Check tool versions and the existing trust-store gates.
    Record readiness durations, observed envd, allocated resources and persistence

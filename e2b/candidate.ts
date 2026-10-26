@@ -35,11 +35,11 @@ export async function buildCandidate(
     apiUrl: `https://api.${domain}`,
     debug: false,
     retries: 0,
-    requestTimeoutMs: 30_000,
   };
   // Require an existing template so an incorrect project cannot silently seed
   // a new one. Account/project identity must still be verified by the operator.
-  const before = await Template.getTags(name, options);
+  const lookupOptions = { ...options, requestTimeoutMs: 30_000 };
+  const before = await Template.getTags(name, lookupOptions);
   const previousDefault = before.find(
     (item) => item.tag === "default",
   )?.buildId;
@@ -52,11 +52,13 @@ export async function buildCandidate(
   // hand-picked envd binary into the image or assume an automatic-update floor.
   const build = await Template.build(template, `${name}:${tag}`, {
     ...options,
+    // Keep SDK phase-specific defaults: its upload bound is longer than API
+    // reads. A lookup timeout here would also abort Docker COPY uploads.
     skipCache: true,
     cpuCount: 4,
     memoryMB: 4096,
   });
-  const after = await Template.getTags(build.templateId, options);
+  const after = await Template.getTags(build.templateId, lookupOptions);
   if (
     after.find((item) => item.tag === tag)?.buildId !== build.buildId ||
     after.find((item) => item.tag === "default")?.buildId !== previousDefault

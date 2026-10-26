@@ -2,7 +2,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Sandbox, type SandboxInfo } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "./e2b-cluster";
-import { readE2BRuntimeDiagnostics } from "./e2b-runtime-diagnostics";
+import {
+  envdVersionAtLeast,
+  readE2BRuntimeDiagnostics,
+} from "./e2b-runtime-diagnostics";
 import {
   claimE2BDiskRecovery,
   readCloudWorkspaceState,
@@ -133,25 +136,15 @@ function assertIdentity(
     );
 }
 
-function assertSnapshotSupport(version: string): void {
-  // This is the documented snapshot prerequisite, NOT the unknown minimum for
-  // automatic envd updates: https://docs.e2b.dev/sandbox/snapshots
-  // Unknown/prerelease versions need operator review before discarding memory.
-  const match =
-    typeof version === "string"
-      ? /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[a-zA-Z0-9.-]{1,64})?$/.exec(
-          version,
-        )
-      : null;
-  const parts = match?.slice(1, 4).map(Number);
-  if (
-    !parts ||
-    !parts.every(Number.isSafeInteger) ||
-    !(parts[0] > 0 || parts[1] >= 5)
-  )
+function assertTemplateSnapshotSupport(templateBuildVersion: string): void {
+  // Snapshot docs specify the template's build-time minimum. This establishes
+  // the baseline capability, NOT the live envd version after automatic updates.
+  // An older/unknown baseline needs separate operator evidence; never wake the
+  // source merely to inspect its binary. https://docs.e2b.dev/sandbox/snapshots
+  if (envdVersionAtLeast(templateBuildVersion, [0, 5, 0]) !== true)
     throw new DiskRecoveryError(
       "capability",
-      "Recovery requires verified snapshot support: stable envd 0.5.0 or newer",
+      "Snapshot support is unverified from the template build-time envd version; operator review required",
     );
 }
 
@@ -236,7 +229,7 @@ export async function recoverE2BDiskOnly(
   const assertTarget = async () => {
     const info = await getInfo();
     assertIdentity(info, auth);
-    assertSnapshotSupport(info.envdVersion);
+    assertTemplateSnapshotSupport(info.envdVersion);
     if (
       customer &&
       (typeof info.lifecycle?.autoResume !== "boolean" ||
@@ -284,6 +277,10 @@ export async function recoverE2BDiskOnly(
   });
   let stage = "identity";
   const startedAt = Date.now();
+  let runtimeAfter: Awaited<
+    ReturnType<typeof readE2BRuntimeDiagnostics>
+  > | null = null;
+  let rebootRequested = false;
   try {
     // Recheck after fencing. E2B arbitrates a later inbound race: an in-flight
     // restore refuses reboot; an already-running sandbox is returned unchanged.
@@ -292,6 +289,7 @@ export async function recoverE2BDiskOnly(
     if (customer) await customer.assertIdle();
     stage = "reboot";
     const connectStartedAt = Date.now();
+    rebootRequested = true;
     const sandbox = await Sandbox.connect(auth.sandboxId, {
       ...connectionOptions,
       onResume: "reboot",
@@ -325,14 +323,16 @@ export async function recoverE2BDiskOnly(
     const observed = await observeWorkspace(sandbox, fingerprintKey);
     const readyInfo = await getInfo();
     assertIdentity(readyInfo, auth, "running");
-    const runtimeAfter = await readE2BRuntimeDiagnostics(
+    runtimeAfter = await readE2BRuntimeDiagnostics(
       readyInfo,
       connectionOptions,
+      sandbox,
     );
     await claim.update({ step: "inventory_observed", ...observed });
     stage = "backup";
-    // This backs up the recovered state, not the pre-reboot memory. After a
-    // successful reboot the original memory is no longer reachable.
+    // This backs up recovered state, not the pre-reboot memory. Original RAM
+    // cannot be restored into the running sandbox; the next pause (including
+    // onTimeout=pause) replaces the stored state. A fence does not stop that.
     const backup = await sandbox.createSnapshot({
       retries: 0,
       requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
@@ -500,7 +500,16 @@ export async function recoverE2BDiskOnly(
         : "Recovery stopped; fence status uncertain. Inspect Redis and the exact sandbox before any continuation",
       {
         fence,
-        diagnostics: { before, durationMs: Date.now() - startedAt },
+        diagnostics: {
+          before,
+          after: runtimeAfter,
+          durationMs: Date.now() - startedAt,
+        },
+        // A retained application fence cannot freeze provider lifecycle or
+        // establish that an uncertain reboot left the original snapshot intact.
+        originalMemoryPreservation: rebootRequested
+          ? "not_guaranteed"
+          : "not_changed_by_this_attempt",
         providerStatus:
           error && typeof error === "object" && "statusCode" in error
             ? (error as { statusCode: unknown }).statusCode

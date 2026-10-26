@@ -64,6 +64,7 @@ const auth = {
 const info = {
   sandboxId: auth.sandboxId,
   envdVersion: "0.5.0",
+  lifecycle: { autoResume: true, onTimeout: "pause" },
   state: "paused",
   metadata: {
     userID: auth.userId,
@@ -101,7 +102,11 @@ beforeEach(() => {
   update.mockResolvedValue(undefined);
   pause.mockResolvedValue(true);
   snapshot.mockResolvedValue({ snapshotId: "backup-1" });
-  run.mockResolvedValue({ exitCode: 0 });
+  run.mockImplementation(async (command) =>
+    command === "/usr/bin/envd -version"
+      ? { exitCode: 0, stdout: "0.10.2\n" }
+      : { exitCode: 0 },
+  );
   list.mockResolvedValue([{ name: "synthetic.txt", type: "file", size: 4 }]);
   let bytes = "";
   write.mockImplementation(async (_path, value) => {
@@ -261,6 +266,15 @@ describe("disk-only recovery", () => {
       status: "verified_paused",
       backupSnapshotId: "backup-1",
       entryCount: 1,
+      diagnostics: {
+        before: { templateBuildEnvdVersion: "0.5.0", runtimeEnvdVersion: null },
+        after: {
+          templateBuildEnvdVersion: "0.5.0",
+          runtimeEnvdVersion: "0.10.2",
+          runtimeMeetsReadinessMinimum: true,
+          readinessSafeguardRollout: "unknown",
+        },
+      },
     });
     expect(connect).toHaveBeenCalledTimes(2);
     expect(connect).toHaveBeenNthCalledWith(
@@ -391,6 +405,30 @@ describe("disk-only recovery", () => {
       details: { fence: "retained" },
     });
     expect(connect).toHaveBeenCalledTimes(1);
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("retains the fence across an automatic pause after post-reboot backup failure without claiming memory rollback", async () => {
+    state.mockResolvedValueOnce(null).mockResolvedValue({
+      phase: "recovery",
+      token: auth.idempotencyKey,
+    } as never);
+    snapshot.mockRejectedValueOnce(new Error("snapshot failed"));
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "backup",
+      details: {
+        fence: "retained",
+        originalMemoryPreservation: "not_guaranteed",
+        diagnostics: { after: { onTimeout: "pause" } },
+      },
+    });
+    // E2B may save rebooted state independently of our Redis fence.
+    getInfo.mockResolvedValue(info as never);
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "fenced",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(pause).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
   });
 

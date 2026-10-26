@@ -50,6 +50,11 @@ it.each(["us-dev", "us-prod", "eu-dev", "eu-prod"])(
         retries: 0,
       }),
     );
+    expect(build.mock.calls[0][2]).not.toHaveProperty("requestTimeoutMs");
+    expect(tags).toHaveBeenCalledWith(
+      "template",
+      expect.objectContaining({ requestTimeoutMs: 30_000, retries: 0 }),
+    );
   },
 );
 
