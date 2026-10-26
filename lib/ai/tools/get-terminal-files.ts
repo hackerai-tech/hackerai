@@ -141,6 +141,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         }
       };
       try {
+        abortSignal?.throwIfAborted();
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
@@ -240,6 +241,17 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          if (abortSignal?.aborted) {
+            const remainingFiles = files.slice(i);
+            countFailure("unknown", remainingFiles.length);
+            blockedFiles.push(
+              ...remainingFiles.map((path) => ({
+                path,
+                reason: "File delivery canceled before this file was retrieved",
+              })),
+            );
+            break;
+          }
           currentPhase = "sandbox_setup";
           setupStage = "path_preparation";
           const originalPath = files[i];
@@ -295,6 +307,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
+              abortSignal?.throwIfAborted();
               currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
               currentPhase = "finalization";
@@ -351,8 +364,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
-              lastFailurePhase = currentPhase;
+              lastFailurePhase = abortSignal?.aborted
+                ? "unknown"
+                : currentPhase;
               lastMetadataFailureReason = currentMetadataFailureReason;
+              if (abortSignal?.aborted) break;
               // Continue to try next path
             }
           }

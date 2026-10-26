@@ -1025,22 +1025,33 @@ describe("get_terminal_files", () => {
           ...base.sandboxManager,
           getSandbox,
           recoverLocalConnection,
+          getSandboxInfo: jest.fn(() => ({ type: "cloud" })),
         } as never,
       });
-      mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
-        args.onPhase?.("file_metadata");
-        if (phase === "before recovery")
-          controller.abort(new Error("Canceled"));
-        throw new LocalFileRequestError("relay_unsubscribed", "Relay absent");
-      });
+      mockUploadSandboxFileToConvex
+        .mockResolvedValueOnce({
+          url: "https://files.example/one.txt",
+          fileId: "stored-first" as never,
+          name: "one.txt",
+          mediaType: "text/plain",
+          tokens: 0,
+          sizeBytes: 1,
+        })
+        .mockImplementation(async (args) => {
+          args.onPhase?.("file_metadata");
+          if (phase === "before recovery")
+            controller.abort(new Error("Canceled"));
+          throw new LocalFileRequestError("relay_unsubscribed", "Relay absent");
+        });
       const result = await runTool(
         createGetTerminalFiles(context),
-        { files: ["/one.txt"] },
+        { files: ["one.txt", "two.txt", "three.txt"] },
         controller.signal,
       );
       expect(result).toMatchObject({
-        files: [],
-        failedFiles: [{ path: "/one.txt" }],
+        files: [{ path: "one.txt" }],
+        deliveryReceipts: [{ fileId: "stored-first", storageStatus: "stored" }],
+        failedFiles: [{ path: "two.txt" }, { path: "three.txt" }],
       });
       expect(recoverLocalConnection).toHaveBeenCalledTimes(
         phase === "before recovery" ? 0 : 1,
@@ -1048,9 +1059,35 @@ describe("get_terminal_files", () => {
       expect(getSandbox).toHaveBeenCalledTimes(
         phase === "during reacquisition" ? 2 : 1,
       );
-      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(2);
+      expect(context.fileAccumulator.add).toHaveBeenCalledTimes(1);
+      expect(phLogger.event).toHaveBeenLastCalledWith(
+        "agent_file_delivery_completed",
+        expect.objectContaining({
+          delivered_file_count: 1,
+          failed_file_count: 2,
+        }),
+      );
     },
   );
+  it("does not acquire a sandbox for a delivery canceled before execution", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Canceled"));
+    const context = makeContext();
+    const result = await runTool(
+      createGetTerminalFiles(context),
+      {
+        files: ["/one.txt", "/two.txt"],
+      },
+      controller.signal,
+    );
+    expect(result).toMatchObject({
+      files: [],
+      failedFiles: [{ path: "/one.txt" }, { path: "/two.txt" }],
+    });
+    expect(context.sandboxManager.getSandbox).not.toHaveBeenCalled();
+    expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+  });
   it("does not carry a native metadata reason across a relay recovery attempt", async () => {
     const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
     const replacement = {
