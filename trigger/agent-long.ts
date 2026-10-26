@@ -17,7 +17,6 @@ import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-sub
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
@@ -4558,12 +4557,6 @@ export const agentLongTask = task({
                                 onRejected: (reason) => {
                                   continuationRejection = reason;
                                 },
-                                allowCompletedTail:
-                                  terminalEmptyResponse ||
-                                  shouldRecoverAbliterationStreamError ||
-                                  isProviderResponseTimeout(
-                                    state.providerError,
-                                  ),
                               },
                             )
                           : undefined;
@@ -4951,10 +4944,6 @@ export const agentLongTask = task({
                                             allowEmptyResponse:
                                               selectedModelOverride ===
                                               "hackerai-max",
-                                            allowCompletedTail:
-                                              isProviderResponseTimeout(
-                                                state.providerError,
-                                              ),
                                           },
                                         )
                                       : undefined;

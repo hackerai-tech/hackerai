@@ -28,30 +28,11 @@ describe("prepareProviderDisconnectContinuation", () => {
       ],
       "missing_step_boundary",
     ],
-    [
-      [
-        {
-          id: "assistant",
-          role: "assistant",
-          parts: [
-            { type: "step-start" },
-            {
-              type: "tool-save",
-              toolCallId: "saved",
-              state: "output-available",
-              input: { private: "input" },
-              output: { private: "result" },
-            },
-          ],
-        },
-      ],
-      "no_tail_to_trim",
-    ],
   ])(
     "explains a rejected transcript without exposing its contents (%s)",
     (messages, reason) => {
       const onRejected = jest.fn();
-      const options = { allowCompletedTail: false, onRejected };
+      const options = { onRejected };
 
       expect(
         prepareProviderDisconnectContinuation(messages as UIMessage[], options),
@@ -62,7 +43,6 @@ describe("prepareProviderDisconnectContinuation", () => {
 
   it("keeps the existing rejection when diagnostic collection throws", () => {
     const options = {
-      allowCompletedTail: false,
       onRejected: () => {
         throw new Error("diagnostics unavailable");
       },
@@ -165,7 +145,7 @@ describe("prepareProviderDisconnectContinuation", () => {
     expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
   });
 
-  it("preserves tools completed before an Abliteration error even without a partial tail", () => {
+  it("continues after a completed tool without requiring a discarded suffix", () => {
     const messages = [
       {
         id: "assistant",
@@ -182,16 +162,15 @@ describe("prepareProviderDisconnectContinuation", () => {
         ],
       },
     ] as UIMessage[];
-    expect(prepareProviderDisconnectContinuation(messages)).toBeUndefined();
+    const onRejected = jest.fn();
     expect(
-      prepareProviderDisconnectContinuation(messages, {
-        allowCompletedTail: true,
-      }),
+      prepareProviderDisconnectContinuation(messages, { onRejected }),
     ).toMatchObject({
       messages,
       removedPartCount: 0,
       preservedCompletedToolCount: 1,
     });
+    expect(onRejected).not.toHaveBeenCalled();
   });
 
   it("removes an entirely incomplete first assistant step", () => {
