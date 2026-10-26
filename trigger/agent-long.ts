@@ -310,7 +310,6 @@ import {
   omitTrailingStepStartAssistantMessage,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import {
   BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
@@ -364,6 +363,10 @@ import {
 } from "@/lib/chat/agent-tool-approval-requester";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 6 * 60 * 60;
+// The free concurrency lock must outlive the run cap and cleanup grace.
+// Approval waits release it early and re-acquire it after authorization.
+const FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS =
+  AGENT_LONG_FREE_MAX_DURATION_SECONDS + 5 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 6 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
