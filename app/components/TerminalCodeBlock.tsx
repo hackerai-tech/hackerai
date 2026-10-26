@@ -72,12 +72,11 @@ const createPlainTextHtml = (codeToRender: string): string => {
  * Uses native Shiki codeToHtml with react-shiki patterns for performance
  *
  * Features:
- * - Debounced rendering for streaming content (150ms delay, same as react-shiki)
+ * - Bounded rendering batches so continuous output keeps making visible progress
  * - Caching to avoid re-rendering identical content
  * - Race condition protection for async renders
  * - Memory management with cache cleanup
  * - Proper HTML escaping for fallback content
- * - Follows react-shiki performance patterns
  */
 const AnsiCodeBlock = ({
   code,
@@ -91,29 +90,29 @@ const AnsiCodeBlock = ({
   const [htmlContent, setHtmlContent] = useState<string>("");
   const [isRendering, setIsRendering] = useState(false);
   const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingCodeRef = useRef("");
   const lastRenderedCodeRef = useRef<string>("");
   const cacheKeyRef = useRef<string>("");
 
-  // Debounce rendering for streaming content
-  const debouncedRender = useCallback(
-    async (codeToRender: string) => {
-      // Clear any pending render
-      if (renderTimeoutRef.current) {
-        clearTimeout(renderTimeoutRef.current);
-      }
+  const scheduleRender = useCallback(
+    (code: string) => {
+      pendingCodeRef.current = code;
+      // Keep the first chunk's deadline. Restarting it on every update can
+      // leave the terminal blank until a continuous stream finally stops.
+      if (renderTimeoutRef.current !== null) return;
 
-      // For streaming, debounce rapid updates (same as react-shiki default)
       const delay = customDelay ?? (isStreaming ? 150 : 0);
 
       renderTimeoutRef.current = setTimeout(async () => {
+        renderTimeoutRef.current = null;
+        const codeToRender = pendingCodeRef.current;
+        const cacheKey = `${codeToRender}-${isWrapped}-${theme}`;
+        cacheKeyRef.current = cacheKey;
+
         // Skip if we've already rendered this exact content
         if (lastRenderedCodeRef.current === codeToRender) {
           return;
         }
-
-        // Create cache key including theme for proper caching
-        const cacheKey = `${codeToRender}-${isWrapped}-${theme}`;
-        cacheKeyRef.current = cacheKey;
 
         // Check cache first
         if (ansiCache.has(cacheKey)) {
@@ -159,28 +158,38 @@ const AnsiCodeBlock = ({
             lastRenderedCodeRef.current = codeToRender;
           }
         } finally {
-          setIsRendering(false);
+          if (cacheKeyRef.current === cacheKey) setIsRendering(false);
         }
       }, delay);
     },
     [isStreaming, isWrapped, theme, customDelay],
   );
 
+  useEffect(
+    () => () => {
+      if (renderTimeoutRef.current !== null) {
+        clearTimeout(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+      cacheKeyRef.current = "";
+    },
+    [scheduleRender],
+  );
+
   useEffect(() => {
     if (code) {
-      debouncedRender(code);
+      scheduleRender(code);
     } else {
+      if (renderTimeoutRef.current !== null) {
+        clearTimeout(renderTimeoutRef.current);
+        renderTimeoutRef.current = null;
+      }
+      cacheKeyRef.current = "";
       setHtmlContent("");
+      setIsRendering(false);
       lastRenderedCodeRef.current = "";
     }
-
-    // Cleanup timeout on unmount or code change
-    return () => {
-      if (renderTimeoutRef.current) {
-        clearTimeout(renderTimeoutRef.current);
-      }
-    };
-  }, [code, debouncedRender]);
+  }, [code, scheduleRender]);
 
   // Memoize the className to prevent unnecessary re-calculations (react-shiki pattern)
   const containerClassName = useMemo(() => {
