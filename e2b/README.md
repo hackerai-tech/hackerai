@@ -149,6 +149,10 @@ future infrastructure push; never use a review request as build authorization.
 
 Migration requires its own authorized operation and a maintenance window. This
 repository does not automatically replace an old workspace because of its version.
+Set SDK `retries: 0` explicitly on destination creation, pause and reconnect calls
+and give each an explicit bounded request timeout. After an ambiguous timeout,
+inspect the recorded target and provider state before any continuation; a fence
+does not make repeated lifecycle requests safe.
 
 1. Verify the exact source owner, sandbox, region, template, account and existing
    workspace pin. Record every existing recovery/migration/preservation fence and

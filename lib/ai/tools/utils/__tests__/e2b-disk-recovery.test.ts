@@ -552,6 +552,39 @@ describe("customer recovery verification", () => {
     ).toHaveLength(1);
     expect(finish).toHaveBeenCalledTimes(1);
   });
+  it.each([1, 2, 3])(
+    "verifies ownership before workspace access on connection %s",
+    async (connection) => {
+      getInfo.mockImplementation(
+        async () =>
+          ({
+            ...info,
+            state:
+              connect.mock.calls.length > pause.mock.calls.length
+                ? "running"
+                : "paused",
+            metadata: {
+              ...info.metadata,
+              userID:
+                connect.mock.calls.length === connection
+                  ? "other-owner"
+                  : auth.userId,
+            },
+          }) as never,
+      );
+      await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+        stage: ["reboot", "normal_resume", "reconnect"][connection - 1],
+      });
+      // Only earlier, identity-verified transitions may have touched the workspace.
+      expect(write).toHaveBeenCalledTimes(connection === 1 ? 0 : 1);
+      expect(read).toHaveBeenCalledTimes(connection - 1);
+      expect(list).toHaveBeenCalledTimes(connection - 1);
+      expect(remove).toHaveBeenCalledTimes(connection === 3 ? 1 : 0);
+      expect(pause).toHaveBeenCalledTimes(connection - 1);
+      expect(connect).toHaveBeenCalledTimes(connection);
+      expect(finish).not.toHaveBeenCalled();
+    },
+  );
   it("keeps the fence on lost probe contents", async () => {
     read.mockResolvedValueOnce("corrupt");
     await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({

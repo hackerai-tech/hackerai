@@ -302,6 +302,8 @@ export async function recoverE2BDiskOnly(
         "Provider returned a different sandbox",
       );
     const connectDurationMs = Date.now() - connectStartedAt;
+    const readyInfo = await getInfo();
+    assertIdentity(readyInfo, auth, "running");
     await claim.update({ step: "reboot_connected" });
     stage = "inventory";
     const probePath = `/home/user/.hackerai-recovery-${auth.idempotencyKey}`;
@@ -321,8 +323,6 @@ export async function recoverE2BDiskOnly(
         "Recovery probe readback failed",
       );
     const observed = await observeWorkspace(sandbox, fingerprintKey);
-    const readyInfo = await getInfo();
-    assertIdentity(readyInfo, auth, "running");
     runtimeAfter = await readE2BRuntimeDiagnostics(
       readyInfo,
       connectionOptions,
@@ -393,6 +393,7 @@ export async function recoverE2BDiskOnly(
         "normal_resume",
         "Provider returned a different sandbox",
       );
+    assertIdentity(await getInfo(), auth, "running");
     if (
       (await resumed.files.read(probePath, {
         requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
@@ -441,9 +442,9 @@ export async function recoverE2BDiskOnly(
           stage,
           "Provider returned a different sandbox",
         );
-      await observeWorkspace(ready, fingerprintKey);
       const readyInfo = await getInfo();
       assertIdentity(readyInfo, auth, "running");
+      await observeWorkspace(ready, fingerprintKey);
     }
     const result = {
       token: auth.idempotencyKey,
