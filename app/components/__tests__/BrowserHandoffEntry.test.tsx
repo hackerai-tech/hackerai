@@ -113,7 +113,7 @@ it("keeps the reminder hidden after opening, closing the panel, and reloading", 
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
-it("dismisses without opening and does not repeat for later browser activity", () => {
+it("dismisses without opening and does not repeat in another chat", () => {
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
   );
@@ -125,11 +125,33 @@ it("dismisses without opening and does not repeat for later browser activity", (
   view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+it("shows passive discovery only once even if it was not clicked", () => {
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
   expect(screen.getByRole("status")).toHaveTextContent(
     "Agent browser available",
   );
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(localStorage.getItem("browser-reminder:discovered:v1")).toBe("true");
+  view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  view.unmount();
+  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+it("still surfaces an explicit handoff in a later chat", () => {
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  mockSession = { state: "waiting", sessionId: "new-session", updatedAt: 2 };
+  view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Waiting for you");
 });
 
 it("surfaces new handoff requests but keeps an acknowledged request hidden on reload", () => {
@@ -192,6 +214,30 @@ it("recovers from malformed preferences and syncs dismissal from another tab", (
   );
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
+
+it("keeps discovery hidden when a chat preference is malformed", () => {
+  localStorage.setItem("browser-reminder:discovered:v1", "true");
+  localStorage.setItem("browser-reminder:v1:chat", "{invalid");
+  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+it.each(["availableHidden", "browserDiscovered"])(
+  "migrates a saved %s preference across chats",
+  (field) => {
+    localStorage.setItem(
+      "browser-reminder:v1:chat",
+      JSON.stringify({ [field]: true }),
+    );
+    const view = render(
+      <BrowserHandoffEntry chatId="chat" messages={messages} />,
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(localStorage.getItem("browser-reminder:discovered:v1")).toBe("true");
+    view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  },
+);
 
 it("keeps acknowledged takeover transitions quiet while surfacing recovery", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };

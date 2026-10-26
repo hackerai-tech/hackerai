@@ -13,12 +13,14 @@ import { isSidebarTerminal } from "@/types/chat";
 
 type ReminderPreference = {
   chatId: string;
-  availableHidden: boolean;
+  browserDiscovered: boolean;
   dismissedAttention: string | null;
   acknowledgedSession: string | null;
 };
 
-/** Passive discovery stays dismissed; a new handoff can still request attention. */
+const discoveryKey = "browser-reminder:discovered:v1";
+
+/** Passive discovery appears once; a new handoff can still request attention. */
 export function BrowserHandoffEntry({
   chatId,
   messages,
@@ -30,12 +32,19 @@ export function BrowserHandoffEntry({
   const storageKey = `browser-reminder:v1:${chatId}`;
   useEffect(() => {
     const readPreference = () => {
-      let availableHidden = false;
+      let browserDiscovered = false;
+      let discoveredInChat = false;
       let dismissedAttention: string | null = null;
       let acknowledgedSession: string | null = null;
       try {
+        browserDiscovered = localStorage.getItem(discoveryKey) === "true";
+      } catch {
+        // Storage may be unavailable. Dismissal still works for this mount.
+      }
+      try {
         const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
-        availableHidden = saved?.availableHidden === true;
+        discoveredInChat =
+          saved?.availableHidden === true || saved?.browserDiscovered === true;
         acknowledgedSession =
           typeof saved?.acknowledgedSession === "string"
             ? saved.acknowledgedSession
@@ -47,16 +56,29 @@ export function BrowserHandoffEntry({
       } catch {
         // Storage may be unavailable. Dismissal still works for this mount.
       }
+      if (discoveredInChat && !browserDiscovered) {
+        browserDiscovered = true;
+        try {
+          localStorage.setItem(discoveryKey, "true");
+        } catch {
+          // The per-chat preference still hides the notice in this chat.
+        }
+      }
       setPreference({
         chatId,
-        availableHidden,
+        browserDiscovered,
         dismissedAttention,
         acknowledgedSession,
       });
     };
     readPreference();
     const onStorage = (event: StorageEvent) => {
-      if (event.key === storageKey || event.key === null) readPreference();
+      if (
+        event.key === storageKey ||
+        event.key === discoveryKey ||
+        event.key === null
+      )
+        readPreference();
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -80,6 +102,23 @@ export function BrowserHandoffEntry({
     [messages],
   );
 
+  const passiveVisible =
+    !sidebarOpen &&
+    !!session &&
+    !!browserTool &&
+    preference?.chatId === chatId &&
+    session.state === "agent" &&
+    !preference.browserDiscovered;
+
+  useEffect(() => {
+    if (!passiveVisible) return;
+    try {
+      localStorage.setItem(discoveryKey, "true");
+    } catch {
+      // Storage may be unavailable; the notice remains visible this mount.
+    }
+  }, [passiveVisible]);
+
   if (sidebarOpen || !session || !browserTool || preference?.chatId !== chatId)
     return null;
 
@@ -93,7 +132,7 @@ export function BrowserHandoffEntry({
     attentionKey
       ? preference.dismissedAttention === attentionKey
       : session.state === "agent"
-        ? preference.availableHidden
+        ? preference.browserDiscovered
         : preference.acknowledgedSession === session.sessionId
   )
     return null;
@@ -101,13 +140,18 @@ export function BrowserHandoffEntry({
   const dismiss = () => {
     const next = {
       chatId,
-      availableHidden: true,
+      browserDiscovered: true,
       dismissedAttention: attentionKey,
       acknowledgedSession: session.sessionId,
     };
     setPreference(next);
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      // Storage may be unavailable. Dismissal still works for this mount.
+    }
+    try {
+      localStorage.setItem(discoveryKey, "true");
     } catch {
       // Never prevent opening the browser when storage is blocked or full.
     }
@@ -125,37 +169,38 @@ export function BrowserHandoffEntry({
             : "Agent browser available";
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[800px] px-4">
-      <div className="flex items-center gap-3 rounded-2xl border border-border bg-background px-3 py-2.5 shadow-sm">
+    <div className="mx-auto mb-1.5 w-full max-w-[800px] px-4">
+      <div className="flex items-center gap-2 rounded-xl border border-border bg-background px-2.5 py-1 shadow-sm sm:gap-2.5">
         <Monitor
-          size={18}
+          size={16}
           className="shrink-0 text-muted-foreground"
           aria-hidden
         />
-        <div className="min-w-0 flex-1 text-sm">
-          <p role="status" className="font-medium">
+        <div className="min-w-0 flex-1 text-xs sm:text-sm">
+          <p role="status" className="truncate font-medium">
             {status}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="sr-only">
             Open the browser to view it or take control.
           </p>
         </div>
         <button
           type="button"
+          aria-label="Open browser"
           onClick={() => {
             dismiss();
             openSidebar(browserTool);
           }}
-          className="min-h-11 shrink-0 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-h-11 shrink-0 rounded-full bg-foreground px-3 text-xs font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-9 sm:text-sm"
         >
-          Open browser
+          Open<span className="hidden min-[360px]:inline"> browser</span>
         </button>
         <button
           type="button"
           onClick={dismiss}
           aria-label="Hide browser reminder"
-          title="Hide browser reminders for this chat. New handoff requests will still appear."
-          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title="Dismiss this notice. New handoff requests will still appear."
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-9 sm:min-w-9"
         >
           <X size={16} aria-hidden />
         </button>
