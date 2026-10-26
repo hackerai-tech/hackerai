@@ -560,6 +560,7 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandboxApi.create).toHaveBeenCalledWith(
       "terminal-agent-sandbox",
       expect.objectContaining({
+        network: { allowOut: [], denyOut: [] },
         timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
         lifecycle: { onTimeout: "pause", autoResume: true },
         secure: true,

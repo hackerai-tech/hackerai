@@ -3,7 +3,7 @@ import {
   clearResumeFailures,
 } from "@/lib/cloud-recovery/store";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { e2bNetwork } from "@/lib/cloud-network/policy";
+import { DEFAULT_NETWORK_POLICY, e2bNetwork } from "@/lib/cloud-network/policy";
 import {
   CloudAcquisitionTimeoutError,
   CLOUD_RESUME_DEADLINE_MS,
@@ -375,9 +375,9 @@ export const ensureSandboxConnection = async (
       try {
         const networkSettings = await readNetworkSettings(userID);
         const sandbox = await Sandbox.create(createCluster.template, {
-          ...(networkSettings
-            ? { network: e2bNetwork(networkSettings.policy) }
-            : {}),
+          network: e2bNetwork(
+            networkSettings?.policy ?? DEFAULT_NETWORK_POLICY,
+          ),
           ...createCluster.connectionOptions,
           ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
