@@ -370,6 +370,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
     const context = await manager.getSandboxContextForPrompt();
 
     expect(context).toContain("where agent-browser && agent-browser --version");
+    expect(context).toContain("npm install -g agent-browser@0.26.0");
     expect(context).not.toContain("command -v agent-browser");
   });
 });

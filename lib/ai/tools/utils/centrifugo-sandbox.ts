@@ -1,3 +1,4 @@
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -436,7 +437,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Other than the browser setup described below, do not install host tools without the user's request.
 
 Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
-Use agent-browser for browser tasks; if missing, follow the setup instructions in <agent_browser>.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+${CONNECTED_AGENT_BROWSER_GUIDANCE}${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
     return null;
