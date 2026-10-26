@@ -14,8 +14,6 @@ import {
 const MAX_DELETE_TARGETS = 8;
 const MAX_DELETE_TREE_ENTRIES = 200;
 const MAX_DELETE_TREE_DEPTH = 8;
-const MAX_SCRIPT_BYTES = 16 * 1024;
-const MAX_PACKAGE_JSON_BYTES = 64 * 1024;
 
 type InspectionKind = AgentAutoReviewTerminalInspection["kind"];
 
@@ -48,7 +46,14 @@ const COMMAND_WRAPPERS = new Set([
   "command",
   "builtin",
   "nohup",
+  "env",
+  "time",
+  "timeout",
+  "nice",
+  "setsid",
+  "stdbuf",
 ]);
+const DISPLAY_ONLY_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
 const SCRIPT_INTERPRETERS = new Set([
   "bash",
   "sh",
@@ -230,7 +235,7 @@ const classifyStaticTokens = (tokens: string[]): ParsedCandidate | null => {
   }
   if (SCRIPT_INTERPRETERS.has(executable)) {
     const firstArgument = stripped[1];
-    if (firstArgument) {
+    if (firstArgument && !DISPLAY_ONLY_FLAGS.has(firstArgument)) {
       return { kind: "script", tokens: stripped };
     }
   }
@@ -258,12 +263,49 @@ export const getAgentAutoReviewInspectionKind = (
   command: string,
 ): InspectionKind | null => {
   const tokens = tokenizeStaticTerminalCommand(command);
-  if (tokens) return classifyStaticTokens(tokens)?.kind ?? null;
+  if (tokens) {
+    const classified = classifyStaticTokens(tokens);
+    if (classified) return classified.kind;
+    const firstCommandToken = tokens.find(
+      (token) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token),
+    );
+    // Wrapper options such as `env -S 'bash script.sh'` can hide an entire
+    // command in one token. Its contents cannot be safely resolved here.
+    if (
+      firstCommandToken &&
+      COMMAND_WRAPPERS.has(firstCommandToken.toLowerCase())
+    ) {
+      return "script";
+    }
+    // Options and wrappers can put the executable after argv[0]. While file
+    // evidence is unavailable, conservatively require human review for these
+    // indirect commands rather than treating them as ordinary shell commands.
+    if (
+      tokens.some(
+        (token, index) =>
+          SCRIPT_INTERPRETERS.has(token.toLowerCase()) &&
+          !!tokens[index + 1] &&
+          !DISPLAY_ONLY_FLAGS.has(tokens[index + 1]),
+      )
+    ) {
+      return "script";
+    }
+    if (
+      tokens.some(
+        (token, index) =>
+          PACKAGE_MANAGERS.has(token.toLowerCase()) &&
+          !DISPLAY_ONLY_FLAGS.has(tokens[index + 1] ?? ""),
+      )
+    ) {
+      return "package_task";
+    }
+    return null;
+  }
   if (isAgentAutoReviewFilesystemDeletionCommand(command)) {
     return "filesystem_delete";
   }
   if (
-    /(?:^|[;&|]\s*)(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+[^-]|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?[^\s]+)/iu.test(
+    /(?:^|[;&|\s])(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+[^-]|(?:npm|pnpm|yarn|bun)\s+[^\s]+)/iu.test(
       command,
     )
   ) {
@@ -557,50 +599,6 @@ const inspectDeletion = async ({
   };
 };
 
-const readBoundedText = async ({
-  sandbox,
-  filePath,
-  maxBytes,
-}: {
-  sandbox: AnySandbox;
-  filePath: string;
-  maxBytes: number;
-}): Promise<string> => {
-  if (isCentrifugoSandbox(sandbox) && sandbox.supportsNativeFileRelay()) {
-    const result = await sandbox.files.readText(filePath, {
-      maxFullBytes: maxBytes,
-      maxResultBytes: maxBytes,
-    });
-    if (result.tooLarge || result.truncated || result.sizeBytes > maxBytes) {
-      throw new Error("too-large");
-    }
-    return result.content ?? "";
-  }
-  if (isCloudSandbox(sandbox)) {
-    const files = sandbox.files as typeof sandbox.files & {
-      exists?: (candidate: string) => Promise<boolean>;
-      getInfo?: (candidate: string) => Promise<{
-        type?: string;
-        size?: number;
-      }>;
-    };
-    if (files.exists && !(await files.exists(filePath))) {
-      throw new Error("missing-target");
-    }
-    if (files.getInfo) {
-      const info = await files.getInfo(filePath);
-      if (info.type !== "file") throw new Error("missing-target");
-      if (typeof info.size === "number" && info.size > maxBytes) {
-        throw new Error("too-large");
-      }
-    }
-  }
-  const content = await sandbox.files.read(filePath);
-  if (Buffer.byteLength(content, "utf8") > maxBytes)
-    throw new Error("too-large");
-  return content;
-};
-
 const scriptPathFromTokens = (tokens: string[]): string | null => {
   const executable = tokens[0].toLowerCase();
   if (/^(?:\.\.?[\\/]|[\\/])/u.test(tokens[0])) return tokens[0];
@@ -608,15 +606,13 @@ const scriptPathFromTokens = (tokens: string[]): string | null => {
   return tokens[1] && !tokens[1].startsWith("-") ? tokens[1] : null;
 };
 
-const inspectScript = async ({
+const inspectScript = ({
   candidate,
-  sandbox,
   workingDirectory,
 }: {
   candidate: Extract<ParsedCandidate, { kind: "script" }>;
-  sandbox: AnySandbox;
   workingDirectory: string;
-}): Promise<AgentAutoReviewTerminalInspection> => {
+}): AgentAutoReviewTerminalInspection => {
   const rawScriptPath = scriptPathFromTokens(candidate.tokens);
   if (!rawScriptPath) {
     return unresolved({
@@ -641,40 +637,14 @@ const inspectScript = async ({
       workingDirectory,
     });
   }
-  try {
-    const content = await readBoundedText({
-      sandbox,
-      filePath: scriptPath,
-      maxBytes: MAX_SCRIPT_BYTES,
-    });
-    if (content.includes("\0")) throw new Error("binary");
-    const scripts = [{ source: "file" as const, path: scriptPath, content }];
-    return {
-      kind: candidate.kind,
-      status: "resolved",
-      workingDirectory,
-      scripts,
-      fingerprint: digest({
-        commandTokens: candidate.tokens,
-        workingDirectory,
-        scripts,
-      }),
-    };
-  } catch (error) {
-    const marker = error instanceof Error ? error.message : "";
-    return unresolved({
-      kind: candidate.kind,
-      reason:
-        marker === "too-large"
-          ? "too_large"
-          : marker === "binary"
-            ? "binary_content"
-            : marker === "missing-target"
-              ? "missing_target"
-              : "inspection_failed",
-      workingDirectory,
-    });
-  }
+  // Every current sandbox file reader can follow a leaf or parent symlink.
+  // Do not send file contents to the separate reviewer until the transport
+  // can open a bounded regular file without following links in one operation.
+  return unresolved({
+    kind: candidate.kind,
+    reason: "inspection_failed",
+    workingDirectory,
+  });
 };
 
 const packageTaskName = (tokens: string[]): string | null => {
@@ -682,20 +652,13 @@ const packageTaskName = (tokens: string[]): string | null => {
   return first === "run" ? (tokens[2] ?? null) : (tokens[1] ?? null);
 };
 
-const hasNestedScriptIndirection = (command: string): boolean =>
-  /(?:^|[;&|]\s*)(?:\.\.?[\\/]|[\\/]|(?:bash|sh|zsh|fish|node|python\d*|ruby|perl)\s+[^-])/iu.test(
-    command,
-  );
-
-const inspectPackageTask = async ({
+const inspectPackageTask = ({
   candidate,
-  sandbox,
   workingDirectory,
 }: {
   candidate: Extract<ParsedCandidate, { kind: "package_task" }>;
-  sandbox: AnySandbox;
   workingDirectory: string;
-}): Promise<AgentAutoReviewTerminalInspection> => {
+}): AgentAutoReviewTerminalInspection => {
   const taskName = packageTaskName(candidate.tokens);
   if (!taskName || taskName.startsWith("-")) {
     return unresolved({
@@ -704,65 +667,12 @@ const inspectPackageTask = async ({
       workingDirectory,
     });
   }
-  const packageJsonPath = path.posix.join(workingDirectory, "package.json");
-  try {
-    const rawPackageJson = await readBoundedText({
-      sandbox,
-      filePath: packageJsonPath,
-      maxBytes: MAX_PACKAGE_JSON_BYTES,
-    });
-    const packageJson = JSON.parse(rawPackageJson) as {
-      scripts?: Record<string, unknown>;
-    };
-    const scriptsRecord = packageJson.scripts ?? {};
-    const lifecycleNames = [`pre${taskName}`, taskName, `post${taskName}`];
-    const scripts = lifecycleNames.flatMap((name) => {
-      const command = scriptsRecord[name];
-      return typeof command === "string"
-        ? [{ source: "package_script" as const, name, command }]
-        : [];
-    });
-    if (!scripts.some((script) => script.name === taskName)) {
-      return unresolved({
-        kind: candidate.kind,
-        reason: "missing_package_task",
-        workingDirectory,
-      });
-    }
-    if (scripts.some((script) => hasNestedScriptIndirection(script.command))) {
-      return {
-        ...unresolved({
-          kind: candidate.kind,
-          reason: "nested_indirection",
-          workingDirectory,
-        }),
-        scripts,
-      };
-    }
-    return {
-      kind: candidate.kind,
-      status: "resolved",
-      workingDirectory,
-      scripts,
-      fingerprint: digest({
-        commandTokens: candidate.tokens,
-        workingDirectory,
-        scripts,
-      }),
-    };
-  } catch (error) {
-    const marker = error instanceof Error ? error.message : "";
-    return unresolved({
-      kind: candidate.kind,
-      reason:
-        marker === "too-large"
-          ? "too_large"
-          : marker === "missing-target"
-            ? "missing_target"
-            : "inspection_failed",
-      workingDirectory,
-    });
-  }
+  // package.json may itself be a link or live under a linked directory.
+  return unresolved({
+    kind: candidate.kind,
+    reason: "inspection_failed",
+    workingDirectory,
+  });
 };
 
 export const collectAgentAutoReviewTerminalInspection = async ({
@@ -794,9 +704,9 @@ export const collectAgentAutoReviewTerminalInspection = async ({
     return inspectDeletion({ candidate, sandbox, workingDirectory });
   }
   if (candidate.kind === "script") {
-    return inspectScript({ candidate, sandbox, workingDirectory });
+    return inspectScript({ candidate, workingDirectory });
   }
-  return inspectPackageTask({ candidate, sandbox, workingDirectory });
+  return inspectPackageTask({ candidate, workingDirectory });
 };
 
 export const terminalInspectionMatches = ({

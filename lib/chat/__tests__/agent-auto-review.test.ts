@@ -401,22 +401,17 @@ describe("Agent Auto review", () => {
     expect(runModel).toHaveBeenCalledTimes(1);
   });
 
-  it("lets the reviewer assess referenced-script and package-task indirection", async () => {
+  it("requires human review for opaque script and package-task indirection", async () => {
     for (const command of [
       "./deploy.sh",
       "bash scripts/deploy.sh",
       "pnpm deploy",
+      "npm --prefix ./pkg run test",
+      "env bash scripts/link.sh",
+      "env ./scripts/link.sh",
+      "env -S 'bash scripts/link.sh'",
     ]) {
-      const runModel = jest.fn(async ({ prompt }) => {
-        expect(prompt).toContain(command);
-        return {
-          output: {
-            verdict: "ask_user",
-            riskCategory: "scope_expansion",
-            rationale: "The referenced action is opaque.",
-          },
-        };
-      });
+      const runModel = jest.fn();
       await expect(
         reviewAgentToolAction({
           request: terminalRequest(command),
@@ -425,10 +420,10 @@ describe("Agent Auto review", () => {
         }),
       ).resolves.toMatchObject({
         verdict: "ask_user",
-        riskCategory: "scope_expansion",
-        source: "model",
+        riskCategory: "unknown",
+        source: "failure",
       });
-      expect(runModel).toHaveBeenCalledTimes(1);
+      expect(runModel).not.toHaveBeenCalled();
     }
   });
 
@@ -465,45 +460,55 @@ describe("Agent Auto review", () => {
     ).resolves.toMatchObject({ verdict: "approve", source: "model" });
   });
 
-  it("lets the reviewer assess unresolved deletion and script evidence", async () => {
-    for (const [command, inspection] of [
-      [
-        "rm -rf build",
-        {
+  it("lets the reviewer assess unresolved deletion evidence", async () => {
+    const runModel = jest.fn(async ({ prompt }) => {
+      expect(prompt).toContain('"status":"unresolved"');
+      return {
+        output: {
+          verdict: "ask_user",
+          riskCategory: "unknown",
+          rationale: "The available evidence is not sufficient.",
+        },
+      };
+    });
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest("rm -rf build", {
           kind: "filesystem_delete",
           status: "unresolved",
           reason: "too_broad",
+        }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({ verdict: "ask_user", source: "model" });
+    expect(runModel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["script", "package_task"] as const)(
+    "requires human approval for unresolved %s evidence even if the reviewer would approve",
+    async (kind) => {
+      const runModel = jest.fn(async () => ({
+        output: {
+          verdict: "approve" as const,
+          riskCategory: "unknown" as const,
+          rationale: "The command seems safe.",
         },
-      ],
-      [
-        "./scripts/release.sh",
-        {
-          kind: "script",
-          status: "unresolved",
-          reason: "too_large",
-        },
-      ],
-    ] as const) {
-      const runModel = jest.fn(async ({ prompt }) => {
-        expect(prompt).toContain('"status":"unresolved"');
-        return {
-          output: {
-            verdict: "ask_user",
-            riskCategory: "unknown",
-            rationale: "The available evidence is not sufficient.",
-          },
-        };
-      });
+      }));
       await expect(
         reviewAgentToolAction({
-          request: terminalRequest(command, inspection),
+          request: terminalRequest("bash scripts/link.sh", {
+            kind,
+            status: "unresolved",
+            reason: "inspection_failed",
+          }),
           authorizationContext,
           runModel,
         }),
-      ).resolves.toMatchObject({ verdict: "ask_user", source: "model" });
-      expect(runModel).toHaveBeenCalledTimes(1);
-    }
-  });
+      ).resolves.toMatchObject({ verdict: "ask_user", source: "failure" });
+      expect(runModel).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses a separate structured model verdict for complete exact actions", async () => {
     const runModel = jest.fn(async ({ system, prompt }) => {
@@ -596,6 +601,30 @@ describe("Agent Auto review", () => {
       verdict: "ask_user",
       riskCategory: "destructive",
       source: "rule",
+    });
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "bash scripts/link.sh\n",
+    "pnpm run test\n",
+    "env ./scripts/link.sh\n",
+    "env -S 'bash scripts/link.sh'\n",
+  ])("requires human review for indirect terminal input %s", async (input) => {
+    const runModel = jest.fn();
+    await expect(
+      reviewAgentToolAction({
+        request: terminalInteractionRequest({
+          input,
+          recentOutput: "user@host:/workspace/project$ ",
+        }),
+        authorizationContext,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      failureClass: "missing_context",
+      source: "failure",
     });
     expect(runModel).not.toHaveBeenCalled();
   });
@@ -745,28 +774,14 @@ describe("Agent Auto review", () => {
     ).resolves.toMatchObject({ failureClass: "missing_context" });
   });
 
-  it("still reviews an oversized user instruction with explicit compaction metadata", async () => {
+  it("requires human approval when a user instruction is truncated", async () => {
     const oversizedInstruction = `authorize focused tests ${"x".repeat(
       12_000,
     )} keep changes inside this repository`;
     const context = extractAgentAutoReviewAuthorizationContext([
       userMessage("user-1", oversizedInstruction),
     ]);
-    const runModel = jest.fn(async ({ system, prompt }) => {
-      expect(system).toContain("authorization history may be compacted");
-      expect(prompt).toContain("Authorization context status: compacted");
-      expect(prompt).toContain("excerpted_user_messages=1");
-      expect(prompt).toContain("authorize focused tests");
-      expect(prompt).toContain("keep changes inside this repository");
-      expect(prompt).toContain("<user_content_truncated />");
-      return {
-        output: {
-          verdict: "approve",
-          riskCategory: "routine",
-          rationale: "The retained instruction clearly authorizes this test.",
-        },
-      };
-    });
+    const runModel = jest.fn();
 
     await expect(
       reviewAgentToolAction({
@@ -775,14 +790,40 @@ describe("Agent Auto review", () => {
         runModel,
       }),
     ).resolves.toMatchObject({
-      verdict: "approve",
-      source: "model",
+      verdict: "ask_user",
+      failureClass: "context_truncated",
+      source: "failure",
     });
     expect(context.complete).toBe(false);
     expect(context.omittedUserMessageCount).toBe(0);
     expect(context.truncatedUserMessageCount).toBe(1);
     expect(context.text.length).toBeLessThanOrEqual(12_000);
-    expect(runModel).toHaveBeenCalledTimes(1);
+    expect(runModel).not.toHaveBeenCalled();
+  });
+
+  it("requires human approval when a user instruction was omitted", async () => {
+    const context = extractAgentAutoReviewAuthorizationContext([
+      userMessage("user-1", `root scope ${"a".repeat(4_500)}`),
+      userMessage("user-2", `never run deployment ${"b".repeat(4_500)}`),
+      userMessage("user-3", `inspect only ${"c".repeat(4_500)}`),
+      userMessage("user-4", `check status ${"d".repeat(4_500)}`),
+    ]);
+    const runModel = jest.fn();
+
+    expect(context.complete).toBe(false);
+    expect(context.omittedUserMessageCount).toBeGreaterThan(0);
+    await expect(
+      reviewAgentToolAction({
+        request: terminalRequest("git status"),
+        authorizationContext: context,
+        runModel,
+      }),
+    ).resolves.toMatchObject({
+      verdict: "ask_user",
+      failureClass: "context_truncated",
+      source: "failure",
+    });
+    expect(runModel).not.toHaveBeenCalled();
   });
 
   it("anchors the first and latest instructions and fills remaining space newest-first", () => {
