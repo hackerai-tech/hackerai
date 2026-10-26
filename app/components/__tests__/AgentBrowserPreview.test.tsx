@@ -1310,3 +1310,91 @@ it("preserves user-provided zero-width characters", async () => {
     actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
   ).toEqual([{ kind: "text", text: "A\u200bB" }]);
 });
+
+it("honors a waiting-session takeover click once, after the preview frame arrives", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  let resolveFrame!: (value: Response) => void;
+  const pendingFrame = new Promise<Response>((resolve) => {
+    resolveFrame = resolve;
+  });
+  (global.fetch as jest.Mock).mockImplementationOnce(() => pendingFrame);
+  const request = { requestId: "click-1", sessionId: "session-a" };
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={request}
+    />,
+  );
+  expect(actions).toEqual([]);
+  await act(async () => resolveFrame(response({ frame })));
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={{ ...request }}
+    />,
+  );
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+});
+
+it.each(["session-b", "session-a"])(
+  "does not apply stale takeover intent to an unrelated session or an Agent that resumed (%s)",
+  async (sessionId) => {
+    mockSession = {
+      sessionId,
+      state: sessionId === "session-a" ? "agent" : "waiting",
+    };
+    const view = render(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={{ requestId: "old-click", sessionId: "session-a" }}
+      />,
+    );
+    await act(async () => {});
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={{ requestId: "old-click", sessionId: "session-a" }}
+      />,
+    );
+    await act(async () => {});
+    expect(actions).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Exit takeover" })).toBeNull();
+  },
+);
+
+it("does not retry a failed requested takeover until another user action", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  handleAction = async () =>
+    response({ error: "Connection interrupted" }, false);
+  render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={{ requestId: "click-1", sessionId: "session-a" }}
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByText("Connection interrupted")).toBeInTheDocument();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(4000);
+  });
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  await takeControl();
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(2);
+});

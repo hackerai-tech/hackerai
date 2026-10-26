@@ -730,6 +730,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             {sidebarOpen && browserChatId && (
               <AgentBrowserPreview
                 onVisibilityChange={setBrowserPreviewVisible}
+                takeoverRequest={
+                  isSidebarTerminal(sidebarContent)
+                    ? sidebarContent.browserTakeoverRequest
+                    : undefined
+                }
                 onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
