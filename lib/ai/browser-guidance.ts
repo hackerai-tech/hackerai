@@ -45,6 +45,7 @@ Screenshots and evidence:
 
 Session lifetime and recovery:
 - The cloud browser shuts down after 15 minutes without an agent-browser command. After relaunch, assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
+- Before reopening immediately after \`close\`, wait for that session's daemon to exit (its socket and PID files disappear); close can return before shutdown finishes. Do not blindly replay an action after an unknown outcome.
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry. Do not run global repair that affects another session.
 - For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
 - Only when HACKERAI_BROWSER_STATE_DIR is set by the managed Cloud runtime, you may checkpoint an authorized test login: \`agent-browser --session alice state save "$HACKERAI_BROWSER_STATE_DIR/alice.json"\`. The runtime encrypts it; use the returned .enc path, scoped to that identity, with \`agent-browser --session alice state load "$HACKERAI_BROWSER_STATE_DIR/alice.json.enc"\` after relaunch. Then reopen the target, verify the actual identity and re-snapshot. State recovery does not refresh expired server sessions and does not preserve every browser storage mechanism.
