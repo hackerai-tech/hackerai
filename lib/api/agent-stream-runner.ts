@@ -1584,7 +1584,7 @@ export async function createAgentStream(
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
-    // The replacement request was accepted, so this recovery made progress.
+    // The provider wrapper commits only a smaller replacement request.
     unproductiveCompactionCount = 0;
     // Keep the canonical transcript untouched. Future SDK steps project from
     // this checkpoint, so already completed tools are not submitted again.
