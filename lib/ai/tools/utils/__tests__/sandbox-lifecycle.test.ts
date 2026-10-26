@@ -38,7 +38,7 @@ jest.mock("../cloud-workspace-guard", () => ({
 }));
 
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { Sandbox, TimeoutError } from "@e2b/code-interpreter";
+import { Sandbox, SandboxError, TimeoutError } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
   E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS,
@@ -1142,9 +1142,56 @@ describe("E2B sandbox lease lifecycle", () => {
     },
   );
 
-  it.each([true, false])(
-    "marks only SDK connection deadlines as reconcilable: %s",
-    async (deadline) => {
+  it.each<[string, Error, boolean, boolean]>([
+    [
+      "SDK deadline",
+      new TimeoutError("requestTimeoutMs exceeded"),
+      true,
+      false,
+    ],
+    [
+      "provider gateway timeout",
+      Object.assign(new SandboxError("upstream request timeout"), {
+        statusCode: 504,
+      }),
+      true,
+      false,
+    ],
+    ...[500, 502, 503].map<[string, Error, boolean, boolean]>((statusCode) => [
+      `other provider failure ${statusCode}`,
+      Object.assign(new SandboxError("provider failure"), { statusCode }),
+      false,
+      false,
+    ]),
+    [
+      "unattributed HTTP status",
+      Object.assign(new Error("unknown failure"), { statusCode: 504 }),
+      false,
+      false,
+    ],
+    [
+      "expired sandbox",
+      Object.assign(new TimeoutError("sandbox timeout"), { statusCode: 504 }),
+      false,
+      false,
+    ],
+    [
+      "cancellation during provider timeout",
+      Object.assign(new SandboxError("upstream request timeout"), {
+        statusCode: 504,
+      }),
+      false,
+      true,
+    ],
+    [
+      "unknown connection failure",
+      new Error("unknown connection failure"),
+      false,
+      false,
+    ],
+  ])(
+    "marks only known paused connection timeouts as reconcilable: %s",
+    async (_label, failure, reconcilable, cancel) => {
       process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
       listSandbox({
         state: "paused",
@@ -1155,26 +1202,105 @@ describe("E2B sandbox lease lifecycle", () => {
           e2bCluster: "us",
         },
       });
-      sandboxApi.connect.mockRejectedValue(
-        deadline
-          ? new TimeoutError("requestTimeoutMs exceeded")
-          : new Error("unknown connection failure"),
-      );
+      const controller = new AbortController();
+      sandboxApi.connect.mockImplementation(async () => {
+        if (cancel) controller.abort(new Error("user cancelled"));
+        throw failure;
+      });
       await expect(
         ensureSandboxConnection(
           { userID: "user-1", setSandbox: jest.fn() },
           {
             acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
             triggerRegion: "us-east-1",
+            signal: controller.signal,
           },
         ),
       ).rejects.toThrow();
       expect(recordResumeFailure).toHaveBeenCalledWith(
-        expect.objectContaining({ uncertain: true, timeoutOnly: deadline }),
+        expect.objectContaining({ uncertain: true, timeoutOnly: reconcilable }),
       );
+      expect(sandboxApi.connect).toHaveBeenCalledTimes(1);
       expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
     },
   );
+
+  it("records a pinned paused gateway timeout without another resume", async () => {
+    process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+    sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "pinned-sandbox",
+      state: "paused",
+      metadata: {
+        userID: "user-1",
+        sandboxVersion: "v12",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+      },
+    });
+    sandboxApi.connect.mockRejectedValue(
+      Object.assign(new SandboxError("upstream request timeout"), {
+        statusCode: 504,
+      }),
+    );
+    await expect(
+      ensureSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        {
+          destinationId: "pinned-sandbox",
+          acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+          triggerRegion: "us-east-1",
+        },
+      ),
+    ).rejects.toThrow();
+    expect(recordResumeFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxId: "pinned-sandbox",
+        uncertain: true,
+        timeoutOnly: true,
+      }),
+    );
+    expect(sandboxApi.connect).toHaveBeenCalledTimes(1);
+    expect(sandboxApi.list).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not classify a publication failure as a provider gateway timeout", async () => {
+    process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+    listSandbox({
+      state: "paused",
+      metadata: {
+        userID: "user-1",
+        sandboxVersion: "v12",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+      },
+    });
+    sandboxApi.connect.mockResolvedValue({ sandboxId: "sandbox-1" });
+    await expect(
+      ensureSandboxConnection(
+        {
+          userID: "user-1",
+          setSandbox: () => {
+            throw Object.assign(new SandboxError("publication failed"), {
+              statusCode: 504,
+            });
+          },
+        },
+        {
+          acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+          triggerRegion: "us-east-1",
+        },
+      ),
+    ).rejects.toThrow();
+    expect(recordResumeFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ uncertain: true, timeoutOnly: false }),
+    );
+    expect(sandboxApi.connect).toHaveBeenCalledTimes(1);
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+  });
 
   it("never replaces a known paused workspace after a not-found resume response", async () => {
     listSandbox({ state: "paused" });
