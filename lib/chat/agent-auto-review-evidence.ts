@@ -54,6 +54,8 @@ const COMMAND_WRAPPERS = new Set([
   "stdbuf",
 ]);
 const DISPLAY_ONLY_FLAGS = new Set(["--version", "-v", "-V", "--help", "-h"]);
+const isDisplayOnlyFlagAt = (tokens: string[], index: number): boolean =>
+  index === tokens.length - 1 && DISPLAY_ONLY_FLAGS.has(tokens[index] ?? "");
 const SCRIPT_INTERPRETERS = new Set([
   "bash",
   "sh",
@@ -235,7 +237,7 @@ const classifyStaticTokens = (tokens: string[]): ParsedCandidate | null => {
   }
   if (SCRIPT_INTERPRETERS.has(executable)) {
     const firstArgument = stripped[1];
-    if (firstArgument && !DISPLAY_ONLY_FLAGS.has(firstArgument)) {
+    if (firstArgument && !isDisplayOnlyFlagAt(stripped, 1)) {
       return { kind: "script", tokens: stripped };
     }
   }
@@ -285,7 +287,7 @@ export const getAgentAutoReviewInspectionKind = (
         (token, index) =>
           SCRIPT_INTERPRETERS.has(token.toLowerCase()) &&
           !!tokens[index + 1] &&
-          !DISPLAY_ONLY_FLAGS.has(tokens[index + 1]),
+          !isDisplayOnlyFlagAt(tokens, index + 1),
       )
     ) {
       return "script";
@@ -294,7 +296,7 @@ export const getAgentAutoReviewInspectionKind = (
       tokens.some(
         (token, index) =>
           PACKAGE_MANAGERS.has(token.toLowerCase()) &&
-          !DISPLAY_ONLY_FLAGS.has(tokens[index + 1] ?? ""),
+          !isDisplayOnlyFlagAt(tokens, index + 1),
       )
     ) {
       return "package_task";
