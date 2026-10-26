@@ -1,3 +1,4 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
 import type { GoalJudgment } from "@/lib/goals/contracts";
@@ -31,7 +32,6 @@ import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-sub
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
@@ -308,6 +308,7 @@ import {
   isTerminalEmptyAssistantResponse,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  type ProviderDisconnectContinuationRejection,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
@@ -325,7 +326,6 @@ import {
   omitTrailingStepStartAssistantMessage,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import {
   BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
@@ -379,6 +379,10 @@ import {
 } from "@/lib/chat/agent-tool-approval-requester";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 6 * 60 * 60;
+// The free concurrency lock must outlive the run cap and cleanup grace.
+// Approval waits release it early and re-acquire it after authorization.
+const FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS =
+  AGENT_LONG_FREE_MAX_DURATION_SECONDS + 5 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 6 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
@@ -1986,6 +1990,16 @@ export const agentLongTask = task({
         });
         if (!activeGoal) return { chatId, assistantMessageId };
         goalClaimed = true;
+        await captureGoalLifecycle(
+          "run_started",
+          {
+            ...payload,
+            runId: ctx.run.id,
+            automatic: isAutomaticContinuation,
+            workerVersion: ctx.deployment?.version,
+          },
+          activeGoal,
+        );
         await assertGoalExecutionAllowed(payload);
       }
       if (
@@ -2190,6 +2204,7 @@ export const agentLongTask = task({
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2218,6 +2233,7 @@ export const agentLongTask = task({
       }
 
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog,
         userId,
         selectedModel,
         subscription,
@@ -2225,11 +2241,15 @@ export const agentLongTask = task({
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
+        newUserTurn: !regenerate && !isAutoContinue && !isAutomaticContinuation,
         messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
-        ...(ctx.environment.type === "PREVIEW" && {
-          previewDiagnosticContext: { chatId, requestId: ctx.run.id },
-        }),
+        diagnosticContext: {
+          chatId,
+          requestId: ctx.run.id,
+          logAll: ctx.environment.type === "PREVIEW",
+        },
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -4735,6 +4755,9 @@ export const agentLongTask = task({
                             message.role !== "assistant" ||
                             (message.parts?.length ?? 0) > 0,
                         );
+                      let continuationRejection:
+                        | ProviderDisconnectContinuationRejection
+                        | "not_evaluated" = "not_evaluated";
                       const providerDisconnectContinuation =
                         (hasTerminalProviderStreamError ||
                           terminalEmptyResponse) &&
@@ -4752,12 +4775,9 @@ export const agentLongTask = task({
                           ? prepareProviderDisconnectContinuation(
                               normalizedFinishedMessages,
                               {
-                                allowCompletedTail:
-                                  terminalEmptyResponse ||
-                                  shouldRecoverAbliterationStreamError ||
-                                  isProviderResponseTimeout(
-                                    state.providerError,
-                                  ),
+                                onRejected: (reason) => {
+                                  continuationRejection = reason;
+                                },
                               },
                             )
                           : undefined;
@@ -4885,6 +4905,10 @@ export const agentLongTask = task({
                           terminal_empty_response: terminalEmptyResponse,
                           has_safe_continuation:
                             shouldContinueAfterProviderDisconnect,
+                          continuation_preparation:
+                            providerDisconnectContinuation
+                              ? "prepared"
+                              : continuationRejection,
                           ...getProviderOutputDiagnostics(
                             lastAssistantMessageParts,
                           ),
@@ -5148,10 +5172,6 @@ export const agentLongTask = task({
                                             allowEmptyResponse:
                                               selectedModelOverride ===
                                               "hackerai-max",
-                                            allowCompletedTail:
-                                              isProviderResponseTimeout(
-                                                state.providerError,
-                                              ),
                                           },
                                         )
                                       : undefined;

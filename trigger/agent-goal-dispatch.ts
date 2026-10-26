@@ -1,3 +1,4 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { task, tasks, sessions } from "@trigger.dev/sdk";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient, setConvexUrl } from "@/lib/db/convex-client";
@@ -99,8 +100,23 @@ export const agentGoalDispatch = task({
       }
       // The worker claims the generation and installs its run/approval handle
       // atomically before any costly work. Late dispatcher responses cannot replace it.
+      await captureGoalLifecycle(
+        "dispatch_started",
+        {
+          ...payload,
+          runId: startedRunId,
+          workerVersion: payload.goalWorkerVersion ?? ctx.deployment?.version,
+          automatic: true,
+        },
+        goal,
+      );
       return { runId: startedRunId };
     } catch (error) {
+      await captureGoalLifecycle("dispatch_failed", {
+        ...payload,
+        runId: ctx.run.id,
+        automatic: true,
+      });
       await getConvexClient().mutation(api.agentGoals.failDispatch, {
         serviceKey: goalServiceKey(),
         chatId: payload.chatId,
@@ -139,7 +155,18 @@ export async function scheduleGoalContinuation(
         version: payload.goalWorkerVersion,
       },
     );
+    await captureGoalLifecycle(
+      "dispatch_scheduled",
+      { ...payload, runId: completedRunId, automatic: true },
+      goal,
+    );
   } catch {
+    await captureGoalLifecycle("schedule_failed", {
+      ...payload,
+      goalGeneration: generation,
+      runId: completedRunId,
+      automatic: true,
+    });
     await getConvexClient().mutation(api.agentGoals.failDispatch, {
       serviceKey: goalServiceKey(),
       chatId: payload.chatId,

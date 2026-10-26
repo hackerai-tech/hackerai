@@ -1,3 +1,7 @@
+import {
+  classifyPersistenceFailure,
+  type PersistenceFailureCategory,
+} from "./persistence-failure";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -119,6 +123,7 @@ export function createTerminalRecordStore(
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
+      let failureCategory: PersistenceFailureCategory | undefined;
       try {
         const validated = recordSchema.parse(record);
         const path = pathFor(record.session);
@@ -139,12 +144,14 @@ export function createTerminalRecordStore(
         }
         outcome = "success";
         return path;
-      } catch {
+      } catch (error) {
+        failureCategory = classifyPersistenceFailure(error);
         return null; // Persistence failure must not interrupt or replay a command.
       } finally {
         recordTerminalMaintenance(sandbox, {
           operation: "checkpoint_write",
           outcome,
+          failureCategory,
           payloadBytes,
           transport: ownerOnlyPosix ? "posix_command" : "native_file",
         });

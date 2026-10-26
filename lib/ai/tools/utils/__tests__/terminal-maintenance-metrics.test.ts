@@ -119,6 +119,7 @@ test("attributes UTF-8 record writes, recovery reads and Windows retention reads
           transport: "native_file",
           source: "agent-long",
           reason: "none",
+          failure_category: "none",
         },
       }),
     ]);
@@ -253,4 +254,29 @@ test("measures logical payloads over the POSIX command transport and preserves c
   }
   expect(sandbox.files.write).not.toHaveBeenCalled();
   expect(sandbox.files.read).not.toHaveBeenCalled();
+});
+
+test("attributes a failed private checkpoint without retaining shell stderr or identifiers", async () => {
+  const { sandbox, record } = fixture();
+  sandbox.supportsNativeFileRelay = () => false;
+  sandbox.supportsCommandStdin = () => true;
+  sandbox.commands.run.mockResolvedValue({
+    exitCode: 1,
+    stdout: "",
+    stderr: "mkdir: /private/customer: Read-only file system; private-output",
+  });
+  const store = createTerminalRecordStore(
+    sandbox,
+    "private-user",
+    "private-scope",
+  );
+  expect(await store.save(record)).toBeNull();
+  expect(events("checkpoint_write")[0].labels).toMatchObject({
+    outcome: "failure",
+    transport: "posix_command",
+    failure_category: "read_only_filesystem",
+  });
+  expect(JSON.stringify(samples)).not.toMatch(
+    /customer|private-output|private-user|private-scope/,
+  );
 });

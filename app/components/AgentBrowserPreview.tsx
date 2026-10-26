@@ -48,6 +48,8 @@ export function AgentBrowserPreview({
   agentId,
   liveSelection,
   browserRequested = false,
+  takeoverRequest,
+  onTakeoverRequestConsumed,
   runActive = false,
   onJumpToLive,
   onContinue,
@@ -57,6 +59,8 @@ export function AgentBrowserPreview({
   agentId: string;
   liveSelection: boolean;
   browserRequested?: boolean;
+  takeoverRequest?: { requestId: string; sessionId: string };
+  onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
@@ -384,7 +388,7 @@ export function AgentBrowserPreview({
     if (grant && fullScreen) inputRef.current?.focus({ preventScroll: true });
   }, [grant, fullScreen]);
 
-  const takeControl = async () => {
+  const takeControl = useCallback(async () => {
     if (!canTake || !frame || busy) return;
     if (!liveSelection) onJumpToLive?.();
     setTakingControl(true);
@@ -428,7 +432,51 @@ export function AgentBrowserPreview({
         setTakingControl(false);
       }
     }
-  };
+  }, [
+    canTake,
+    frame,
+    busy,
+    liveSelection,
+    onJumpToLive,
+    post,
+    sessionId,
+    hasTakenControl,
+  ]);
+
+  const consumedTakeoverRequest = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !takeoverRequest ||
+      consumedTakeoverRequest.current === takeoverRequest.requestId
+    )
+      return;
+    if (session === undefined) return;
+    if (
+      takeoverRequest.sessionId !== activeSessionId ||
+      human ||
+      (effectiveState !== "waiting" && effectiveState !== "recovery")
+    ) {
+      consumedTakeoverRequest.current = takeoverRequest.requestId;
+      onTakeoverRequestConsumed?.(takeoverRequest.requestId);
+      return;
+    }
+    if (!canTake || busy) return;
+    // A fresh frame and the same waiting session must still match the click.
+    // Consume before posting: a failed request needs another explicit click.
+    consumedTakeoverRequest.current = takeoverRequest.requestId;
+    onTakeoverRequestConsumed?.(takeoverRequest.requestId);
+    void takeControl();
+  }, [
+    takeoverRequest,
+    onTakeoverRequestConsumed,
+    session,
+    activeSessionId,
+    human,
+    effectiveState,
+    canTake,
+    busy,
+    takeControl,
+  ]);
 
   const resumeAgent = async () => {
     if (!canResume || resumingRef.current) return;

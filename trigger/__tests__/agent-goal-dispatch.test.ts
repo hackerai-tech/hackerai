@@ -1,3 +1,7 @@
+jest.mock("@/lib/goals/analytics", () => ({
+  captureGoalLifecycle: jest.fn().mockResolvedValue(undefined),
+}));
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
 jest.mock("@trigger.dev/sdk", () => ({
   task: (config: unknown) => config,
   tasks: { trigger: jest.fn() },
@@ -60,10 +64,20 @@ describe("bounded goal continuation dispatch", () => {
     mockMutation.mockResolvedValue(false);
     await run();
     expect(mockAllowed).not.toHaveBeenCalled();
+    expect(captureGoalLifecycle).not.toHaveBeenCalled();
     expect(tasks.trigger).not.toHaveBeenCalled();
   });
   it("preserves sandbox, permissions, worker version, and idempotency", async () => {
     await run();
+    expect(captureGoalLifecycle).toHaveBeenCalledWith(
+      "dispatch_started",
+      expect.objectContaining({
+        runId: "worker",
+        goalGeneration: 2,
+        automatic: true,
+      }),
+      expect.objectContaining({ _id: "goal" }),
+    );
     expect(tasks.trigger).toHaveBeenCalledWith(
       "agent-long",
       expect.objectContaining({
@@ -101,6 +115,10 @@ describe("bounded goal continuation dispatch", () => {
     mockAllowed.mockRejectedValue(new Error("Subscription changed"));
     await expect(run()).rejects.toThrow("Subscription changed");
     expect(tasks.trigger).not.toHaveBeenCalled();
+    expect(captureGoalLifecycle).toHaveBeenCalledWith(
+      "dispatch_failed",
+      expect.objectContaining({ goalGeneration: 2, runId: "dispatcher" }),
+    );
     expect(mockMutation).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ generation: 2, chatId: "chat" }),

@@ -1,3 +1,4 @@
+import { persistenceCommandError } from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -568,20 +569,48 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new LocalFileRequestError("native_error", message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Receipt is final even if the broker never acknowledges our ACK.
+        // Keep the subscription briefly for delivery, but bound caller cleanup.
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (message.type === "file_error")
+            reject(new LocalFileRequestError("native_error", message.message));
+          else resolve(message as T);
+        };
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(finish, 1000);
+        void Promise.resolve()
+          .then(() =>
+            isolated && subscription
+              ? subscription.publish({
+                  type: "file_response_ack",
+                  requestId,
+                  targetConnectionId: this.connectionInfo.connectionId,
+                })
+              : undefined,
+          )
+          .catch(() => {})
+          .finally(finish);
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
           new LocalFileRequestError(
             "subscription_error",
@@ -631,6 +660,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
+            ...(isolated ? { fileResponseAck: true } : {}),
             path: this.resolveWorkingPath(input.path),
             requestId,
             ...(this.workingDirectory &&
@@ -1789,7 +1819,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
@@ -2366,22 +2396,25 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
           // Decode and clean up temp file
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
         }
       } else {
         const literalCommand = isBinary
@@ -2396,7 +2429,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             signal,
           });
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
           return;
         }
@@ -2418,7 +2451,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
         }
       }

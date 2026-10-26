@@ -1,3 +1,4 @@
+import { LocalFileRequestError } from "../local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { describe, expect, it, jest } from "@jest/globals";
 import { phLogger } from "@/lib/posthog/server";
@@ -52,6 +53,131 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
+  it("delegates Windows directory setup to the file adapter", async () => {
+    const sandbox = {
+      ...createSandbox({ sandboxKind: "centrifugo" }),
+      isWindows: () => true,
+    };
+    sandbox.commands.run.mockRejectedValue(new Error("POSIX mkdir is invalid"));
+    expect(await saveFullOutputToFile(sandbox as any, "output")).not.toBeNull();
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["saved", "recovered", "failed"] as const)(
+    "emits one eligible save outcome for %s, with bounded client context",
+    async (result) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo", nativeFileRelay: true }),
+        supportsCommandStdin: () => false,
+        getConnectionInfo: () => ({
+          isDesktop: true,
+          name: "PRIVATE host",
+          osInfo: { platform: "darwin", hostname: "PRIVATE hostname" },
+          capabilities: {
+            files: true,
+            commandStdin: false,
+            operationChannels: true,
+          },
+        }),
+      };
+      if (result !== "saved")
+        sandbox.files.write.mockRejectedValueOnce(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      if (result === "failed")
+        sandbox.files.write.mockRejectedValue(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output");
+        const outcomes = event.mock.calls.filter(
+          ([name]) => name === "terminal_output_persistence_result",
+        );
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0][1]).toMatchObject({
+          result,
+          client_surface: "desktop",
+          client_platform: "darwin",
+          native_file_relay: true,
+          command_stdin: false,
+        });
+        if (result !== "saved")
+          expect(outcomes[0][1]).toMatchObject({
+            local_file_failure: "dispatch_error",
+          });
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+      } finally {
+        event.mockRestore();
+      }
+    },
+  );
+  it("does not retry canceled native persistence or classify transport text as filesystem permission", async () => {
+    expect(
+      classifyTerminalOutputPersistenceFailure(
+        new LocalFileRequestError(
+          "dispatch_error",
+          "PRIVATE permission denied",
+        ),
+      ),
+    ).toBe("transport");
+    const sandbox = createSandbox({
+      sandboxKind: "centrifugo",
+      nativeFileRelay: true,
+    });
+    sandbox.files.write.mockRejectedValue(
+      new LocalFileRequestError("aborted", "PRIVATE canceled path"),
+    );
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output"),
+      ).toBeNull();
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(event).toHaveBeenCalledWith(
+        "terminal_output_persistence_failure",
+        expect.objectContaining({
+          failure_category: "aborted",
+          failure_stage: "write_output",
+          retry_decision: "not_retryable",
+        }),
+      );
+      expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+    } finally {
+      event.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("reports the mkdir cause without leaking shell output or retrying an unusable root", async () => {
+    const sandbox = createSandbox();
+    sandbox.commands.run.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "mkdir: /private/customer-root: Read-only file system",
+    });
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        await saveFullOutputToFile(sandbox as any, "private-output"),
+      ).toBeNull();
+      const payload = JSON.parse(warning.mock.calls.at(-1)![0] as string);
+      expect(payload).toMatchObject({
+        failure_category: "read_only_filesystem",
+        failure_stage: "ensure_directory",
+        attempt_count: 1,
+      });
+      expect(JSON.stringify(payload)).not.toMatch(
+        /customer-root|private-output/,
+      );
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each(["/Users/test/My Project", "C:\\Users\\test\\My Project"])(
     "writes and prunes native artifacts inside %s without shell setup",
     async (project) => {
@@ -305,6 +431,47 @@ describe("saveFullOutputToFile", () => {
     eventSpy.mockRestore();
   });
 
+  it.each(["size_mismatch", "probe_failed"] as const)(
+    "does not replay an uncertain write after %s",
+    async (verification) => {
+      const sandbox = createSandbox({
+        sandboxKind: "centrifugo",
+        nativeFileRelay: true,
+        statSizeBytes: 1,
+      });
+      sandbox.files.write.mockRejectedValueOnce(
+        new LocalFileRequestError("timeout", "PRIVATE output path"),
+      );
+      if (verification === "probe_failed")
+        (sandbox.files.stat as jest.Mock<any>).mockRejectedValueOnce(
+          new LocalFileRequestError("relay_unsubscribed", "PRIVATE host"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        expect(await saveFullOutputToFile(sandbox as any, "output")).toBeNull();
+        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+        expect(
+          event.mock.calls.filter(
+            ([name]) => name === "terminal_output_persistence_result",
+          ),
+        ).toHaveLength(1);
+        expect(event).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            timeout_verification: verification,
+            ...(verification === "probe_failed"
+              ? { verification_failure_category: "relay_unavailable" }
+              : {}),
+          }),
+        );
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+      } finally {
+        event.mockRestore();
+      }
+    },
+  );
+
   it("accepts a completed desktop write whose timeout only lost the ack", async () => {
     const output = "full output";
     const sandbox = createSandbox({
@@ -444,7 +611,7 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
     ],
     ["Direct file mutation path is outside its allowed root", "permission"],
     ["Path is outside the allowed project folder: /tmp/output", "permission"],
-    ["ENOSPC: no space left on device", "filesystem"],
+    ["ENOSPC: no space left on device", "no_space"],
     ["opaque failure", "unknown"],
   ])("classifies %s as %s", (message, category) => {
     expect(classifyTerminalOutputPersistenceFailure(new Error(message))).toBe(

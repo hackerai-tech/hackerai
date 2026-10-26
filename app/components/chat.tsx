@@ -27,6 +27,7 @@ import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
@@ -2687,8 +2688,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                             hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                             isCentered={true}
                             hasMessages={hasMessages}
-                            isAtBottom={isAtBottom}
-                            onScrollToBottom={handleScrollToBottom}
                             isNewChat={!isExistingChat}
                             chatId={chatId}
                             rateLimitWarning={
@@ -2717,6 +2716,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
+                  {/* Anchor above the entire composer, including browser notices. */}
+                  <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
+                    <ScrollToBottomButton
+                      onClick={handleScrollToBottom}
+                      hasMessages={hasMessages}
+                      isAtBottom={isAtBottom}
+                    />
+                  </div>
                   {showChatLayout && (
                     <BrowserHandoffEntry chatId={chatId} messages={messages} />
                   )}
@@ -2731,8 +2738,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     status={status}
                     hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
                     hasMessages={hasMessages}
-                    isAtBottom={isAtBottom}
-                    onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
                     sendDisabledReason={computerSendDisabledReason}

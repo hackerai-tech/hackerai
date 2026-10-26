@@ -4,7 +4,7 @@ A goal keeps an objective and completion contract attached to one chat across bo
 
 The completion contract has one to eight success criteria and optional verification command, constraints to preserve, scope boundaries, and conditions requiring user input. Multiline commands accept `criterion:`, `verify:`, `preserve:`, `scope:`, `stop when:`, and `runs:` fields. The goal bar sits above the composer. Editing opens the Computer sidebar on desktop and its full-screen overlay on mobile, with labeled objective and contract inputs. Saving pauses work, preserves the remaining budget, clears evidence for the old objective, and requires explicit Resume.
 
-Goal messages retain a sent-as-goal receipt. Verified completion saves elapsed time from goal creation on the final assistant message, including pauses and waiting. These receipts survive reload, goal deletion, and replacement; ordinary completed runs receive no achievement receipt. Older goals without a recorded start time do not receive an invented duration.
+Goal messages retain a sent-as-goal receipt. Verified completion saves cumulative active goal time on the final assistant message. Pauses and waiting are excluded; resuming continues from the saved duration. These receipts survive reload, goal deletion, and replacement; ordinary completed runs receive no achievement receipt. Older goals without a recorded start time do not receive an invented duration.
 
 ## Limits and completion
 
@@ -25,6 +25,8 @@ If a worker terminates before saving its final state, loading goal status reconc
 ## Rollout and verification
 
 `persistent-agent-goals` gates paid Agent goal admission and continuation. Existing saved goals retain their pause, edit, and delete controls after the flag is disabled. Goal analytics contain identifiers, categorical states, and counts; they exclude objectives, criteria, prompts, commands, and evidence.
+
+`agent_goal_lifecycle` records admission, resume, worker claim, settlement, recovery, user controls, and continuation scheduling/start/failure. `goal_attempt_id` separates replacements of the same goal record; `goal_generation` fences continuations, and `trigger_run_id` joins existing Agent diagnostics. Retried emissions share a deterministic event UUID. Use `snapshot_updated_at` to order persisted state snapshots rather than ingestion time; dispatch observations can arrive after a newer worker snapshot. Cleared goals have `deleted: true`. Failures without a snapshot do not assert a persisted state. `elapsed_ms` uses the same cumulative timer as the UI. Count unique attempts, not settlement events, for outcomes; paused, waiting, input-required, and budget-exhausted states are not infrastructure failures. Telemetry is best effort and cannot fail execution. Missing events alone do not prove a stalled worker; confirm its recorded Trigger run and canonical goal state.
 
 Deploy the Convex functions and Trigger worker before testing goal admission in the web Preview. Independently verify the Vercel, Trigger, Convex, and PostHog selections according to `AGENTS.md`. Preview uses the Developer account and development PostHog project; Production requires a separate rollout decision. A feature-flag definition alone does not prove that the worker uses the expected project.
 

@@ -518,6 +518,16 @@ describe("current experiment reservation", () => {
       "abliterated_paid_moderated_default_feedback_v1",
       "test",
     ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "abliterated_pro_three_steps_feedback_v1",
+      "control",
+    ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "abliterated_pro_three_steps_feedback_v1",
+      "test",
+    ],
   ])(
     "reserves and answers new phase %s/%s/%s without rewriting old invitations",
     async (key, phase, variant) => {

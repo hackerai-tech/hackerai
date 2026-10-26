@@ -277,12 +277,21 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  /** One explicit user click; discarded when the sidebar selection closes. */
+  browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Structured process exit code, available after command completion. */
+  exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
-    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
+    | "reviewing"
+    | "awaiting_approval"
+    | "executing"
+    | "completed"
+    | "failed"
+    | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;

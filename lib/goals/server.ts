@@ -1,3 +1,4 @@
+import { captureGoalLifecycle } from "./analytics";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import PostHogClient from "@/app/posthog";
@@ -99,8 +100,9 @@ export async function finishGoalRun(
     ...outcome,
   });
   if (goal) {
-    const posthog = PostHogClient();
+    let posthog: ReturnType<typeof PostHogClient> = null;
     try {
+      posthog = PostHogClient();
       posthog?.capture({
         distinctId: payload.userId,
         event: "agent_goal_state_changed",
@@ -111,15 +113,24 @@ export async function finishGoalRun(
           state: goal.state,
           runs_used: goal.runs,
           max_runs: goal.maxRuns,
-          verified_criteria_count: goal.evidence.length,
+          verified_criteria_count: new Set(
+            goal.evidence.map((e) => e.criterion),
+          ).size,
           $geoip_disable: true,
           $process_person_profile: false,
         },
       });
+    } catch {
+      // Analytics must not turn a persisted outcome into a failed run.
     } finally {
-      await posthog?.shutdown().catch(() => undefined);
+      try {
+        await posthog?.shutdown(1000);
+      } catch {
+        // Delivery failures cannot change the persisted result.
+      }
     }
   }
+  if (goal) await captureGoalLifecycle("settled", { ...payload, runId }, goal);
   return goal;
 }
 
@@ -164,5 +175,11 @@ export async function reconcileGoal(chatId: string, userId: string) {
     expectedRunId: goal.activeRunId,
     clearApprovalPending: true,
   });
+  if (settled)
+    await captureGoalLifecycle(
+      "reconciled",
+      { userId, chatId, runId: goal.activeRunId },
+      settled,
+    );
   return settled ?? (await getGoal(chatId, userId));
 }

@@ -1059,21 +1059,78 @@ describe("CentrifugoSandbox", () => {
     await jest.advanceTimersByTimeAsync(0);
     const control = mockSubscriptions[1];
     expect(control.publish).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "file_write", operationChannel: true }),
+      expect.objectContaining({
+        type: "file_write",
+        operationChannel: true,
+        fileResponseAck: true,
+      }),
     );
     reply.emit("publication", {
       data: { type: "operation_ready", requestId: FIXED_UUID },
     });
     await jest.advanceTimersByTimeAsync(0);
+    reply.emit("error", {
+      type: "subscribe",
+      error: { code: 1, message: "timeout" },
+    });
+    expect(reply.unsubscribe).not.toHaveBeenCalled();
     reply.emit("subscribed");
     expect(control.publish).toHaveBeenCalledTimes(1);
     reply.emit("publication", {
       data: { type: "file_ok", requestId: FIXED_UUID },
     });
     await expect(pending).resolves.toBeUndefined();
+    expect(reply.publish).toHaveBeenCalledWith({
+      type: "file_response_ack",
+      requestId: FIXED_UUID,
+      targetConnectionId: defaultConnection.connectionId,
+    });
+    expect(reply.publish.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      reply.unsubscribe.mock.invocationCallOrder[0],
+    );
     expect(control.unsubscribe).toHaveBeenCalled();
     expect(reply.unsubscribe).toHaveBeenCalled();
   });
+
+  it.each(["pending", "rejected"])(
+    "settles a received file result when its receipt ACK is %s",
+    async (ackState) => {
+      const sandbox = createSandbox({
+        isDesktop: true,
+        capabilities: { commands: true, files: true, operationChannels: true },
+      });
+      let completed = false;
+      const pending = sandbox.files
+        .write("/tmp/bounded-test", "hello")
+        .then(() => {
+          completed = true;
+        });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      reply.publish.mockImplementation(() =>
+        ackState === "pending"
+          ? new Promise(() => {})
+          : Promise.reject(new Error("ACK unavailable")),
+      );
+      reply.emit("publication", {
+        data: { type: "file_ok", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(completed).toBe(true);
+      await pending;
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(mockClients[0].disconnect).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
 
   it("keeps isolated PTY controls on the session channel", async () => {
     const sandbox = new CentrifugoSandbox(
@@ -1334,6 +1391,33 @@ describe("CentrifugoSandbox", () => {
       expect(mockSubscriptions[1].unsubscribe).toHaveBeenCalled();
       expect(run).not.toHaveBeenCalled();
       expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("does not mask a Windows decode failure with successful cleanup", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      (sandbox as any).shellKind = "cmd";
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => ({
+          stdout: "",
+          stderr: command.startsWith("certutil")
+            ? "PRIVATE: Access denied"
+            : "",
+          // cmd.exe returns the last command's status when commands use &.
+          exitCode:
+            command.startsWith("certutil") && !command.includes(" & del")
+              ? 5
+              : 0,
+        }));
+      await expect(
+        sandbox.files.write("C:\\temp\\result.txt", "output"),
+      ).rejects.toMatchObject({
+        persistenceCategory: "permission",
+        exitCode: 5,
+      });
+      expect(
+        run.mock.calls.some(([command]) => command.startsWith("del")),
+      ).toBe(true);
     });
 
     it.each(["directory", "chunk"])(
@@ -3469,7 +3553,12 @@ describe("CentrifugoSandbox", () => {
         (sandbox as any).commands.run = jest.fn(async (command: string) => {
           if (command.startsWith("printf") && ++writes === 2) {
             if (reason === "cancel") controller.abort();
-            else return { stdout: "", stderr: "disk full", exitCode: 1 };
+            else
+              return {
+                stdout: "",
+                stderr: "No space left on device",
+                exitCode: 1,
+              };
           }
           return { stdout: "", stderr: "", exitCode: 0 };
         });
@@ -3477,7 +3566,11 @@ describe("CentrifugoSandbox", () => {
           sandbox.files.write("/tmp/partial", "x".repeat(100_000), {
             signal: controller.signal,
           }),
-        ).rejects.toThrow(reason === "failure" ? "disk full" : undefined);
+        ).rejects.toMatchObject(
+          reason === "failure"
+            ? { persistenceCategory: "no_space", exitCode: 1 }
+            : { name: "AbortError" },
+        );
         expect(writes).toBe(2);
       },
     );

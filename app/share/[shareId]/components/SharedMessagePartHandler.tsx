@@ -37,6 +37,7 @@ import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
   computeShellTerminalBlock,
+  getTerminalExecutionPhase,
   getTerminalFailureAction,
   type ShellToolInput,
   type ShellToolOutput,
@@ -358,6 +359,10 @@ function renderTerminalTool(
       streamingOutput: "",
       isExecuting: false,
       hasResult: part.state === "output-available",
+      executionPhase: getTerminalExecutionPhase({
+        toolState: part.state,
+        errorText: part.errorText,
+      }),
       toolCallId: part.toolCallId || "",
       legacyInteractive: legacyInput?.interactive,
       legacyIsBackground: legacyInput?.is_background,

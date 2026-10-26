@@ -2597,30 +2597,4 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
     });
   });
-
-  describe("Scroll to Bottom Integration", () => {
-    it("should show scroll to bottom button when provided", () => {
-      const mockScrollToBottom = jest.fn();
-
-      render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="ready"
-            hasMessages={true}
-            isAtBottom={false}
-            onScrollToBottom={mockScrollToBottom}
-          />
-        </TestWrapper>,
-      );
-
-      // Scroll to bottom button should be present when not at bottom
-      const scrollButton = screen.getByLabelText("Scroll to bottom");
-      expect(scrollButton).toBeInTheDocument();
-
-      fireEvent.click(scrollButton);
-      expect(mockScrollToBottom).toHaveBeenCalledTimes(1);
-    });
-  });
 });

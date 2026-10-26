@@ -8,6 +8,7 @@ import {
 import {
   formatSendInput,
   getTerminalExecutionPhase,
+  getShellExitCode,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
@@ -176,6 +177,7 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -256,6 +258,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
@@ -275,6 +278,7 @@ export function extractSidebarContentFromMessage(
       const command = part.input.command || part.input.brief || "";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -310,6 +314,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: false,
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,

@@ -214,12 +214,14 @@ jest.mock("../../hooks/useChatHandlers", () => ({
   },
 }));
 
+let mockIsAtBottom = true;
+const mockScrollToBottom = jest.fn();
 jest.mock("../../hooks/useMessageScroll", () => ({
   useMessageScroll: () => ({
     scrollRef: { current: null },
     contentRef: { current: null },
-    scrollToBottom: jest.fn(),
-    isAtBottom: true,
+    scrollToBottom: mockScrollToBottom,
+    isAtBottom: mockIsAtBottom,
   }),
 }));
 
@@ -500,6 +502,7 @@ describe("Chat Component Integration", () => {
     mockRouteParams = {};
     mockRestoredChat = undefined;
     mockDesktopState = {};
+    mockIsAtBottom = true;
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
     window.localStorage.clear();
@@ -970,6 +973,53 @@ describe("Chat Component Integration", () => {
           },
         })?.autoReview,
       ).toBeUndefined();
+    });
+  });
+
+  describe("Scroll to bottom", () => {
+    it("scrolls from the composer overlay and hides at the bottom or with expanded todos", () => {
+      mockIsAtBottom = false;
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "assistant-1",
+            role: "assistant",
+            parts: [{ type: "text", text: "Answer" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      const button = screen.getByRole("button", { name: "Scroll to bottom" });
+      expect(
+        button.closest("[data-chat-composer-overlay]"),
+      ).toBeInTheDocument();
+      fireEvent.click(button);
+      expect(mockScrollToBottom).toHaveBeenCalledWith({ force: true });
+
+      mockIsAtBottom = true;
+      rerender(view());
+      expect(
+        screen.queryByRole("button", { name: "Scroll to bottom" }),
+      ).toBeNull();
+
+      mockIsAtBottom = false;
+      mockDesktopState = { isTodoPanelExpanded: true };
+      rerender(view());
+      expect(
+        screen.queryByRole("button", { name: "Scroll to bottom" }),
+      ).toBeNull();
     });
   });
 

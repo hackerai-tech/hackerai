@@ -24,14 +24,17 @@ export const getErrorMessage = (err: unknown): string => {
   }
   if (err && typeof err === "object" && "message" in err) {
     const msg = (err as { message: unknown }).message;
-    return typeof msg === "string"
-      ? msg
-      : (JSON.stringify(msg) ?? "Unknown error occurred");
+    if (typeof msg === "string") return msg;
+    try {
+      return JSON.stringify(msg) ?? "Unknown error occurred";
+    } catch {
+      return "Unknown error occurred";
+    }
   }
   try {
     return JSON.stringify(err) ?? "Unknown error occurred";
   } catch {
-    return String(err);
+    return "Unknown error occurred";
   }
 };
 
@@ -407,9 +410,9 @@ export type ProviderErrorCategory =
   | "unknown";
 
 const PROVIDER_STREAM_TERMINATION_PATTERN =
-  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 const PROVIDER_STREAM_DISCONNECT_PATTERN =
-  /terminated|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 
 const parseHttpStatus = (value: unknown): number | undefined => {
   const code =
@@ -517,18 +520,23 @@ export const getProviderErrorCategory = (
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
+  const fallbackStatusCode = parseHttpStatus(details.errorCode);
+  if (fallbackStatusCode === 429) return "rate_limited";
+  if (
+    fallbackStatusCode != null &&
+    fallbackStatusCode >= 400 &&
+    fallbackStatusCode < 500
+  )
+    return "provider_4xx";
+
   const message = getProviderMessageText(details);
   if (PROVIDER_STREAM_TERMINATION_PATTERN.test(message)) {
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
 
-  const fallbackStatusCode = parseHttpStatus(details.errorCode);
-  if (fallbackStatusCode === 429) return "rate_limited";
   if (fallbackStatusCode != null && fallbackStatusCode >= 500)
     return "provider_5xx";
-  if (fallbackStatusCode != null && fallbackStatusCode >= 400)
-    return "provider_4xx";
 
   return "unknown";
 };

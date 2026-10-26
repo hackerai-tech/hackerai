@@ -573,6 +573,7 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -603,6 +604,7 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
         subscription,
@@ -610,11 +612,15 @@ export const createChatHandler = () => {
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         moderationChecked,
+        allowsAbliterationContinuation,
+        newUserTurn: !regenerate && !isAutoContinue,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
-        ...(process.env.VERCEL_ENV === "preview" && {
-          previewDiagnosticContext: { chatId, requestId },
-        }),
+        diagnosticContext: {
+          chatId,
+          requestId,
+          logAll: process.env.VERCEL_ENV === "preview",
+        },
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -2060,9 +2066,7 @@ export const createChatHandler = () => {
                       !hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
                       )
-                        ? prepareProviderDisconnectContinuation(messages, {
-                            allowCompletedTail: true,
-                          })
+                        ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
@@ -2310,9 +2314,7 @@ export const createChatHandler = () => {
                         ) {
                           const continuation =
                             emptyResponseContinuation ??
-                            prepareProviderDisconnectContinuation(messages, {
-                              allowCompletedTail: true,
-                            });
+                            prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
                             usageTracker.resetModelLeg();
                           }

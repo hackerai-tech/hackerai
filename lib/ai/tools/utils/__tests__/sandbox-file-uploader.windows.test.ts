@@ -153,6 +153,32 @@ windowsDescribe("Windows generated-file metadata command", () => {
     expect(adapter.files.uploadToUrl).not.toHaveBeenCalled();
   });
 
+  test("does not run a project-local cmd.bat during file metadata lookup", async () => {
+    const marker = join(directory, "shadowed.txt");
+    writeFileSync(
+      join(directory, "cmd.bat"),
+      "@echo off\r\necho shadowed>shadowed.txt\r\nexit /b 0\r\n",
+    );
+    const path = join(directory, "ordinary.txt");
+    writeFileSync(path, Buffer.alloc(17, 65));
+
+    const adapter = sandbox();
+    await uploadSandboxFileToConvex({
+      sandbox: adapter as any,
+      fullPath: path,
+      mediaType: "text/plain",
+      userId: "owned-fixture-user",
+    });
+
+    expect(uploadUrl).toHaveBeenLastCalledWith(
+      "ordinary.txt",
+      "text/plain",
+      "owned-fixture-user",
+      17,
+    );
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("rejects a command-breaking path before any shell command", async () => {
     const adapter = sandbox();
     await expect(

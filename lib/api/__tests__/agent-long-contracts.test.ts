@@ -873,6 +873,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
+      /FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS\s*=\s*AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*\+\s*5\s*\*\s*60/,
+    );
+    expect(taskSrc).toMatch(
       /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(

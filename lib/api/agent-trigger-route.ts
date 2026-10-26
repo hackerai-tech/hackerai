@@ -1,3 +1,4 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
 import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
@@ -592,6 +593,10 @@ export const createAgentTriggerPost =
       } catch {
         // A persistence outage leaves the goal fenced for explicit recovery.
       }
+      await captureGoalLifecycle("admission_failed", {
+        ...goal,
+        goalGeneration: goal.generation,
+      });
     };
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
@@ -873,6 +878,11 @@ export const createAgentTriggerPost =
                 additionalRuns: goalRequest.additionalRuns,
               });
         reservedGoal = { chatId, userId, generation: savedGoal.generation };
+        await captureGoalLifecycle(
+          goalRequest.action === "start" ? "admitted" : "resumed",
+          { chatId, userId, subscription },
+          savedGoal,
+        );
       };
 
       // Fence an existing goal before writing input that a queued worker could

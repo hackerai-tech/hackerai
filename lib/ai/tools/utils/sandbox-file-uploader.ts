@@ -19,6 +19,7 @@ import {
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 import { getLocalFileRequestFailure } from "./local-sandbox-errors";
+import { getUploadFailureDiagnostics } from "./sandbox-upload-diagnostics";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
@@ -269,7 +270,9 @@ async function getWindowsSandboxFileSize(
   // The relay may set env vars earlier in the same cmd.exe /C command.
   // Enable delayed expansion in a child: inline SETLOCAL has no effect outside
   // a batch file. Keep the path in env so shell metacharacters remain data.
-  const winCommand = `cmd /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
+  // Resolve the child interpreter from Windows itself. A bare `cmd` can run a
+  // cmd.bat supplied by the project in the relay's working directory.
+  const winCommand = `"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
   let winResult: SandboxCommandResult;
   try {
     winResult = await sandbox.commands.run(winCommand, {
@@ -439,6 +442,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         file_name: fileName,
         file_path: fullPath,
         media_type: mediaType,
+        ...getUploadFailureDiagnostics(uploadUrl, error),
         error: errorToLog(error),
       });
       // The Windows adapter already selected its available HTTP client. The
@@ -472,6 +476,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
           file_name: fileName,
           file_path: fullPath,
           media_type: mediaType,
+          ...getUploadFailureDiagnostics(uploadUrl, error),
           error: errorToLog(error),
         },
       );
@@ -490,6 +495,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       file_path: fullPath,
       media_type: mediaType,
       exit_code: result.exitCode,
+      ...getUploadFailureDiagnostics(uploadUrl, result.stderr || result.stdout),
       stderr: result.stderr?.slice(0, 500),
       stdout: result.stdout?.slice(0, 500),
     });

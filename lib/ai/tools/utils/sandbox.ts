@@ -3,7 +3,7 @@ import {
   clearResumeFailures,
 } from "@/lib/cloud-recovery/store";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
-import { e2bNetwork } from "@/lib/cloud-network/policy";
+import { DEFAULT_NETWORK_POLICY, e2bNetwork } from "@/lib/cloud-network/policy";
 import {
   CloudAcquisitionTimeoutError,
   CLOUD_RESUME_DEADLINE_MS,
@@ -13,6 +13,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
   NotFoundError,
+  SandboxError,
   TimeoutError,
   classifyE2BError,
   getUserFacingE2BErrorMessage,
@@ -121,6 +122,9 @@ export const ensureSandboxConnection = async (
   }
   const startedAt = performance.now();
   let phase: E2BAcquisitionPhase = "routing";
+  let connectState: "running" | "paused" | null = null;
+  let connectSelectionSource: "pinned" | "inventory" | null = null;
+  let connectRequestTimeoutMs: number | null = null;
   let createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -131,6 +135,19 @@ export const ensureSandboxConnection = async (
   };
   let failedTarget:
     { sandboxId: string; template: string; sandboxVersion: string } | undefined;
+  let connectGatewayTimeout: SandboxError | undefined;
+  const connectSelectedSandbox = async (
+    sandboxId: string,
+    connectOptions: Parameters<typeof Sandbox.connect>[1],
+  ) => {
+    try {
+      return await Sandbox.connect(sandboxId, connectOptions);
+    } catch (error) {
+      if (error instanceof SandboxError && error.statusCode === 504)
+        connectGatewayTimeout = error;
+      throw error;
+    }
+  };
   try {
     options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
@@ -164,10 +181,15 @@ export const ensureSandboxConnection = async (
           sandboxVersion: info.metadata.sandboxVersion,
         };
       const resumingPausedWorkspace = info.state === "paused";
+      connectState = resumingPausedWorkspace ? "paused" : "running";
+      connectSelectionSource = "pinned";
+      connectRequestTimeoutMs = resumingPausedWorkspace
+        ? CLOUD_RESUME_DEADLINE_MS
+        : null;
       options.reportStage?.("connect", { resumingPausedWorkspace });
       const sandbox = await retryWithBackoff(
         () =>
-          Sandbox.connect(options.destinationId!, {
+          connectSelectedSandbox(options.destinationId!, {
             ...createCluster.connectionOptions,
             ...requestOptions,
             ...(resumingPausedWorkspace
@@ -294,10 +316,19 @@ export const ensureSandboxConnection = async (
       try {
         phase = "connect";
         const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
+        connectState = resumingPausedWorkspace
+          ? "paused"
+          : existingSandboxInfo.state === "running"
+            ? "running"
+            : null;
+        connectSelectionSource = "inventory";
+        connectRequestTimeoutMs = resumingPausedWorkspace
+          ? CLOUD_RESUME_DEADLINE_MS
+          : null;
         options.reportStage?.("connect", { resumingPausedWorkspace });
         const sandbox = await retryWithBackoff(
           () =>
-            Sandbox.connect(existingSandboxInfo.sandboxId, {
+            connectSelectedSandbox(existingSandboxInfo.sandboxId, {
               ...existingCluster.connectionOptions,
               ...requestOptions,
               ...(resumingPausedWorkspace
@@ -358,9 +389,9 @@ export const ensureSandboxConnection = async (
       try {
         const networkSettings = await readNetworkSettings(userID);
         const sandbox = await Sandbox.create(createCluster.template, {
-          ...(networkSettings
-            ? { network: e2bNetwork(networkSettings.policy) }
-            : {}),
+          network: e2bNetwork(
+            networkSettings?.policy ?? DEFAULT_NETWORK_POLICY,
+          ),
           ...createCluster.connectionOptions,
           ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
@@ -403,16 +434,19 @@ export const ensureSandboxConnection = async (
         acquisitionId: options.acquisitionId,
         uncertain:
           signal?.aborted === true || !status || ![400, 422].includes(status),
-        // Only a known connection deadline can be reconciled by the customer
-        // path. Cancellation, authentication errors and unknown outcomes remain
-        // support-only; a deadline still waits for the complete idle window.
+        // E2B reports its own gateway timeout as SandboxError, not TimeoutError.
+        // This is still uncertain: only the consent-gated customer path may
+        // reconcile exact paused identity after the complete idle window.
+        // Other provider failures and cancellation remain support-only.
         timeoutOnly:
           phase === "connect" &&
           (signal?.aborted
             ? signal.reason instanceof CloudAcquisitionTimeoutError &&
               signal.reason.acquisitionStage === "connect"
-            : error instanceof TimeoutError &&
-              !error.message.includes("sandbox timeout")),
+            : error instanceof TimeoutError
+              ? !error.message.includes("sandbox timeout")
+              : connectGatewayTimeout !== undefined &&
+                error === connectGatewayTimeout),
       }).catch(() => {});
     }
     signal?.throwIfAborted();
@@ -448,6 +482,12 @@ export const ensureSandboxConnection = async (
         trigger_run_id: options.triggerRunId ?? null,
         user_id: userID,
         ...diagnostics,
+        e2b_connect_state: phase === "connect" ? connectState : null,
+        e2b_connect_selection_source:
+          phase === "connect" ? connectSelectionSource : null,
+        // Null means the SDK default was used, not a measured timeout of zero.
+        e2b_connect_request_timeout_ms:
+          phase === "connect" ? connectRequestTimeoutMs : null,
         duration_ms: Math.round(performance.now() - startedAt),
       }),
     );

@@ -5,6 +5,7 @@ import {
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
 } from "../experiments/abliteration-keys";
 import type { AbliteratedAssignment } from "../experiments/abliterated-model";
 
@@ -19,6 +20,9 @@ export const PAID_FIRST_STEP_TASK_OUTCOME_PHASE =
 export const PAID_MODERATED_TASK_OUTCOME_PHASE =
   "abliterated_paid_moderated_default_feedback_v1";
 
+export const PRO_THREE_STEPS_TASK_OUTCOME_PHASE =
+  "abliterated_pro_three_steps_feedback_v1";
+
 // Keep historical reservations readable while new assignments use their own
 // immutable phase. A routing change must never relabel the old cohort.
 export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
@@ -29,6 +33,8 @@ export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
       return PAID_FIRST_STEP_TASK_OUTCOME_PHASE;
     case ABLITERATED_PAID_MODERATED_DEFAULT_KEY:
       return PAID_MODERATED_TASK_OUTCOME_PHASE;
+    case ABLITERATED_PRO_THREE_STEPS_KEY:
+      return PRO_THREE_STEPS_TASK_OUTCOME_PHASE;
     case ABLITERATED_EXPERIMENT_KEY:
     case ABLITERATED_PAID_THREE_STEPS_KEY:
     case ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY:

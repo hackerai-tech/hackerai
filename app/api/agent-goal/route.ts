@@ -1,3 +1,4 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { z } from "zod";
 import { NextRequest } from "next/server";
 import { api } from "@/convex/_generated/api";
@@ -78,6 +79,11 @@ export async function POST(req: NextRequest) {
       );
       await cancelAgentTriggerRun(goal.activeRunId);
     }
+    await captureGoalLifecycle(
+      action === "update" ? "update" : action,
+      { userId, chatId: body.chatId, runId: goal.activeRunId },
+      goal,
+    );
     return Response.json({ state: goal.state });
   } catch (e) {
     return e instanceof ChatSDKError
