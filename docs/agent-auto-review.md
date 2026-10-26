@@ -78,3 +78,7 @@ Approve for me is probabilistic and can make mistakes. It does not expand sandbo
 permissions, enforce target scope, control network reachability, or provide a
 deterministic security guarantee. It reviews only actions that already cross
 HackerAI's current approval gate.
+
+Script and package-manager commands require human approval until sandbox file
+readers can inspect their referenced files without following symlinks. An
+incomplete user-authorization history also requires human approval.
