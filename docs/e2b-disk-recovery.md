@@ -146,12 +146,14 @@ Unknown lifecycle, provider conflict or uncertain recovery outcome requires
 support. Validate these provider semantics on disposable sandboxes before
 rollout, including a real inbound-traffic race.
 
-Only definite 400/422 ordinary resume failures and known SDK/application
-connection deadlines can contribute to a recoverable incident. A known deadline
-remains uncertain: wait the full fifteen-minute idle window after its last
+Only definite 400/422 ordinary resume failures, known SDK/application
+connection deadlines, and an E2B SDK `SandboxError` with HTTP 504 from a
+verified paused-workspace connect can contribute to a recoverable incident.
+These timeouts remain uncertain, including a gateway timeout before the client
+deadline: wait the full fifteen-minute idle window after the last
 failure, check leases and active work, then independently verify exact paused
 identity and regional inventory. E2B must refuse the single reboot request if an
-old restore is still starting. Cancellation, 409s, 5xx responses and other unknown
+old restore is still starting. Cancellation, 409s, other 5xx responses and unknown
 outcomes remain support-only. Uncertainty from one of those failures cannot be
 erased by a later known timeout or definite failure.
 
