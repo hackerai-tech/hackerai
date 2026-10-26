@@ -746,7 +746,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(cloudPrompt).toContain("runtime encrypts it");
     expect(cloudPrompt).toContain("Do not promise recovery across Agent runs");
-    expect(cloudPrompt).not.toContain("npm install -g agent-browser@0.26.0");
+    expect(cloudPrompt).not.toContain("npm install -g agent-browser");
     expect(localPrompt).toContain(
       "On Local, Desktop, and remote hosts, choose a unique session name",
     );

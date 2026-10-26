@@ -5197,7 +5197,7 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain(
         "command -v agent-browser && agent-browser --version",
       );
-      expect(context).toContain("npm install -g agent-browser@0.26.0");
+      expect(context).toContain("`npm install -g agent-browser`");
     });
 
     it("uses a cmd-compatible browser probe on Windows", () => {
@@ -5238,7 +5238,7 @@ describe("CentrifugoSandbox", () => {
       const context = sandbox.getSandboxContext();
 
       expect(context).toContain("DANGEROUS MODE");
-      expect(context).toContain("npm install -g agent-browser@0.26.0");
+      expect(context).toContain("`npm install -g agent-browser`");
       expect(context).not.toContain("command -v agent-browser");
       expect(context).not.toContain("where agent-browser");
     });

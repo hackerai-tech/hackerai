@@ -370,7 +370,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
     const context = await manager.getSandboxContextForPrompt();
 
     expect(context).toContain("where agent-browser && agent-browser --version");
-    expect(context).toContain("npm install -g agent-browser@0.26.0");
+    expect(context).toContain("`npm install -g agent-browser`");
     expect(context).not.toContain("command -v agent-browser");
   });
 
@@ -396,7 +396,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
     const context = await local.getSandboxContextForPrompt();
 
     expect(context).toContain("DANGEROUS MODE");
-    expect(context).toContain("npm install -g agent-browser@0.26.0");
+    expect(context).toContain("`npm install -g agent-browser`");
     expect(context).not.toContain("command -v agent-browser");
     expect(context).not.toContain("where agent-browser");
     await expect(cloud.getSandboxContextForPrompt()).resolves.toBeNull();

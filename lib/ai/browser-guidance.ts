@@ -1,6 +1,6 @@
 // Shared by the parent and every worker. Runtime skills should describe the
 // installed browser's practical workflow without assuming a connected host has it.
-export const CONNECTED_AGENT_BROWSER_GUIDANCE = `On Local, Desktop, and remote connections, use agent-browser for browser tasks. If missing, install it with \`npm install -g agent-browser@0.26.0\`. Respect the user's installation restrictions.`;
+export const CONNECTED_AGENT_BROWSER_GUIDANCE = `On Local, Desktop, and remote connections, use agent-browser for browser tasks. If missing, install it with \`npm install -g agent-browser\`. Respect the user's installation restrictions.`;
 
 export const AGENT_BROWSER_GUIDANCE = `<agent_browser>
 Browser availability:
