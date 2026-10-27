@@ -272,11 +272,34 @@ it.each([
   "I don't want to take control.",
   'Explain the text "take control".',
   "Explain this code:\n```\nbrowser_handoff\n```",
+  "Explain this code:\n~~~text\nbrowser_handoff\n~~~",
+  "Explain this code:\n````text\n```\nbrowser_handoff\n````",
+  "Explain this code:\n~~~text\n```\nbrowser_handoff\n~~~",
+  "Explain this code:\n~~~text\nbrowser_handoff",
 ])("requires a current affirmative user request: %s", async (text) => {
   const { output, canRecover } = await parts(promise, { input: params(text) });
   expect(output.some((part) => part.type === "tool-call")).toBe(false);
   expect(canRecover).not.toHaveBeenCalled();
 });
+
+it.each([
+  "~~~text\n```\nexample\n~~~\n",
+  "````text\n```\nexample\n````\n",
+  "```js\nconst sample = '```';\n```\n",
+])(
+  "preserves a genuine user request after a fenced example: %s",
+  async (example) => {
+    const { output } = await parts(promise, {
+      input: params(example + request),
+    });
+    expect(output).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "browser_handoff",
+      }),
+    );
+  },
+);
 
 it.each(["length", "error", "content-filter"])(
   "does not repair %s finishes",

@@ -12,6 +12,30 @@ type StreamResult = Awaited<ReturnType<StreamOptions["doStream"]>>;
 type StreamPart =
   StreamResult["stream"] extends ReadableStream<infer T> ? T : never;
 
+// Both user examples and model examples must stay out of handoff intent checks.
+// Fence state belongs to a complete line, including when streaming splits it.
+function createProseLineFilter(): (line: string) => boolean {
+  let fence: { character: string; length: number } | undefined;
+  return (line) => {
+    if (fence) {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*\r?$/);
+      if (
+        closing &&
+        closing[1][0] === fence.character &&
+        closing[1].length >= fence.length
+      )
+        fence = undefined;
+      return false;
+    }
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
+      fence = { character: opening[1][0], length: opening[1].length };
+      return false;
+    }
+    return !/^(?: {4}|\t)/.test(line);
+  };
+}
+
 function requestedHandoff(params: StreamOptions["params"]): boolean {
   const userIndex = params.prompt.findLastIndex((m) => m.role === "user");
   const user = params.prompt[userIndex];
@@ -21,7 +45,9 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     .map((part) => part.text)
     .join("\n")
     .replace(/[\u2018\u2019]/g, "'")
-    .replace(/```[\s\S]*?(?:```|$)/g, "")
+    .split("\n")
+    .filter(createProseLineFilter())
+    .join("\n")
     .replace(/^\s*>.*$|"[^"\n]*"|“[^”\n]*”/gm, "");
   if (
     /\b(?:don't|do not|never|no need to)\s+(?:(?:want|need)(?: you)? to\s+)?(?:wait|hand\s*over|handoff|call\s+browser_handoff|take\s+(?:control|over))\b/i.test(
@@ -109,27 +135,9 @@ export function recoverBrowserHandoffCompletion(
           return result;
         let text = "";
         let pendingLine = "";
-        let fence: { character: string; length: number } | undefined;
-        // Classify complete lines before bounding prose. Only a matching fence
-        // line closes code; delimiters inside code strings stay inside code.
+        const keepProseLine = createProseLineFilter();
         const appendLine = (line: string) => {
-          if (fence) {
-            const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*\r?$/);
-            if (
-              closing &&
-              closing[1][0] === fence.character &&
-              closing[1].length >= fence.length
-            )
-              fence = undefined;
-            return;
-          }
-          const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-          if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
-            fence = { character: opening[1][0], length: opening[1].length };
-            return;
-          }
-          if (!/^(?: {4}|\t)/.test(line))
-            text = (text + line + "\n").slice(-4000);
+          if (keepProseLine(line)) text = (text + line + "\n").slice(-4000);
         };
         const appendText = (delta: string) => {
           const lines = (pendingLine + delta).split("\n");
