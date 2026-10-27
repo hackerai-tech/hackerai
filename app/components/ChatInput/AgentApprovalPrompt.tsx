@@ -50,14 +50,20 @@ const getReusableApprovalDescription = (
   grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
 ): string => {
   if (grant.kind === "terminal_command") {
-    // JSON keeps bidi controls literal; escape them so displayed order cannot
-    // disguise the selected scope. The submitted argv remains unchanged.
+    // JSON leaves some invisible characters literal; show their code units so
+    // they cannot disguise the selected scope. Submitted argv stays unchanged.
     const displayedArgv = `[${grant.argv
       .map((argument) => {
         const escaped = JSON.stringify(argument).replace(
-          /\p{Bidi_Control}/gu,
+          /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]/gu,
           (character) =>
-            `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+            character
+              .split("")
+              .map(
+                (unit) =>
+                  `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`,
+              )
+              .join(""),
         );
         // Isolate each argument so natural RTL text cannot reorder neighbors.
         return `\u2068${escaped}\u2069`;
@@ -361,6 +367,7 @@ export function AgentApprovalPrompt({
                     Allow once
                   </DropdownMenuItem>
                   <DropdownMenuItem
+                    translate="no"
                     className="min-h-10 flex-col items-start gap-1 rounded-lg px-3 text-sm"
                     aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
                     onSelect={() => void submitApproval(true)}
