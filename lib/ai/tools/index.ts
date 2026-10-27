@@ -476,6 +476,9 @@ export const createTools = (
         isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
     ),
     tools,
+    canRecoverBrowserHandoff: (signal?: AbortSignal) =>
+      browserSessions?.canRecoverHumanHandoff(signal ?? runtimePolicy.signal) ??
+      Promise.resolve(false),
     waitForBrowserHandoff: (signal?: AbortSignal) =>
       browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??
       Promise.resolve(false),

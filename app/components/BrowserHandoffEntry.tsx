@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
-import { Monitor, X } from "lucide-react";
+import { Monitor, MousePointerClick, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -11,14 +11,7 @@ import {
 } from "@/lib/utils/sidebar-utils";
 import { isSidebarTerminal } from "@/types/chat";
 
-type ReminderPreference = {
-  chatId: string;
-  availableHidden: boolean;
-  dismissedAttention: string | null;
-  acknowledgedSession: string | null;
-};
-
-/** Passive discovery stays dismissed; a new handoff can still request attention. */
+/** Browser access stays compact until the session needs human input. */
 export function BrowserHandoffEntry({
   chatId,
   messages,
@@ -26,20 +19,16 @@ export function BrowserHandoffEntry({
   chatId: string;
   messages: Message[];
 }) {
-  const [preference, setPreference] = useState<ReminderPreference | null>(null);
+  const [preference, setPreference] = useState<{
+    chatId: string;
+    dismissedAttention: string | null;
+  } | null>(null);
   const storageKey = `browser-reminder:v1:${chatId}`;
   useEffect(() => {
     const readPreference = () => {
-      let availableHidden = false;
       let dismissedAttention: string | null = null;
-      let acknowledgedSession: string | null = null;
       try {
         const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
-        availableHidden = saved?.availableHidden === true;
-        acknowledgedSession =
-          typeof saved?.acknowledgedSession === "string"
-            ? saved.acknowledgedSession
-            : null;
         dismissedAttention =
           typeof saved?.dismissedAttention === "string"
             ? saved.dismissedAttention
@@ -47,12 +36,7 @@ export function BrowserHandoffEntry({
       } catch {
         // Storage may be unavailable. Dismissal still works for this mount.
       }
-      setPreference({
-        chatId,
-        availableHidden,
-        dismissedAttention,
-        acknowledgedSession,
-      });
+      setPreference({ chatId, dismissedAttention });
     };
     readPreference();
     const onStorage = (event: StorageEvent) => {
@@ -83,81 +67,81 @@ export function BrowserHandoffEntry({
   if (sidebarOpen || !session || !browserTool || preference?.chatId !== chatId)
     return null;
 
-  // Only a new wait request or recovery problem should interrupt an acknowledged
-  // session. Claiming, human control, and resuming belong to the same takeover.
   const attentionKey =
     session.state === "waiting" || session.state === "recovery"
       ? `${session.sessionId}:${session.state}:${session.updatedAt}`
       : null;
-  if (
-    attentionKey
-      ? preference.dismissedAttention === attentionKey
-      : session.state === "agent"
-        ? preference.availableHidden
-        : preference.acknowledgedSession === session.sessionId
-  )
-    return null;
+  const needsAttention =
+    attentionKey !== null && preference.dismissedAttention !== attentionKey;
 
-  const dismiss = () => {
-    const next = {
-      chatId,
-      availableHidden: true,
-      dismissedAttention: attentionKey,
-      acknowledgedSession: session.sessionId,
-    };
-    setPreference(next);
+  const dismissAttention = () => {
+    setPreference({ chatId, dismissedAttention: attentionKey });
     try {
-      localStorage.setItem(storageKey, JSON.stringify(next));
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({ dismissedAttention: attentionKey }),
+      );
     } catch {
-      // Never prevent opening the browser when storage is blocked or full.
+      // Keep the compact Browser action available even when storage is blocked.
     }
   };
 
-  const status =
-    session.state === "waiting"
-      ? "Waiting for you"
-      : session.state === "claiming"
-        ? "Pausing Agent…"
-        : session.state === "resuming"
-          ? "Returning control to Agent…"
-          : session.state === "human" || session.state === "recovery"
-            ? "Agent paused for browser takeover"
-            : "Agent browser available";
+  if (!needsAttention) {
+    return (
+      <div className="mx-auto mb-1.5 flex w-full max-w-[800px] justify-end px-4">
+        <button
+          type="button"
+          aria-label="Open Agent browser"
+          onClick={() => openSidebar(browserTool)}
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"
+        >
+          <Monitor size={14} aria-hidden />
+          Browser
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto mb-2 w-full max-w-[800px] px-4">
-      <div className="flex items-center gap-3 rounded-2xl border border-border bg-background px-3 py-2.5 shadow-sm">
-        <Monitor
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background p-3 shadow-sm sm:flex-nowrap sm:gap-3">
+        <MousePointerClick
           size={18}
           className="shrink-0 text-muted-foreground"
           aria-hidden
         />
         <div className="min-w-0 flex-1 text-sm">
           <p role="status" className="font-medium">
-            {status}
+            {session.state === "recovery"
+              ? "Browser takeover needs attention"
+              : "Agent needs your input"}
           </p>
-          <p className="text-xs text-muted-foreground">
-            Open the browser to view it or take control.
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Take control to complete this step, then continue the Agent.
           </p>
         </div>
         <button
           type="button"
-          onClick={() => {
-            dismiss();
-            openSidebar(browserTool);
-          }}
-          className="min-h-11 shrink-0 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={dismissAttention}
+          aria-label="Dismiss browser takeover prompt"
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:order-last sm:min-h-9 sm:min-w-9"
         >
-          Open browser
+          <X size={16} aria-hidden />
         </button>
         <button
           type="button"
-          onClick={dismiss}
-          aria-label="Hide browser reminder"
-          title="Hide browser reminders for this chat. New handoff requests will still appear."
-          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => {
+            openSidebar({
+              ...browserTool,
+              browserTakeoverRequest: {
+                requestId: crypto.randomUUID(),
+                sessionId: session.sessionId,
+              },
+            });
+          }}
+          className="min-h-11 w-full shrink-0 rounded-full bg-foreground px-4 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-9 sm:w-auto"
         >
-          <X size={16} aria-hidden />
+          Take control
         </button>
       </div>
     </div>

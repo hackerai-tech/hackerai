@@ -87,6 +87,14 @@ type Route<S extends ChannelSubscription> = {
   queue: CentrifugoPublishQueue;
   timer: ReturnType<typeof setTimeout>;
   retainCommandOutput?: boolean;
+  retainFileResponse?: boolean;
+  fileResponse?: {
+    message: Message;
+    bytes: number;
+    attempts: number;
+    timer?: ReturnType<typeof setTimeout>;
+  };
+
   failed?: boolean;
 };
 
@@ -103,6 +111,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
   private closed = new Set<string>();
   private legacy = new Map<string, LegacyRoute>();
   private stopped = false;
+  private retainedFileBytes = 0;
 
   constructor(
     private client: {
@@ -198,11 +207,13 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           await subscription.publish(fragment);
         } catch (error) {
           const type = (fragment as Message).type;
-          // These responses are idempotent by commandId. Never replay output
+          // Readiness and terminal controls are idempotent by operation ID. Never replay output
           // chunks, fragments, or execution requests after uncertain delivery.
           if (
             !isCentrifugoPublishTimeout(error) ||
-            (type !== "exit" && type !== "command_cancel_result")
+            (type !== "exit" &&
+              type !== "command_cancel_result" &&
+              type !== "operation_ready")
           )
             throw error;
           if (this.stopped || this.routes.get(key) !== route) return;
@@ -210,6 +221,8 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         }
       }),
       timer: setTimeout(() => this.close(key), this.deadline(message, op)),
+      retainFileResponse:
+        op.kind === "file" && message.fileResponseAck === true,
     };
     this.routes.set(key, route);
     let started = false;
@@ -219,6 +232,17 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       // large response fragments echoed to the publishing subscriber.
       const control =
         data && typeof data === "object" ? (data as Message) : null;
+      if (
+        control?.type === "file_response_ack" &&
+        control.targetConnectionId === this.connectionId &&
+        control.requestId === op.id &&
+        op.kind === "file" &&
+        this.routes.get(key) === route &&
+        route.fileResponse
+      ) {
+        this.close(key);
+        return;
+      }
       if (
         !control ||
         control.targetConnectionId !== this.connectionId ||
@@ -312,6 +336,29 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     const route = this.routes.get(key);
     const legacy = this.legacy.get(key);
     if (route?.failed || legacy?.failed) return;
+    if (
+      route?.retainFileResponse &&
+      op.kind === "file" &&
+      END_TYPES.has(String(message.type))
+    ) {
+      // Freeze the first completed outcome. Publication failure must never turn
+      // a successful filesystem mutation into a different file_error response.
+      if (route.fileResponse) return;
+      const serialized = JSON.stringify(message);
+      const bytes = new TextEncoder().encode(serialized).byteLength;
+      if (bytes + this.retainedFileBytes > 4 * 1024 * 1024) {
+        this.failOutput(message, publishLegacy);
+        throw new RelayOutputOverflowError();
+      }
+      route.fileResponse = {
+        message: JSON.parse(serialized),
+        bytes,
+        attempts: 0,
+      };
+      this.retainedFileBytes += bytes;
+      await this.sendFileResponse(key, route);
+      return;
+    }
     try {
       if (route) {
         await route.queue.publish(message);
@@ -334,6 +381,67 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         this.failOutput(message, publishLegacy);
       }
       throw error;
+    }
+  }
+
+  private async sendFileResponse(key: string, route: Route<S>): Promise<void> {
+    if (this.stopped || this.routes.get(key) !== route || !route.fileResponse)
+      return;
+    const response = route.fileResponse;
+    try {
+      if (response.attempts++ > 0) {
+        const presence = await route.subscription.presence();
+        if (
+          !Object.values(presence.clients).some((client) => {
+            const info = client.connInfo;
+            return (
+              client.user === this.userId &&
+              !(
+                info &&
+                typeof info === "object" &&
+                "connectionId" in info &&
+                info.connectionId === this.connectionId
+              )
+            );
+          })
+        )
+          return;
+      }
+      if (
+        this.stopped ||
+        this.routes.get(key) !== route ||
+        route.fileResponse !== response
+      )
+        return;
+      await route.queue.publish(response.message);
+    } catch (error) {
+      if (error instanceof RelayOutputOverflowError) {
+        this.failOutput(response.message);
+        throw error;
+      }
+      // Retain the response through temporary disconnects or lost broker ACKs.
+      // The receiver deduplicates by requestId; the filesystem is never replayed.
+    } finally {
+      if (
+        !this.stopped &&
+        !route.failed &&
+        this.routes.get(key) === route &&
+        route.fileResponse
+      ) {
+        // Even a successful broker publish can miss a disconnected receiver. Retry
+        // until its explicit ACK or the original operation deadline releases state.
+        route.fileResponse.timer = setTimeout(
+          () => {
+            // Permanent failures are reported by failOutput; timer callers have
+            // no original publisher awaiting their rejection.
+            void this.sendFileResponse(key, route).catch(() => {});
+          },
+          Math.min(
+            5000,
+            1000 * 2 ** Math.min(route.fileResponse.attempts - 1, 3),
+          ),
+        );
+      }
     }
   }
 
@@ -407,6 +515,11 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     const route = this.routes.get(key);
     if (!route) return;
     route.queue.close();
+    if (route.fileResponse) {
+      clearTimeout(route.fileResponse.timer);
+      this.retainedFileBytes -= route.fileResponse.bytes;
+      route.fileResponse = undefined;
+    }
     this.routes.delete(key);
     this.rememberClosed(key);
     clearTimeout(route.timer);

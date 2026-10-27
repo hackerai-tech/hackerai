@@ -1,4 +1,5 @@
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { persistenceCommandError } from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -486,6 +487,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
+      let requestPublicationStarted = false;
+      let uncertainReadiness = false;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
       let trafficMetricRecorded = false;
@@ -545,7 +548,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       timeoutId = setTimeout(() => {
         fail(
           new LocalFileRequestError(
-            "timeout",
+            uncertainReadiness ? "readiness_timeout" : "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -571,20 +574,48 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new LocalFileRequestError("native_error", message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Receipt is final even if the broker never acknowledges our ACK.
+        // Keep the subscription briefly for delivery, but bound caller cleanup.
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (message.type === "file_error")
+            reject(new LocalFileRequestError("native_error", message.message));
+          else resolve(message as T);
+        };
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(finish, 1000);
+        void Promise.resolve()
+          .then(() =>
+            isolated && subscription
+              ? subscription.publish({
+                  type: "file_response_ack",
+                  requestId,
+                  targetConnectionId: this.connectionInfo.connectionId,
+                })
+              : undefined,
+          )
+          .catch(() => {})
+          .finally(finish);
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
           new LocalFileRequestError(
             "subscription_error",
@@ -634,6 +665,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           if (settled || !subscription) return;
           const request = {
             ...input,
+            ...(isolated ? { fileResponseAck: true } : {}),
             path: this.resolveWorkingPath(input.path),
             requestId,
             ...(this.workingDirectory &&
@@ -652,11 +684,27 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 request as unknown as Record<string, unknown>,
                 () => !settled,
                 subscription!,
+                () => {
+                  requestPublicationStarted = true;
+                },
               );
             } else {
               await subscription.publish(request);
             }
           } catch (error) {
+            if (
+              isolated &&
+              requestPublicationStarted &&
+              !settled &&
+              (error instanceof RelayOperationReadinessTimeout ||
+                isCentrifugoPublishTimeout(error))
+            ) {
+              // Publication may have reached the client. Retain the original
+              // reply channel and deadline; never replay a write or append.
+              uncertainReadiness =
+                error instanceof RelayOperationReadinessTimeout;
+              return;
+            }
             fail(
               new LocalFileRequestError(
                 error instanceof RelayOperationReadinessTimeout
@@ -1461,7 +1509,6 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 if (
                   !settled &&
                   isolated &&
-                  this.connectionInfo.isDesktop &&
                   commandPublicationStarted &&
                   (err instanceof RelayOperationReadinessTimeout ||
                     isCentrifugoPublishTimeout(err))
@@ -1688,6 +1735,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       signal,
       displayName: "",
     });
+    if (probe.exitCode !== 0) {
+      throw persistenceCommandError("Failed to detect local shell", probe);
+    }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
@@ -1792,7 +1842,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
@@ -2309,7 +2359,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escapedPath = escapePath(path);
-      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      // Legacy Windows relays may launch Bash through cmd.exe, whose command
+      // line limit applies even though the inner shell accepts POSIX syntax.
+      const commandBudget = this.isWindows()
+        ? CentrifugoSandbox.MAX_CMD_CHUNK_SIZE
+        : CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
       const overhead = Buffer.byteLength(
         `printf '%s' "" | base64 -d >> ${escapedPath}`,
         "utf8",
@@ -2369,22 +2423,25 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
           // Decode and clean up temp file
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
         }
       } else {
         const literalCommand = isBinary
@@ -2399,7 +2456,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             signal,
           });
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
           return;
         }
@@ -2421,7 +2478,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
         }
       }

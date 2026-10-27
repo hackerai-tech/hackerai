@@ -21,6 +21,7 @@ import {
   type QueueBehavior,
   type SandboxPreference,
   isChatMode,
+  isSidebarTerminal,
   normalizeSelectedModelForSubscription,
 } from "@/types/chat";
 import type { Todo } from "@/types";
@@ -188,6 +189,7 @@ interface GlobalStateType {
   clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
+  consumeBrowserTakeoverRequest: (requestId: string) => void;
   closeSidebar: () => void;
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
@@ -1280,6 +1282,18 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
+  const consumeBrowserTakeoverRequest = useCallback((requestId: string) => {
+    setSidebarContent((current) => {
+      if (
+        !current ||
+        !isSidebarTerminal(current) ||
+        current.browserTakeoverRequest?.requestId !== requestId
+      )
+        return current;
+      return { ...current, browserTakeoverRequest: undefined };
+    });
+  }, []);
+
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
     setSidebarContent(null);
@@ -1382,6 +1396,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     clearUploadedFiles,
     openSidebar,
     updateSidebarContent,
+    consumeBrowserTakeoverRequest,
     closeSidebar,
     toggleChatSidebar,
     initializeChat,

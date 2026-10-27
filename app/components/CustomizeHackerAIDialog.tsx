@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Plus } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
 
 interface CustomizeHackerAIDialogProps {
@@ -23,21 +22,12 @@ interface CustomizeHackerAIDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const predefinedTraits = [
-  "Methodical",
-  "Detail-oriented",
-  "Thorough",
-  "Risk-aware",
-  "Tool-savvy",
-];
-
 export const CustomizeHackerAIDialog = ({
   open,
   onOpenChange,
 }: CustomizeHackerAIDialogProps) => {
   const [nickname, setNickname] = useState("");
   const [occupation, setOccupation] = useState("");
-  const [traitsText, setTraitsText] = useState("");
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -45,7 +35,6 @@ export const CustomizeHackerAIDialog = ({
 
   const isNicknameOverLimit = nickname.length > MAX_CHAR_LIMIT;
   const isOccupationOverLimit = occupation.length > MAX_CHAR_LIMIT;
-  const isTraitsOverLimit = traitsText.length > MAX_CHAR_LIMIT;
   const isAdditionalInfoOverLimit = additionalInfo.length > MAX_CHAR_LIMIT;
 
   const saveCustomization = useMutation(
@@ -61,25 +50,15 @@ export const CustomizeHackerAIDialog = ({
     if (userCustomization) {
       setNickname(userCustomization.nickname || "");
       setOccupation(userCustomization.occupation || "");
-      setTraitsText(userCustomization.traits || "");
       setAdditionalInfo(userCustomization.additional_info || "");
     }
   }, [userCustomization]);
-
-  const handleAddTrait = (trait: string) => {
-    if (trait) {
-      const currentText = traitsText.trim();
-      const newText = currentText ? `${currentText}, ${trait}` : trait;
-      setTraitsText(newText);
-    }
-  };
 
   const handleSave = async () => {
     // Check for character limit violations
     if (
       isNicknameOverLimit ||
       isOccupationOverLimit ||
-      isTraitsOverLimit ||
       isAdditionalInfoOverLimit
     ) {
       return; // Don't save if any field exceeds the limit
@@ -91,7 +70,6 @@ export const CustomizeHackerAIDialog = ({
       await saveCustomization({
         nickname: nickname || undefined,
         occupation: occupation || undefined,
-        traits: traitsText.trim() || undefined,
         additional_info: additionalInfo || undefined,
       });
       onOpenChange(false);
@@ -116,13 +94,11 @@ export const CustomizeHackerAIDialog = ({
     if (userCustomization) {
       setNickname(userCustomization.nickname || "");
       setOccupation(userCustomization.occupation || "");
-      setTraitsText(userCustomization.traits || "");
       setAdditionalInfo(userCustomization.additional_info || "");
     } else {
       // Reset to empty values if no existing customization
       setNickname("");
       setOccupation("");
-      setTraitsText("");
       setAdditionalInfo("");
     }
     onOpenChange(false);
@@ -176,40 +152,6 @@ export const CustomizeHackerAIDialog = ({
               )}
             </div>
 
-            {/* Traits */}
-            <div className="flex flex-col gap-2 px-1">
-              <Label>What traits should HackerAI have?</Label>
-
-              <TextareaAutosize
-                placeholder="Describe or select traits"
-                value={traitsText}
-                onChange={(e) => setTraitsText(e.target.value)}
-                className={`flex w-full rounded-md border ${isTraitsOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
-                minRows={2}
-                maxRows={4}
-              />
-              {isTraitsOverLimit && (
-                <div className="text-xs text-red-500 mt-1">
-                  {traitsText.length}/{MAX_CHAR_LIMIT} characters
-                </div>
-              )}
-
-              {/* Predefined traits */}
-              <div className="flex flex-wrap gap-2 mt-2">
-                {predefinedTraits.map((trait) => (
-                  <button
-                    key={trait}
-                    type="button"
-                    onClick={() => handleAddTrait(trait)}
-                    className="inline-flex items-center gap-1 px-3 py-1 text-sm border rounded-full hover:bg-muted transition-colors"
-                  >
-                    <Plus className="h-3 w-3" />
-                    {trait}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             {/* Additional Info */}
             <div className="flex flex-col gap-3 px-1">
               <Label htmlFor="additional-info">
@@ -243,7 +185,6 @@ export const CustomizeHackerAIDialog = ({
               isSaving ||
               isNicknameOverLimit ||
               isOccupationOverLimit ||
-              isTraitsOverLimit ||
               isAdditionalInfoOverLimit
             }
           >

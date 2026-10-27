@@ -158,6 +158,56 @@ describe("ComputerSidebar reconnect behavior", () => {
     jest.useRealTimers();
   });
 
+  it("carries an explicit waiting-session takeover through the real sidebar viewer", async () => {
+    const originalFetch = global.fetch;
+    const actions: string[] = [];
+    const frame = {
+      image: "data:image/png;base64,test",
+      width: 800,
+      height: 600,
+      capturedAt: Date.now(),
+      browserSessionName: "default",
+    };
+    mockUseQuery.mockReturnValue({ sessionId: "session-a", state: "waiting" });
+    global.fetch = jest.fn(async (_url, options) => {
+      const action = options?.body
+        ? JSON.parse(String(options.body)).action
+        : undefined;
+      if (action) actions.push(action);
+      return {
+        ok: true,
+        json: async () =>
+          action === "take" ? { grant: "grant-a", frame } : { frame },
+      } as Response;
+    });
+    try {
+      const view = render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: "agent-browser snapshot -i",
+            browserTakeoverRequest: {
+              requestId: "click-1",
+              sessionId: "session-a",
+            },
+          }}
+        />,
+      );
+      await act(async () => {});
+      expect(
+        screen.getByRole("button", { name: "Exit takeover" }),
+      ).toBeEnabled();
+      expect(actions).toEqual(["take"]);
+      view.unmount();
+      expect(actions).toEqual(["take", "release"]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("shows command expansion only alongside a browser section", () => {
     const props = {
       sidebarOpen: true,

@@ -207,8 +207,24 @@ backfilled. Signup events mean eligible attributed signups, not every account
 that opened a link. The ordered funnel uses the same influencer at every step
 and a 30-day visit-to-payment window; recent cohorts are still incomplete.
 
+Referral arrivals are measured directly by the browser in PostHog after consent.
+The redirect sets a five-minute, browser-readable analytics handoff containing
+only the partner code, visitor ID, visit UUID, timestamp, and environment. The
+browser consumes it once; reloads do not create another visit, while a fresh
+short-link arrival gets a new UUID. This unsigned handoff never authorizes signup
+attribution or commissions; those still use the separate signed HttpOnly cookies.
+The event uses the same referral visitor identity as backend conversion events,
+without changing the account's normal PostHog identity or creating a person profile.
+
+The anonymous redirect performs no visit database writes, queue flushes, or Redis
+operations. There is no per-source or global visit cap. Browser capture is best
+effort: blockers, disabled JavaScript, failed delivery, and overlapping arrivals
+that replace the handoff can lose visits. Client events can be forged and must
+never determine commissions. The operator report's `legacyLinkOpens` field is the
+historical Convex counter; use PostHog for current visit counts.
+
 Consent denial prevents visitor cookies and link events. Withdrawal through
-privacy settings clears influencer cookies, records an opt-out for signed
+privacy settings clears influencer cookies, including the pending browser handoff,, records an opt-out for signed
 visitor IDs and the signed-in account’s persisted attribution (including expired
 cookies), suppresses their pending events, and stops future financial
 analytics for those IDs. It does not erase delivered historical events or the
@@ -232,7 +248,7 @@ Use PostHog's Activity view for automatically refreshing incoming events.
 Dashboards require refresh and are subject to ingestion and query caching;
 this is near-real-time measurement, not an instantaneous or authoritative
 payout balance. Set `INFLUENCER_ANALYTICS_DISABLED=true` in the relevant web
-runtime to pause delivery without discarding the queue. This uses the web
+runtime to pause backend delivery without discarding the queue and stop issuing browser visit handoffs. This uses the web
 runtime's existing PostHog write key/host and service key; no Trigger worker
 configuration is involved. The cron uses the existing `CRON_SECRET`.
 

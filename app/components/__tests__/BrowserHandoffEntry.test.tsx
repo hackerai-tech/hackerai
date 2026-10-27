@@ -59,101 +59,124 @@ beforeEach(() => {
   mockOpenSidebar.mockClear();
 });
 
-it("opens the latest browser tool without claiming the running Agent is paused", () => {
+it("keeps compact access available across opens, chats, reloads and legacy dismissals", () => {
+  localStorage.setItem("browser-reminder:discovered:v1", "true");
+  localStorage.setItem(
+    "browser-reminder:v1:chat",
+    JSON.stringify({ availableHidden: true, browserDiscovered: true }),
+  );
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open Agent browser" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({ toolCallId: "current-browser" }),
+  );
+  expect(mockOpenSidebar.mock.calls[0][0]).not.toHaveProperty(
+    "browserTakeoverRequest",
+  );
+  mockSidebarOpen = true;
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.queryByRole("button")).toBeNull();
+  mockSidebarOpen = false;
+  view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
+  expect(
+    screen.getByRole("button", { name: "Open Agent browser" }),
+  ).toBeEnabled();
+  view.unmount();
+  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(
+    screen.getByRole("button", { name: "Open Agent browser" }),
+  ).toBeEnabled();
+});
+
+it("requests takeover of the exact waiting session only after the user clicks", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   expect(screen.getByRole("status")).toHaveTextContent(
-    "Agent browser available",
+    "Agent needs your input",
   );
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  expect(mockOpenSidebar).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
   expect(mockOpenSidebar).toHaveBeenCalledWith(
     expect.objectContaining({
       toolCallId: "current-browser",
-      command: "agent-browser snapshot -i",
+      browserTakeoverRequest: {
+        sessionId: "session",
+        requestId: expect.any(String),
+      },
     }),
   );
 });
 
-it("shows recovery as paused and removes the entry when the session ends", () => {
-  mockSession = { state: "recovery" };
-  const view = render(
-    <BrowserHandoffEntry chatId="chat" messages={messages} />,
-  );
-  expect(screen.getByRole("status")).toHaveTextContent("Agent paused");
-  mockSession = null;
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("button")).not.toBeInTheDocument();
-});
-
-it("does not duplicate the entry while the Computer panel is open", () => {
-  mockSidebarOpen = true;
-  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("button")).not.toBeInTheDocument();
-});
-
-it("distinguishes a requested handoff from an Agent still working", () => {
-  mockSession = { state: "waiting" };
-  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent("Waiting for you");
-  expect(screen.getByRole("button", { name: "Open browser" })).toBeEnabled();
-});
-
-it("keeps the reminder hidden after opening, closing the panel, and reloading", () => {
-  const view = render(
-    <BrowserHandoffEntry chatId="chat" messages={messages} />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  mockSidebarOpen = true;
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  mockSidebarOpen = false;
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  view.unmount();
-  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-});
-
-it("dismisses without opening and does not repeat for later browser activity", () => {
+it("dismisses attention into compact access, preserves dismissal on reload, and surfaces a new request", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
   );
   fireEvent.click(
-    screen.getByRole("button", { name: "Hide browser reminder" }),
+    screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
   );
   expect(mockOpenSidebar).not.toHaveBeenCalled();
-  mockSession = { state: "agent", sessionId: "replacement", updatedAt: 50 };
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Agent browser available",
-  );
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-});
-
-it("surfaces new handoff requests but keeps an acknowledged request hidden on reload", () => {
-  const view = render(
-    <BrowserHandoffEntry chatId="chat" messages={messages} />,
-  );
-  fireEvent.click(
-    screen.getByRole("button", { name: "Hide browser reminder" }),
-  );
-  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent("Waiting for you");
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Open Agent browser" }),
+  ).toBeEnabled();
   view.unmount();
   const reloaded = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
   );
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
   mockSession = { ...mockSession, updatedAt: 3 };
   reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent("Waiting for you");
+  expect(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
+  );
+  mockSession = { state: "waiting", sessionId: "new-session", updatedAt: 3 };
+  reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Agent needs your input",
+  );
 });
 
-it("still opens and hides the reminder when browser storage is blocked", () => {
+it("surfaces recovery after a dismissed wait and keeps takeover transitions compact", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
+  );
+  for (const state of ["claiming", "human", "resuming", "agent"]) {
+    mockSession = { state, sessionId: "session", updatedAt: 3 };
+    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Open Agent browser" }),
+    ).toBeEnabled();
+  }
+  mockSession = { state: "recovery", sessionId: "session", updatedAt: 4 };
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Browser takeover needs attention",
+  );
+});
+
+it("shows neither access nor prompts without an active browser session or browser tool", () => {
+  mockSession = null;
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  expect(screen.queryByRole("button")).toBeNull();
+  mockSession = { state: "waiting", sessionId: "session" };
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={[]} />);
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("allows dismissal and compact access when browser storage is blocked", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const get = jest
     .spyOn(Storage.prototype, "getItem")
     .mockImplementation(() => {
@@ -166,54 +189,34 @@ it("still opens and hides the reminder when browser storage is blocked", () => {
     });
   try {
     render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open Agent browser" }));
     expect(mockOpenSidebar).toHaveBeenCalled();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   } finally {
     get.mockRestore();
     set.mockRestore();
   }
 });
 
-it("recovers from malformed preferences and syncs dismissal from another tab", () => {
+it("recovers from malformed preferences and syncs attention dismissal from another tab", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   localStorage.setItem("browser-reminder:v1:chat", "{invalid");
   render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent(
-    "Agent browser available",
-  );
+  expect(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
   localStorage.setItem(
     "browser-reminder:v1:chat",
-    JSON.stringify({ availableHidden: true }),
+    JSON.stringify({ dismissedAttention: "session:waiting:2" }),
   );
   act(() =>
     window.dispatchEvent(
       new StorageEvent("storage", { key: "browser-reminder:v1:chat" }),
     ),
   );
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-});
-
-it("keeps acknowledged takeover transitions quiet while surfacing recovery", () => {
-  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
-  const view = render(
-    <BrowserHandoffEntry chatId="chat" messages={messages} />,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Open browser" }));
-  for (const state of ["claiming", "human", "resuming", "agent"]) {
-    mockSidebarOpen = true;
-    mockSession = { state, sessionId: "session", updatedAt: 3 };
-    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-    mockSidebarOpen = false;
-    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  }
-  view.unmount();
-  mockSession = { state: "human", sessionId: "session", updatedAt: 4 };
-  const reloaded = render(
-    <BrowserHandoffEntry chatId="chat" messages={messages} />,
-  );
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-  mockSession = { state: "recovery", sessionId: "session", updatedAt: 4 };
-  reloaded.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.getByRole("status")).toHaveTextContent("Agent paused");
+  expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Open Agent browser" }),
+  ).toBeEnabled();
 });

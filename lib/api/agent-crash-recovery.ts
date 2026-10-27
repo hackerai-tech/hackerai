@@ -9,9 +9,11 @@ import {
 import { saveMessage } from "@/lib/db/actions";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { CLIENT_SAVED_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
 
 // Failure-only replay budgets, shared by the entire run, not by each message.
-// Exceeding them leaves the run attached so recovery can be retried/investigated.
+// Exceeding them leaves the run attached for recovery/investigation. The byte
+// limit is deterministic for an immutable crashed stream, not a retryable poll.
 const MAX_REPLAY_BYTES = 8 * 1024 * 1024;
 const MAX_REPLAY_RECORDS = 100_000;
 const MAX_REPLAY_CHUNKS = 4096;
@@ -88,7 +90,7 @@ export async function recoverCrashedAgentRun({
       if (raw === undefined) continue;
       bytes += Buffer.byteLength(JSON.stringify(raw), "utf8");
       if (bytes > MAX_REPLAY_BYTES)
-        throw new Error("Agent crash recovery replay budget exceeded");
+        throw new AgentCrashRecoveryReplayLimitError();
       const validated = await uiMessageChunkSchema().validate!(raw);
       if (!validated.success)
         throw new Error("Agent crash recovery invalid stream chunk");

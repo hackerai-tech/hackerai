@@ -32,7 +32,10 @@ import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { phLogger } from "@/lib/posthog/server";
 import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
-import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalFileRequestError,
+} from "../utils/local-sandbox-errors";
 import { saveSandboxGeneratedFile } from "@/convex/fileActions";
 import { getConvexClient } from "@/lib/db/convex-client";
 import * as storage from "@/convex/s3Utils";
@@ -215,7 +218,10 @@ describe("generated artifact delivery over HTTP", () => {
       files: {
         ...connected.files,
         stat: async () => {
-          throw new LocalCommandRelayUnsubscribedError("stale");
+          throw new LocalFileRequestError(
+            "relay_unsubscribed",
+            "Native relay absent",
+          );
         },
       },
       commands: {

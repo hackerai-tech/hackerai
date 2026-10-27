@@ -270,7 +270,9 @@ async function getWindowsSandboxFileSize(
   // The relay may set env vars earlier in the same cmd.exe /C command.
   // Enable delayed expansion in a child: inline SETLOCAL has no effect outside
   // a batch file. Keep the path in env so shell metacharacters remain data.
-  const winCommand = `cmd /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
+  // Resolve the child interpreter from Windows itself. A bare `cmd` can run a
+  // cmd.bat supplied by the project in the relay's working directory.
+  const winCommand = `"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c "for %I in ("!${WINDOWS_FILE_SIZE_PATH_ENV_VAR}!") do @echo %~zI"`;
   let winResult: SandboxCommandResult;
   try {
     winResult = await sandbox.commands.run(winCommand, {

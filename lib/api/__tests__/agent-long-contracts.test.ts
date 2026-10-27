@@ -16,6 +16,43 @@
 
 import fs from "fs";
 import path from "path";
+import ts from "typescript";
+
+/** Find awaited settlements so billing-before-continuation guards survive diagnostics. */
+function awaitedUsageDeductions(text: string) {
+  const source = ts.createSourceFile(
+    "caller.ts",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const calls: { position: number; arguments: string[] }[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === "deductAccumulatedUsage"
+    ) {
+      let parent = node.parent;
+      if (ts.isArrowFunction(parent) && parent.body === node) {
+        const observer = parent.parent;
+        if (
+          ts.isCallExpression(observer) &&
+          observer.expression.getText(source) === "observeFinish" &&
+          observer.arguments[1] === parent
+        )
+          parent = observer.parent;
+      }
+      if (ts.isAwaitExpression(parent))
+        calls.push({
+          position: parent.getStart(source),
+          arguments: node.arguments.map((arg) => arg.getText(source)),
+        });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
 
 const transportSrc = fs.readFileSync(
   path.resolve(__dirname, "../../chat/agent-long-transport.ts"),
@@ -873,6 +910,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
+      /FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS\s*=\s*AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*\+\s*5\s*\*\s*60/,
+    );
+    expect(taskSrc).toMatch(
       /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
@@ -1511,10 +1551,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "sendFileMetadataToStream(accumulatedFiles)",
         autoContinueIdx,
       );
-      const deductionIdx = source.lastIndexOf(
-        "await deductAccumulatedUsage",
-        autoContinueIdx,
-      );
+      const deductionIdx =
+        awaitedUsageDeductions(source)
+          .filter((call) => call.position < autoContinueIdx)
+          .at(-1)?.position ?? -1;
 
       expect(autoContinueIdx).toBeGreaterThan(-1);
       expect(persistenceIdx).toBeGreaterThan(-1);
@@ -1878,8 +1918,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
-    expect(chatHandlerSrc).toMatch(
-      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    const source = ts.createSourceFile(
+      "handler.ts",
+      chatHandlerSrc,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let usageMessageParameter: ts.ParameterDeclaration | undefined;
+    const findUsageHelper = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(source) === "deductAccumulatedUsage" &&
+        node.initializer &&
+        ts.isArrowFunction(node.initializer)
+      )
+        usageMessageParameter = node.initializer.parameters[0];
+      ts.forEachChild(node, findUsageHelper);
+    };
+    findUsageHelper(source);
+    expect(usageMessageParameter?.name.getText(source)).toBe(
+      "assistantMessageIdForUsage",
+    );
+    expect(usageMessageParameter?.initializer?.getText(source)).toBe(
+      "assistantMessageId",
     );
     expect(
       chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
@@ -1888,10 +1949,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const retryMessageIdIdx = chatHandlerSrc.indexOf(
       "const retryMessageId = generateId()",
     );
-    const retryUsageIdx = chatHandlerSrc.indexOf(
-      "await deductAccumulatedUsage(retryMessageId)",
-      retryMessageIdIdx,
-    );
+    const retryUsageIdx =
+      awaitedUsageDeductions(chatHandlerSrc).find(
+        (call) =>
+          call.position > retryMessageIdIdx &&
+          call.arguments[0] === "retryMessageId",
+      )?.position ?? -1;
 
     expect(retryMessageIdIdx).toBeGreaterThan(-1);
     expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);

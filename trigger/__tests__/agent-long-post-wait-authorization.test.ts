@@ -167,6 +167,10 @@ describe("agent-long post-wait authorization contract", () => {
 
   it("excludes suspension time and rechecks cost capacity under reacquired free concurrency", () => {
     const beforeSuspend = taskSource.indexOf("await beforeSuspend()");
+    const claimSlot = taskSource.indexOf(
+      "approvalPendingMarked = await claimApprovalSlot(",
+      beforeSuspend,
+    );
     const pause = taskSource.indexOf(
       "activeRuntimeBudget.pause()",
       beforeSuspend,
@@ -181,6 +185,7 @@ describe("agent-long post-wait authorization contract", () => {
     const cost = taskSource.indexOf("await checkFreeCostBudget(", reacquire);
 
     expect(beforeSuspend).toBeGreaterThan(-1);
+    expect(claimSlot).toBeGreaterThan(beforeSuspend);
     expect(pause).toBeGreaterThan(beforeSuspend);
     expect(wait).toBeGreaterThan(pause);
     expect(resume).toBeGreaterThan(wait);
