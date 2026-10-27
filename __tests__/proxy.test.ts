@@ -571,6 +571,60 @@ describe("proxy", () => {
     },
   );
 
+  it.each([true, false])(
+    "logs AuthKit's transient classification (%s) without changing its response",
+    async (isTransient) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const sessionCookie = isTransient
+        ? "wos-session=existing-session; Path=/; HttpOnly"
+        : "wos-session=; Max-Age=0; Path=/; HttpOnly";
+      const request = createRequest({
+        pathname: "/api/subscription-details",
+        hasSession: true,
+      });
+
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          options.onSessionRefreshError({
+            error: new Error("Refresh failed"),
+            isTransient,
+          });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers({ "set-cookie": sessionCookie }),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+
+        await proxy(request);
+
+        expect(JSON.parse(String(warnSpy.mock.calls[0][0]))).toMatchObject({
+          event: "auth.session_refresh_failed",
+          error: "Refresh failed",
+          is_transient: isTransient,
+        });
+        expect(mockNextResponseJson).toHaveBeenCalledWith(
+          {
+            code: "unauthorized:auth",
+            message: "You need to sign in before continuing.",
+            cause: "Session expired or invalid",
+          },
+          expect.objectContaining({ status: 401 }),
+        );
+        const responseInit = mockNextResponseJson.mock.calls[0][1] as {
+          headers: Headers;
+        };
+        expect(responseInit.headers.get("set-cookie")).toBe(sessionCookie);
+        expect(request.cookies.delete).not.toHaveBeenCalled();
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it("treats callback-only ended-session refresh errors as logged-out requests", async () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     const endedSessionError = Object.assign(

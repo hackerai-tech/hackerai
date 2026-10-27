@@ -277,6 +277,8 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  /** One explicit user click; discarded when the sidebar selection closes. */
+  browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
   output: string;
   isExecuting: boolean;

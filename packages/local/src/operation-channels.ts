@@ -207,11 +207,13 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           await subscription.publish(fragment);
         } catch (error) {
           const type = (fragment as Message).type;
-          // These responses are idempotent by commandId. Never replay output
+          // Readiness and terminal controls are idempotent by operation ID. Never replay output
           // chunks, fragments, or execution requests after uncertain delivery.
           if (
             !isCentrifugoPublishTimeout(error) ||
-            (type !== "exit" && type !== "command_cancel_result")
+            (type !== "exit" &&
+              type !== "command_cancel_result" &&
+              type !== "operation_ready")
           )
             throw error;
           if (this.stopped || this.routes.get(key) !== route) return;

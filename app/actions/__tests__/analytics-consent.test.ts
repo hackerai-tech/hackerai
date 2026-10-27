@@ -64,13 +64,14 @@ describe("saveAnalyticsConsent", () => {
     await expect(saveAnalyticsConsent("declined")).rejects.toThrow(
       "Unavailable",
     );
-    expect(mockCookieDelete).not.toHaveBeenCalled();
+    expect(mockCookieDelete.mock.calls).toEqual([["hackerai_partner_visit"]]);
   });
 
   it("removes existing optional analytics and attribution cookies on rejection", async () => {
     await saveAnalyticsConsent("declined");
 
     expect(mockCookieDelete.mock.calls.map(([name]) => name)).toEqual([
+      "hackerai_partner_visit",
       "hackerai_partner",
       "hackerai_partner_visitor",
       "hackerai_first_touch_attribution",

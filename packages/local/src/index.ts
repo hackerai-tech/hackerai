@@ -24,6 +24,7 @@ import {
   MAX_OUTPUT_SIZE,
   getDefaultShell,
   buildShellSpawn,
+  windowsSystemExecutable,
 } from "./utils";
 import {
   ProcessRunner,
@@ -892,10 +893,14 @@ export class LocalSandboxClient {
     }
 
     if (os.platform() === "win32") {
-      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      spawn(
+        windowsSystemExecutable("taskkill.exe"),
+        ["/PID", String(pid), "/T", "/F"],
+        {
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
       return;
     }
 

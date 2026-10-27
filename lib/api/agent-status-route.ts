@@ -8,6 +8,7 @@ import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
 import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 
 import { recoverCrashedAgentRun } from "./agent-crash-recovery";
+import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
 
 type AgentStatusRequestBody = {
   chatId?: unknown;
@@ -171,12 +172,36 @@ export const createAgentStatusPost =
       if (terminal) {
         if (run.status === "CRASHED") {
           stage = "recover_crashed_trigger_run";
-          const outcome = await recoverCrashedAgentRun({
-            chatId,
-            userId,
-            runId,
-            metadata: run.metadata,
-          });
+          let outcome: "recovered" | "stale";
+          try {
+            outcome = await recoverCrashedAgentRun({
+              chatId,
+              userId,
+              runId,
+              metadata: run.metadata,
+            });
+          } catch (error) {
+            if (!(error instanceof AgentCrashRecoveryReplayLimitError))
+              throw error;
+            console.warn(
+              JSON.stringify({
+                event: "agent_crash_recovery_blocked",
+                service: "hackerai-web",
+                action: "status",
+                reason: "replay_byte_limit",
+                chat_id: chatId.slice(0, 128),
+                user_id: userId.slice(0, 128),
+                trigger_run_id: runId.slice(0, 128),
+              }),
+            );
+            // Report the real terminal state so clients stop polling. Preserve
+            // the association and approval session; no replay was persisted.
+            return NextResponse.json({
+              status: "CRASHED",
+              terminal: true,
+              recovery: "blocked",
+            });
+          }
           if (outcome === "stale")
             return NextResponse.json({ status: "DETACHED", terminal: true });
         }

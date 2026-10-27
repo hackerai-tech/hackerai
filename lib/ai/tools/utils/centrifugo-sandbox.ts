@@ -1,3 +1,4 @@
+import { persistenceCommandError } from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -483,6 +484,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
+      let requestPublicationStarted = false;
+      let uncertainReadiness = false;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
       let trafficMetricRecorded = false;
@@ -542,7 +545,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       timeoutId = setTimeout(() => {
         fail(
           new LocalFileRequestError(
-            "timeout",
+            uncertainReadiness ? "readiness_timeout" : "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -678,11 +681,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 request as unknown as Record<string, unknown>,
                 () => !settled,
                 subscription!,
+                () => {
+                  requestPublicationStarted = true;
+                },
               );
             } else {
               await subscription.publish(request);
             }
           } catch (error) {
+            if (
+              isolated &&
+              requestPublicationStarted &&
+              !settled &&
+              (error instanceof RelayOperationReadinessTimeout ||
+                isCentrifugoPublishTimeout(error))
+            ) {
+              // Publication may have reached the client. Retain the original
+              // reply channel and deadline; never replay a write or append.
+              uncertainReadiness =
+                error instanceof RelayOperationReadinessTimeout;
+              return;
+            }
             fail(
               new LocalFileRequestError(
                 error instanceof RelayOperationReadinessTimeout
@@ -1487,7 +1506,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 if (
                   !settled &&
                   isolated &&
-                  this.connectionInfo.isDesktop &&
                   commandPublicationStarted &&
                   (err instanceof RelayOperationReadinessTimeout ||
                     isCentrifugoPublishTimeout(err))
@@ -1714,6 +1732,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
       displayName: "",
     });
+    if (probe.exitCode !== 0) {
+      throw persistenceCommandError("Failed to detect local shell", probe);
+    }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
@@ -1818,7 +1839,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
@@ -2335,7 +2356,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escapedPath = escapePath(path);
-      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      // Legacy Windows relays may launch Bash through cmd.exe, whose command
+      // line limit applies even though the inner shell accepts POSIX syntax.
+      const commandBudget = this.isWindows()
+        ? CentrifugoSandbox.MAX_CMD_CHUNK_SIZE
+        : CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
       const overhead = Buffer.byteLength(
         `printf '%s' "" | base64 -d >> ${escapedPath}`,
         "utf8",
@@ -2395,22 +2420,25 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
           // Decode and clean up temp file
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
         }
       } else {
         const literalCommand = isBinary
@@ -2425,7 +2453,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             signal,
           });
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
           return;
         }
@@ -2447,7 +2475,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
         }
       }

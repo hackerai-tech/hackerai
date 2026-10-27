@@ -360,7 +360,7 @@ export default async function proxy(request: NextRequest) {
     authkitResult = await authkit(request, {
       redirectUri: getRedirectUri(),
       eagerAuth: true,
-      onSessionRefreshError: ({ error }) => {
+      onSessionRefreshError: ({ error, isTransient }) => {
         if (isInvalidRefreshTokenError(error)) {
           refreshEndedSession = true;
           console.warn(
@@ -413,6 +413,7 @@ export default async function proxy(request: NextRequest) {
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             pathname,
             error: error instanceof Error ? error.message : String(error),
+            is_transient: isTransient,
           }),
         );
       },

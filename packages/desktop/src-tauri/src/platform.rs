@@ -39,7 +39,7 @@ pub fn get_shell_config() -> ShellConfig {
             if let Some(bash) = find_git_bash() {
                 (bash, "-c", false)
             } else {
-                ("cmd".to_string(), "/C", true)
+                (windows_system_executable("cmd.exe"), "/C", true)
             }
         });
         return ShellConfig {
@@ -80,7 +80,21 @@ pub fn get_shell_config() -> ShellConfig {
 /// Locate `bash.exe` from Git for Windows. Tries:
 ///   1. `HACKERAI_BASH_PATH` env override
 ///   2. Common install locations
-///   3. `where git` → `<gitDir>/../../bin/bash.exe`
+///   3. System `where.exe` searches PATH → `<gitDir>/../../bin/bash.exe`
+#[cfg(windows)]
+fn windows_system_executable(name: &str) -> String {
+    use std::path::PathBuf;
+
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    root.join("System32")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[cfg(windows)]
 fn find_git_bash() -> Option<String> {
     use std::os::windows::process::CommandExt;
@@ -103,8 +117,8 @@ fn find_git_bash() -> Option<String> {
         }
     }
 
-    if let Ok(out) = StdCommand::new("where")
-        .arg("git")
+    if let Ok(out) = StdCommand::new(windows_system_executable("where.exe"))
+        .arg("$PATH:git.exe")
         .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
@@ -112,7 +126,7 @@ fn find_git_bash() -> Option<String> {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let line = line.trim();
-                if line.to_lowercase().ends_with("git.exe") {
+                if PathBuf::from(line).is_absolute() && line.to_lowercase().ends_with("git.exe") {
                     // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
                     let p = PathBuf::from(line);
                     if let Some(git_dir) = p.parent().and_then(|d| d.parent()) {
@@ -269,7 +283,7 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        return tokio::process::Command::new("taskkill")
+        return tokio::process::Command::new(windows_system_executable("taskkill.exe"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()

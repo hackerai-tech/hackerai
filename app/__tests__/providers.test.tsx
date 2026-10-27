@@ -605,6 +605,7 @@ describe("X referral consent and identity continuity", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
+    document.cookie = "hackerai_partner_visit=; Path=/; Max-Age=0";
     mockUseAuth.mockReturnValue({ user: null });
     mockUseGlobalState.mockReturnValue({ subscription: "free" });
     mockGetPostHogClient.mockReturnValue(null);
@@ -614,6 +615,103 @@ describe("X referral consent and identity continuity", () => {
     jest.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0");
   });
   afterEach(() => jest.restoreAllMocks());
+
+  it.each([false, true])(
+    "captures partner arrivals with isolated funnel identity (signed in: %s)",
+    async (signedIn) => {
+      jest.spyOn(document, "referrer", "get").mockReturnValue("");
+      const visitorId = "00000000-0000-4000-8000-000000000001";
+      document.cookie = `hackerai_partner_visit=${encodeURIComponent(
+        JSON.stringify({
+          code: "medusa",
+          visitorId,
+          visitId: "00000000-0000-4000-8000-000000000002",
+          timestamp: Date.now(),
+          environment: "preview",
+        }),
+      )}; Path=/`;
+      if (signedIn)
+        mockUseAuth.mockReturnValue({ user: { id: "existing-user" } });
+      const posthog = client(signedIn ? "existing-user" : undefined);
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+      const view = render(
+        <PostHogProvider analyticsAllowed>content</PostHogProvider>,
+      );
+      await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+      expect(posthog.capture).toHaveBeenCalledWith(
+        "influencer_link_visited",
+        expect.objectContaining({
+          distinct_id: `influencer-visitor:${visitorId}`,
+          influencer_code: "medusa",
+        }),
+        expect.anything(),
+      );
+      expect(posthog.get_distinct_id()).toBe(
+        signedIn ? "existing-user" : "anonymous-x-visitor",
+      );
+      const config = (
+        posthog.init.mock.calls as unknown as [
+          string,
+          { before_send: (event: unknown) => unknown },
+        ][]
+      )[0][1];
+      expect(
+        config.before_send({
+          event: "influencer_link_visited",
+          properties: {
+            distinct_id: `influencer-visitor:${visitorId}`,
+            $process_person_profile: true,
+            $user_id: "existing-user",
+            $current_url: "private",
+          },
+          $set: { email: "private" },
+        }),
+      ).toEqual({
+        event: "influencer_link_visited",
+        properties: {
+          distinct_id: `influencer-visitor:${visitorId}`,
+          $process_person_profile: false,
+          $geoip_disable: true,
+        },
+      });
+      view.unmount();
+      render(<PostHogProvider analyticsAllowed>content</PostHogProvider>);
+      await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+    },
+  );
+
+  it("preserves a pending arrival while consent is resolving, then captures after allowance", async () => {
+    jest.spyOn(document, "referrer", "get").mockReturnValue("");
+    document.cookie = `hackerai_partner_visit=${encodeURIComponent(
+      JSON.stringify({
+        code: "medusa",
+        visitorId: "00000000-0000-4000-8000-000000000001",
+        visitId: "00000000-0000-4000-8000-000000000002",
+        timestamp: Date.now(),
+        environment: "preview",
+      }),
+    )}; Path=/`;
+    const posthog = client();
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed={false}>content</PostHogProvider>,
+    );
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+    expect(document.cookie).toContain("hackerai_partner_visit=");
+    view.rerender(<PostHogProvider analyticsAllowed>content</PostHogProvider>);
+    await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+  });
+
+  it("clears a pending partner visit without loading analytics when consent is denied", () => {
+    document.cookie = "hackerai_partner_visit=pending; Path=/";
+    render(
+      <PostHogProvider analyticsAllowed={false} consentDeclined>
+        content
+      </PostHogProvider>,
+    );
+    expect(document.cookie).not.toContain("hackerai_partner_visit=");
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+  });
 
   it("waits for consent, captures only a referral, and preserves its identity into signup", async () => {
     const posthog = client();

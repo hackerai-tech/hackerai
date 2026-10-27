@@ -1520,6 +1520,18 @@ export class DesktopSandboxBridge {
 
   /** Check file transport availability without creating files or hanging terminal startup. */
   private async probeFileBridge(): Promise<boolean> {
+    // A startup transport hiccup must not pin this connection to files=false.
+    // Retry only this read-only probe, within the original total startup budget.
+    const deadline = Date.now() + DESKTOP_FILE_PROBE_TIMEOUT_MS;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const remainingMs = deadline - Date.now();
+      if (this.isStoppingOrStopped || remainingMs <= 0) return false;
+      if (await this.probeFileBridgeOnce(remainingMs)) return true;
+    }
+    return false;
+  }
+
+  private async probeFileBridgeOnce(timeoutMs: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // A read-only directory stat checks the transport without creating files
@@ -1533,7 +1545,7 @@ export class DesktopSandboxBridge {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("Desktop file probe timed out")),
-            DESKTOP_FILE_PROBE_TIMEOUT_MS,
+            timeoutMs,
           );
         }),
       ]);

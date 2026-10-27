@@ -772,7 +772,9 @@ describe("uploadSandboxFileToConvex", () => {
             exitCode: 1,
           };
         }
-        if (command.startsWith("cmd /d /v:on /s /c")) {
+        if (
+          command.startsWith('"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c')
+        ) {
           return { stdout: "4321", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "unexpected command", exitCode: 1 };
@@ -787,7 +789,7 @@ describe("uploadSandboxFileToConvex", () => {
 
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
       1,
-      'cmd /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
+      '"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
       expect.objectContaining({
         displayName: "",
         envVars: expect.objectContaining({
@@ -812,7 +814,7 @@ describe("uploadSandboxFileToConvex", () => {
       return "cmd";
     });
     sandbox.commands.run.mockImplementation(async (command) =>
-      command.startsWith("cmd /d /v:on /s /c")
+      command.startsWith('"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c')
         ? { stdout: "4321", stderr: "", exitCode: 0 }
         : { stdout: "", stderr: "POSIX syntax is unavailable", exitCode: 1 },
     );
@@ -848,7 +850,7 @@ describe("uploadSandboxFileToConvex", () => {
       expect.any(Object),
     );
     expect(sandbox.commands.run).not.toHaveBeenCalledWith(
-      expect.stringContaining("cmd /d"),
+      expect.stringContaining('"%SystemRoot%\\System32\\cmd.exe" /d'),
       expect.any(Object),
     );
   });
