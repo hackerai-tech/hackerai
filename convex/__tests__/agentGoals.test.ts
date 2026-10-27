@@ -588,6 +588,26 @@ describe("editing and deleting an active goal", () => {
       }),
     ).rejects.toThrow("Goal changed");
   });
+  it.each(["pause", "clear"])(
+    "rejects a delayed %s against a replacement goal",
+    async (action) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(control, db.ctx, {
+        ...owner,
+        action: "clear",
+        generation: 1,
+      });
+      const next = await invoke(start, db.ctx, startArgs);
+      await expect(
+        invoke(control, db.ctx, { ...owner, action, generation: 1 }),
+      ).rejects.toThrow("Goal changed");
+      expect(await invoke(get, db.ctx, { chatId: "chat" })).toMatchObject({
+        generation: next.generation,
+        state: next.state,
+      });
+    },
+  );
   it("hides a deleted goal and fences stale dispatches without resetting its generation", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

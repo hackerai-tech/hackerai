@@ -16,6 +16,7 @@ const controlRequest = z.discriminatedUnion("action", [
   z.object({
     chatId: z.string().trim().min(1).max(128),
     action: z.enum(["pause", "stop", "clear"]),
+    generation: z.number().int().nonnegative().optional(),
   }),
   z.object({
     chatId: z.string().trim().min(1).max(128),
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
             userId,
             chatId: body.chatId,
             action,
+            generation: body.generation,
           });
     if (goal.activeRunId) {
       await closeAgentApprovalSession(

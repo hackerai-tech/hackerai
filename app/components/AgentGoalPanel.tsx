@@ -61,6 +61,7 @@ export function AgentGoalPanel({
   eligible,
   idle,
   latestSavedUserMessageAt,
+  stopRunBeforeControl,
   disabledReason,
   send,
 }: {
@@ -69,6 +70,7 @@ export function AgentGoalPanel({
   eligible: boolean;
   idle: boolean;
   latestSavedUserMessageAt?: number;
+  stopRunBeforeControl?: (runId: string) => Promise<boolean>;
   disabledReason?: string;
   send: (
     message: { text: string },
@@ -155,10 +157,16 @@ export function AgentGoalPanel({
   async function control(action: "pause" | "clear") {
     setControlling(true);
     try {
+      if (goal?.activeRunId && stopRunBeforeControl) {
+        if (!(await stopRunBeforeControl(goal.activeRunId)))
+          throw new Error(
+            "Could not stop and save the current run. Try again.",
+          );
+      }
       const r = await fetch("/api/agent-goal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chatId, action }),
+        body: JSON.stringify({ chatId, action, generation: goal?.generation }),
       });
       if (!r.ok)
         throw new Error((await r.json()).message ?? "Goal control failed");

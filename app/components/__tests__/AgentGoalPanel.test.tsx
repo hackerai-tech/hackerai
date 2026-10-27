@@ -45,6 +45,58 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
+  it.each(["Clear goal", "Pause goal"])(
+    "saves the running response before %s and aborts when stopping fails",
+    async (name) => {
+      setMockQueryResult({
+        ...goal,
+        state: "running",
+        activeRunId: "run",
+        generation: 4,
+      });
+      let settle!: (result: boolean) => void;
+      const stop = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            settle = resolve;
+          }),
+      );
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle={false}
+          send={jest.fn()}
+          settings={settings}
+          stopRunBeforeControl={stop}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name, exact: true }));
+      expect(stop).toHaveBeenCalledWith("run");
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({ method: "POST" }),
+      );
+      await act(async () => settle(false));
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({ method: "POST" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name, exact: true }));
+      await act(async () => settle(true));
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({
+          body: JSON.stringify({
+            chatId: "chat",
+            action: name === "Clear goal" ? "clear" : "pause",
+            generation: 4,
+          }),
+        }),
+      );
+    },
+  );
   it.each([false, true])(
     "hides an achieved goal only after a newer saved user message (mobile: %s)",
     async (isMobile) => {

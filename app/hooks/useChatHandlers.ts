@@ -370,6 +370,7 @@ export const useChatHandlers = ({
   const stopActiveStream = async (options?: {
     skipSave?: boolean;
     requireCancelSuccess?: boolean;
+    requireSaveSuccess?: boolean;
   }): Promise<ChatMessage[]> => {
     // Stop the stream immediately (client-side abort)
     stop();
@@ -431,6 +432,7 @@ export const useChatHandlers = ({
             generationTimeMs,
           }).catch((error) => {
             console.error("Failed to save message on stop:", error);
+            if (options?.requireSaveSuccess) throw error;
           })
         : Promise.resolve();
 
@@ -844,7 +846,7 @@ export const useChatHandlers = ({
     return true;
   };
 
-  const handleStop = async () => {
+  const handleStop = async (options?: { requireSavedResponse: boolean }) => {
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
@@ -865,7 +867,7 @@ export const useChatHandlers = ({
 
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
       cancelTriggerRun("stop"),
-      stopActiveStream(),
+      stopActiveStream({ requireSaveSuccess: options?.requireSavedResponse }),
     ]);
 
     if (triggerCancelResult.status === "rejected") {
@@ -887,7 +889,10 @@ export const useChatHandlers = ({
       return false;
     }
 
-    return triggerCancelResult.status === "fulfilled";
+    return (
+      triggerCancelResult.status === "fulfilled" &&
+      streamStopResult.status === "fulfilled"
+    );
   };
 
   // Response replacement is an explicit deletion, so reconcile immediately

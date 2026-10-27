@@ -2500,11 +2500,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     "waiting",
     "needs_approval",
   ].includes(persistedGoal?.state ?? "");
+  const stopGoalRunBeforeControl = async (runId: string) => {
+    // Never let a delayed goal control stop a replacement or unrelated run.
+    if (cancellationTriggerRunRef.current !== runId)
+      throw new Error("The goal run changed. Reload before changing the goal.");
+    return handleStop({ requireSavedResponse: true });
+  };
   const goalPanel = (
     <AgentGoalPanel
       key={chatId}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
+      stopRunBeforeControl={stopGoalRunBeforeControl}
       latestSavedUserMessageAt={paginatedMessageResults?.reduce(
         (latest, message) =>
           message.role === "user"
@@ -2790,6 +2797,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {sidebarOpen && (
                 <ComputerSidebar
+                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
                   onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}
                   messages={messages}

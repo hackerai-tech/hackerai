@@ -15,9 +15,11 @@ import { defaultGoalCriterion } from "@/lib/goals/contracts";
 export function AgentGoalEditor({
   chatId,
   onClose,
+  stopRunBeforeControl,
 }: {
   chatId: string;
   onClose: () => void;
+  stopRunBeforeControl?: (runId: string) => Promise<boolean>;
 }) {
   const goal = useQuery(api.agentGoals.get, { chatId });
   return (
@@ -42,7 +44,12 @@ export function AgentGoalEditor({
       ) : !goal || goal.state === "achieved" ? (
         <p className="p-4">This goal is no longer editable.</p>
       ) : (
-        <GoalForm key={goal._id} goal={goal} onClose={onClose} />
+        <GoalForm
+          key={goal._id}
+          goal={goal}
+          onClose={onClose}
+          stopRunBeforeControl={stopRunBeforeControl}
+        />
       )}
     </section>
   );
@@ -51,9 +58,11 @@ export function AgentGoalEditor({
 function GoalForm({
   goal,
   onClose,
+  stopRunBeforeControl,
 }: {
   goal: Doc<"agent_goals">;
   onClose: () => void;
+  stopRunBeforeControl?: (runId: string) => Promise<boolean>;
 }) {
   // Keep the original version with the draft. Reactive run updates must not
   // overwrite edits or silently save them against a different objective.
@@ -93,6 +102,12 @@ function GoalForm({
     setSaving(true);
     setError("");
     try {
+      if (goal.activeRunId && stopRunBeforeControl) {
+        if (!(await stopRunBeforeControl(goal.activeRunId)))
+          throw new Error(
+            "Could not stop and save the current run. Try again.",
+          );
+      }
       const response = await fetch("/api/agent-goal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

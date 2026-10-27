@@ -700,6 +700,33 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it("reports failure to goal controls when the partial response could not be saved", async () => {
+    mockSaveAssistantMessage.mockRejectedValueOnce(
+      new Error("Synthetic save failure"),
+    );
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+    let stopped: boolean | undefined;
+    await act(async () => {
+      stopped = await result.current.handleStop({ requireSavedResponse: true });
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalled();
+    expect(stopped).toBe(false);
+  });
+
   it("does not broadly cancel a chat when Stop has no captured run or pending start", async () => {
     const { result } = renderHook(() =>
       useChatHandlers({

@@ -78,6 +78,16 @@ describe("goal control admission", () => {
     expect(mockMutation).not.toHaveBeenCalled();
     expect(mockCancel).not.toHaveBeenCalled();
   });
+  it("forwards the selected goal generation before canceling", async () => {
+    expect(
+      (await POST(request({ chatId: "chat", action: "clear", generation: 4 })))
+        .status,
+    ).toBe(200);
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ generation: 4, action: "clear" }),
+    );
+  });
   it("cancels the authoritative run returned by the control mutation", async () => {
     expect(
       (await POST(request({ chatId: "chat", action: "pause" }))).status,

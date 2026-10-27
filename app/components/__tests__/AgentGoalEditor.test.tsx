@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { AgentGoalEditor } from "../AgentGoalEditor";
 import { setMockQueryResult } from "@/__mocks__/convex-react";
 jest.mock("@/lib/analytics/client", () => ({
@@ -130,4 +136,42 @@ it("can save a long edited objective without an oversized automatic criterion", 
   const body = JSON.parse((fetch as jest.Mock).mock.calls[0][1].body);
   expect(body.objective).toBe(objective);
   expect(body.criteria[0].length).toBeLessThanOrEqual(1000);
+});
+
+it("preserves the draft when stopping fails and saves only after the response is retained", async () => {
+  global.fetch = jest.fn().mockResolvedValue({ ok: true });
+  let settle!: (result: boolean) => void;
+  const stop = jest.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        settle = resolve;
+      }),
+  );
+  const close = jest.fn();
+  render(
+    <AgentGoalEditor
+      chatId="chat"
+      onClose={close}
+      stopRunBeforeControl={stop}
+    />,
+  );
+  fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+    target: { value: "Keep draft" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save and pause" }));
+  expect(stop).toHaveBeenCalledWith("run");
+  expect(fetch).not.toHaveBeenCalled();
+  await act(async () => settle(false));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not stop and save",
+  );
+  expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+    "Keep draft",
+  );
+  expect(close).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Save and pause" }));
+  await act(async () => settle(true));
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(close).toHaveBeenCalled();
 });

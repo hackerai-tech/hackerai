@@ -173,6 +173,7 @@ export const control = mutation({
       v.literal("resume"),
     ),
     additionalRuns: v.optional(v.number()),
+    generation: v.optional(v.number()),
   },
   returns: goalDoc,
   handler: async (ctx, args) => {
@@ -180,6 +181,8 @@ export const control = mutation({
     const chat = await owned(ctx, args.chatId, args.userId);
     const goal = await byChat(ctx, args.chatId);
     if (!goal) throw new ConvexError("No goal in this chat");
+    if (args.generation !== undefined && args.generation !== goal.generation)
+      throw new ConvexError("Goal changed. Reload before changing it.");
     if (args.action === "resume") {
       if (
         goal.deletedAt ||

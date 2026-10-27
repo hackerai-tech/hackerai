@@ -1448,11 +1448,18 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
-}> = ({ chatId, messages, status, onBrowserContinue }) => {
+}> = ({
+  chatId,
+  messages,
+  status,
+  onBrowserContinue,
+  stopGoalRunBeforeControl,
+}) => {
   const {
     sidebarOpen,
     sidebarContent,
@@ -1468,7 +1475,15 @@ export const ComputerSidebar: React.FC<{
     sidebarContent.kind === "goal"
   )
     return (
-      <AgentGoalEditor chatId={sidebarContent.chatId} onClose={closeSidebar} />
+      <AgentGoalEditor
+        chatId={sidebarContent.chatId}
+        onClose={closeSidebar}
+        stopRunBeforeControl={
+          sidebarContent.chatId === chatId
+            ? stopGoalRunBeforeControl
+            : undefined
+        }
+      />
     );
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
