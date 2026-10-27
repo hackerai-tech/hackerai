@@ -64,7 +64,7 @@ const getReusableApprovalDescription = (
     const displayedArgv = `[${grant.argv
       .map((argument) => {
         const escaped = JSON.stringify(argument).replace(
-          /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]/gu,
+          /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]|(?!\u0020)\p{Zs}/gu,
           (character) =>
             character
               .split("")

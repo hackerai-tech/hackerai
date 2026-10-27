@@ -298,7 +298,7 @@ describe("AgentApprovalPrompt", () => {
       "אב",
       "גד",
       "two  spaces",
-      "report\u200b.txt\u{e0001}",
+      "report\u200b\u00a0.txt\u{e0001}",
     ];
     render(
       <AgentApprovalPrompt
@@ -315,7 +315,7 @@ describe("AgentApprovalPrompt", () => {
       { key: "ArrowDown", code: "ArrowDown" },
     );
     const description =
-      'Commands starting with [\u2068"printf"\u2069,\u2068"\\u202eelif--\\u202c"\u2069,\u2068"café"\u2069,\u2068"אב"\u2069,\u2068"גד"\u2069,\u2068"two  spaces"\u2069,\u2068"report\\u200b.txt\\udb40\\udc01"\u2069], with any following arguments';
+      'Commands starting with [\u2068"printf"\u2069,\u2068"\\u202eelif--\\u202c"\u2069,\u2068"café"\u2069,\u2068"אב"\u2069,\u2068"גד"\u2069,\u2068"two  spaces"\u2069,\u2068"report\\u200b\\u00a0.txt\\udb40\\udc01"\u2069], with any following arguments';
     expect(
       await screen.findByText(description, { normalizer: (text) => text }),
     ).toBeVisible();
