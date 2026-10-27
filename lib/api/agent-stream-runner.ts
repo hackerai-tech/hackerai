@@ -148,8 +148,9 @@ import {
   safeCountTokens,
 } from "@/lib/token-utils";
 import {
+  COMPACTION_ESTIMATE_RECOVERY_RATIO,
   getSummarizationThresholdTokens,
-  MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
@@ -160,7 +161,10 @@ import {
   getRecentCompleteModelTail,
   estimateSummaryInputTokens,
 } from "@/lib/chat/summarization/helpers";
-import { withProviderRequestSizeRecovery } from "@/lib/chat/provider-request-size-recovery";
+import {
+  withProviderRequestSizeRecovery,
+  type ProviderRequestRetryParams,
+} from "@/lib/chat/provider-request-size-recovery";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 
@@ -1059,9 +1063,36 @@ export async function createAgentStream(
   );
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
   let compactionAttemptCount = 0;
+  let unproductiveCompactionCount = 0;
+  let pendingCompactionVerdict = false;
+  let pendingCompactionInputEstimate = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
-    compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+    unproductiveCompactionCount <
+    MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+  const recordCompactionAttempt = () => {
+    compactionAttemptCount++;
+    unproductiveCompactionCount++;
+    pendingCompactionVerdict = true;
+    pendingCompactionInputEstimate = 0;
+  };
+  const confirmCompactionProgress = (inputTokens?: number) => {
+    if (!pendingCompactionVerdict) return;
+    pendingCompactionVerdict = false;
+    const providerTokens =
+      typeof inputTokens === "number" &&
+      Number.isFinite(inputTokens) &&
+      inputTokens > 0
+        ? inputTokens
+        : undefined;
+    const recovered =
+      providerTokens !== undefined
+        ? providerTokens < summarizationThreshold
+        : pendingCompactionInputEstimate > 0 &&
+          pendingCompactionInputEstimate <
+            summarizationThreshold * COMPACTION_ESTIMATE_RECOVERY_RATIO;
+    if (recovered) unproductiveCompactionCount = 0;
+  };
   let toolHistoryRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
@@ -1405,6 +1436,18 @@ export async function createAgentStream(
   let trustedHistoryPrefix: ModelMessage[] = [];
   const hasPlatformAnnotationContext = () =>
     ctx.platformAuthorized || state.hasCompletedAbliterationStep;
+  let toolSchemaInputEstimate: Promise<number> | undefined;
+  const getToolSchemaInputEstimate = () =>
+    (toolSchemaInputEstimate ??= Promise.all(
+      Object.entries(ctx.tools).map(async ([name, tool]) => ({
+        name,
+        description: tool.description,
+        schema: await asSchema(tool.inputSchema).jsonSchema,
+        providerOptions: tool.providerOptions,
+      })),
+    )
+      .then((tools) => safeCountTokens(JSON.stringify(tools)))
+      .catch(() => Number.POSITIVE_INFINITY));
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1456,7 +1499,10 @@ export async function createAgentStream(
     );
     // A failed compaction must not send expanded history to a smaller model.
     // Preserve the transcript for retry instead of silently deleting context.
-    if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
+    if (
+      ctx.mode === "agent" &&
+      (ctx.agentModelContextEnabled || pendingCompactionVerdict)
+    ) {
       lastPreparedInputEstimate =
         estimateSummaryInputTokens(prepared) +
         Math.max(
@@ -1465,6 +1511,20 @@ export async function createAgentStream(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
         );
+      if (pendingCompactionVerdict) {
+        // Include fixed request overhead before falling back to this estimate
+        // when the provider omits usage. All tools are a conservative bound
+        // for steps that activate only a subset.
+        pendingCompactionInputEstimate =
+          lastPreparedInputEstimate +
+          (await getToolSchemaInputEstimate()) +
+          safeCountTokens(
+            JSON.stringify({
+              providerOptions: getStepProviderOptions(effectiveModelName),
+              toolChoice: "auto",
+            }),
+          );
+      }
       lastCompletedResponseMessages = [];
     }
     if (
@@ -1482,6 +1542,7 @@ export async function createAgentStream(
           previous_provider_input_tokens: state.lastStepInputTokens,
           max_tokens: activeContextBudget,
           compaction_attempt_count: compactionAttemptCount,
+          unproductive_compaction_count: unproductiveCompactionCount,
         }),
       );
       throw new AgentContextBudgetError(
@@ -1503,7 +1564,7 @@ export async function createAgentStream(
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
     abortSignal.throwIfAborted();
-    compactionAttemptCount++;
+    recordCompactionAttempt();
     const result = await compactModelMessagesInRun({
       compactionPolicy,
       // Use the existing bounded summary projection even for expanded Max.
@@ -1578,8 +1639,13 @@ export async function createAgentStream(
       .map((message) => message.content)
       .join("\n\n");
   };
-  const commitRejectedRequestSummary = (summary: string) => {
+  const commitRejectedRequestSummary = (
+    summary: string,
+    retryParams: ProviderRequestRetryParams,
+  ) => {
     if (!rejectedRequestSource) return;
+    // The provider wrapper commits a smaller replacement request. Wait for
+    // the retried provider call before deciding whether it cleared pressure.
     // Keep the canonical transcript untouched. Future SDK steps project from
     // this checkpoint, so already completed tools are not submitted again.
     historyEnabled = false;
@@ -1597,8 +1663,21 @@ export async function createAgentStream(
       rejectedRequestSource.rawMessages,
     );
     lastCompactionRawMessageCount = rejectedRequestSource.rawMessages.length;
+    // The retry bypasses normal preparation; include its system prompt and
+    // fixed request controls before using the missing-usage fallback.
     lastPreparedInputEstimate =
-      safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens;
+      Math.max(
+        safeCountTokens(JSON.stringify(retryParams.prompt)),
+        safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens,
+      ) +
+      safeCountTokens(
+        JSON.stringify({
+          tools: retryParams.tools,
+          toolChoice: retryParams.toolChoice,
+          providerOptions: retryParams.providerOptions,
+        }),
+      );
+    pendingCompactionInputEstimate = lastPreparedInputEstimate;
     lastCompletedResponseMessages = [];
     state.ctxUsage = {
       usedTokens: lastPreparedInputEstimate,
@@ -2184,7 +2263,7 @@ export async function createAgentStream(
             });
 
             if (result.summarizationAttempted) {
-              compactionAttemptCount++;
+              recordCompactionAttempt();
               lastCompactionRawMessageCount = rawModelMessages.length;
             }
 
@@ -2314,7 +2393,7 @@ export async function createAgentStream(
             // Never repeatedly summarize the same raw source cursor. A later
             // provider step advances the cursor and can become eligible again.
           } else {
-            compactionAttemptCount++;
+            recordCompactionAttempt();
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               compactionPolicy,
@@ -2732,7 +2811,10 @@ export async function createAgentStream(
             : state.lastStepInputTokens,
         getHasSummarized: () =>
           ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
-        getCanSummarizeAgain: canSummarizeAgain,
+        // Let the provider finish the latest compacted request before using
+        // its prompt size to decide whether another attempt is possible.
+        getCanSummarizeAgain: () =>
+          pendingCompactionVerdict || canSummarizeAgain(),
         onFired: () => {
           state.stoppedDueToTokenExhaustion = true;
         },
@@ -2935,6 +3017,7 @@ export async function createAgentStream(
           };
         }
       }
+      confirmCompactionProgress(usage?.inputTokens);
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({

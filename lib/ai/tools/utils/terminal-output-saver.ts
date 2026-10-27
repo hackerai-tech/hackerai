@@ -425,8 +425,18 @@ export async function saveTruncatedOutput(opts: {
   );
 
   if (!savedPath) {
-    await terminalWriter(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
-    return FULL_OUTPUT_SAVE_FAILED_MESSAGE;
+    const missingPrivateTransport =
+      usesOwnerOnlyPosixFileTransport(sandbox) &&
+      isCentrifugoSandbox(sandbox) &&
+      sandbox.supportsCommandStdin?.() === false;
+    const recovery = missingPrivateTransport
+      ? sandbox.getConnectionInfo?.()?.isDesktop
+        ? "\n[Desktop file access is unavailable. Ask the user to restart or update the Desktop app and reconnect this computer. Do not work around the private-storage guard.]"
+        : "\n[The local client has not enabled private artifact storage. Ask the user to reconnect an up-to-date local client; if it persists, check the local client's private-storage startup error. Do not bypass the ownership checks.]"
+      : "";
+    const message = FULL_OUTPUT_SAVE_FAILED_MESSAGE + recovery;
+    await terminalWriter(message);
+    return message;
   }
   opts.onSavedPath?.(savedPath);
 

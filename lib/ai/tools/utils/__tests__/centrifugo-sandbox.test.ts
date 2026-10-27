@@ -169,14 +169,19 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
-  it.each(["readiness reply lost", "publish reply lost"])(
-    "receives late Desktop output after %s without executing again",
-    async (failure) => {
+  it.each([
+    [true, "readiness reply lost"],
+    [true, "publish reply lost"],
+    [false, "readiness reply lost"],
+    [false, "publish reply lost"],
+  ])(
+    "receives late output (desktop=%s) after %s without executing again",
+    async (isDesktop, failure) => {
       const sandbox = new CentrifugoSandbox(
         "user-1",
         {
           ...defaultConnection,
-          isDesktop: true,
+          isDesktop: Boolean(isDesktop),
           capabilities: { commands: true, operationChannels: true },
         },
         defaultConfig,
@@ -205,14 +210,27 @@ describe("CentrifugoSandbox", () => {
         if (message.type === "command_output_ack")
           sender.acknowledge(message.sequence);
       });
-      sender.append({ type: "stdout", data: "retained output" });
-      sender.append({ type: "exit", exitCode: 0 });
+      if (isDesktop) {
+        sender.append({ type: "stdout", data: "retained output" });
+        sender.append({ type: "exit", exitCode: 0 });
+      } else {
+        reply.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: FIXED_UUID,
+            data: "retained output",
+          },
+        });
+        reply.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+      }
       await jest.advanceTimersByTimeAsync(5000);
       await expect(result).resolves.toMatchObject({
         stdout: "retained output",
         exitCode: 0,
       });
-      await expect(sender.delivered).resolves.toBeUndefined();
+      if (isDesktop) await expect(sender.delivered).resolves.toBeUndefined();
       expect(stdout.mock.calls).toEqual([["retained output"]]);
       expect(control.publish).toHaveBeenCalledTimes(1);
       expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
@@ -1018,7 +1036,7 @@ describe("CentrifugoSandbox", () => {
       mockClients[0].newSubscription.mockReturnValueOnce(control);
       mockSubscriptions[0].emit("subscribed");
       await jest.advanceTimersByTimeAsync(
-        stage === "acknowledgement" ? 5001 : 0,
+        stage === "acknowledgement" ? 45000 : 0,
       );
       if (stage === "presence")
         await expect(outcome).resolves.toBeInstanceOf(
@@ -2902,6 +2920,46 @@ describe("CentrifugoSandbox", () => {
       expect(mockClients).toHaveLength(0);
     });
 
+    it.each(["readiness reply lost", "publish reply lost"])(
+      "retains a file write through %s and reconnect without replay",
+      async (failure) => {
+        const sandbox = createSandbox({
+          isDesktop: true,
+          capabilities: {
+            commands: true,
+            files: true,
+            operationChannels: true,
+          },
+        });
+        const result = sandbox.files.write("/tmp/once", "one write");
+        const rejected = jest.fn();
+        void result.catch(rejected);
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[0];
+        const control = new MockSubscription();
+        if (failure === "publish reply lost")
+          control.publish.mockRejectedValueOnce({
+            code: 1,
+            message: "timeout",
+          });
+        mockClients[0].newSubscription.mockReturnValueOnce(control);
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(6000);
+        expect(rejected).not.toHaveBeenCalled();
+        expect(reply.unsubscribe).not.toHaveBeenCalled();
+        reply.emit("subscribed");
+        reply.emit("publication", {
+          data: { type: "file_ok", requestId: FIXED_UUID },
+        });
+        await expect(result).resolves.toBeUndefined();
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        expect(reply.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "file_response_ack" }),
+        );
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
     it("keeps isolated file presence rejection distinct from a dispatch error", async () => {
       const sandbox = createSandbox({
         isDesktop: true,
@@ -2977,7 +3035,7 @@ describe("CentrifugoSandbox", () => {
         } else if (failure === "timeout") {
           await jest.advanceTimersByTimeAsync(15000);
         } else if (failure === "readiness_timeout") {
-          await jest.advanceTimersByTimeAsync(5000);
+          await jest.advanceTimersByTimeAsync(15000);
         }
         const error = await result;
         expect(error).toBeInstanceOf(Error);
@@ -3668,6 +3726,41 @@ describe("CentrifugoSandbox", () => {
       });
       return { sandbox, runs };
     }
+
+    it("does not cache a failed shell probe or issue file mutations after it", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "shell unavailable",
+          exitCode: 2,
+        } as any)
+        .mockResolvedValue({
+          stdout: "$BASH_VERSION",
+          stderr: "",
+          exitCode: 0,
+        } as any);
+      await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
+        "Failed to detect local shell",
+      );
+      expect(run).toHaveBeenCalledTimes(1);
+      await expect(sandbox.detectShell()).resolves.toBe("cmd");
+    });
+
+    it("bounds Windows Bash file commands for relays launched through cmd.exe", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await sandbox.files.write("/tmp/output", "x".repeat(50000));
+      const writes = runs.filter((command) => command.includes("base64 -d"));
+      expect(writes.length).toBeGreaterThan(1);
+      expect(
+        writes.every((command) => Buffer.byteLength(command) <= 7000),
+      ).toBe(true);
+      const encoded = writes
+        .map((command) => command.match(/printf '%s' "([A-Za-z0-9+/=]*)"/)![1])
+        .join("");
+      expect(Buffer.from(encoded, "base64").toString()).toBe("x".repeat(50000));
+    });
 
     it("probes legacy connections without OS info before building file commands", async () => {
       const sandbox = createSandbox();
