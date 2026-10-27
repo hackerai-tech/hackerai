@@ -63,7 +63,7 @@ export function createServiceFetch(
     ) => {
       if (reported) return;
       reported = true;
-      // At most one diagnostic attempt per RPC. Never include arguments,
+      // At most one failure diagnostic attempt per RPC. Never include arguments,
       // headers, URLs, response bodies or arbitrary error messages/codes.
       // Reporting must not replace the original transport result or error.
       try {
@@ -101,6 +101,25 @@ export function createServiceFetch(
     };
     let response: Response;
     let text: string;
+    // A platform timeout can kill the request before transport rejects. Record
+    // which await is still pending once, without aborting or retrying the RPC.
+    const pendingWarning = setTimeout(() => {
+      try {
+        console.warn(
+          JSON.stringify({
+            event: "convex_service_rpc_pending",
+            rpc_kind: type,
+            ...(functionName ? { function_name: functionName } : {}),
+            stage,
+            ...(statusCode !== undefined ? { status_code: statusCode } : {}),
+            transport_elapsed_ms: Math.max(0, Date.now() - startedAt),
+          }),
+        );
+      } catch {
+        // A diagnostic must not interrupt the pending RPC.
+      }
+    }, 10_000);
+    pendingWarning.unref?.();
     try {
       response = await transport(input, {
         ...init,
@@ -113,6 +132,8 @@ export function createServiceFetch(
     } catch (error) {
       reportFailure("transport_error", error);
       throw error;
+    } finally {
+      clearTimeout(pendingWarning);
     }
     // Scrub errors and SDK log lines before the SDK can print or rethrow them.
     // Successful result values are preserved byte-for-byte.
