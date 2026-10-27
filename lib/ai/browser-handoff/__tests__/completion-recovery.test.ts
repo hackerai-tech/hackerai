@@ -200,6 +200,49 @@ it("preserves fence state across stream chunks and excludes long unclosed code",
 });
 
 it.each([
+  "I'll wait for you to take control after setup. Setup is complete. I'll wait for you to take control now.",
+  "The browser is ready for you to take control after setup. Setup is complete. The browser is ready for you to take control now.",
+])(
+  "finds a later immediate declaration after a deferred one: %s",
+  async (text) => {
+    const { output } = await parts(text);
+    expect(output).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "browser_handoff",
+      }),
+    );
+  },
+);
+
+it.each([
+  "```js\nconst example = '```';\n```\n",
+  "````js\n```\nconst example = '```';\n````\n",
+  "~~~js\nconst example = '```';\n~~~\n",
+])(
+  "ignores fence-like strings inside code before a real declaration: %s",
+  async (code) => {
+    const { output } = await parts(code + promise);
+    expect(output).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "browser_handoff",
+      }),
+    );
+  },
+);
+
+it.each([
+  "```js\nconst example = '```';\n" + promise + "\n```",
+  "````js\n```\n" + promise + "\n````",
+  "~~~js\n```\n" + promise + "\n~~~",
+  "    " + promise,
+])("never treats declarations inside code as prose: %s", async (code) => {
+  const { canRecover } = await parts(code);
+  expect(canRecover).not.toHaveBeenCalled();
+});
+
+it.each([
   "You can take control when you're ready.",
   "After setup, I'll be handing control over to you.",
   "I'll wait for you to take control after setup.",

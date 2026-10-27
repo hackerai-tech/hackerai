@@ -59,16 +59,20 @@ function promisedImmediateHandoff(text: string): boolean {
   )
     return true;
   return [
-    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/i,
-    /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/i,
+    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/gi,
+    /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/gi,
   ].some((pattern) => {
-    const match = pattern.exec(prose);
-    if (!match) return false;
-    const continuation = prose.slice(match.index + match[0].length);
-    // Accept bounded immediate qualifiers, but not an unfinished setup promise.
-    return /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:not\s+)?(?:until|after|once|when)\b))/i.test(
-      continuation,
-    );
+    for (const match of prose.matchAll(pattern)) {
+      const continuation = prose.slice(match.index + match[0].length);
+      // Accept bounded immediate qualifiers, but not an unfinished setup promise.
+      if (
+        /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:not\s+)?(?:until|after|once|when)\b))/i.test(
+          continuation,
+        )
+      )
+        return true;
+    }
+    return false;
   });
 }
 
@@ -104,24 +108,33 @@ export function recoverBrowserHandoffCompletion(
         )
           return result;
         let text = "";
-        let inFence = false;
-        let pendingTicks = 0;
-        // Strip fences before bounding the prose, including delimiters split
-        // across chunks. A long code block must not discard its opening fence.
-        const appendText = (delta: string) => {
-          for (const char of delta) {
-            if (char === "`") {
-              pendingTicks++;
-              if (pendingTicks === 3) {
-                inFence = !inFence;
-                pendingTicks = 0;
-              }
-            } else {
-              if (!inFence) text += "`".repeat(pendingTicks) + char;
-              pendingTicks = 0;
-            }
+        let pendingLine = "";
+        let fence: { character: string; length: number } | undefined;
+        // Classify complete lines before bounding prose. Only a matching fence
+        // line closes code; delimiters inside code strings stay inside code.
+        const appendLine = (line: string) => {
+          if (fence) {
+            const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*\r?$/);
+            if (
+              closing &&
+              closing[1][0] === fence.character &&
+              closing[1].length >= fence.length
+            )
+              fence = undefined;
+            return;
           }
-          text = text.slice(-4000);
+          const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+          if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
+            fence = { character: opening[1][0], length: opening[1].length };
+            return;
+          }
+          if (!/^(?: {4}|\t)/.test(line))
+            text = (text + line + "\n").slice(-4000);
+        };
+        const appendText = (delta: string) => {
+          const lines = (pendingLine + delta).split("\n");
+          pendingLine = lines.pop() ?? "";
+          for (const line of lines) appendLine(line);
         };
         let hasToolOrError = false;
         return {
@@ -130,6 +143,10 @@ export function recoverBrowserHandoffCompletion(
             new TransformStream<StreamPart, StreamPart>({
               async transform(part, controller) {
                 if (part.type === "text-delta") appendText(part.delta);
+                if (part.type === "finish" && pendingLine) {
+                  appendLine(pendingLine);
+                  pendingLine = "";
+                }
                 if (part.type.startsWith("tool-") || part.type === "error")
                   hasToolOrError = true;
                 if (
