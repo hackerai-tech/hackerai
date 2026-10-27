@@ -274,6 +274,48 @@ describe("unobtrusive task feedback", () => {
     expect(screen.queryByRole("group")).toBeNull();
     expect(record).not.toHaveBeenCalled();
   });
+  it("labels a restored earlier answer and saves its original attribution", async () => {
+    const earlier = {
+      ...survey,
+      survey_kind: "current_experiment" as const,
+      feedback_phase: "abliterated_pro_three_steps_feedback_v1" as const,
+      shown_at: Date.now() - 1000,
+    };
+    const record = jest.fn(async (args: any) => ({
+      ...earlier,
+      ...(args.answer && { answer: args.answer }),
+    }));
+    render(
+      <TaskOutcomeFeedbackPrompt
+        survey={earlier}
+        currentMessageId="later-answer"
+        record={record}
+      />,
+    );
+    expect(
+      screen.getByText("Did the earlier answer help with your task?"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Review that answer" }),
+    ).toHaveAttribute("href", "/c/c#message=m");
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Solved my task" })),
+    );
+    expect(record).toHaveBeenCalledWith({
+      id: survey._id,
+      action: "answered",
+      answer: "solved",
+    });
+    expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "task_outcome_survey_answered",
+        properties: expect.objectContaining({
+          message_id: "m",
+          survey_request_id: "r",
+        }),
+      }),
+    );
+  });
   it("saves the answer before optional reasons and records only structured context", async () => {
     const record = jest.fn(async (args: any) => ({
       ...survey,

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
 import { AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION } from "@/lib/feedback/agent-context";
+import { getSourceMessageHref } from "@/lib/findings/source-message";
 import {
   PAID_TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
@@ -76,6 +77,7 @@ export function TaskOutcomeFeedback({
       key={messageId}
       survey={survey}
       record={recordCompatible}
+      currentMessageId={messageId}
     />
   );
 }
@@ -85,8 +87,10 @@ export function TaskOutcomeFeedback({
 export function TaskOutcomeFeedbackPrompt({
   survey,
   record,
+  currentMessageId,
 }: {
   survey: Survey | null | undefined;
+  currentMessageId?: string;
   record: (args: {
     id: Survey["_id"];
     action: "shown" | "viewed" | "dismissed" | "answered" | "reason";
@@ -110,6 +114,12 @@ export function TaskOutcomeFeedbackPrompt({
   const [error, setError] = useState(false);
   const [answer, setAnswer] = useState<TaskOutcomeAnswer>();
   const [done, setDone] = useState(false);
+  const refersToEarlierAnswer = Boolean(
+    visibleSurvey &&
+    currentMessageId &&
+    isPersistentProFeedback(visibleSurvey) &&
+    visibleSurvey.message_id !== currentMessageId,
+  );
 
   useEffect(() => {
     if (
@@ -279,7 +289,9 @@ export function TaskOutcomeFeedbackPrompt({
                 ? "What helped?"
                 : "What could be better?"
               : isPersistentProFeedback(visibleSurvey)
-                ? "Did this help with your task?"
+                ? refersToEarlierAnswer
+                  ? "Did the earlier answer help with your task?"
+                  : "Did this help with your task?"
                 : "Did this help?"}
         </p>
         <Button
@@ -298,6 +310,20 @@ export function TaskOutcomeFeedbackPrompt({
         <p className="basis-full text-xs text-muted-foreground">
           Answer when you’ve tried the result. Your feedback helps improve
           answers.
+          {refersToEarlierAnswer && (
+            <>
+              {" "}
+              <a
+                className="underline underline-offset-2"
+                href={getSourceMessageHref(
+                  visibleSurvey.chat_id,
+                  visibleSurvey.message_id,
+                )}
+              >
+                Review that answer
+              </a>
+            </>
+          )}
         </p>
       )}
       {!done && (
