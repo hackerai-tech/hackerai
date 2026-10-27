@@ -151,6 +151,50 @@ it.each([
   },
 );
 
+it("recovers a declaration after a fenced block longer than the prose window", async () => {
+  const { output } = await parts(
+    "```text\n" + "x".repeat(5000) + "\n```\n" + promise,
+  );
+  expect(output).toContainEqual(
+    expect.objectContaining({ type: "tool-call", toolName: "browser_handoff" }),
+  );
+});
+
+it("preserves fence state across stream chunks and excludes long unclosed code", async () => {
+  const deltas = [
+    "``",
+    "`text\n",
+    "x".repeat(5000),
+    "\n`",
+    "`",
+    "`\n",
+    promise,
+  ];
+  const doStream = jest.fn(async () => ({
+    stream: new ReadableStream({
+      start(controller) {
+        for (const delta of deltas)
+          controller.enqueue({ type: "text-delta", id: "text", delta });
+        controller.enqueue(finish());
+        controller.close();
+      },
+    }),
+  }));
+  const wrapped = recoverBrowserHandoffCompletion(model(doStream), {
+    state: {},
+    canRecover: async () => true,
+  });
+  if (typeof wrapped === "string") throw Error("Expected model");
+  const result = await wrapped.doStream(params() as never);
+  const output = [];
+  for await (const part of result.stream) output.push(part);
+  expect(output).toContainEqual(
+    expect.objectContaining({ type: "tool-call", toolName: "browser_handoff" }),
+  );
+  const unclosed = await parts("```text\n" + "x".repeat(5000) + "\n" + promise);
+  expect(unclosed.canRecover).not.toHaveBeenCalled();
+});
+
 it.each([
   "You can take control when you're ready.",
   "After setup, I'll be handing control over to you.",

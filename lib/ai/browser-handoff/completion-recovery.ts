@@ -50,7 +50,6 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
 function promisedImmediateHandoff(text: string): boolean {
   const prose = text
     .replace(/[\u2018\u2019]/g, "'")
-    .replace(/```[\s\S]*?(?:```|$)/g, "")
     .replace(/^\s*>.*$/gm, "")
     .replace(/\*\*|__/g, "");
   return [
@@ -92,14 +91,32 @@ export function recoverBrowserHandoffCompletion(
         )
           return result;
         let text = "";
+        let inFence = false;
+        let pendingTicks = 0;
+        // Strip fences before bounding the prose, including delimiters split
+        // across chunks. A long code block must not discard its opening fence.
+        const appendText = (delta: string) => {
+          for (const char of delta) {
+            if (char === "`") {
+              pendingTicks++;
+              if (pendingTicks === 3) {
+                inFence = !inFence;
+                pendingTicks = 0;
+              }
+            } else {
+              if (!inFence) text += "`".repeat(pendingTicks) + char;
+              pendingTicks = 0;
+            }
+          }
+          text = text.slice(-4000);
+        };
         let hasToolOrError = false;
         return {
           ...result,
           stream: result.stream.pipeThrough(
             new TransformStream<StreamPart, StreamPart>({
               async transform(part, controller) {
-                if (part.type === "text-delta")
-                  text = (text + part.delta).slice(-4000);
+                if (part.type === "text-delta") appendText(part.delta);
                 if (part.type.startsWith("tool-") || part.type === "error")
                   hasToolOrError = true;
                 if (
