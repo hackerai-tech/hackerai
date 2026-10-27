@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 
+jest.mock("@/lib/utils/client-token-validation", () => ({
+  ...jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
+    "@/lib/utils/client-token-validation",
+  ),
+}));
+
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureCancellationEvent = jest.fn();
 jest.mock("@/lib/analytics/client", () => ({
@@ -142,6 +148,7 @@ const messages: ChatMessage[] = [
 describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockQueueMessage.mockReturnValue("queued-1");
     mockInput = "";
     mockUploadedFiles = [];
     mockSandboxPreference = "e2b";
@@ -285,23 +292,66 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
-  it("keeps the draft when the queue is full during summarization", async () => {
+  it("keeps the draft when queue admission fails after rendering available capacity", async () => {
     mockInput = "Keep my draft";
-    mockMessageQueue = Array.from({ length: 10 }, (_, index) => ({
-      id: `queued-${index}`,
-      text: "Already queued",
-      timestamp: index,
-    }));
+    mockMessageQueue = [];
+    mockQueueMessage.mockReturnValueOnce(undefined);
     const { result, isSendingNowRef } = renderSummarySteer();
     await act(async () => {
       expect(
         await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
       ).toBe(false);
     });
-    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockQueueMessage).toHaveBeenCalledWith("Keep my draft", []);
     expect(mockClearInput).not.toHaveBeenCalled();
     expect(mockClearUploadedFiles).not.toHaveBeenCalled();
     expect(isSendingNowRef.current).toBe(false);
+    expect(result.current.hasPendingSummarySteer).toBe(false);
+  });
+
+  it("rejects an oversized deferred submission before clearing the draft or interrupting compaction", async () => {
+    mockInput = "Too large";
+    const validation = require("@/lib/utils/client-token-validation");
+    const check = jest
+      .spyOn(validation, "getInputTokenLimitStatus")
+      .mockResolvedValueOnce({ exceedsLimit: true, tokenCount: 1_000_000 });
+    try {
+      const { result } = renderSummarySteer();
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any),
+        ).toBe(false);
+      });
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+      expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+    } finally {
+      check.mockRestore();
+    }
+  });
+
+  it("preserves an oversized Ask attachment submitted during summarization", async () => {
+    mockChatMode = "ask";
+    mockUploadedFiles = [
+      {
+        file: new File(["fixture"], "fixture.txt"),
+        fileId: "file-1",
+        uploaded: true,
+        tokens: 1_000_000,
+      },
+    ];
+    const { result } = renderSummarySteer();
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(false);
+    });
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
   });
 
   it("lets explicit Stop cancel summarization and discard the deferred steer", async () => {

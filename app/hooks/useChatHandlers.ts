@@ -175,6 +175,7 @@ export const useChatHandlers = ({
   const currentChatIdRef = useLatestRef(chatId);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
+  const isSummarizingRef = useCommittedRef(isSummarizing);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
   const [summarySteer, setSummarySteer] = useState<{
@@ -601,48 +602,6 @@ export const useChatHandlers = ({
       return false;
     }
 
-    // While an Agent run is starting or streaming, honor the queue behavior.
-    if (status === "streaming" || status === "submitted") {
-      const validFiles = uploadedFiles
-        .filter(isSendableUploadedFile)
-        .map(createFileMessagePartFromUploadedFile)
-        .filter((part): part is NonNullable<typeof part> => part !== null);
-
-      if (isSummarizing || queueBehavior === "queue") {
-        // During compaction, accept the draft now and steer as soon as the
-        // summary settles. Ordinary queue mode waits for the full response.
-        if (isSummarizing && messageQueue.length >= 10) {
-          toast.error("Queue is full", {
-            description:
-              "Please wait for queued messages to send before adding more.",
-          });
-          return false;
-        }
-        const queuedId = queueMessage(input, validFiles);
-        if (isSummarizing) deferSteerUntilSummary(queuedId);
-        captureAuthenticatedEvent("chat_user_submission", {
-          definition_version: 1,
-          mode: currentChatMode,
-          subscription_tier: subscription,
-          queued: true,
-        });
-        clearInput();
-        clearUploadedFiles();
-        return true;
-      } else if (queueBehavior === "stop-and-send") {
-        try {
-          if (!(await stopActiveRunForSteer("stop_and_send"))) return false;
-        } catch (error) {
-          console.error(
-            "Failed to stop the active run before steering:",
-            error,
-          );
-          toast.error("Could not steer the Agent run. Please try again.");
-          return false;
-        }
-        // Continue to send the new message immediately below (don't return)
-      }
-    }
     // Check token limit before sending based on user plan
     const maxTokens = getMaxTokensForSubscription(subscription, {
       mode: currentChatMode,
@@ -677,7 +636,48 @@ export const useChatHandlers = ({
       });
       return false;
     }
-    if (sendDisabledReasonRef.current) return false;
+    if (sendDisabledReasonRef.current || currentChatIdRef.current !== chatId)
+      return false;
+
+    // While an Agent run is starting or streaming, honor the queue behavior.
+    if (status === "streaming" || status === "submitted") {
+      const validFiles = uploadedFiles
+        .filter(isSendableUploadedFile)
+        .map(createFileMessagePartFromUploadedFile)
+        .filter((part): part is NonNullable<typeof part> => part !== null);
+
+      const deferForSummary = isSummarizingRef.current;
+      if (deferForSummary || queueBehavior === "queue") {
+        // During compaction, accept the draft now and steer as soon as the
+        // summary settles. Ordinary queue mode waits for the full response.
+        const queuedId = queueMessage(input, validFiles);
+        if (!queuedId) return false;
+        if (deferForSummary) deferSteerUntilSummary(queuedId);
+        captureAuthenticatedEvent("chat_user_submission", {
+          definition_version: 1,
+          mode: currentChatMode,
+          subscription_tier: subscription,
+          queued: true,
+        });
+        clearInput();
+        clearUploadedFiles();
+        return true;
+      } else if (queueBehavior === "stop-and-send") {
+        try {
+          if (!(await stopActiveRunForSteer("stop_and_send"))) return false;
+        } catch (error) {
+          console.error(
+            "Failed to stop the active run before steering:",
+            error,
+          );
+          toast.error("Could not steer the Agent run. Please try again.");
+          return false;
+        }
+        // Continue to send the new message immediately below (don't return)
+      }
+    }
+    if (sendDisabledReasonRef.current || currentChatIdRef.current !== chatId)
+      return false;
     // Admission can fail before a task exists. The transport finalizes the
     // saved-task route after admission; keep rejected submissions on the draft.
 
@@ -1182,7 +1182,7 @@ export const useChatHandlers = ({
       isSendingNowRef.current
     )
       return;
-    if (isSummarizing) {
+    if (isSummarizingRef.current) {
       hasManuallyStoppedRef.current = false;
       deferSteerUntilSummary(messageId, options);
       return;
