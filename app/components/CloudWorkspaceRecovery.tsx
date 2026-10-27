@@ -22,14 +22,16 @@ export function CloudWorkspaceRecovery({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const exposed = useRef<string | null>(null);
+  const statusReadGeneration = useRef(0);
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++statusReadGeneration.current;
     const response = await fetch("/api/sandbox/recovery", {
       cache: "no-store",
       signal,
     });
     if (!response.ok) throw new Error("Recovery status unavailable");
     const next = await response.json();
-    if (!signal?.aborted) {
+    if (!signal?.aborted && generation === statusReadGeneration.current) {
       setView(next);
       setError(false);
     }
@@ -99,6 +101,7 @@ export function CloudWorkspaceRecovery({
   }, [view, surface]);
   async function decide(decision: boolean | "reopen") {
     if (!view.token || busy) return;
+    statusReadGeneration.current += 1;
     setBusy(true);
     setError(false);
     try {

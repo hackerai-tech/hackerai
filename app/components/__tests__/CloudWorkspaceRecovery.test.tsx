@@ -52,6 +52,60 @@ it("ignores an older status read after this tab submits consent", async () => {
   }
 });
 
+it.each(["poll", "decision"])(
+  "ignores an older manual status response after a newer %s",
+  async (source) => {
+    jest.useFakeTimers();
+    try {
+      let finishManual!: (response: ReturnType<typeof respond>) => void;
+      fetchMock
+        .mockResolvedValueOnce(respond({ status: "offered", token }))
+        .mockRejectedValueOnce(new Error("network"))
+        .mockImplementationOnce(
+          () => new Promise((resolve) => (finishManual = resolve)),
+        )
+        .mockResolvedValueOnce(
+          respond(
+            source === "poll"
+              ? { status: "recovered" }
+              : { status: "recovering", step: "backup_created" },
+          ),
+        );
+      render(<CloudWorkspaceRecovery />);
+      await screen.findByRole("button", { name: "Recover workspace" });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5000);
+      });
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Check status" }),
+      );
+      if (source === "poll") {
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5000);
+        });
+      } else {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Recover workspace" }),
+        );
+      }
+      const expected =
+        source === "poll"
+          ? /Workspace ready/
+          : /Saving the recovered environment/;
+      await screen.findByText(expected);
+      await act(async () => {
+        finishManual(respond({ status: "offered", token }));
+      });
+      expect(screen.getByText(expected)).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Recover workspace" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
 it.each(["offered", "declined"])(
   "reconciles a %s tab when another tab confirms recovery, without submitting consent",
   async (status) => {
