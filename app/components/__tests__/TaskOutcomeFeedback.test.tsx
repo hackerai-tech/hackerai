@@ -209,6 +209,71 @@ describe("unobtrusive task feedback", () => {
     await inView();
     expect(record).toHaveBeenCalledTimes(1);
   });
+  it.each(["control", "test"])(
+    "restores an unanswered Pro three-step invitation after reload in %s",
+    async (variant) => {
+      const restored = {
+        ...survey,
+        survey_kind: "current_experiment" as const,
+        experiment_key: "abliterated_pro_three_steps_v1" as const,
+        experiment_variant: variant as "control" | "test",
+        feedback_phase: "abliterated_pro_three_steps_feedback_v1" as const,
+        shown_at: Date.now() - 1000,
+      };
+      const record = jest.fn(async (args: any) => ({
+        ...restored,
+        ...(args.answer && { answer: args.answer, answered_at: Date.now() }),
+      }));
+      render(<TaskOutcomeFeedbackPrompt survey={restored} record={record} />);
+      expect(screen.getByText("Did this help with your task?")).toBeTruthy();
+      await inView();
+      expect(record).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "shown" }),
+      );
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Solved my task" })),
+      );
+      expect(record).toHaveBeenCalledWith({
+        id: restored._id,
+        action: "answered",
+        answer: "solved",
+      });
+      expect(screen.getByText("Thanks for your feedback")).toBeTruthy();
+      expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task_outcome_survey_answered",
+          properties: expect.objectContaining({
+            survey_ui_version: 5,
+            feedback_phase: restored.feedback_phase,
+            experiment_variant: variant,
+          }),
+        }),
+      );
+    },
+  );
+  it.each([
+    { dismissed_at: Date.now() },
+    { answered_at: Date.now(), answer: "solved" as const },
+    { expires_at: Date.now() - 1 },
+  ])("keeps a terminal Pro invitation closed: %j", async (terminal) => {
+    const record = jest.fn();
+    render(
+      <TaskOutcomeFeedbackPrompt
+        survey={{
+          ...survey,
+          survey_kind: "current_experiment",
+          experiment_key: "abliterated_pro_three_steps_v1",
+          feedback_phase: "abliterated_pro_three_steps_feedback_v1",
+          shown_at: Date.now() - 1000,
+          ...terminal,
+        }}
+        record={record}
+      />,
+    );
+    await inView();
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(record).not.toHaveBeenCalled();
+  });
   it("saves the answer before optional reasons and records only structured context", async () => {
     const record = jest.fn(async (args: any) => ({
       ...survey,
