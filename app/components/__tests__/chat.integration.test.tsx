@@ -1396,6 +1396,35 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("exposes a saved Ask task before a manual stop", async () => {
+      window.history.replaceState({}, "", "/");
+      mockDesktopState = { chatMode: "ask" };
+      global.fetch = jest
+        .fn<typeof fetch>()
+        .mockResolvedValue({ ok: true } as Response);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+        onFinish: (result: { isAbort: boolean; isError: boolean }) => void;
+      };
+      await act(async () => {
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ chatId: "queued-message-id", messages: [] }),
+        });
+      });
+      expect(window.location.pathname).toBe("/c/queued-message-id");
+      act(() => options.onFinish({ isAbort: true, isError: false }));
+      expect(window.location.pathname).toBe("/c/queued-message-id");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+    });
+
     it("does not turn an attachment admission error into a saved-task route on finish", () => {
       window.history.replaceState({}, "", "/");
       render(

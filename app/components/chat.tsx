@@ -1007,7 +1007,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             handleAgentLongRunClosed,
           );
         }
-        return fetchWithErrorHandlers(input, init);
+        const requestChatId = activeChatIdRef.current;
+        const requestGeneration = agentLongRequestGenerationRef.current;
+        const response = await fetchWithErrorHandlers(input, init);
+        // Ask persists its chat before returning a successful response. Expose
+        // that route now so stopping the stream still leaves a reloadable task.
+        if (
+          init?.method === "POST" &&
+          response.ok &&
+          !init.signal?.aborted &&
+          isChatMountedRef.current &&
+          activeChatIdRef.current === requestChatId &&
+          agentLongRequestGenerationRef.current === requestGeneration &&
+          finalizeNewChatRoute({
+            chatId: requestChatId,
+            isAbort: false,
+            isExistingChat: isExistingChatRef.current,
+          })
+        ) {
+          removeDraft("new");
+          setIsExistingChat(true);
+        }
+        return response;
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the Trigger-backed Agent resume endpoint when there is a stored
