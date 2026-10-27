@@ -24,12 +24,12 @@ function fixture(screenshotExitCode = 0) {
   const sandbox = {
     commands: {
       run: jest.fn(async (command: string) => {
-        if (command.includes("stream status"))
+        if (command.includes('"action":"stream_status"'))
           return {
             exitCode: 0,
             stdout: JSON.stringify({ data: { port: 1234 } }),
           };
-        if (command.includes("screenshot '"))
+        if (command.includes('"action":"screenshot"'))
           return { exitCode: screenshotExitCode, stdout: "" };
         return {
           exitCode: 0,
@@ -65,14 +65,8 @@ it("replaces an undated cached preview with a newly captured image for handoff",
   );
   expect(result.capturedAt).toBeGreaterThanOrEqual(before);
   expect(sandbox.commands.run).toHaveBeenCalledWith(
-    expect.stringContaining("screenshot '"),
-    expect.objectContaining({
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${location.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${location.directory}/config.json`,
-        AGENT_BROWSER_SESSION: "default",
-      },
-    }),
+    expect.stringContaining('"action":"screenshot"'),
+    expect.objectContaining({ user: "root" }),
   );
   expect(sandbox.files.remove).toHaveBeenCalledWith(
     expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
@@ -118,19 +112,17 @@ it("resizes only the bound browser session and returns a fresh frame", async () 
     844,
   );
   expect(sandbox.commands.run).toHaveBeenCalledWith(
-    "agent-browser set viewport 390 844 1",
-    expect.objectContaining({
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${location.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${location.directory}/config.json`,
-        AGENT_BROWSER_SESSION: "child-one",
-      },
-    }),
+    expect.stringContaining(
+      '"action":"viewport","width":390,"height":844,"deviceScaleFactor":1',
+    ),
+    expect.objectContaining({ user: "root" }),
   );
   expect(result.image).toBe(
     `data:image/jpeg;base64,${fresh.toString("base64")}`,
   );
   expect(result.browserSessionName).toBe("child-one");
+  expect(result.width).toBe(390);
+  expect(result.height).toBe(844);
 });
 it("rejects unbounded viewport dimensions before executing a command", async () => {
   const sandbox = fixture();
