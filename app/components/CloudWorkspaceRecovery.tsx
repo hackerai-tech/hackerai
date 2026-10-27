@@ -43,6 +43,10 @@ export function CloudWorkspaceRecovery({
     return () => controller.abort();
   }, [refresh, surface]);
   useEffect(() => {
+    // Another tab can confirm an offered or deferred recovery. Keep reading
+    // server state until it settles, without submitting consent from this tab.
+    // Abort older reads while a local decision is being submitted.
+    if (busy) return;
     // The acquisition deadline can close its stream before failure persistence
     // finishes. Reconcile that event independently, with six reads and backoff.
     const checkingRecordedFailure =
@@ -50,6 +54,8 @@ export function CloudWorkspaceRecovery({
     if (
       view.status !== "recovering" &&
       view.status !== "waiting" &&
+      view.status !== "offered" &&
+      view.status !== "declined" &&
       !checkingRecordedFailure
     )
       return;
@@ -78,7 +84,7 @@ export function CloudWorkspaceRecovery({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view.status, refresh, surface]);
+  }, [view.status, busy, refresh, surface]);
   useEffect(() => {
     if (
       view.status === "offered" &&

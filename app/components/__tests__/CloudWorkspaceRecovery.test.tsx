@@ -16,6 +16,84 @@ beforeEach(() => {
   global.fetch = fetchMock;
 });
 const respond = (body: unknown) => ({ ok: true, json: async () => body });
+it("ignores an older status read after this tab submits consent", async () => {
+  jest.useFakeTimers();
+  try {
+    let finishRead!: (response: ReturnType<typeof respond>) => void;
+    fetchMock
+      .mockResolvedValueOnce(respond({ status: "offered", token }))
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (finishRead = resolve)),
+      )
+      .mockResolvedValueOnce(
+        respond({ status: "recovering", step: "backup_created" }),
+      );
+    render(<CloudWorkspaceRecovery />);
+    const confirm = await screen.findByRole("button", {
+      name: "Recover workspace",
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    fireEvent.click(confirm);
+    await screen.findByText(/Saving the recovered environment/);
+    await act(async () => {
+      finishRead(respond({ status: "offered", token }));
+    });
+    expect(screen.getByText(/Saving the recovered environment/)).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Recover workspace" }),
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+    ).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it.each(["offered", "declined"])(
+  "reconciles a %s tab when another tab confirms recovery, without submitting consent",
+  async (status) => {
+    jest.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(respond({ status, token }))
+        .mockResolvedValueOnce(
+          respond({ status: "recovering", step: "backup_created" }),
+        )
+        .mockResolvedValue(respond({ status: "recovered" }));
+      render(<CloudWorkspaceRecovery surface="workspace_status" />);
+      await screen.findByRole("button", {
+        name: status === "offered" ? "Recover workspace" : "Review recovery",
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5000);
+      });
+      expect(
+        screen.getByText(/Saving the recovered environment/),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Recover workspace" }),
+      ).not.toBeInTheDocument();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5000);
+      });
+      expect(screen.getByText(/Workspace ready/)).toBeVisible();
+      const settledReads = fetchMock.mock.calls.length;
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(30000);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(settledReads);
+      expect(
+        fetchMock.mock.calls.filter(([, opts]) => opts?.method === "POST"),
+      ).toHaveLength(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
 it("renders informed consent without submitting or replaying a task", async () => {
   fetchMock.mockResolvedValue(respond({ status: "offered", token }));
   render(<CloudWorkspaceRecovery />);
