@@ -1,6 +1,11 @@
 import { isRecoverableE2BSandboxVersion } from "@/lib/ai/tools/utils/e2b-sandbox-version";
 import { createHmac } from "node:crypto";
-import { Sandbox } from "@e2b/code-interpreter";
+import {
+  Sandbox,
+  SandboxError,
+  RateLimitError,
+  ServiceBusyError,
+} from "@e2b/code-interpreter";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { z } from "zod";
 import {
@@ -64,6 +69,20 @@ export type RecoveryView = {
 };
 export class RecoveryUnavailable extends Error {}
 class RecoveryBusy extends RecoveryUnavailable {}
+function eligibilityFailureStatus(error: unknown): "waiting" | "support" {
+  // Only retry status reads. Consent and recovery mutations still fail closed.
+  // The SDK's REST request deadline rejects with a DOM TimeoutError.
+  const temporaryReadFailure =
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof TypeError && error.message === "fetch failed") ||
+    error instanceof RateLimitError ||
+    error instanceof ServiceBusyError ||
+    (error instanceof SandboxError &&
+      [500, 502, 504, 529].includes(error.statusCode ?? 0));
+  return error instanceof RecoveryBusy || temporaryReadFailure
+    ? "waiting"
+    : "support";
+}
 function targetAuthorization(userId: string, consent: RecoveryConsent) {
   const all = z
     .partialRecord(
@@ -302,7 +321,7 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
       await assertEligible(userId, consent);
       return { status: "offered", token: consent.token };
     } catch (error) {
-      return { status: error instanceof RecoveryBusy ? "waiting" : "support" };
+      return { status: eligibilityFailureStatus(error) };
     }
   }
   const failures = await readFailures(userId);
@@ -318,7 +337,7 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
   try {
     await assertEligible(userId, candidate);
   } catch (error) {
-    return { status: error instanceof RecoveryBusy ? "waiting" : "support" };
+    return { status: eligibilityFailureStatus(error) };
   }
   const offered = await offerConsent(userId, failures);
   return offered.status === "offered"
@@ -346,6 +365,7 @@ export async function confirmRecovery(
   userId: string,
   token: string,
   confirmed: boolean,
+  organizationId?: string,
 ) {
   if (!(await enabled(userId))) throw new RecoveryUnavailable();
   const consent = await readConsent(userId);
@@ -353,8 +373,12 @@ export async function confirmRecovery(
   if (consent.status !== "offered") return null;
   if (Date.now() - consent.issuedAt > 10 * 60000)
     throw new RecoveryUnavailable();
-  if (confirmed) await assertEligible(userId, consent);
-  if (!(await decideConsent(userId, consent, confirmed))) return null;
+  if (confirmed) {
+    if (!organizationId) throw new RecoveryUnavailable();
+    await assertEligible(userId, consent);
+  }
+  if (!(await decideConsent(userId, consent, confirmed, organizationId)))
+    return null;
   return confirmed ? consent : null;
 }
 export async function executeCustomerRecovery(
@@ -376,7 +400,13 @@ export async function executeCustomerRecovery(
     if (Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000)
       throw new RecoveryUnavailable();
     const auth = await assertEligible(userId, consent);
-    const entitlement = await getCurrentAgentEntitlementContext({ userId });
+    // Bind billing authority to the authenticated session that granted consent.
+    // Legacy receipts without that binding cannot authorize provider work.
+    if (!consent.organizationId) throw new RecoveryUnavailable();
+    const entitlement = await getCurrentAgentEntitlementContext({
+      userId,
+      organizationId: consent.organizationId,
+    });
     if (entitlement.subscription === "free") throw new RecoveryUnavailable();
     await assertUserCanMakeCostIncurringRequest(userId);
     await recoverE2BDiskOnly(auth, {

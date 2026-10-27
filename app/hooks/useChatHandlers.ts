@@ -650,11 +650,8 @@ export const useChatHandlers = ({
       return false;
     }
     if (sendDisabledReasonRef.current) return false;
-    // Local staging can fail before a task exists. Keep its optimistic message
-    // and source paths mounted until the server admits the run.
-    if (!isExistingChat && !hasLocalDesktopFiles) {
-      window.history.replaceState({}, "", `/c/${chatId}`);
-    }
+    // Admission can fail before a task exists. The transport finalizes the
+    // saved-task route after admission; keep rejected submissions on the draft.
 
     try {
       // Get file objects from uploaded files - URLs are already resolved in global state

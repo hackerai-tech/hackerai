@@ -168,6 +168,55 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it.each(["agent", "ask"])(
+    "keeps a rejected new %s task on the draft route",
+    async (mode) => {
+      window.history.replaceState({}, "", "/");
+      mockInput = "Run a bounded request";
+      mockChatMode = mode;
+      let rejectAdmission!: (error: Error) => void;
+      const admission = new Promise<void>((_resolve, reject) => {
+        rejectAdmission = reject;
+      });
+      mockSendMessage.mockImplementationOnce(() => admission);
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { result } = renderHook(() =>
+          useChatHandlers({
+            chatId: "rejected-new-task",
+            messages: [],
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate: jest.fn(),
+            setMessages: mockSetMessages,
+            isExistingChat: false,
+            status: "ready",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        );
+        await act(async () => {
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any);
+        });
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: mockInput }),
+          expect.anything(),
+        );
+        expect(window.location.pathname).toBe("/");
+        await act(async () => {
+          rejectAdmission(new Error("Workspace recovery blocks admission"));
+          await admission.catch(() => {});
+        });
+        // Reload must resolve the draft page, not an unsaved /c/<id> route.
+        expect(window.location.pathname).toBe("/");
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("keeps a new local-upload turn mounted on the draft route until admission", async () => {
     window.history.replaceState({}, "", "/");
     mockInput = "Read these files";
