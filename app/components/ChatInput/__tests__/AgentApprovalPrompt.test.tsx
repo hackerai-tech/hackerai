@@ -1,6 +1,12 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockSendToolApproval = jest.fn(() => Promise.resolve());
@@ -332,6 +338,101 @@ describe("AgentApprovalPrompt", () => {
         targetPrefix: JSON.stringify(["agent-command-prefix-v2", argv]),
       }),
     );
+  });
+
+  it("reviews the complete long scope before submitting unchanged reusable authority", async () => {
+    const user = userEvent.setup();
+    const argument = `start-${"x".repeat(5000)}-end`;
+    const argv = ["printf", argument];
+    render(
+      <AgentApprovalPrompt
+        request={{
+          ...request,
+          target: `printf '${argument}'`,
+          prefixRule: argv,
+        }}
+        onStop={mockOnStop}
+      />,
+    );
+    const openMenu = () =>
+      fireEvent.keyDown(
+        screen.getByRole("button", { name: "More approval options" }),
+        { key: "ArrowDown" },
+      );
+    openMenu();
+    const menu = await screen.findByRole("menu");
+    expect(menu.textContent).not.toContain(argument);
+    expect(
+      within(menu).getByText(
+        "Command prefix with 2 arguments. Additional arguments allowed.",
+      ),
+    ).toBeVisible();
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "View full scope" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Review approval scope",
+    });
+    const fullScope = within(dialog).getByLabelText("Full approval scope");
+    expect(fullScope.textContent).toContain(argument);
+    expect(fullScope).toHaveAttribute("translate", "no");
+    expect(fullScope).toHaveFocus();
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "More approval options" }),
+    ).toHaveFocus();
+    openMenu();
+    await user.click(
+      await screen.findByRole("menuitem", { name: "View full scope" }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Allow this conversation",
+      }),
+    );
+    expect(mockSendToolApproval).toHaveBeenCalledWith({
+      approvalId: request.approvalId,
+      toolCallId: request.toolCallId,
+      decision: "approve",
+      grant: "target_prefix",
+      targetKind: "terminal_command",
+      targetPrefix: JSON.stringify(["agent-command-prefix-v2", argv]),
+    });
+  });
+
+  it("closes scope review when the pending scope changes", async () => {
+    const argv = ["printf", "x".repeat(500)];
+    const longRequest = {
+      ...request,
+      target: argv.join(" "),
+      prefixRule: argv,
+    };
+    const { rerender } = render(
+      <AgentApprovalPrompt request={longRequest} onStop={mockOnStop} />,
+    );
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "More approval options" }),
+      { key: "ArrowDown" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "View full scope" }),
+    );
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    rerender(
+      <AgentApprovalPrompt
+        request={{ ...longRequest, prefixRule: ["printf"] }}
+        onStop={mockOnStop}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(mockSendToolApproval).not.toHaveBeenCalled();
   });
 
   it("does not offer conversation reuse for an unsafe command", () => {
