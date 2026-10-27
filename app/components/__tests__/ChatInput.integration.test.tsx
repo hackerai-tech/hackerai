@@ -25,6 +25,7 @@ import {
   getDraftContentById,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
+import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
 
 let mockSandboxState: Partial<
@@ -158,6 +159,24 @@ const NewChatAttachmentSubmitHarness = ({
         chatId="chat-1"
       />
     </>
+  );
+};
+
+const StableAttachmentSubmitHarness = () => {
+  const { clearUploadedFiles } = useGlobalState();
+  const { clearInput } = useComposerActions();
+  return (
+    <ChatInput
+      onSubmit={async () => {
+        await Promise.resolve();
+        clearInput();
+        clearUploadedFiles();
+        return true;
+      }}
+      onStop={jest.fn()}
+      status="streaming"
+      chatId="stable-attachment"
+    />
   );
 };
 
@@ -1469,6 +1488,40 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Submit Behavior Integration", () => {
+    it("removes an accepted attachment draft without changing the chat id", async () => {
+      const file: UploadedFileState = {
+        file: new File(["image"], "stable.png", { type: "image/png" }),
+        uploaded: true,
+        uploading: false,
+        storage: "s3",
+        fileId: "stable-file",
+        tokens: 12,
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach stable file" />
+          <StableAttachmentSubmitHarness />
+        </TestWrapper>,
+      );
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Submit attachment" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Attach stable file" }),
+      );
+      expect(await screen.findByAltText("stable.png")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(getDraftAttachmentsById("stable-attachment")).toHaveLength(1),
+      );
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => {
+        expect(screen.getByRole("textbox")).toHaveValue("");
+        expect(screen.queryByAltText("stable.png")).not.toBeInTheDocument();
+        expect(getDraftContentById("stable-attachment")).toBeNull();
+        expect(getDraftAttachmentsById("stable-attachment")).toEqual([]);
+      });
+    });
+
     it("accepts an Enter submission during startup before the first model response", async () => {
       const submit = jest.fn(async () => true);
       render(

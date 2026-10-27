@@ -149,6 +149,7 @@ const messages: ChatMessage[] = [
 describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockQueueMessage.mockReset();
     mockQueueMessage.mockReturnValue("queued-1");
     mockInput = "";
     mockUploadedFiles = [];
@@ -248,6 +249,60 @@ describe("useChatHandlers steer todo handoff", () => {
     });
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["submission", "Send now"])(
+    "retains a summary steer chosen by %s until an earlier handoff releases",
+    async (source) => {
+      jest.useFakeTimers();
+      try {
+        const { result, rerender } = renderSummarySteer();
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+        await act(async () => result.current.handleSendNow("queued-1"));
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        const second = { id: "queued-2", text: "Second", timestamp: 124 };
+        mockMessageQueue = [...mockMessageQueue, second];
+        mockQueueMessage.mockReturnValueOnce("queued-2");
+        mockInput = "Second";
+        rerender({
+          isSummarizing: true,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+        await act(async () => {
+          if (source === "Send now")
+            await result.current.handleSendNow("queued-2");
+          else
+            await result.current.handleSubmit({
+              preventDefault: jest.fn(),
+            } as any);
+        });
+        await act(async () => {
+          rerender({
+            isSummarizing: false,
+            chatId: "chat-1",
+            currentMessages: messages,
+          });
+        });
+        expect(result.current.hasPendingSummarySteer).toBe(true);
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        await act(async () => jest.advanceTimersByTime(200));
+        expect(mockSendMessage).toHaveBeenCalledTimes(2);
+        expect(mockSendMessage).toHaveBeenLastCalledWith(
+          expect.objectContaining({ text: "Second" }),
+          expect.any(Object),
+        );
+        expect(result.current.hasPendingSummarySteer).toBe(false);
+        await act(async () => jest.advanceTimersByTime(200));
+        expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it.each(["queue", "stop-and-send"] as const)(
     "queues a new %s submission during summarization and steers immediately afterward",

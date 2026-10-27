@@ -176,6 +176,7 @@ export const useChatHandlers = ({
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
   const stopGenerationRef = useRef(0);
+  const [sendNowReleaseVersion, setSendNowReleaseVersion] = useState(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
   const [summarySteer, setSummarySteer] = useState<{
@@ -1195,17 +1196,13 @@ export const useChatHandlers = ({
   ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
-    if (
-      !message ||
-      message.deliveryStatus === "sending" ||
-      isSendingNowRef.current
-    )
-      return;
+    if (!message || message.deliveryStatus === "sending") return;
     if (isSummarizingRef.current) {
       hasManuallyStoppedRef.current = false;
       setSummarySteer({ chatId, messageId, options });
       return;
     }
+    if (isSendingNowRef.current) return;
     const stopGeneration = stopGenerationRef.current;
     resetAutoContinueCount?.();
 
@@ -1281,6 +1278,7 @@ export const useChatHandlers = ({
       // Clear flag after a brief delay to allow status to change
       setTimeout(() => {
         isSendingNowRef.current = false;
+        setSendNowReleaseVersion((version) => version + 1);
       }, 200);
     }
   };
@@ -1299,7 +1297,8 @@ export const useChatHandlers = ({
       isSummarizing ||
       sendDisabledReason ||
       editingQueuedMessageId != null ||
-      hasManuallyStoppedRef.current
+      hasManuallyStoppedRef.current ||
+      isSendingNowRef.current
     ) {
       return;
     }
@@ -1317,6 +1316,8 @@ export const useChatHandlers = ({
     hasManuallyStoppedRef,
     messageQueue,
     handleSendNowRef,
+    isSendingNowRef,
+    sendNowReleaseVersion,
   ]);
 
   return {
