@@ -52,11 +52,24 @@ function promisedImmediateHandoff(text: string): boolean {
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/^\s*>.*$/gm, "")
     .replace(/\*\*|__/g, "");
+  if (
+    /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i.test(
+      prose,
+    )
+  )
+    return true;
   return [
-    /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i,
-    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\s*(?:[.!—–:,]|$)/i,
+    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/i,
     /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/i,
-  ].some((pattern) => pattern.test(prose));
+  ].some((pattern) => {
+    const match = pattern.exec(prose);
+    if (!match) return false;
+    const continuation = prose.slice(match.index + match[0].length);
+    // Accept bounded immediate qualifiers, but not an unfinished setup promise.
+    return /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:not\s+)?(?:until|after|once|when)\b))/i.test(
+      continuation,
+    );
+  });
 }
 
 /** Repair a declared, requested handoff at normal completion. The SDK executes

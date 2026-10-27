@@ -131,6 +131,10 @@ it.each([
   "I’ll wait for you to take control. Choose Send and continue when done.",
   "I'm pausing now and waiting for you to take control.",
   "The browser is now ready for you to take control.",
+  "I'll wait for you to take control now.",
+  "I'll wait for you to take control in the browser sidebar.",
+  "I'll wait for you to take control, then I'll continue after you resume.",
+  "The browser is ready for you to take control right now.",
 ])(
   "recovers an immediate declaration with case and punctuation: %s",
   async (text) => {
@@ -200,6 +204,10 @@ it.each([
   "After setup, I'll be handing control over to you.",
   "I'll wait for you to take control after setup.",
   "I am not handing control over now.",
+  "I'll wait for you to take control, but not until after I finish setup.",
+  "I'll wait for you to take control, after setup.",
+  "The browser is ready for you to take control after setup.",
+  "The browser is ready for you to take control, once setup finishes.",
   "> Handing control over now. Take control in the sidebar.",
   "```text\nHanding control over now.\n```",
   "```text\nHanding control over now.",
