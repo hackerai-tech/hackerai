@@ -1,3 +1,4 @@
+import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
@@ -895,6 +896,12 @@ export const createChatHandler = () => {
         isUserAborted: () => userStopSignal.signal.aborted,
       });
       chatLogger.startStream();
+      const observeFinish = createChatFinishObserver({
+        requestId,
+        userId,
+        chatId,
+        mode,
+      });
 
       const stream = createUIMessageStream({
         onError: (error) => {
@@ -2413,7 +2420,11 @@ export const createChatHandler = () => {
                                 // Cleanup for retry
                                 preemptiveTimeout?.clear();
                                 if (!subscriberStopped) {
-                                  await cancellationSubscriber.stop();
+                                  await observeFinish(
+                                    "stop_cancellation_subscriber",
+                                    () => cancellationSubscriber.stop(),
+                                    "provider_retry",
+                                  );
                                   subscriberStopped = true;
                                 }
 
@@ -2444,11 +2455,19 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
-                                await drainBackgroundStreamWork();
+                                await observeFinish(
+                                  "drain_background_work",
+                                  () => drainBackgroundStreamWork(),
+                                  "provider_retry",
+                                );
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
-                                await deductAccumulatedUsage(retryMessageId);
+                                await observeFinish(
+                                  "settle_usage",
+                                  () => deductAccumulatedUsage(retryMessageId),
+                                  "provider_retry",
+                                );
                                 const providerContentBlocked =
                                   isProviderContentFilterFinishReason(
                                     state.streamFinishReason,
@@ -2536,7 +2555,11 @@ export const createChatHandler = () => {
                                   });
                                 }
 
-                                const generatedTitle = await titlePromise;
+                                const generatedTitle = await observeFinish(
+                                  "wait_title_generation",
+                                  () => titlePromise,
+                                  "provider_retry",
+                                );
 
                                 {
                                   const mergedTodos =
@@ -2550,18 +2573,28 @@ export const createChatHandler = () => {
                                     state.streamFinishReason ||
                                     mergedTodos.length > 0
                                   ) {
-                                    await updateChat({
-                                      chatId,
-                                      title: generatedTitle,
-                                      finishReason: state.streamFinishReason,
-                                      todos: mergedTodos,
-                                      defaultModelSlug: mode,
-                                      sandboxType:
-                                        sandboxManager.getEffectivePreference(),
-                                      selectedModel: selectedModelOverride,
-                                    });
+                                    await observeFinish(
+                                      "update_chat",
+                                      () =>
+                                        updateChat({
+                                          chatId,
+                                          title: generatedTitle,
+                                          finishReason:
+                                            state.streamFinishReason,
+                                          todos: mergedTodos,
+                                          defaultModelSlug: mode,
+                                          sandboxType:
+                                            sandboxManager.getEffectivePreference(),
+                                          selectedModel: selectedModelOverride,
+                                        }),
+                                      "provider_retry",
+                                    );
                                   } else {
-                                    await prepareForNewStream({ chatId });
+                                    await observeFinish(
+                                      "prepare_new_stream",
+                                      () => prepareForNewStream({ chatId }),
+                                      "provider_retry",
+                                    );
                                   }
 
                                   const accumulatedFiles =
@@ -2579,33 +2612,41 @@ export const createChatHandler = () => {
                                         msg,
                                       );
 
-                                    await saveMessage({
-                                      chatId,
-                                      userId,
-                                      message: processed,
-                                      extraFileIds: newFileIds,
-                                      usage: state.streamUsage,
-                                      model: state.responseModel,
-                                      mode,
-                                      generationStartedAt: fallbackStartTime,
-                                      generationTimeMs:
-                                        Date.now() - fallbackStartTime,
-                                      finishReason: state.streamFinishReason,
-                                      userInitiatedAbort:
-                                        retryAborted &&
-                                        !(
-                                          preemptiveTimeout?.isPreemptive() ??
-                                          false
-                                        ) &&
-                                        !state.stoppedDueToBudgetExhaustion &&
-                                        !state.stoppedDueToAgentRunSpendCap &&
-                                        !state.stoppedDueToElapsedTimeout,
-                                      abliterationRouting:
-                                        abliteratedTelemetry?.getRoutingMarker(
-                                          !retryAborted &&
-                                            state.streamFinishReason === "stop",
-                                        ),
-                                    });
+                                    await observeFinish(
+                                      "save_message",
+                                      () =>
+                                        saveMessage({
+                                          chatId,
+                                          userId,
+                                          message: processed,
+                                          extraFileIds: newFileIds,
+                                          usage: state.streamUsage,
+                                          model: state.responseModel,
+                                          mode,
+                                          generationStartedAt:
+                                            fallbackStartTime,
+                                          generationTimeMs:
+                                            Date.now() - fallbackStartTime,
+                                          finishReason:
+                                            state.streamFinishReason,
+                                          userInitiatedAbort:
+                                            retryAborted &&
+                                            !(
+                                              preemptiveTimeout?.isPreemptive() ??
+                                              false
+                                            ) &&
+                                            !state.stoppedDueToBudgetExhaustion &&
+                                            !state.stoppedDueToAgentRunSpendCap &&
+                                            !state.stoppedDueToElapsedTimeout,
+                                          abliterationRouting:
+                                            abliteratedTelemetry?.getRoutingMarker(
+                                              !retryAborted &&
+                                                state.streamFinishReason ===
+                                                  "stop",
+                                            ),
+                                        }),
+                                      "provider_retry",
+                                    );
                                   }
 
                                   // Send file metadata via stream for resumable stream clients
@@ -2664,7 +2705,11 @@ export const createChatHandler = () => {
 
                                 shutdownPostHog(posthog);
                               } finally {
-                                await releaseFreeRunLockOnce();
+                                await observeFinish(
+                                  "release_run_lock",
+                                  () => releaseFreeRunLockOnce(),
+                                  "provider_retry",
+                                );
                               }
                             },
                             sendReasoning: true,
@@ -2786,7 +2831,11 @@ export const createChatHandler = () => {
 
                     // Stop cancellation subscriber
                     stepStart = beginStep("stop_cancellation_subscriber");
-                    await cancellationSubscriber.stop();
+                    await observeFinish(
+                      "stop_cancellation_subscriber",
+                      () => cancellationSubscriber.stop(),
+                      "primary",
+                    );
                     subscriberStopped = true;
                     logStep("stop_cancellation_subscriber", stepStart);
 
@@ -2811,11 +2860,19 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
-                    await drainBackgroundStreamWork();
+                    await observeFinish(
+                      "drain_background_work",
+                      () => drainBackgroundStreamWork(),
+                      "primary",
+                    );
                     // Final reconciliation can change the finish reason to
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
-                    await deductAccumulatedUsage();
+                    await observeFinish(
+                      "settle_usage",
+                      () => deductAccumulatedUsage(),
+                      "primary",
+                    );
                     const finalProviderContentBlocked =
                       isProviderContentFilterFinishReason(
                         state.streamFinishReason,
@@ -2905,7 +2962,11 @@ export const createChatHandler = () => {
 
                     // Always wait for title generation to complete
                     stepStart = beginStep("wait_title_generation");
-                    const generatedTitle = await titlePromise;
+                    const generatedTitle = await observeFinish(
+                      "wait_title_generation",
+                      () => titlePromise,
+                      "primary",
+                    );
                     logStep("wait_title_generation", stepStart);
 
                     {
@@ -2927,20 +2988,30 @@ export const createChatHandler = () => {
                       if (shouldPersist) {
                         // updateChat automatically clears stream state (active_stream_id and canceled_at)
                         stepStart = beginStep("update_chat");
-                        await updateChat({
-                          chatId,
-                          title: generatedTitle,
-                          finishReason: state.streamFinishReason,
-                          todos: mergedTodos,
-                          defaultModelSlug: mode,
-                          sandboxType: sandboxManager.getEffectivePreference(),
-                          selectedModel: selectedModelOverride,
-                        });
+                        await observeFinish(
+                          "update_chat",
+                          () =>
+                            updateChat({
+                              chatId,
+                              title: generatedTitle,
+                              finishReason: state.streamFinishReason,
+                              todos: mergedTodos,
+                              defaultModelSlug: mode,
+                              sandboxType:
+                                sandboxManager.getEffectivePreference(),
+                              selectedModel: selectedModelOverride,
+                            }),
+                          "primary",
+                        );
                         logStep("update_chat", stepStart);
                       } else {
                         // If not persisting, still need to clear stream state
                         stepStart = beginStep("prepare_for_new_stream");
-                        await prepareForNewStream({ chatId });
+                        await observeFinish(
+                          "prepare_new_stream",
+                          () => prepareForNewStream({ chatId }),
+                          "primary",
+                        );
                         logStep("prepare_for_new_stream", stepStart);
                       }
 
@@ -2994,10 +3065,11 @@ export const createChatHandler = () => {
                       if (!resolvedUsage && isAborted) {
                         stepStart = beginStep("resolve_stream_usage");
                         try {
-                          resolvedUsage = (await result.usage) as Record<
-                            string,
-                            unknown
-                          >;
+                          resolvedUsage = (await observeFinish(
+                            "resolve_usage",
+                            () => result.usage,
+                            "primary",
+                          )) as Record<string, unknown>;
                         } catch {
                           // Usage unavailable on abort - continue without it
                         } finally {
@@ -3049,8 +3121,16 @@ export const createChatHandler = () => {
                             has_usage_to_record: hasUsageToRecord,
                           }),
                         );
-                        await drainBackgroundStreamWork();
-                        await deductAccumulatedUsage();
+                        await observeFinish(
+                          "drain_background_work",
+                          () => drainBackgroundStreamWork(),
+                          "primary",
+                        );
+                        await observeFinish(
+                          "settle_usage",
+                          () => deductAccumulatedUsage(),
+                          "primary",
+                        );
                         shutdownPostHog(posthog);
                         return;
                       }
@@ -3077,39 +3157,45 @@ export const createChatHandler = () => {
                         // only patch existing messages (add files/usage), don't create new ones.
                         // Budget/provider/system aborts must insert partial work if no row exists.
                         try {
-                          await saveMessage({
-                            chatId,
-                            userId,
-                            message: processedMessage,
-                            extraFileIds: newFileIds,
-                            model: state.responseModel || configuredModelId,
-                            mode,
-                            generationStartedAt:
-                              processedMessage.role === "assistant"
-                                ? streamStartTime
-                                : undefined,
-                            generationTimeMs: Date.now() - streamStartTime,
-                            finishReason: state.streamFinishReason,
-                            usage: resolvedUsage ?? state.streamUsage,
-                            abliterationRouting:
-                              abliteratedTelemetry?.getRoutingMarker(
-                                !isAborted &&
-                                  state.streamFinishReason === "stop",
-                              ),
-                            userInitiatedAbort: isUserInitiatedAbort,
-                            updateOnly: shouldUseUpdateOnlyForAbortedSave({
-                              isAborted,
-                              isUserInitiatedAbort,
-                            })
-                              ? true
-                              : undefined,
-                            isHidden:
-                              isAutoContinue && processedMessage.role === "user"
-                                ? true
-                                : undefined,
-                            wasAborted: isAborted,
-                            wasPreemptiveTimeout: isPreemptiveAbort,
-                          });
+                          await observeFinish(
+                            "save_message",
+                            () =>
+                              saveMessage({
+                                chatId,
+                                userId,
+                                message: processedMessage,
+                                extraFileIds: newFileIds,
+                                model: state.responseModel || configuredModelId,
+                                mode,
+                                generationStartedAt:
+                                  processedMessage.role === "assistant"
+                                    ? streamStartTime
+                                    : undefined,
+                                generationTimeMs: Date.now() - streamStartTime,
+                                finishReason: state.streamFinishReason,
+                                usage: resolvedUsage ?? state.streamUsage,
+                                abliterationRouting:
+                                  abliteratedTelemetry?.getRoutingMarker(
+                                    !isAborted &&
+                                      state.streamFinishReason === "stop",
+                                  ),
+                                userInitiatedAbort: isUserInitiatedAbort,
+                                updateOnly: shouldUseUpdateOnlyForAbortedSave({
+                                  isAborted,
+                                  isUserInitiatedAbort,
+                                })
+                                  ? true
+                                  : undefined,
+                                isHidden:
+                                  isAutoContinue &&
+                                  processedMessage.role === "user"
+                                    ? true
+                                    : undefined,
+                                wasAborted: isAborted,
+                                wasPreemptiveTimeout: isPreemptiveAbort,
+                              }),
+                            "primary",
+                          );
                         } catch (error) {
                           if (isPreemptiveAbort) {
                             console.error(
@@ -3170,7 +3256,11 @@ export const createChatHandler = () => {
                           : null,
                       });
                       stepStart = beginStep("flush_telemetry");
-                      await phLogger.flush();
+                      await observeFinish(
+                        "flush_telemetry",
+                        () => phLogger.flush(),
+                        "primary",
+                      );
                       logStep("flush_telemetry", stepStart);
                     }
 
@@ -3215,7 +3305,11 @@ export const createChatHandler = () => {
                     shutdownPostHog(posthog);
                   } finally {
                     if (!retryScheduled) {
-                      await releaseFreeRunLockOnce();
+                      await observeFinish(
+                        "release_run_lock",
+                        () => releaseFreeRunLockOnce(),
+                        "primary",
+                      );
                     }
                   }
                 },
