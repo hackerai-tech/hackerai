@@ -4318,6 +4318,8 @@ export const agentLongTask = task({
                     preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
                     preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
                     ...extractErrorDetails(error),
+                    request_id: ctx.run.id,
+                    trigger_run_id: ctx.run.id,
                   },
                 );
                 isRetryWithFallback = true;
