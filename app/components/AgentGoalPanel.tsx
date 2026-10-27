@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ChevronDown,
+  CircleCheck,
   Pause,
   CirclePause,
   CirclePlay,
@@ -329,9 +330,11 @@ export function AgentGoalPanel({
     <div
       id={detailsId}
       className={
-        isMobile
-          ? "space-y-3 border-t pt-3 text-sm"
-          : "mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
+        goal.state === "achieved"
+          ? "space-y-3 text-sm"
+          : isMobile
+            ? "space-y-3 border-t pt-3 text-sm"
+            : "mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
       }
     >
       <p className="text-xs text-muted-foreground">
@@ -428,7 +431,9 @@ export function AgentGoalPanel({
       </ul>
       <details>
         <summary className="cursor-pointer">
-          Completion contract and evidence
+          {goal.state === "achieved"
+            ? "Verification and evidence"
+            : "Completion contract and evidence"}
         </summary>
         <div className="space-y-1 py-2">
           {goal.verificationCommand && (
@@ -480,6 +485,55 @@ export function AgentGoalPanel({
         : ["paused", "canceled"].includes(goal.state)
           ? "text-muted-foreground"
           : "text-foreground";
+  if (goal.state === "achieved") {
+    return (
+      <section
+        aria-label="Agent goal"
+        className={`relative z-10 order-1 flex min-w-0 shrink-0 items-center gap-1 py-1 text-xs text-muted-foreground ${isMobile ? "justify-center" : "mx-3"}`}
+      >
+        <Popover open={expanded} onOpenChange={setExpanded}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={expanded ? "Hide goal details" : "Show goal details"}
+              className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-left hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? "max-w-full" : "flex-1"}`}
+            >
+              <CircleCheck className="size-3.5 shrink-0" aria-hidden="true" />
+              <span role="status" aria-live="polite" className="shrink-0">
+                Goal achieved
+              </span>
+              {goal.startedAt !== undefined && <GoalElapsedTime goal={goal} />}
+              {!isMobile && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="min-w-0 truncate">{goal.objective}</span>
+                </>
+              )}
+              <ChevronDown
+                className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align={isMobile ? "center" : "start"}
+            sideOffset={8}
+            collisionPadding={12}
+            aria-label="Goal achievement details"
+            className="w-[calc(100vw-2rem)] max-w-md max-h-[min(60dvh,var(--radix-popover-content-available-height))] space-y-3 overflow-y-auto overscroll-contain rounded-xl p-3 break-words [overflow-wrap:anywhere]"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium">Goal achieved</h3>
+              {isMobile && actions}
+            </div>
+            {details}
+          </PopoverContent>
+        </Popover>
+        {!isMobile && deleteAction}
+      </section>
+    );
+  }
   if (isMobile) {
     return (
       <section
