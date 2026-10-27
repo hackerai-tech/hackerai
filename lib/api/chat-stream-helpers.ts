@@ -1060,7 +1060,15 @@ export function buildProviderOptions(
   options: FallbackOptions = {},
 ) {
   // Direct provider: never send OpenRouter routing, plugins, or user IDs.
-  if (isAbliterationModel(modelName)) return {} as Record<string, never>;
+  // Large Flash maps xhigh to high, so Max must request the literal max mode.
+  if (isAbliterationModel(modelName)) {
+    return {
+      abliteration: {
+        reasoningEffort:
+          options.selectedModelOverride === "hackerai-max" ? "max" : "high",
+      },
+    } as Record<"abliteration", { reasoningEffort: "max" | "high" }>;
+  }
   const modelId =
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
