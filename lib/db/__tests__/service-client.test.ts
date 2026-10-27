@@ -122,11 +122,11 @@ it("scrubs native validation diagnostics and SDK log lines before returning them
 
 describe("bounded RPC failure diagnostics", () => {
   let warning: jest.SpyInstance;
-  const diagnostics = () =>
+  const diagnostics = (event = "convex_service_rpc_failed") =>
     warning.mock.calls.flatMap(([line]) => {
       try {
         const value = JSON.parse(String(line));
-        return value.event === "convex_service_rpc_failed" ? [value] : [];
+        return value.event === event ? [value] : [];
       } catch {
         return [];
       }
@@ -317,6 +317,151 @@ describe("bounded RPC failure diagnostics", () => {
       expect(warning).not.toHaveBeenCalled();
     },
   );
+
+  describe("pending RPC diagnostics", () => {
+    const pending = () => diagnostics("convex_service_rpc_pending");
+    const deferred = <T>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it.each(["fixture:accept", `fixture:${secret}`])(
+      "reports one pending request without leaking the %s label or arguments",
+      async (path) => {
+        const started = deferred<void>();
+        const headers = deferred<Response>();
+        const body = deferred<string>();
+        const readingBody = deferred<void>();
+        const response = new Response("unused", { status: 201 });
+        jest.spyOn(response, "text").mockImplementation(() => {
+          readingBody.resolve();
+          return body.promise;
+        });
+        const transport = jest.fn(() => {
+          started.resolve();
+          return headers.promise;
+        });
+        const result = createServiceFetch(deployment, transport)(
+          `${deployment}/api/mutation`,
+          request(path),
+        );
+        await started.promise;
+        await jest.advanceTimersByTimeAsync(9999);
+        expect(pending()).toEqual([]);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(pending()).toEqual([
+          expect.objectContaining({
+            rpc_kind: "mutation",
+            stage: "request",
+            transport_elapsed_ms: 10000,
+          }),
+        ]);
+        expect(pending()[0]).not.toHaveProperty("status_code");
+        if (path === "fixture:accept")
+          expect(pending()[0].function_name).toBe(path);
+        else expect(pending()[0]).not.toHaveProperty("function_name");
+        headers.resolve(response);
+        await readingBody.promise;
+        await jest.advanceTimersByTimeAsync(20000);
+        expect(pending()).toHaveLength(1);
+        body.resolve("PRIVATE_BODY");
+        const completed = await result;
+        expect(jest.getTimerCount()).toBe(0);
+        jest.useRealTimers();
+        expect(completed.status).toBe(201);
+        expect(await completed.text()).toBe("PRIVATE_BODY");
+        expect(transport).toHaveBeenCalledTimes(1);
+        for (const canary of [
+          secret,
+          "PRIVATE_TARGET",
+          "PRIVATE_HEADER",
+          "PRIVATE_BODY",
+          deployment,
+        ])
+          expect(JSON.stringify(pending())).not.toContain(canary);
+      },
+    );
+
+    it("identifies a pending response body after headers arrive", async () => {
+      const body = deferred<string>();
+      const readingBody = deferred<void>();
+      const response = new Response("unused", { status: 200 });
+      jest.spyOn(response, "text").mockImplementation(() => {
+        readingBody.resolve();
+        return body.promise;
+      });
+      const result = createServiceFetch(
+        deployment,
+        jest.fn().mockResolvedValue(response),
+      )(`${deployment}/api/query`, request());
+      await readingBody.promise;
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(pending()).toEqual([
+        expect.objectContaining({ stage: "response_body", status_code: 200 }),
+      ]);
+      body.resolve('{"value":"ok"}');
+      const completed = await result;
+      expect(jest.getTimerCount()).toBe(0);
+      jest.useRealTimers();
+      expect(await completed.text()).toBe('{"value":"ok"}');
+    });
+
+    it.each(["success", "request_failure", "body_failure"])(
+      "clears the timer after fast %s without changing the result",
+      async (outcome) => {
+        const failure = new Error("original transport failure");
+        const response = new Response("unused");
+        const read = jest.spyOn(response, "text");
+        if (outcome === "body_failure") read.mockRejectedValue(failure);
+        else read.mockResolvedValue('{"value":"ok"}');
+        const transport = jest.fn();
+        if (outcome === "request_failure") transport.mockRejectedValue(failure);
+        else transport.mockResolvedValue(response);
+        const result = createServiceFetch(deployment, transport)(
+          `${deployment}/api/query`,
+          request(),
+        );
+        let completed: Response | undefined;
+        if (outcome === "success") completed = await result;
+        else await expect(result).rejects.toBe(failure);
+        expect(jest.getTimerCount()).toBe(0);
+        await jest.advanceTimersByTimeAsync(20000);
+        expect(pending()).toEqual([]);
+        expect(transport).toHaveBeenCalledTimes(1);
+        jest.useRealTimers();
+        if (completed) expect(await completed.text()).toBe('{"value":"ok"}');
+      },
+    );
+
+    it("does not interrupt a pending RPC when its warning logger throws", async () => {
+      const started = deferred<void>();
+      const headers = deferred<Response>();
+      const result = createServiceFetch(deployment, () => {
+        started.resolve();
+        return headers.promise;
+      })(`${deployment}/api/query`, request());
+      await started.promise;
+      warning.mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(warning).toHaveBeenCalledTimes(1);
+      const response = new Response("unused");
+      jest.spyOn(response, "text").mockResolvedValue('{"value":"ok"}');
+      headers.resolve(response);
+      const completed = await result;
+      expect(jest.getTimerCount()).toBe(0);
+      jest.useRealTimers();
+      expect(await completed.text()).toBe('{"value":"ok"}');
+    });
+  });
 });
 
 it("cancels only the request-scoped client's in-flight transport", async () => {
