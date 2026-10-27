@@ -45,6 +45,55 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
+  it.each([false, true])(
+    "hides an achieved goal only after a newer saved user message (mobile: %s)",
+    async (isMobile) => {
+      mockIsMobile = isMobile;
+      const achieved = {
+        ...goal,
+        state: "achieved",
+        achievedAt: 2000,
+        updatedAt: 2000,
+      };
+      setMockQueryResult(achieved);
+      const panel = (latestSavedUserMessageAt?: number) => (
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+          latestSavedUserMessageAt={latestSavedUserMessageAt}
+        />
+      );
+      const { rerender, unmount } = render(panel(1000));
+      expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+      // Unsaved drafts and failed optimistic sends don't advance this timestamp.
+      rerender(panel(1000));
+      expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+      rerender(panel(3000));
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      unmount();
+      const reloaded = render(panel(3000));
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      setMockQueryResult({ ...achieved, _id: "next-goal", achievedAt: 4000 });
+      reloaded.rerender(panel(3000));
+      expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+      setMockQueryResult({ ...goal, state: "paused", updatedAt: 2000 });
+      reloaded.rerender(panel(3000));
+      expect(screen.getByRole("status")).toHaveTextContent("Paused goal");
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({ method: "POST" }),
+      );
+      await act(async () => {});
+    },
+  );
   it("keeps a paused goal visible and enables Resume after the canceled run settles", async () => {
     const paused = { ...goal, state: "paused", maxRuns: 3, activeRunId: "r1" };
     setMockQueryResult(paused);

@@ -62,6 +62,7 @@ const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
+let mockSavedGoal: Record<string, unknown> | undefined;
 let mockLocalConnections:
   Array<{ connectionId: string; isDesktop: boolean }> | undefined;
 let mockChatHandlerArgs: Parameters<
@@ -105,6 +106,7 @@ jest.mock("convex/react", () => {
     },
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
+      if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
       if (getFunctionName(query) === "localSandbox:listConnections")
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
@@ -265,7 +267,9 @@ jest.mock("../Messages", () => ({
 }));
 
 jest.mock("../ChatInput", () => ({
-  ChatInput: () => <div data-testid="chat-input">ChatInput</div>,
+  ChatInput: ({ goalPanel }: { goalPanel?: React.ReactNode }) => (
+    <div data-testid="chat-input">ChatInput{goalPanel}</div>
+  ),
 }));
 
 let mockBrowserContinue: (message: {
@@ -505,6 +509,7 @@ describe("Chat Component Integration", () => {
     mockIsAtBottom = true;
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
+    mockSavedGoal = undefined;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1024,6 +1029,68 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("dismisses completed goals from saved user messages, not optimistic sends or assistant updates", async () => {
+      const convexReact = require("convex/react");
+      mockRouteParams = { id: "goal-chat" };
+      mockRestoredChat = { id: "goal-chat", default_model_slug: "agent" };
+      mockSavedGoal = {
+        _id: "goal",
+        state: "achieved",
+        objective: "Create marker",
+        criteria: ["Marker exists"],
+        evidence: [],
+        runs: 1,
+        maxRuns: 3,
+        achievedAt: 2000,
+        updatedAt: 2000,
+      };
+      const original = {
+        id: "original",
+        chat_id: "goal-chat",
+        role: "user",
+        parts: [{ type: "text", text: "Create marker" }],
+        created_at: 1000,
+      };
+      const followup = { ...original, id: "followup", created_at: 3000 };
+      const saved = (results: unknown[]) =>
+        convexReact.setMockPaginatedQueryResult({
+          results,
+          status: "Exhausted",
+          loadMore: jest.fn(),
+          isLoading: false,
+        });
+      saved([original]);
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        messages: [{ ...followup, metadata: { createdAt: 3000 } }],
+        error: new Error("Send failed"),
+      });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender, unmount } = render(view());
+      expect(
+        screen.getByRole("button", { name: "Show goal details" }),
+      ).toBeVisible();
+      saved([{ ...followup, role: "assistant" }, original]);
+      rerender(view());
+      expect(
+        screen.getByRole("button", { name: "Show goal details" }),
+      ).toBeVisible();
+      saved([followup, original]);
+      rerender(view());
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      unmount();
+      render(view());
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      await act(async () => {});
+    });
     it("arms the inline survey for a fresh completed response, hides during the next run, and ignores history", () => {
       mockSurveyAuth();
       mockRouteParams = { id: "survey-chat" };

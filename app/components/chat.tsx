@@ -2505,6 +2505,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       key={chatId}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
+      latestSavedUserMessageAt={paginatedMessageResults?.reduce(
+        (latest, message) =>
+          message.role === "user"
+            ? Math.max(latest, message.created_at)
+            : latest,
+        0,
+      )}
       eligible={chatMode === "agent" && subscription !== "free"}
       idle={
         status === "ready" && !activeTriggerRunId && messageQueue.length === 0

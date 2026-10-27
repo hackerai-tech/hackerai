@@ -60,6 +60,7 @@ export function AgentGoalPanel({
   exists,
   eligible,
   idle,
+  latestSavedUserMessageAt,
   disabledReason,
   send,
 }: {
@@ -67,6 +68,7 @@ export function AgentGoalPanel({
   exists: boolean;
   eligible: boolean;
   idle: boolean;
+  latestSavedUserMessageAt?: number;
   disabledReason?: string;
   send: (
     message: { text: string },
@@ -125,6 +127,14 @@ export function AgentGoalPanel({
     // Replacement goals reuse the saved row, but receive a new start time.
   }, [chatId, goal?._id, goal?.startedAt]);
   if (!goal) return null;
+  // Only persisted user messages dismiss completion; optimistic/failed sends
+  // must not hide it. The saved goal and message receipts remain intact.
+  if (
+    goal.state === "achieved" &&
+    latestSavedUserMessageAt !== undefined &&
+    latestSavedUserMessageAt > (goal.achievedAt ?? goal.updatedAt)
+  )
+    return null;
   const active = goal && !["achieved", "canceled"].includes(goal.state);
   const resumable =
     goal &&
