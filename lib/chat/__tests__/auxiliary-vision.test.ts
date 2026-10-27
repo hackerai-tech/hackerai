@@ -28,13 +28,17 @@ describe("auxiliary vision", () => {
   });
 
   it.each([
-    [503, "provider_5xx"],
-    [400, "provider_4xx"],
-    [undefined, "unknown"],
-    ["PRIVATE_STATUS", "unknown"],
+    [503, "provider_5xx", 503],
+    [400, "provider_4xx", 400],
+    [200, "unknown", 200],
+    ["200", "unknown", 200],
+    [99, "unknown", undefined],
+    [600, "unknown", undefined],
+    [undefined, "unknown", undefined],
+    ["PRIVATE_STATUS", "unknown", undefined],
   ] as const)(
     "records bounded provider diagnostics for status %s without changing the failure",
-    async (statusCode, category) => {
+    async (statusCode, category, expectedStatus) => {
       const error = new Error("PRIVATE_PROVIDER_MESSAGE", {
         cause: Object.assign(new Error("PRIVATE_CAUSE"), {
           statusCode,
@@ -66,8 +70,8 @@ describe("auxiliary vision", () => {
         attempt: 1,
         will_retry: false,
       });
-      if (typeof statusCode === "number")
-        expect(warnings[0].provider_status_code).toBe(statusCode);
+      if (expectedStatus !== undefined)
+        expect(warnings[0].provider_status_code).toBe(expectedStatus);
       else expect(warnings[0]).not.toHaveProperty("provider_status_code");
       expect(JSON.stringify(warnings)).not.toMatch(/PRIVATE|private\.invalid/);
     },

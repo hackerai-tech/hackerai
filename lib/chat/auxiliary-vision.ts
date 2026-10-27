@@ -330,7 +330,21 @@ export async function describeImageWithAuxiliaryVision({
           : error;
       const details = extractErrorDetails(failure);
       const category = getProviderErrorCategory(details);
-      const providerStatusCode = getProviderStatusCode(details);
+      // An invalid provider body can fail after HTTP 200. Preserve that wire
+      // status for diagnostics without broadening the retry classifier.
+      const httpStatusCode =
+        typeof details.statusCode === "number"
+          ? details.statusCode
+          : typeof details.statusCode === "string"
+            ? Number(details.statusCode)
+            : undefined;
+      const providerStatusCode =
+        httpStatusCode !== undefined &&
+        Number.isInteger(httpStatusCode) &&
+        httpStatusCode >= 100 &&
+        httpStatusCode <= 599
+          ? httpStatusCode
+          : getProviderStatusCode(details);
       const willRetry =
         attempt === 0 &&
         !abortSignal?.aborted &&
