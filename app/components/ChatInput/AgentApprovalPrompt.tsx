@@ -50,7 +50,14 @@ const getReusableApprovalDescription = (
   grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
 ): string => {
   if (grant.kind === "terminal_command") {
-    return `Commands starting with ${JSON.stringify(grant.argv)}, with any following arguments`;
+    // JSON keeps bidi controls literal; escape them so displayed order cannot
+    // disguise the selected scope. The submitted argv remains unchanged.
+    const displayedArgv = JSON.stringify(grant.argv).replace(
+      /\p{Bidi_Control}/gu,
+      (character) =>
+        `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
+    return `Commands starting with ${displayedArgv}, with any following arguments`;
   }
   if (grant.kind === "terminal_interaction") {
     return `${grant.action} actions in this terminal session`;

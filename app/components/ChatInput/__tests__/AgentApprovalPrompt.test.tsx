@@ -284,6 +284,38 @@ describe("AgentApprovalPrompt", () => {
     );
   });
 
+  it("shows directional controls literally without changing the approved argv", async () => {
+    const argv = ["printf", "\u202Eelif--\u202C", "café"];
+    render(
+      <AgentApprovalPrompt
+        request={{ ...request, target: argv.join(" "), prefixRule: argv }}
+        onStop={mockOnStop}
+      />,
+    );
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "More approval options" }),
+      { key: "ArrowDown", code: "ArrowDown" },
+    );
+    const description =
+      'Commands starting with ["printf","\\u202eelif--\\u202c","café"], with any following arguments';
+    expect(await screen.findByText(description)).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("menuitem", {
+        name: `Allow this conversation: ${description}`,
+      }),
+    );
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "approve",
+        grant: "target_prefix",
+        targetKind: "terminal_command",
+        targetPrefix: JSON.stringify(["agent-command-prefix-v2", argv]),
+      }),
+    );
+  });
+
   it("does not offer conversation reuse for an unsafe command", () => {
     render(
       <AgentApprovalPrompt
