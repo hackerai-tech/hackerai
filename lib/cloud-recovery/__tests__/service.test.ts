@@ -250,6 +250,8 @@ describe.each([false, true])(
       ),
       new RateLimitError("rate limited"),
       Object.assign(new SandboxError("unavailable"), { statusCode: 502 }),
+      Object.assign(new SandboxError("overloaded"), { statusCode: 529 }),
+      new TypeError("fetch failed"),
     ])(
       "keeps temporary getInfo failure %s retryable without authorizing recovery",
       async (error) => {
@@ -267,25 +269,31 @@ describe.each([false, true])(
         });
       },
     );
-    it("rechecks inventory after a temporary provider refusal", async () => {
-      if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
-      jest.mocked(Sandbox.list).mockReturnValueOnce({
-        hasNext: false,
-        nextItems: async () => {
-          throw new ServiceBusyError("busy");
-        },
-      } as never);
-      expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
-      expect(decideConsent).not.toHaveBeenCalled();
-      expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
-      expect(await recoveryView("owner")).toMatchObject({
-        status: "offered",
-        token,
-      });
-    });
+    it.each([new ServiceBusyError("busy"), new TypeError("fetch failed")])(
+      "rechecks inventory after a temporary provider refusal: %s",
+      async (error) => {
+        if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
+        jest.mocked(Sandbox.list).mockReturnValueOnce({
+          hasNext: false,
+          nextItems: async () => {
+            throw error;
+          },
+        } as never);
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "waiting",
+        });
+        expect(decideConsent).not.toHaveBeenCalled();
+        expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "offered",
+          token,
+        });
+      },
+    );
   },
 );
 it.each([
+  new TypeError("programming error"),
   new AuthenticationError("invalid key"),
   new NotFoundError("sandbox absent"),
   new Error("unknown failure"),

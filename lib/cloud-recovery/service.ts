@@ -73,10 +73,11 @@ function eligibilityFailureStatus(error: unknown): "waiting" | "support" {
   // The SDK's REST request deadline rejects with a DOM TimeoutError.
   const temporaryReadFailure =
     (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof TypeError && error.message === "fetch failed") ||
     error instanceof RateLimitError ||
     error instanceof ServiceBusyError ||
     (error instanceof SandboxError &&
-      [500, 502, 504].includes(error.statusCode ?? 0));
+      [500, 502, 504, 529].includes(error.statusCode ?? 0));
   return error instanceof RecoveryBusy || temporaryReadFailure
     ? "waiting"
     : "support";
