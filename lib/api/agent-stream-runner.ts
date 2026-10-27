@@ -1436,6 +1436,18 @@ export async function createAgentStream(
   let trustedHistoryPrefix: ModelMessage[] = [];
   const hasPlatformAnnotationContext = () =>
     ctx.platformAuthorized || state.hasCompletedAbliterationStep;
+  let toolSchemaInputEstimate: Promise<number> | undefined;
+  const getToolSchemaInputEstimate = () =>
+    (toolSchemaInputEstimate ??= Promise.all(
+      Object.entries(ctx.tools).map(async ([name, tool]) => ({
+        name,
+        description: tool.description,
+        schema: await asSchema(tool.inputSchema).jsonSchema,
+        providerOptions: tool.providerOptions,
+      })),
+    )
+      .then((tools) => safeCountTokens(JSON.stringify(tools)))
+      .catch(() => Number.POSITIVE_INFINITY));
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1499,8 +1511,20 @@ export async function createAgentStream(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
         );
-      if (pendingCompactionVerdict)
-        pendingCompactionInputEstimate = lastPreparedInputEstimate;
+      if (pendingCompactionVerdict) {
+        // Include fixed request overhead before falling back to this estimate
+        // when the provider omits usage. All tools are a conservative bound
+        // for steps that activate only a subset.
+        pendingCompactionInputEstimate =
+          lastPreparedInputEstimate +
+          (await getToolSchemaInputEstimate()) +
+          safeCountTokens(
+            JSON.stringify({
+              providerOptions: getStepProviderOptions(effectiveModelName),
+              toolChoice: "auto",
+            }),
+          );
+      }
       lastCompletedResponseMessages = [];
     }
     if (

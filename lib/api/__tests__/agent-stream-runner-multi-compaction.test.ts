@@ -5567,6 +5567,73 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
 
+  it("keeps large tool schemas in the missing-usage recovery estimate", async () => {
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [uiMessage("small-summary", "Keep the objective.")],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const state = initAgentStreamState(
+      [uiMessage("original", "old context ".repeat(2_000))],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: {
+          large_tool: {
+            description: "Inspect local state.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                input: {
+                  type: "string",
+                  description: "schema overhead ".repeat(50_000),
+                },
+              },
+            },
+          },
+        },
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    const initial: ModelMessage[] = [
+      { role: "user", content: "old context ".repeat(2_000) },
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    await stream.onStepFinish({
+      response: { modelId: "test-model", messages: [] },
+    });
+    const next: ModelMessage = { role: "assistant", content: "new work" };
+    await stream.prepareStep({
+      steps: [{ toolResults: [], response: { messages: [next] } }],
+      messages: [...initial, next],
+    });
+    await stream.onStepFinish({
+      response: { modelId: "test-model", messages: [] },
+    });
+
+    state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(true);
+    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
   it("allows compaction after provider rejection recovery without usage", async () => {
     const sdk = jest.requireActual("ai");
     const wrap = jest.mocked(require("ai").wrapLanguageModel);
