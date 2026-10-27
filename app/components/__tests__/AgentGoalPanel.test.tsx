@@ -318,6 +318,14 @@ describe("goal controls", () => {
       expect(
         screen.getByRole("button", { name: "Show goal details" }),
       ).toHaveFocus();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show goal details" }),
+      );
+      fireEvent.click(screen.getByText("Verification and evidence"));
+      fireEvent.click(screen.getByRole("link", { name: "saved run evidence" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
       if (isMobile)
         fireEvent.click(
           screen.getByRole("button", { name: "Show goal details" }),

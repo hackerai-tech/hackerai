@@ -453,6 +453,10 @@ export function AgentGoalPanel({
               <a
                 className="underline"
                 href={getSourceMessageHref(chatId, e.messageId ?? e.runId)}
+                onClick={() => {
+                  setExpanded(false);
+                  setMobileOpen(false);
+                }}
               >
                 saved run evidence
               </a>
