@@ -353,7 +353,7 @@ export function AgentApprovalPrompt({
                     onSelect={() => void submitApproval(true)}
                   >
                     <span>{reusableApprovalLabel}</span>
-                    <span className="whitespace-normal break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    <span className="min-w-0 max-w-full whitespace-normal text-xs text-muted-foreground [overflow-wrap:anywhere]">
                       {reusableApprovalDescription}
                     </span>
                   </DropdownMenuItem>
