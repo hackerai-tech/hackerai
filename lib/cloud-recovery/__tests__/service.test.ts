@@ -35,8 +35,7 @@ import {
   reopenRecovery,
 } from "../service";
 
-// Template parsing is unrelated to status reads; keep the SDK's real error types.
-jest.mock("dockerfile-ast", () => ({}));
+// Keep the SDK's real error types while mocking remote sandbox reads.
 jest.mock("@e2b/code-interpreter", () => ({
   ...jest.requireActual("@e2b/code-interpreter"),
   Sandbox: { getInfo: jest.fn(), list: jest.fn() },
