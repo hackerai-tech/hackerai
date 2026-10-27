@@ -862,10 +862,12 @@ const ChatInputContent = ({
   }
 
   return (
-    <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
+    <div
+      className={`relative flex max-h-[calc(100dvh-4rem)] min-h-0 min-w-0 flex-col px-4 ${isCentered ? "" : "pb-3"}`}
+    >
       <div
         ref={chatInputContainerRef}
-        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
         {isOffline && (
@@ -952,7 +954,7 @@ const ChatInputContent = ({
             Existing chats reveal it in the same position while composing. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`relative z-0 order-1 grid min-w-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+            className={`relative z-0 order-1 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
             data-testid="chat-input-agent-context-reveal"
             aria-hidden={!agentControlsVisible}
             inert={!agentControlsVisible}
@@ -986,7 +988,7 @@ const ChatInputContent = ({
         )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
-          <div className="order-2">
+          <div className="order-2 shrink-0">
             <FileUploadPreview
               uploadedFiles={uploadedFiles}
               onRemoveFile={handleRemoveFile}
@@ -1016,7 +1018,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-0 min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
           >
             <ChatInputTextarea
