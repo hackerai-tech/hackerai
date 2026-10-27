@@ -36,6 +36,14 @@ import {
   X_REFERRAL_EVENT,
 } from "@/lib/analytics/x-referral";
 
+import {
+  captureInfluencerVisit,
+  clearInfluencerVisit,
+  pendingInfluencerVisit,
+  sanitizeInfluencerVisit,
+} from "@/lib/influencers/browser-visits";
+import { INFLUENCER_VISIT_EVENT } from "@/lib/influencers/visit-handoff";
+
 let lastIdentifiedSignature: string | null = null;
 
 function isEnglishLocale(locale: string | null | undefined) {
@@ -53,11 +61,13 @@ export function PostHogProvider({
   analyticsAllowed,
   children,
   consentRequired = false,
+  consentDeclined = false,
   firstTouchAttribution = null,
 }: {
   analyticsAllowed: boolean;
   children: React.ReactNode;
   consentRequired?: boolean;
+  consentDeclined?: boolean;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {
   const { subscription } = useGlobalState();
@@ -97,8 +107,15 @@ export function PostHogProvider({
         }
         if (!analyticsAllowed) posthog.opt_out_capturing();
       }
-      if (!analyticsAllowed) clearXReferralDedupe();
-      if (!analyticsAllowed || referralHandled.current || !isXReferralLanding())
+      if (!analyticsAllowed) {
+        clearXReferralDedupe();
+        if (consentDeclined) clearInfluencerVisit();
+      }
+      if (
+        !analyticsAllowed ||
+        (!pendingInfluencerVisit() &&
+          (referralHandled.current || !isXReferralLanding()))
+      )
         return;
     }
 
@@ -131,6 +148,8 @@ export function PostHogProvider({
             if (!event) {
               return null;
             }
+            if (event.event === INFLUENCER_VISIT_EVENT)
+              return sanitizeInfluencerVisit(event);
             if (event.event === X_REFERRAL_EVENT) {
               return sanitizeXReferralEvent(event);
             }
@@ -171,6 +190,8 @@ export function PostHogProvider({
         if (posthog.has_opted_out_capturing()) {
           posthog.opt_in_capturing({ captureEventName: false });
         }
+
+        captureInfluencerVisit(posthog);
 
         if (!userId) {
           posthog.stopSessionRecording();
@@ -260,6 +281,7 @@ export function PostHogProvider({
   }, [
     analyticsAllowed,
     consentRequired,
+    consentDeclined,
     firstTouchAttribution,
     subscription,
     userEmail,
