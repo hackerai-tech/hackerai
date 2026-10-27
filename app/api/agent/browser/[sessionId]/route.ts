@@ -28,13 +28,19 @@ export const dynamic = "force-dynamic";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+class BrowserAuthenticationError extends Error {}
 
 async function resolveSession(
   request: NextRequest,
   sessionId: string,
   allowEnded = false,
 ) {
-  const userId = await getUserID(request);
+  let userId: string;
+  try {
+    userId = await getUserID(request);
+  } catch {
+    throw new BrowserAuthenticationError();
+  }
   if (!serviceKey || !/^[a-f0-9]{32}$/.test(sessionId)) return null;
   const session = await getConvexClient().query(
     api.browserHandoffs.getForBackend,
@@ -62,8 +68,10 @@ export async function GET(
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
   try {
     resolved = await resolveSession(request, (await params).sessionId);
-  } catch {
-    return json({ state: "unauthorized" }, 401);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ state: "unauthorized" }, 401)
+      : unavailable(error);
   }
   if (!resolved) return json({ state: "expired" }, 404);
   try {
@@ -151,8 +159,10 @@ export async function POST(
       (await params).sessionId,
       body.action === "resume",
     );
-  } catch {
-    return json({ error: "Unauthorized" }, 401);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ error: "Unauthorized" }, 401)
+      : unavailable(error);
   }
   if (!resolved || !serviceKey) return json({ state: "expired" }, 404);
   const { session, userId } = resolved;

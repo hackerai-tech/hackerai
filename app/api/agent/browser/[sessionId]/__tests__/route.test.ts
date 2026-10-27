@@ -60,15 +60,24 @@ jest.mock("next/server", () => ({
 jest.mock("@/convex/_generated/api", () => ({
   api: { browserHandoffs: new Proxy({}, { get: (_target, name) => name }) },
 }));
-jest.mock("@/lib/auth/get-user-id", () => ({ getUserID: async () => "owner" }));
+jest.mock("@/lib/auth/get-user-id", () => ({
+  getUserID: async () => {
+    if (mockFailure === "auth") throw new Error("Not signed in");
+    return "owner";
+  },
+}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
-    query: async () => ({
-      sessionId: mockSessionId,
-      state: mockState,
-      runActive: mockRunActive,
-      controlledSessionName: "default",
-    }),
+    query: async () => {
+      if (mockFailure === "lookup")
+        throw new Error("Backend lookup unavailable");
+      return {
+        sessionId: mockSessionId,
+        state: mockState,
+        runActive: mockRunActive,
+        controlledSessionName: "default",
+      };
+    },
     mutation: mockMutation,
   }),
 }));
@@ -163,6 +172,17 @@ it("does not renew a rejected grant", async () => {
   const result = await heartbeat();
   expect(result.status).toBe(409);
   expect(mockRenewRelay).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["auth", 401],
+  ["lookup", 503],
+])("distinguishes %s failure from lease expiry", async (failure, status) => {
+  mockFailure = String(failure);
+  const result = await heartbeat();
+  expect(result.status).toBe(status);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+  expect(mockMutation).not.toHaveBeenCalled();
 });
 
 it.each(["identity", "capture", "claim"])(
