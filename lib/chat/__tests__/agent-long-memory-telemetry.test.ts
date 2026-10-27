@@ -1,4 +1,11 @@
-import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 import { AgentLongMemoryTelemetry } from "../agent-long-memory-telemetry";
 import type {
@@ -41,9 +48,13 @@ const retention: ProviderRequestRetentionDiagnostics = {
 };
 
 describe("AgentLongMemoryTelemetry", () => {
+  beforeEach(() => {
+    jest.spyOn(process, "constrainedMemory").mockReturnValue(0);
+  });
   afterEach(() => jest.restoreAllMocks());
 
   it("emits an initial privacy-safe provider checkpoint", () => {
+    jest.spyOn(process, "constrainedMemory").mockReturnValue(1024 * MIB);
     jest.spyOn(process, "resourceUsage").mockReturnValue({
       maxRSS: 512 * 1024,
     } as NodeJS.ResourceUsage);
@@ -87,6 +98,7 @@ describe("AgentLongMemoryTelemetry", () => {
       rss_bytes: 300 * MIB,
       rss_high_water_bytes: 300 * MIB,
       process_rss_os_high_water_bytes: 512 * MIB,
+      process_memory_constraint_bytes: 1024 * MIB,
       heap_total_bytes: 250 * MIB,
       heap_used_bytes: 200 * MIB,
       heap_used_high_water_bytes: 200 * MIB,
@@ -102,6 +114,9 @@ describe("AgentLongMemoryTelemetry", () => {
   });
 
   it("keeps the OS process peak distinct from sampled run highs without adding checkpoints", () => {
+    const readMemoryConstraint = jest
+      .spyOn(process, "constrainedMemory")
+      .mockReturnValue(1024 * MIB);
     const readResourceUsage = jest
       .spyOn(process, "resourceUsage")
       .mockReturnValue({ maxRSS: 900 * 1024 } as NodeJS.ResourceUsage);
@@ -126,12 +141,56 @@ describe("AgentLongMemoryTelemetry", () => {
     expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
     expect(emit).toHaveBeenCalledTimes(1);
     expect(readResourceUsage).toHaveBeenCalledTimes(1);
+    expect(readMemoryConstraint).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         rss_bytes: 300 * MIB,
         rss_high_water_bytes: 300 * MIB,
         process_rss_os_high_water_bytes: 900 * MIB,
       }),
+    );
+  });
+
+  it.each([0, -1, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 1.5])(
+    "omits an unknown or unusable OS memory constraint (%s)",
+    (bytes) => {
+      jest.spyOn(process, "constrainedMemory").mockReturnValue(bytes);
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_123",
+        chatId: "chat_123",
+        userId: "user_123",
+        emit,
+      });
+
+      expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit.mock.calls[0][0]).not.toHaveProperty(
+        "process_memory_constraint_bytes",
+      );
+    },
+  );
+
+  it("retains the checkpoint when the OS memory constraint cannot be read", () => {
+    jest.spyOn(process, "constrainedMemory").mockImplementation(() => {
+      throw new Error("unavailable memory constraint");
+    });
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_123",
+      chatId: "chat_123",
+      userId: "user_123",
+      emit,
+    });
+
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      true,
+    );
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "agent_long_memory_checkpoint" }),
+    );
+    expect(emit.mock.calls[0][0]).not.toHaveProperty(
+      "process_memory_constraint_bytes",
     );
   });
 
