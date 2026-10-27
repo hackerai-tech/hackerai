@@ -129,6 +129,7 @@ it.each([
   "The page is open.\nHanding browser control over to you right now: click Take control.",
   "I'll wait for you to take control. Choose Send and continue when done.",
   "I’ll wait for you to take control. Choose Send and continue when done.",
+  "I'm pausing now and waiting for you to take control.",
   "The browser is now ready for you to take control.",
 ])(
   "recovers an immediate declaration with case and punctuation: %s",
@@ -153,6 +154,7 @@ it.each([
 it.each([
   "You can take control when you're ready.",
   "After setup, I'll be handing control over to you.",
+  "I'll wait for you to take control after setup.",
   "I am not handing control over now.",
   "> Handing control over now. Take control in the sidebar.",
   "```text\nHanding control over now.\n```",

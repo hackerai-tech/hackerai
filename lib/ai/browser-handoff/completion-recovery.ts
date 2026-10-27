@@ -55,7 +55,7 @@ function promisedImmediateHandoff(text: string): boolean {
     .replace(/\*\*|__/g, "");
   return [
     /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i,
-    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/i,
+    /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\s*(?:[.!—–:,]|$)/i,
     /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/i,
   ].some((pattern) => pattern.test(prose));
 }
