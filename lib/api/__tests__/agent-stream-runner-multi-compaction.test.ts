@@ -5049,7 +5049,6 @@ describe("createAgentStream repeated compaction", () => {
     });
     expect(first.messages[0].content).toBe("summary 1");
     await stream.onStepFinish({
-      usage: { inputTokens: 1_000, outputTokens: 10 },
       response: { modelId: "test-model", messages: [] },
     });
     state.lastStepInputTokens = 300_000;
