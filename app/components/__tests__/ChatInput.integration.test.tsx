@@ -949,7 +949,7 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
-    it("renders a glass composer with a narrower sandbox context strip", async () => {
+    it("renders compact Agent controls above the glass composer", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -984,15 +984,15 @@ describe("ChatInput - Integration Tests", () => {
         "z-10",
       );
       expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
-        "chat-input-glass-context",
-        "mx-2",
-        "sm:mx-6",
-        "-mt-2",
-        "min-h-10",
+        "mb-2",
+        "px-2",
         "flex-nowrap",
-        "rounded-b-[18px]",
         "md:hidden",
       );
+      expect(screen.getByTestId("chat-input-agent-context-reveal")).toHaveClass(
+        "order-1",
+      );
+      expect(screen.getByTestId("chat-input-surface")).toHaveClass("order-2");
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",
         "flex-1",

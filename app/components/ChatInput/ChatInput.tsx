@@ -949,8 +949,54 @@ const ChatInputContent = ({
           </div>
         )}
 
+        {/* New chats always show compact Agent controls above the input.
+            Existing chats reveal them in the same position while composing. */}
+        {user && isAgent && !showAgentApprovalPrompt && (
+          <div
+            className={`relative z-0 order-1 grid min-w-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+            data-testid="chat-input-agent-context-reveal"
+            aria-hidden={!agentControlsVisible}
+            inert={!agentControlsVisible}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <div
+                className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "mb-2 flex-nowrap items-center gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                data-compact={compactAgentControls ? "true" : "false"}
+                data-testid="chat-input-agent-context"
+                onPointerDownCapture={() => {
+                  agentControlsPointerDownRef.current = true;
+                  window.setTimeout(() => {
+                    agentControlsPointerDownRef.current = false;
+                  }, 0);
+                }}
+              >
+                <div
+                  className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
+                  data-testid="chat-input-mobile-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    compact={!isEmptyNewChat}
+                    size={isEmptyNewChat ? "md" : "sm"}
+                  />
+                </div>
+                <div
+                  className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
+                  data-testid="chat-input-mobile-permission"
+                >
+                  <AgentPermissionSelector
+                    analyticsSurface="chat_input"
+                    size={isEmptyNewChat ? "md" : "sm"}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {uploadedFiles && uploadedFiles.length > 0 && (
-          <div className={isEmptyNewChat ? "order-2" : undefined}>
+          <div className="order-2">
             <FileUploadPreview
               uploadedFiles={uploadedFiles}
               onRemoveFile={handleRemoveFile}
@@ -980,7 +1026,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${isEmptyNewChat ? "" : "sm:order-1"} ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
           >
             <ChatInputTextarea
@@ -1020,52 +1066,6 @@ const ChatInputContent = ({
               isOnline={!isOffline}
               sendDisabledReason={effectiveSendDisabledReason}
             />
-          </div>
-        )}
-
-        {/* New chats always show compact Agent controls above the input.
-            Existing chats reveal the lower strip while composing. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
-          <div
-            className={`relative z-0 grid min-w-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${isEmptyNewChat ? "order-1" : "order-3"} ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
-            data-testid="chat-input-agent-context-reveal"
-            aria-hidden={!agentControlsVisible}
-            inert={!agentControlsVisible}
-          >
-            <div className="min-h-0 overflow-hidden">
-              <div
-                className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
-                data-compact={compactAgentControls ? "true" : "false"}
-                data-testid="chat-input-agent-context"
-                onPointerDownCapture={() => {
-                  agentControlsPointerDownRef.current = true;
-                  window.setTimeout(() => {
-                    agentControlsPointerDownRef.current = false;
-                  }, 0);
-                }}
-              >
-                <div
-                  className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
-                  data-testid="chat-input-mobile-sandbox"
-                >
-                  <SandboxSelector
-                    value={sandboxPreference}
-                    onChange={setSandboxPreference}
-                    compact={!isEmptyNewChat}
-                    size={isEmptyNewChat ? "md" : "sm"}
-                  />
-                </div>
-                <div
-                  className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
-                  data-testid="chat-input-mobile-permission"
-                >
-                  <AgentPermissionSelector
-                    analyticsSurface="chat_input"
-                    size={isEmptyNewChat ? "md" : "sm"}
-                  />
-                </div>
-              </div>
-            </div>
           </div>
         )}
       </div>
