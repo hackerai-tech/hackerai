@@ -949,6 +949,45 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it("keeps sandbox controls before progress and queued messages in reading order", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { chatMode: "agent" };
+
+      render(
+        <TestWrapper>
+          <TaskPanelsSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      const progress = await screen.findByRole("button", {
+        name: "Expand todos",
+      });
+      const sandbox = await screen.findByTestId(
+        "chat-input-agent-context-reveal",
+      );
+      const queued = screen.getByText("Private queued message");
+      const composer = screen.getByTestId("chat-input-surface");
+      for (const [before, after] of [
+        [sandbox, progress],
+        [progress, queued],
+        [queued, composer],
+      ]) {
+        expect(
+          before.compareDocumentPosition(after) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    });
+
     it("renders compact Agent controls above the glass composer", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
@@ -989,9 +1028,12 @@ describe("ChatInput - Integration Tests", () => {
         "flex-nowrap",
         "md:hidden",
       );
-      expect(screen.getByTestId("chat-input-agent-context-reveal")).toHaveClass(
-        "order-1",
-      );
+      expect(
+        screen
+          .getByTestId("chat-input-agent-context-reveal")
+          .compareDocumentPosition(screen.getByTestId("chat-input-surface")) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
       expect(screen.getByTestId("chat-input-surface")).toHaveClass("order-2");
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",

@@ -870,9 +870,9 @@ const ChatInputContent = ({
         className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
-        {/* Reserve the header, textarea/action row and bottom padding before
-            scrolling notices, queued messages and attachment previews. */}
-        <div className="flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto">
+        {/* Panels keep their content height and scroll as a stack instead of
+            shrinking beneath the next panel. Reserve the textarea/actions. */}
+        <div className="flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0">
           {isOffline && (
             <div
               role="status"
@@ -937,30 +937,11 @@ const ChatInputContent = ({
             />
           )}
 
-          {user && (
-            <div className="flex flex-col [&>*+*]:rounded-t-none">
-              <TodoPanel status={status} />
-
-              {messageQueue.length > 0 && (
-                <QueuedMessagesPanel
-                  messages={messageQueue}
-                  onSendNow={onSendNow}
-                  onEdit={updateQueuedMessage}
-                  onEditingMessageChange={setEditingQueuedMessageId}
-                  onDelete={removeQueuedMessage}
-                  isStreaming={status === "streaming"}
-                  queueBehavior={queueBehavior}
-                  onQueueBehaviorChange={setQueueBehavior}
-                />
-              )}
-            </div>
-          )}
-
           {/* New chats always show the sandbox selector above the input.
-            Existing chats reveal it in the same position while composing. */}
+            Keep it above the joined progress/queue/attachment panels too. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 order-1 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+              className={`relative z-0 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
               data-testid="chat-input-agent-context-reveal"
               aria-hidden={!agentControlsVisible}
               inert={!agentControlsVisible}
@@ -990,6 +971,25 @@ const ChatInputContent = ({
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {user && (
+            <div className="flex flex-col [&>*+*]:rounded-t-none">
+              <TodoPanel status={status} />
+
+              {messageQueue.length > 0 && (
+                <QueuedMessagesPanel
+                  messages={messageQueue}
+                  onSendNow={onSendNow}
+                  onEdit={updateQueuedMessage}
+                  onEditingMessageChange={setEditingQueuedMessageId}
+                  onDelete={removeQueuedMessage}
+                  isStreaming={status === "streaming"}
+                  queueBehavior={queueBehavior}
+                  onQueueBehaviorChange={setQueueBehavior}
+                />
+              )}
             </div>
           )}
 
