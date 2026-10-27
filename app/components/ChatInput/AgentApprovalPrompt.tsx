@@ -50,7 +50,7 @@ const getReusableApprovalDescription = (
   grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
 ): string => {
   if (grant.kind === "terminal_command") {
-    return `Commands starting with ${grant.argv.join(" ")}`;
+    return `Commands starting with ${JSON.stringify(grant.argv)}, with any following arguments`;
   }
   if (grant.kind === "terminal_interaction") {
     return `${grant.action} actions in this terminal session`;
@@ -339,7 +339,7 @@ export function AgentApprovalPrompt({
                   side="top"
                   align="end"
                   sideOffset={6}
-                  className="min-w-56 rounded-xl p-1.5"
+                  className="min-w-56 max-w-[min(28rem,calc(100vw-2rem))] rounded-xl p-1.5"
                 >
                   <DropdownMenuItem
                     className="min-h-10 rounded-lg px-3 text-sm"
@@ -348,11 +348,14 @@ export function AgentApprovalPrompt({
                     Allow once
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    className="min-h-10 rounded-lg px-3 text-sm"
+                    className="min-h-10 flex-col items-start gap-1 rounded-lg px-3 text-sm"
                     aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
                     onSelect={() => void submitApproval(true)}
                   >
-                    {reusableApprovalLabel}
+                    <span>{reusableApprovalLabel}</span>
+                    <span className="whitespace-normal break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                      {reusableApprovalDescription}
+                    </span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

@@ -41,6 +41,36 @@ type AgentApprovalGrantSelection = Pick<
   "grant" | "targetKind" | "targetPrefix"
 >;
 
+// Version the consent scope, independently of its sandbox/cwd envelope. Old
+// grants predate visible scope disclosure and must prompt again.
+const serializeCommandScope = (argv: string[]): string =>
+  JSON.stringify(["agent-command-prefix-v2", argv]);
+
+// These deletion tools always require fresh approval. This is a bounded
+// exclusion, not a claim that every other executable is harmless: users must
+// still explicitly approve the displayed scope for other tools.
+const NON_REUSABLE_DELETION_COMMANDS = new Set([
+  "rm",
+  "unlink",
+  "rmdir",
+  "shred",
+  "del",
+  "erase",
+  "rd",
+  "remove-item",
+  "ri",
+]);
+
+const permitsCommandReuse = (executable: string): boolean => {
+  const basename = executable
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    ?.toLowerCase()
+    .replace(/\.(exe|com|cmd|bat)$/, "");
+  return !!basename && !NON_REUSABLE_DELETION_COMMANDS.has(basename);
+};
+
 const SHELL_CONTROL_CHARACTERS = new Set([
   ";",
   "|",
@@ -317,10 +347,13 @@ const deriveTerminalCommandGrant = (
     approvedArgv.length <= argv.length &&
     approvedArgv.every((argument, index) => argument === argv[index]);
 
-  return executable && argv && prefixMatchesCommand
+  return executable &&
+    permitsCommandReuse(executable) &&
+    argv &&
+    prefixMatchesCommand
     ? {
         kind: "terminal_command",
-        targetPrefix: JSON.stringify(approvedArgv),
+        targetPrefix: serializeCommandScope(approvedArgv),
         executable,
         argv: approvedArgv,
       }
@@ -374,9 +407,15 @@ export const deriveApprovedAgentTargetGrant = (
 ): AgentApprovalTargetGrant | null => {
   if (selection.grant !== "target_prefix") return null;
 
-  // targetPrefix and targetKind are retained on the wire for compatibility,
-  // but authorization is derived exclusively from the pending request.
-  return deriveAgentApprovalTargetGrant(request);
+  // Derive authority from the pending request, then require the current client
+  // to have selected that exact disclosed scope. Stale or mismatched selections
+  // still approve this action once, but cannot create a reusable grant.
+  const grant = deriveAgentApprovalTargetGrant(request);
+  return grant &&
+    selection.targetKind === grant.kind &&
+    selection.targetPrefix === grant.targetPrefix
+    ? grant
+    : null;
 };
 
 export const matchesAgentApprovalTargetGrant = (
@@ -386,6 +425,15 @@ export const matchesAgentApprovalTargetGrant = (
   // Invalidate file grants persisted by older workers. Lexical paths are not
   // stable identities across symlinks, junctions, or backend operations.
   if (grant.kind === "file_change") return false;
+
+  if (
+    grant.kind === "terminal_command" &&
+    (grant.argv.length === 0 ||
+      grant.executable !== grant.argv[0] ||
+      !permitsCommandReuse(grant.executable) ||
+      grant.targetPrefix !== serializeCommandScope(grant.argv))
+  )
+    return false;
 
   if (
     request.operation === "terminal_execute" &&

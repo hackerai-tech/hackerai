@@ -262,11 +262,13 @@ describe("AgentApprovalPrompt", () => {
       { key: "ArrowDown", code: "ArrowDown" },
     );
     expect(
-      screen.queryByText("Commands starting with ping -c 4"),
-    ).not.toBeInTheDocument();
+      await screen.findByText(
+        'Commands starting with ["ping","-c","4"], with any following arguments',
+      ),
+    ).toBeVisible();
     fireEvent.click(
       await screen.findByRole("menuitem", {
-        name: "Allow this conversation: Commands starting with ping -c 4",
+        name: 'Allow this conversation: Commands starting with ["ping","-c","4"], with any following arguments',
       }),
     );
 
@@ -277,7 +279,7 @@ describe("AgentApprovalPrompt", () => {
         decision: "approve",
         grant: "target_prefix",
         targetKind: "terminal_command",
-        targetPrefix: '["ping","-c","4"]',
+        targetPrefix: '["agent-command-prefix-v2",["ping","-c","4"]]',
       }),
     );
   });
@@ -298,6 +300,26 @@ describe("AgentApprovalPrompt", () => {
     expect(
       screen.queryByRole("button", { name: "More approval options" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps deletion available for one-time approval without offering reuse", async () => {
+    render(
+      <AgentApprovalPrompt
+        request={{ ...request, target: "rm scratch.txt", prefixRule: ["rm"] }}
+        onStop={mockOnStop}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "More approval options" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(mockSendToolApproval).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        toolCallId: "tool-1",
+        decision: "approve",
+      }),
+    );
   });
 
   it("denies from the secondary action", async () => {

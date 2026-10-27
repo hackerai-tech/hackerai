@@ -40,6 +40,102 @@ const expectFileOperationRequiresFreshApproval = (
 };
 
 describe("agent approval grants", () => {
+  it.each([
+    "rm",
+    "/bin/rm",
+    "unlink",
+    "rmdir",
+    "DEL",
+    "erase",
+    "rd",
+    "Remove-Item",
+    "ri",
+    "RM.EXE",
+    "/usr/bin/shred",
+  ])(
+    "requires fresh approval for deletion via %s, including old grants",
+    (executable) => {
+      const target = `${executable} scratch.txt`;
+      expect(
+        deriveAgentApprovalTargetGrant(
+          request("terminal_execute", target, [executable]),
+        ),
+      ).toBeNull();
+      expect(
+        deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
+      ).toBeNull();
+      expect(
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", `${executable} important.txt`),
+          {
+            kind: "terminal_command",
+            executable,
+            argv: [executable],
+            targetPrefix: JSON.stringify([executable]),
+          },
+        ),
+      ).toBe(false);
+      expect(
+        matchesAgentApprovalTargetGrant(
+          request("terminal_execute", `${executable} important.txt`),
+          {
+            kind: "terminal_command",
+            executable,
+            argv: [executable],
+            targetPrefix: JSON.stringify([
+              "agent-command-prefix-v2",
+              [executable],
+            ]),
+          },
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("does not reuse legacy grants whose scope was not visibly approved", () => {
+    expect(
+      matchesAgentApprovalTargetGrant(
+        request("terminal_execute", "npm publish"),
+        {
+          kind: "terminal_command",
+          executable: "npm",
+          argv: ["npm"],
+          targetPrefix: '["npm"]',
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("requires the selected scope to match the scope shown by the current client", () => {
+    const pending = request("terminal_execute", "ping -c 4 example.com", [
+      "ping",
+      "-c",
+      "4",
+    ]);
+    const grant = deriveAgentApprovalTargetGrant(pending)!;
+    expect(
+      deriveApprovedAgentTargetGrant(pending, {
+        grant: "target_prefix",
+        targetKind: grant.kind,
+        targetPrefix: grant.targetPrefix,
+      }),
+    ).toEqual(grant);
+    expect(
+      deriveApprovedAgentTargetGrant(pending, {
+        grant: "target_prefix",
+        targetKind: grant.kind,
+        targetPrefix: '["ping"]',
+      }),
+    ).toBeNull();
+    expect(
+      deriveApprovedAgentTargetGrant(pending, {
+        grant: "target_prefix",
+        targetKind: grant.kind,
+        targetPrefix: JSON.stringify(["ping", "-c", "4"]),
+      }),
+    ).toBeNull();
+  });
+
   it("matches an exact static argv, not another command or executable", () => {
     const grant = deriveAgentApprovalTargetGrant(
       request("terminal_execute", "npm test"),
@@ -86,7 +182,7 @@ describe("agent approval grants", () => {
       kind: "terminal_command",
       executable: "ping",
       argv: ["ping", "-c", "4"],
-      targetPrefix: '["ping","-c","4"]',
+      targetPrefix: '["agent-command-prefix-v2",["ping","-c","4"]]',
     });
     expect(
       grant &&
@@ -365,7 +461,7 @@ describe("agent approval grants", () => {
     ).toBe(false);
   });
 
-  it("derives the approved scope from the pending request, not tampered client fields", () => {
+  it("rejects tampered client fields instead of granting a different scope", () => {
     const grant = deriveApprovedAgentTargetGrant(
       request("terminal_execute", "npm test -- --runInBand", ["npm", "test"]),
       {
@@ -375,17 +471,6 @@ describe("agent approval grants", () => {
       },
     );
 
-    expect(grant).toMatchObject({
-      kind: "terminal_command",
-      executable: "npm",
-      argv: ["npm", "test"],
-    });
-    expect(
-      grant &&
-        matchesAgentApprovalTargetGrant(
-          request("terminal_execute", "npmx test"),
-          grant,
-        ),
-    ).toBe(false);
+    expect(grant).toBeNull();
   });
 });
