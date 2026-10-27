@@ -781,7 +781,9 @@ const ChatInputContent = ({
     if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
-      (status === "ready" || status === "streaming") &&
+      (status === "ready" ||
+        status === "submitted" ||
+        status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 

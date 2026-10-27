@@ -1469,6 +1469,25 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Submit Behavior Integration", () => {
+    it("accepts an Enter submission during startup before the first model response", async () => {
+      const submit = jest.fn(async () => true);
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={submit}
+            onStop={mockOnStop}
+            status="submitted"
+            chatId="startup-summary"
+          />
+        </TestWrapper>,
+      );
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Steer during preparation" },
+      });
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    });
+
     it.each(["rejected", "throws"])(
       "blocks duplicate Enter presses and unlocks after a submission %s",
       async (outcome) => {
