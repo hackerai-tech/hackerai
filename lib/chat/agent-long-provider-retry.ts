@@ -120,6 +120,7 @@ export const getProviderOutputDiagnostics = (parts: unknown[]) => ({
   completed_tool_count: parts.filter(isCompletedToolPart).length,
   has_durable_output: hasDurableAssistantPart(parts),
   has_step_boundary: parts.some((part) => getPartType(part) === "step-start"),
+  uncertain_tool_outcome: hasUncertainProviderToolOutcome(parts),
 });
 
 /** Shared eligibility and skip reason so telemetry cannot drift from behavior. */
