@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
-import { allowInfluencerVisitAnalytics } from "@/lib/influencers/visit-rate-limit";
-import { after, NextRequest, NextResponse } from "next/server";
+import {
+  INFLUENCER_VISIT_COOKIE,
+  VISIT_HANDOFF_SECONDS,
+} from "@/lib/influencers/visit-handoff";
+import { NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import {
@@ -81,27 +83,20 @@ export async function GET(
         partnerCookie(code, Date.now(), visitorId),
         options,
       );
-    const visitedAt = Date.now();
-    after(async () => {
-      try {
-        if (!(await allowInfluencerVisitAnalytics(req))) return;
-        const client = getConvexClient();
-        await client.mutation(api.influencers.recordLinkOpen, {
-          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-          code,
-        });
-        await client.mutation(api.influencerAnalytics.recordVisit, {
-          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    if (process.env.INFLUENCER_ANALYTICS_DISABLED !== "true") {
+      response.cookies.set(
+        INFLUENCER_VISIT_COOKIE,
+        JSON.stringify({
           code,
           visitorId,
           visitId: randomUUID(),
-          timestamp: visitedAt,
-        });
-        await flushInfluencerAnalytics(client);
-      } catch {
-        console.warn("Influencer visit analytics unavailable");
-      }
-    });
+          timestamp: Date.now(),
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "development",
+        }),
+        { ...options, httpOnly: false, maxAge: VISIT_HANDOFF_SECONDS },
+      );
+    }
   }
   return response;
 }
