@@ -801,7 +801,9 @@ const ChatInputContent = ({
     const abort = new AbortController();
     fetch("/api/agent-goal", { signal: abort.signal, cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => setGoalEnabled(data?.enabled === true))
+      .then((data) => {
+        if (!abort.signal.aborted) setGoalEnabled(data?.enabled === true);
+      })
       .catch(() => undefined);
     return () => abort.abort();
   }, [chatId, chatMode, subscription, setGoalMode]);
@@ -809,6 +811,8 @@ const ChatInputContent = ({
   const goalSuggestionDraft = getGoalSuggestionDraft(input);
   const showGoalSuggestion =
     !showAgentApprovalPrompt &&
+    chatMode === "agent" &&
+    subscription !== "free" &&
     goalEnabled &&
     !goalMode &&
     !dismissedGoalSuggestion &&

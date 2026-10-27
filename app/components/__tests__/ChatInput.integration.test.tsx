@@ -400,6 +400,58 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it.each(["chat", "ask", "free"])(
+    "ignores a late availability response after changing %s",
+    async (change) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      let resolveAvailability!: (value: { enabled: boolean }) => void;
+      const availability = new Promise<{ enabled: boolean }>((resolve) => {
+        resolveAvailability = resolve;
+      });
+      const readAvailability = jest.fn(() => availability);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: readAvailability });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: false }),
+      });
+      const ui = (chatId: string) => (
+        <TestWrapper>
+          <ChatInput
+            chatId={chatId}
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(ui("first-chat"));
+      await waitFor(() => expect(readAvailability).toHaveBeenCalled());
+      if (change === "ask")
+        mockSandboxState = { ...mockSandboxState, chatMode: "ask" };
+      if (change === "free")
+        mockSandboxState = { ...mockSandboxState, subscription: "free" };
+      rerender(ui(change === "chat" ? "second-chat" : "first-chat"));
+      await act(async () => resolveAvailability({ enabled: true }));
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Create a marker /goal" },
+      });
+      expect(
+        screen.queryByRole("button", {
+          name: "Goal Set a goal to keep pursuing",
+        }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox")).not.toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
+    },
+  );
+
   it("waits for attachment removal before accepting a message", async () => {
     const attachment: UploadedFileState = {
       file: new File(["fixture"], "removing.txt", { type: "text/plain" }),

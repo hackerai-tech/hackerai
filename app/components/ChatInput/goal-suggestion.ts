@@ -1,6 +1,7 @@
 /** Return the draft after selecting a standalone goal command, or null. */
 export function getGoalSuggestionDraft(input: string): string | null {
-  const match = /(^|\s)(\/(?:g(?:o(?:a(?:l)?)?)?)?)(?=\s|$)/i.exec(input);
+  if (input.trim() === "/") return "";
+  const match = /(^|\s)(\/g(?:o(?:a(?:l)?)?)?)(?=\s|$)/i.exec(input);
   if (!match) return null;
 
   const start = match.index + match[1].length;

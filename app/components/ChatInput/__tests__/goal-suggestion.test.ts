@@ -12,6 +12,8 @@ describe("goal suggestion boundaries", () => {
     "/goal start Create a marker",
     "  /goal Create a marker",
     "ordinary draft",
+    "Calculate 12 / 3",
+    "Compare desktop / mobile",
   ])("leaves %s to normal submission", (draft) => {
     expect(getGoalSuggestionDraft(draft)).toBeNull();
   });
@@ -22,4 +24,9 @@ describe("goal suggestion boundaries", () => {
       expect(getGoalSuggestionDraft(draft)).toBe("");
     },
   );
+  it("preserves division when selecting a later inline goal", () => {
+    expect(getGoalSuggestionDraft("Calculate 12 / 3 /goal")).toBe(
+      "Calculate 12 / 3",
+    );
+  });
 });
