@@ -633,6 +633,10 @@ it("preserves drag initiation and the final movement before release during slow 
     pointer(image, "pointermove", 300, 1);
     pointer(image, "pointermove", 350, 1);
     pointer(image, "pointerup", 400, 0);
+    // A second gesture may start inside the previous move's throttle window.
+    pointer(image, "pointerdown", 200, 1);
+    pointer(image, "pointermove", 300, 1);
+    pointer(image, "pointerup", 400, 0);
   });
   expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
   pending = false;
@@ -647,8 +651,16 @@ it("preserves drag initiation and the final movement before release during slow 
     { kind: "move", x: 400, y: 200, buttons: 1 },
     { kind: "move", x: 600, y: 200, buttons: 1 },
     { kind: "up", x: 600, y: 200 },
+    { kind: "down", x: 200, y: 200 },
+    { kind: "move", x: 400, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "up", x: 600, y: 200 },
   ]);
   expect(normalizeBrowserInputBatch(inputs)).toMatchObject([
+    { eventType: "mousePressed", button: "left" },
+    { eventType: "mouseMoved", button: "left", x: 400 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseReleased", button: "left", x: 600 },
     { eventType: "mousePressed", button: "left" },
     { eventType: "mouseMoved", button: "left", x: 400 },
     { eventType: "mouseMoved", button: "left", x: 600 },

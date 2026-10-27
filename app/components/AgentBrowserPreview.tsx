@@ -1166,6 +1166,7 @@ export function AgentBrowserPreview({
                 if (!xy) return;
                 releaseMouse();
                 mouseRef.current = { id: event.pointerId, ...xy, moved: false };
+                lastMoveAt.current = -Infinity;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 sendInput({ kind: "down", ...xy });
               }}
