@@ -60,6 +60,14 @@ export function ChatInputTextarea({
     inputRef.current = input;
   });
 
+  useEffect(() => {
+    // Mobile composition starts with an explicit tap, without opening its
+    // keyboard or Agent controls as soon as a chat mounts.
+    if (autoFocus && !window.matchMedia("(max-width: 767px)").matches) {
+      textareaRef.current?.focus();
+    }
+  }, [autoFocus]);
+
   // Load draft when draftId changes (chat switch or mount)
   useLayoutEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
@@ -184,7 +192,6 @@ export function ChatInputTextarea({
         }
         className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
         minRows={minRows}
-        autoFocus={autoFocus}
         onFocus={onFocus}
         onPointerDown={onPointerDown}
         onBlur={onBlur}

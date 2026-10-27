@@ -1023,11 +1023,11 @@ const ChatInputContent = ({
           </div>
         )}
 
-        {/* Keep compact Agent controls available while composing. New chats
-            place them above the input without a separate surface. */}
+        {/* New chats always show compact Agent controls above the input.
+            Existing chats reveal the lower strip while composing. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`${isEmptyNewChat ? "order-1 mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context order-3 mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative z-0 min-w-0 ${composerFocused ? "flex" : "hidden"} ${compactAgentControls ? "" : "md:hidden"}`}
+            className={`${isEmptyNewChat ? "order-1 mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context order-3 mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative z-0 min-w-0 ${isEmptyNewChat || composerFocused ? "flex" : "hidden"} ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
             onPointerDownCapture={() => {

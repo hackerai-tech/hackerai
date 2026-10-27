@@ -1050,7 +1050,7 @@ describe("ChatInput - Integration Tests", () => {
           : undefined,
       );
 
-      render(
+      const { rerender } = render(
         <TestWrapper>
           <ChatInput
             onSubmit={mockOnSubmit}
@@ -1092,6 +1092,23 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).toHaveClass("hidden");
 
       fireEvent.pointerDown(input);
+      expect(context).toHaveClass("flex");
+
+      fireEvent.pointerDown(document.body);
+      expect(context).toHaveClass("hidden");
+      rerender(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      expect(context).toHaveClass("flex");
+      fireEvent.pointerDown(document.body);
       expect(context).toHaveClass("flex");
     });
 
