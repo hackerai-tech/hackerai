@@ -4944,6 +4944,12 @@ export const agentLongTask = task({
                                     isRetriableProviderStreamDisconnectError(
                                       state.providerError,
                                     ) &&
+                                    !hasUncertainProviderToolOutcome(
+                                      normalizedRetryMessages.findLast(
+                                        (message) =>
+                                          message.role === "assistant",
+                                      )?.parts ?? [],
+                                    ) &&
                                     !retryAborted
                                       ? prepareProviderDisconnectContinuation(
                                           normalizedRetryMessages,
