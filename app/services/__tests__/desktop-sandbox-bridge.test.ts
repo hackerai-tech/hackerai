@@ -448,6 +448,26 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("recovers a transient startup file probe before advertising missing capability", async () => {
+    const original = mockInvokeHandler;
+    let probes = 0;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request" && ++probes === 1)
+        throw new TypeError("Load failed");
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({ files: true }),
+      }),
+    );
+    expect(probes).toBe(2);
+    await bridge.stop();
+  });
+
   it("keeps native permission denials on the native adapter", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
