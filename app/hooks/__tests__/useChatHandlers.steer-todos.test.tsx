@@ -176,7 +176,7 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
-  const renderSummarySteer = () => {
+  const renderSummarySteer = (isSummarizing = true) => {
     const isSendingNowRef = { current: false };
     const hasManuallyStoppedRef = { current: false };
     const hook = renderHook(
@@ -197,7 +197,7 @@ describe("useChatHandlers steer todo handoff", () => {
         }),
       {
         initialProps: {
-          isSummarizing: true,
+          isSummarizing,
           chatId: "chat-1",
           currentMessages: messages,
         },
@@ -482,6 +482,66 @@ describe("useChatHandlers steer todo handoff", () => {
       check.mockRestore();
     }
   });
+
+  it.each([true, false])(
+    "steers when summarization changes during validation (initially summarizing: %s)",
+    async (initiallySummarizing) => {
+      mockInput = "Submission during preparation";
+      let finishValidation!: (status: { exceedsLimit: false }) => void;
+      const check = jest
+        .spyOn(
+          require("@/lib/utils/client-token-validation"),
+          "getInputTokenLimitStatus",
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishValidation = resolve;
+            }),
+        );
+      mockQueueMessage.mockImplementationOnce(() => {
+        mockMessageQueue = [
+          { id: "queued-1", text: mockInput, timestamp: 123 },
+        ];
+        return "queued-1";
+      });
+      try {
+        const { result, rerender } = renderSummarySteer(initiallySummarizing);
+        let submitting!: Promise<boolean>;
+        act(() => {
+          submitting = result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any);
+        });
+        rerender({
+          isSummarizing: !initiallySummarizing,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+        await act(async () => {
+          finishValidation({ exceedsLimit: false });
+          expect(await submitting).toBe(true);
+        });
+        if (!initiallySummarizing) {
+          expect(mockSendMessage).not.toHaveBeenCalled();
+          await act(async () => {
+            rerender({
+              isSummarizing: false,
+              chatId: "chat-1",
+              currentMessages: messages,
+            });
+          });
+        }
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "Submission during preparation" }),
+          expect.any(Object),
+        );
+      } finally {
+        check.mockRestore();
+      }
+    },
+  );
 
   it("honors Stop while a deferred Send now handoff is settling", async () => {
     let finishSave!: (value: null) => void;

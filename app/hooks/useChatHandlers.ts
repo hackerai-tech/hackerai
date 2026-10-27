@@ -521,6 +521,7 @@ export const useChatHandlers = ({
     e.preventDefault();
     if (sendDisabledReasonRef.current) return false;
     const stopGeneration = stopGenerationRef.current;
+    const wasSummarizing = isSummarizingRef.current;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
@@ -657,7 +658,7 @@ export const useChatHandlers = ({
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
 
-      const deferForSummary = isSummarizingRef.current;
+      const deferForSummary = wasSummarizing || isSummarizingRef.current;
       if (deferForSummary || queueBehavior === "queue") {
         // During compaction, accept the draft now and steer as soon as the
         // summary settles. Ordinary queue mode waits for the full response.
