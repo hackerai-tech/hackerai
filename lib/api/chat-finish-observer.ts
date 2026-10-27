@@ -27,7 +27,7 @@ export function createChatFinishObserver(context: {
     request_id:
       requestId &&
       requestId.length <= 128 &&
-      (/^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+      (/^(?:[a-z0-9-]{1,32}(?::[a-z0-9-]{1,32})*::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
         requestId,
       ) ||
         /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requestId))

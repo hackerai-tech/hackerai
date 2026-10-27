@@ -12,6 +12,7 @@ const context = {
   mode: "ask",
 };
 
+/** Hold external work pending while advancing the diagnostic clock. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -237,3 +238,31 @@ it("attributes the first title wait separately from settlement in every finishin
   }
   expect(phases.sort()).toEqual(["primary", "primary", "provider_retry"]);
 });
+
+it.each([
+  ["abc12-1700000000000-abcdef123456", true],
+  ["iad1::abc12-1700000000000-abcdef123456", true],
+  ["sfo1:iad1::abc12-1700000000000-abcdef123456", true],
+  ["arn1:sfo1:iad1::abc12-1700000000000-abcdef123456", true],
+  ["11111111-1111-4111-8111-111111111111", true],
+  ["sfo1:iad1::abc12-1700000000000-not-hex", false],
+  ["sfo1::iad1::abc12-1700000000000-abcdef123456", false],
+  ["sfo1:iad1::private-target", false],
+  ["iad1:".repeat(30) + ":abc12-1700000000000-abcdef123456", false],
+])(
+  "preserves bounded request correlation for %s",
+  async (requestId, accepted) => {
+    const work = deferred<void>();
+    const pending = createChatFinishObserver({ ...context, requestId })(
+      "save_message",
+      () => work.promise,
+    );
+    await jest.advanceTimersByTimeAsync(10_000);
+    const record = JSON.parse(warn.mock.calls[0][0] as string);
+    if (accepted) expect(record.request_id).toBe(requestId);
+    else expect(record).not.toHaveProperty("request_id");
+    work.resolve();
+    await pending;
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
