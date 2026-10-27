@@ -5009,6 +5009,9 @@ describe("createAgentStream repeated compaction", () => {
     };
     const usageTracker = {
       inputTokens: 0,
+      accumulateStep: jest.fn(() => 0),
+      setAuthoritativeModelCostForStep: jest.fn(),
+      computeCostDollars: () => 0,
       summarizationInputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
@@ -5045,6 +5048,10 @@ describe("createAgentStream repeated compaction", () => {
       messages: initialRaw,
     });
     expect(first.messages[0].content).toBe("summary 1");
+    await stream.onStepFinish({
+      usage: { inputTokens: 1_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
     state.lastStepInputTokens = 300_000;
     expect(stream.stopWhen[1]()).toBe(false);
 
@@ -5101,6 +5108,10 @@ describe("createAgentStream repeated compaction", () => {
       estimateSummaryInputTokens(third.messages.slice(1, -1)),
     ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024 - 768);
     expect(tracker.summarizationCount).toBe(2);
+    await stream.onStepFinish({
+      usage: { inputTokens: 1_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
 
     state.lastStepInputTokens = 0;
     const step3: ModelMessage = { role: "assistant", content: "tool step 3" };
@@ -5135,14 +5146,42 @@ describe("createAgentStream repeated compaction", () => {
       { toolResults: [], response: { messages: [step2] } },
       { toolResults: [], response: { messages: [step3] } },
     ];
-    for (
-      let index = 4;
-      index <= MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
-      index++
-    ) {
+    expect(tracker.summarizationCount).toBe(2);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(2);
+    state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(false);
+    expect(state.stoppedDueToTokenExhaustion).toBe(false);
+
+    const nextStep: ModelMessage = {
+      role: "assistant",
+      content: "new evidence after useful compactions ".repeat(1_000),
+    };
+    accumulatedRaw.push(nextStep);
+    accumulatedSteps.push({
+      toolResults: [],
+      response: { messages: [nextStep] },
+    });
+    await stream.prepareStep({
+      steps: accumulatedSteps,
+      messages: accumulatedRaw,
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(3);
+
+    // Provider-confirmed recovery should permit more than the former eight
+    // compactions in one stream as fresh Agent work fills the context again.
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    for (let index = 0; index < 9; index++) {
+      await stream.onStepFinish({
+        usage: { inputTokens: 1_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
+      state.lastStepInputTokens = 300_000;
       const nextStep: ModelMessage = {
         role: "assistant",
-        content: `large tool step ${index} `.repeat(1_000),
+        content: `fresh evidence ${index} `.repeat(1_000),
       };
       accumulatedRaw.push(nextStep);
       accumulatedSteps.push({
@@ -5154,33 +5193,7 @@ describe("createAgentStream repeated compaction", () => {
         messages: accumulatedRaw,
       });
     }
-
-    expect(tracker.summarizationCount).toBe(
-      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
-    );
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
-    );
-    state.lastStepInputTokens = 300_000;
-    expect(stream.stopWhen[1]()).toBe(false);
-    expect(state.stoppedDueToTokenExhaustion).toBe(false);
-
-    const nextStep: ModelMessage = {
-      role: "assistant",
-      content: "new evidence after eight useful compactions ".repeat(1_000),
-    };
-    accumulatedRaw.push(nextStep);
-    accumulatedSteps.push({
-      toolResults: [],
-      response: { messages: [nextStep] },
-    });
-    await stream.prepareStep({
-      steps: accumulatedSteps,
-      messages: accumulatedRaw,
-    });
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
-    );
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(12);
   });
 
   it("retains the latest completed tool pair across rolling compaction", async () => {
@@ -5356,6 +5369,7 @@ describe("createAgentStream repeated compaction", () => {
           ctxMaxTokens: 200_000,
           summarizationTracker: tracker,
           usageTracker: {
+            accumulateStep: jest.fn(() => 0),
             setAuthoritativeModelCostForStep: jest.fn(),
             computeCostDollars: () => 0,
           },
@@ -5364,6 +5378,10 @@ describe("createAgentStream repeated compaction", () => {
       )) as any;
 
       await stream.prepareStep({ steps: [], messages: initialRaw });
+      await stream.onStepFinish({
+        usage: { inputTokens: 300_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
       const rawMessages = [...initialRaw];
       const steps: Array<Record<string, unknown>> = [];
       for (
@@ -5378,6 +5396,10 @@ describe("createAgentStream repeated compaction", () => {
         rawMessages.push(step);
         steps.push({ toolResults: [], response: { messages: [step] } });
         await stream.prepareStep({ steps, messages: rawMessages });
+        await stream.onStepFinish({
+          usage: { inputTokens: 300_000, outputTokens: 10 },
+          response: { modelId: "test-model", messages: [] },
+        });
       }
 
       expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
@@ -5446,6 +5468,7 @@ describe("createAgentStream repeated compaction", () => {
           recordSummarizationUsage: jest.fn(),
         },
         usageTracker: {
+          accumulateStep: jest.fn(() => 0),
           setAuthoritativeModelCostForStep: jest.fn(),
           computeCostDollars: () => 0,
         },
@@ -5454,6 +5477,10 @@ describe("createAgentStream repeated compaction", () => {
     )) as any;
 
     await stream.prepareStep({ steps: [], messages: initialRaw });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
     const rawMessages = [...initialRaw];
     const steps: Array<Record<string, unknown>> = [];
     for (
@@ -5468,9 +5495,75 @@ describe("createAgentStream repeated compaction", () => {
       rawMessages.push(step);
       steps.push({ toolResults: [], response: { messages: [step] } });
       await stream.prepareStep({ steps, messages: rawMessages });
+      await stream.onStepFinish({
+        usage: { inputTokens: 300_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
     }
 
     state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(true);
+    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
+  it("stops after summaries shrink messages but the provider prompt remains over the threshold", async () => {
+    const summary = uiMessage("small-summary", "Keep the current objective.");
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [summary],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const state = initAgentStreamState(
+      [uiMessage("original", "old context ".repeat(2_000))],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          accumulateStep: jest.fn(() => 0),
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    const initial: ModelMessage[] = [
+      { role: "user", content: "old context ".repeat(2_000) },
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
+    const next: ModelMessage = {
+      role: "assistant",
+      content: "new findings ".repeat(12_000),
+    };
+    await stream.prepareStep({
+      steps: [{ toolResults: [], response: { messages: [next] } }],
+      messages: [...initial, next],
+    });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
+
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
@@ -5524,7 +5617,11 @@ describe("createAgentStream repeated compaction", () => {
             recordSummarization: jest.fn(),
             recordSummarizationUsage: jest.fn(),
           },
-          usageTracker: {},
+          usageTracker: {
+            accumulateStep: jest.fn(() => 0),
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
         }) as any,
         state,
       )) as any;
@@ -5565,6 +5662,10 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(doStream.mock.calls[1][0].prompt)).toContain(
         "Keep verified facts.",
       );
+      await stream.onStepFinish({
+        usage: { inputTokens: 1_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
 
       mockCompactModelMessagesInRun.mockResolvedValueOnce({
         summaryMessage: uiMessage(

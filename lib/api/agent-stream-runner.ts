@@ -148,6 +148,7 @@ import {
   safeCountTokens,
 } from "@/lib/token-utils";
 import {
+  COMPACTION_ESTIMATE_RECOVERY_RATIO,
   getSummarizationThresholdTokens,
   MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
@@ -1060,10 +1061,35 @@ export async function createAgentStream(
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
   let compactionAttemptCount = 0;
   let unproductiveCompactionCount = 0;
+  let pendingCompactionVerdict = false;
+  let pendingCompactionInputEstimate = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
     unproductiveCompactionCount <
     MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+  const recordCompactionAttempt = () => {
+    compactionAttemptCount++;
+    unproductiveCompactionCount++;
+    pendingCompactionVerdict = true;
+    pendingCompactionInputEstimate = 0;
+  };
+  const confirmCompactionProgress = (inputTokens?: number) => {
+    if (!pendingCompactionVerdict) return;
+    pendingCompactionVerdict = false;
+    const providerTokens =
+      typeof inputTokens === "number" &&
+      Number.isFinite(inputTokens) &&
+      inputTokens > 0
+        ? inputTokens
+        : undefined;
+    const recovered =
+      providerTokens !== undefined
+        ? providerTokens < summarizationThreshold
+        : pendingCompactionInputEstimate > 0 &&
+          pendingCompactionInputEstimate <
+            summarizationThreshold * COMPACTION_ESTIMATE_RECOVERY_RATIO;
+    if (recovered) unproductiveCompactionCount = 0;
+  };
   let toolHistoryRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
@@ -1458,7 +1484,10 @@ export async function createAgentStream(
     );
     // A failed compaction must not send expanded history to a smaller model.
     // Preserve the transcript for retry instead of silently deleting context.
-    if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
+    if (
+      ctx.mode === "agent" &&
+      (ctx.agentModelContextEnabled || pendingCompactionVerdict)
+    ) {
       lastPreparedInputEstimate =
         estimateSummaryInputTokens(prepared) +
         Math.max(
@@ -1467,6 +1496,8 @@ export async function createAgentStream(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
         );
+      if (pendingCompactionVerdict)
+        pendingCompactionInputEstimate = lastPreparedInputEstimate;
       lastCompletedResponseMessages = [];
     }
     if (
@@ -1506,8 +1537,7 @@ export async function createAgentStream(
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
     abortSignal.throwIfAborted();
-    compactionAttemptCount++;
-    unproductiveCompactionCount++;
+    recordCompactionAttempt();
     const result = await compactModelMessagesInRun({
       compactionPolicy,
       // Use the existing bounded summary projection even for expanded Max.
@@ -1584,8 +1614,8 @@ export async function createAgentStream(
   };
   const commitRejectedRequestSummary = (summary: string) => {
     if (!rejectedRequestSource) return;
-    // The provider wrapper commits only a smaller replacement request.
-    unproductiveCompactionCount = 0;
+    // The provider wrapper commits a smaller replacement request. Wait for
+    // the retried provider call before deciding whether it cleared pressure.
     // Keep the canonical transcript untouched. Future SDK steps project from
     // this checkpoint, so already completed tools are not submitted again.
     historyEnabled = false;
@@ -2190,8 +2220,7 @@ export async function createAgentStream(
             });
 
             if (result.summarizationAttempted) {
-              compactionAttemptCount++;
-              unproductiveCompactionCount++;
+              recordCompactionAttempt();
               lastCompactionRawMessageCount = rawModelMessages.length;
             }
 
@@ -2259,14 +2288,6 @@ export async function createAgentStream(
                   ? [{ role: "user" as const, content: parentGate.reminder }]
                   : []),
               ];
-              if (
-                isRollingCompactionEffective(
-                  rawModelMessages,
-                  summarizedModelMessages,
-                )
-              ) {
-                unproductiveCompactionCount = 0;
-              }
               rollingContextCheckpoint = {
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
@@ -2329,8 +2350,7 @@ export async function createAgentStream(
             // Never repeatedly summarize the same raw source cursor. A later
             // provider step advances the cursor and can become eligible again.
           } else {
-            compactionAttemptCount++;
-            unproductiveCompactionCount++;
+            recordCompactionAttempt();
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               compactionPolicy,
@@ -2424,7 +2444,6 @@ export async function createAgentStream(
                   }),
                 );
               } else {
-                unproductiveCompactionCount = 0;
                 ctx.summarizationTracker.recordSummarization(
                   steps.length,
                   inRunResult.summarizationUsage,
@@ -2749,7 +2768,10 @@ export async function createAgentStream(
             : state.lastStepInputTokens,
         getHasSummarized: () =>
           ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
-        getCanSummarizeAgain: canSummarizeAgain,
+        // Let the provider finish the latest compacted request before using
+        // its prompt size to decide whether another attempt is possible.
+        getCanSummarizeAgain: () =>
+          pendingCompactionVerdict || canSummarizeAgain(),
         onFired: () => {
           state.stoppedDueToTokenExhaustion = true;
         },
@@ -2952,6 +2974,7 @@ export async function createAgentStream(
           };
         }
       }
+      confirmCompactionProgress(usage?.inputTokens);
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({

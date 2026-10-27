@@ -59,11 +59,14 @@ export const SUMMARY_PRIOR_CHECKPOINT_MAX_TOKENS = 16_000;
 export const SUMMARY_OVERFLOW_TEXT_PART_MAX_TOKENS = 1024;
 export const SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS = 512;
 
-// Bound consecutive compactions that fail to make progress. Effective
-// compactions may recur as new Agent work grows the context over a long run.
-// A provider with irreducible fixed prompt/tool overhead still stops after
-// this many unproductive attempts and can use client-driven continuation.
-export const MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM = 8;
+// Bound consecutive compactions whose next provider prompt remains over the
+// threshold. Fixed system/tool overhead can make message-only savings
+// misleading; productive compactions may recur throughout a long Agent run.
+export const MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM = 2;
+
+// When a provider omits input usage, require substantial estimated headroom
+// before treating a compaction as productive.
+export const COMPACTION_ESTIMATE_RECOVERY_RATIO = 0.8;
 
 // A replacement checkpoint must remove at least 10% of serialized context.
 export const ROLLING_COMPACTION_MAX_SIZE_RATIO = 0.9;
