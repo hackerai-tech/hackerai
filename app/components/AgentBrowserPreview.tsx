@@ -459,7 +459,7 @@ export function AgentBrowserPreview({
   }, [endpoint]);
 
   const frameStale =
-    renewalPending ||
+    (!!grant && renewalPending) ||
     !session ||
     !frame ||
     previewState !== "ready" ||
