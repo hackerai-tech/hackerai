@@ -870,135 +870,140 @@ const ChatInputContent = ({
         className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
-        {isOffline && (
-          <div
-            role="status"
-            aria-live="polite"
-            data-testid="offline-status"
-            className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
-          >
-            <div className="flex min-w-0 flex-1 items-start gap-2">
-              <WifiOff
-                aria-hidden="true"
-                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
-              />
-              <p>
-                You&apos;re offline. Keep typing—this draft will stay on this
-                device.
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="w-full shrink-0 sm:w-auto"
-              disabled={isReconnecting}
-              onClick={() => void handleOfflineReconnect()}
+        <div className="flex min-h-0 flex-col overflow-y-auto">
+          {isOffline && (
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="offline-status"
+              className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
             >
-              {isReconnecting ? "Reconnecting..." : "Reconnect"}
-            </Button>
-          </div>
-        )}
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <WifiOff
+                  aria-hidden="true"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+                />
+                <p>
+                  You&apos;re offline. Keep typing—this draft will stay on this
+                  device.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="w-full shrink-0 sm:w-auto"
+                disabled={isReconnecting}
+                onClick={() => void handleOfflineReconnect()}
+              >
+                {isReconnecting ? "Reconnecting..." : "Reconnect"}
+              </Button>
+            </div>
+          )}
 
-        {user && selectedComputerUnavailable && !computerConnectionPending && (
-          <DisconnectedComputerNotice
-            isNewChat={isNewChat}
-            sandboxPreference={sandboxPreference}
-            onSelect={setSandboxPreference}
-            reconnectInstructions={
-              isDesktopPreference(sandboxPreference) && !selectedNativeDesktop
-                ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
-                : undefined
-            }
-            reconnecting={
-              selectedNativeDesktop && desktopBridgeStatus === "connecting"
-            }
-            onReconnect={() => {
-              if (selectedNativeDesktop) retryDesktopBridge();
-              else {
-                requestRemoteConnectionSelection(sandboxPreference);
-                openSettingsDialog("Remote Control");
-              }
-            }}
-          />
-        )}
-
-        {user && rateLimitWarning && onDismissRateLimitWarning && (
-          <RateLimitWarning
-            data={rateLimitWarning}
-            onDismiss={onDismissRateLimitWarning}
-            compact={todoPanelVisible}
-          />
-        )}
-
-        {user && (
-          <div className="flex flex-col [&>*+*]:rounded-t-none">
-            <TodoPanel status={status} />
-
-            {messageQueue.length > 0 && (
-              <QueuedMessagesPanel
-                messages={messageQueue}
-                onSendNow={onSendNow}
-                onEdit={updateQueuedMessage}
-                onEditingMessageChange={setEditingQueuedMessageId}
-                onDelete={removeQueuedMessage}
-                isStreaming={status === "streaming"}
-                queueBehavior={queueBehavior}
-                onQueueBehaviorChange={setQueueBehavior}
+          {user &&
+            selectedComputerUnavailable &&
+            !computerConnectionPending && (
+              <DisconnectedComputerNotice
+                isNewChat={isNewChat}
+                sandboxPreference={sandboxPreference}
+                onSelect={setSandboxPreference}
+                reconnectInstructions={
+                  isDesktopPreference(sandboxPreference) &&
+                  !selectedNativeDesktop
+                    ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
+                    : undefined
+                }
+                reconnecting={
+                  selectedNativeDesktop && desktopBridgeStatus === "connecting"
+                }
+                onReconnect={() => {
+                  if (selectedNativeDesktop) retryDesktopBridge();
+                  else {
+                    requestRemoteConnectionSelection(sandboxPreference);
+                    openSettingsDialog("Remote Control");
+                  }
+                }}
               />
             )}
-          </div>
-        )}
 
-        {/* New chats always show the sandbox selector above the input.
+          {user && rateLimitWarning && onDismissRateLimitWarning && (
+            <RateLimitWarning
+              data={rateLimitWarning}
+              onDismiss={onDismissRateLimitWarning}
+              compact={todoPanelVisible}
+            />
+          )}
+
+          {user && (
+            <div className="flex flex-col [&>*+*]:rounded-t-none">
+              <TodoPanel status={status} />
+
+              {messageQueue.length > 0 && (
+                <QueuedMessagesPanel
+                  messages={messageQueue}
+                  onSendNow={onSendNow}
+                  onEdit={updateQueuedMessage}
+                  onEditingMessageChange={setEditingQueuedMessageId}
+                  onDelete={removeQueuedMessage}
+                  isStreaming={status === "streaming"}
+                  queueBehavior={queueBehavior}
+                  onQueueBehaviorChange={setQueueBehavior}
+                />
+              )}
+            </div>
+          )}
+
+          {/* New chats always show the sandbox selector above the input.
             Existing chats reveal it in the same position while composing. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
-          <div
-            className={`relative z-0 order-1 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
-            data-testid="chat-input-agent-context-reveal"
-            aria-hidden={!agentControlsVisible}
-            inert={!agentControlsVisible}
-          >
-            <div className="min-h-0 overflow-hidden">
-              <div
-                className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "mb-2 flex-nowrap items-center gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
-                data-compact={compactAgentControls ? "true" : "false"}
-                data-testid="chat-input-agent-context"
-                onPointerDownCapture={() => {
-                  agentControlsPointerDownRef.current = true;
-                  window.setTimeout(() => {
-                    agentControlsPointerDownRef.current = false;
-                  }, 0);
-                }}
-              >
+          {user && isAgent && !showAgentApprovalPrompt && (
+            <div
+              className={`relative z-0 order-1 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+              data-testid="chat-input-agent-context-reveal"
+              aria-hidden={!agentControlsVisible}
+              inert={!agentControlsVisible}
+            >
+              <div className="min-h-0 overflow-hidden">
                 <div
-                  className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
-                  data-testid="chat-input-mobile-sandbox"
+                  className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "mb-2 flex-nowrap items-center gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                  data-compact={compactAgentControls ? "true" : "false"}
+                  data-testid="chat-input-agent-context"
+                  onPointerDownCapture={() => {
+                    agentControlsPointerDownRef.current = true;
+                    window.setTimeout(() => {
+                      agentControlsPointerDownRef.current = false;
+                    }, 0);
+                  }}
                 >
-                  <SandboxSelector
-                    value={sandboxPreference}
-                    onChange={setSandboxPreference}
-                    compact={!isEmptyNewChat}
-                    size={isEmptyNewChat ? "md" : "sm"}
-                  />
+                  <div
+                    className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
+                    data-testid="chat-input-mobile-sandbox"
+                  >
+                    <SandboxSelector
+                      value={sandboxPreference}
+                      onChange={setSandboxPreference}
+                      compact={!isEmptyNewChat}
+                      size={isEmptyNewChat ? "md" : "sm"}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {uploadedFiles && uploadedFiles.length > 0 && (
-          <div className="order-2 shrink-0">
-            <FileUploadPreview
-              uploadedFiles={uploadedFiles}
-              onRemoveFile={handleRemoveFile}
-              onRetryFile={handleRetryFile}
-              onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
-              onShowGeneratedTextInField={handleShowGeneratedTextInField}
-              generatedTextAttachmentsAvailable={isAgent}
-            />
-          </div>
-        )}
+          {uploadedFiles && uploadedFiles.length > 0 && (
+            <div className="order-2 shrink-0">
+              <FileUploadPreview
+                uploadedFiles={uploadedFiles}
+                onRemoveFile={handleRemoveFile}
+                onRetryFile={handleRetryFile}
+                onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+                onShowGeneratedTextInField={handleShowGeneratedTextInField}
+                generatedTextAttachmentsAvailable={isAgent}
+              />
+            </div>
+          )}
+        </div>
 
         <input
           ref={fileInputRef}
@@ -1018,7 +1023,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-0 min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
           >
             <ChatInputTextarea
