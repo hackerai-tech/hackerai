@@ -110,12 +110,14 @@ windowsDescribe("Windows generated-file metadata command", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  test.each(["cmd", "git-bash"])(
+  const gitBash = process.platform === "win32" ? findGitBash() : null;
+  const persistenceShells = [
+    ["cmd", windowsSystemExecutable("cmd.exe")],
+    ...(gitBash ? [["git-bash", gitBash]] : []),
+  ];
+  test.each(persistenceShells)(
     "persists large UTF-8 output through real %s commands",
-    async (kind) => {
-      const shell =
-        kind === "cmd" ? windowsSystemExecutable("cmd.exe") : findGitBash();
-      expect(shell).not.toBeNull();
+    async (kind, shell) => {
       const adapter = new CentrifugoSandbox(
         "fixture-user",
         {
@@ -139,7 +141,7 @@ windowsDescribe("Windows generated-file metadata command", () => {
             kind === "cmd" ? "/C" : "-c",
             command,
           );
-          const result = spawnSync(shell!, spec.args, {
+          const result = spawnSync(shell, spec.args, {
             ...spec.options,
             encoding: "utf8",
             timeout: 10_000,
