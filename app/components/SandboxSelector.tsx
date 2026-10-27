@@ -448,6 +448,7 @@ export function SandboxSelector({
                 </button>
               </PopoverTrigger>
               <PopoverContent
+                data-chat-input-agent-menu
                 side="top"
                 sideOffset={8}
                 className="w-[240px] p-4"

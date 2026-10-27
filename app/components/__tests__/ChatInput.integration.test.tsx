@@ -1069,6 +1069,11 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.focus(input);
       expect(context).toHaveClass("flex");
 
+      fireEvent.change(input, { target: { value: "A harmless follow-up" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      expect(context).toHaveClass("flex");
+
       const sandboxTrigger = screen
         .getByTestId("chat-input-mobile-sandbox")
         .querySelector("button");

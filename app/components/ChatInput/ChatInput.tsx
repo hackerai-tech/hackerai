@@ -804,7 +804,6 @@ const ChatInputContent = ({
         isSubmittingAttachmentsRef.current = false;
         return;
       }
-      setComposerFocused(false);
       if (clearDraftOnSubmit) {
         uploadedFilesRef.current = [];
         removeDraft(draftId);
