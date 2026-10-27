@@ -131,13 +131,12 @@ export const useChatHandlers = ({
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
     getInput,
-    uploadedFiles,
+    getUploadedFiles,
     chatMode,
     clearInput,
     clearUploadedFiles,
     todos,
     setTodos,
-    isUploadingFiles,
     subscription,
     queueMessage,
     messageQueue,
@@ -176,7 +175,6 @@ export const useChatHandlers = ({
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
-  const uploadedFilesRef = useCommittedRef(uploadedFiles);
   const stopGenerationRef = useRef(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
@@ -193,7 +191,9 @@ export const useChatHandlers = ({
     };
   }, [chatId]);
 
-  const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
+  const isSendableUploadedFile = (
+    file: ReturnType<typeof getUploadedFiles>[number],
+  ) =>
     file.uploaded &&
     !file.uploading &&
     !file.error &&
@@ -524,8 +524,9 @@ export const useChatHandlers = ({
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
     const input = getInput();
+    const uploadedFiles = getUploadedFiles();
     const clearSubmittedDraft = () => {
-      if (getInput() === input && uploadedFilesRef.current === uploadedFiles) {
+      if (getInput() === input && getUploadedFiles() === uploadedFiles) {
         clearInput();
         clearUploadedFiles();
       }
@@ -547,7 +548,7 @@ export const useChatHandlers = ({
     resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
-    if (isUploadingFiles) {
+    if (uploadedFiles.some((file) => file.uploading || file.error)) {
       return false;
     }
     const currentChatMode = chatModeRef.current;

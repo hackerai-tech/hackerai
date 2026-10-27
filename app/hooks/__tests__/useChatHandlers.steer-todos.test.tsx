@@ -89,6 +89,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     getInput: () => mockInput,
     uploadedFiles: mockUploadedFiles,
+    getUploadedFiles: () => mockUploadedFiles,
     chatMode: mockChatMode,
     clearInput: mockClearInput,
     clearUploadedFiles: mockClearUploadedFiles,

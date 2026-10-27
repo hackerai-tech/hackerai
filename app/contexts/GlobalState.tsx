@@ -84,6 +84,7 @@ interface GlobalStateType {
   setSurveyActivation: (activation: SurveyActivation | null) => void;
   // File upload state
   uploadedFiles: UploadedFileState[];
+  getUploadedFiles: () => UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
   removeUploadedFile: (target: number | UploadedFileState["file"]) => void;
@@ -289,7 +290,28 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const initialSavedChatModeRef = useRef<ChatMode | null>(null);
   const hasUserSelectedModeThisSessionRef = useRef(false);
   const agentFirstDefaultAppliedRef = useRef(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadedFileState[]>(
+    [],
+  );
+  const uploadedFilesRef = useRef<UploadedFileState[]>([]);
+  const getUploadedFiles = useCallback(() => uploadedFilesRef.current, []);
+  // Admission and composer cleanup must observe attachment changes immediately,
+  // before React publishes the corresponding render.
+  const setUploadedFiles = useCallback(
+    (
+      update:
+        | UploadedFileState[]
+        | ((files: UploadedFileState[]) => UploadedFileState[]),
+    ) => {
+      const next =
+        typeof update === "function"
+          ? update(uploadedFilesRef.current)
+          : update;
+      uploadedFilesRef.current = next;
+      setUploadedFilesState(next);
+    },
+    [],
+  );
   const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
@@ -1153,9 +1175,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     (file) => file.uploading || file.error,
   );
 
-  const addUploadedFile = useCallback((file: UploadedFileState) => {
-    setUploadedFiles((prev) => [...prev, file]);
-  }, []);
+  const addUploadedFile = useCallback(
+    (file: UploadedFileState) => {
+      setUploadedFiles((prev) => [...prev, file]);
+    },
+    [setUploadedFiles],
+  );
 
   const removeUploadedFile = useCallback(
     (target: number | UploadedFileState["file"]) => {
@@ -1165,7 +1190,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   const updateUploadedFile = useCallback(
@@ -1181,7 +1206,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   // Message queue handlers
@@ -1377,6 +1402,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       surveySubmission?.userId === userId ? surveySubmission : null,
     setSurveyActivation,
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     addUploadedFile,
     removeUploadedFile,

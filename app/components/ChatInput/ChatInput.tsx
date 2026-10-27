@@ -270,6 +270,7 @@ const ChatInputContent = ({
     chatMode,
     setChatMode,
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     isUploadingFiles,
     messageQueue,
@@ -790,7 +791,7 @@ const ChatInputContent = ({
     if (canSubmit) {
       isSubmittingRef.current = true;
       const submittedInput = getInput();
-      const submittedFiles = uploadedFilesRef.current;
+      const submittedFiles = getUploadedFiles();
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
@@ -798,10 +799,10 @@ const ChatInputContent = ({
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
-          uploadedFilesRef.current === submittedFiles;
+          getUploadedFiles() === submittedFiles;
         // The chat handler can already have cleared the accepted submission.
         const alreadyCleared =
-          getInput() === "" && uploadedFilesRef.current.length === 0;
+          getInput() === "" && getUploadedFiles().length === 0;
         const sameDraft =
           prevDraftIdRef.current === draftId ||
           (draftId === "new" && prevDraftIdRef.current === chatId);
