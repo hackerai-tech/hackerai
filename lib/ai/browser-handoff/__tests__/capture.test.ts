@@ -20,7 +20,7 @@ const location = {
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
-function fixture(screenshotExitCode = 0) {
+function fixture(screenshotExitCode = 0, viewportExitCode = 0) {
   const sandbox = {
     commands: {
       run: jest.fn(async (command: string) => {
@@ -31,6 +31,8 @@ function fixture(screenshotExitCode = 0) {
           };
         if (command.includes('"action":"screenshot"'))
           return { exitCode: screenshotExitCode, stdout: "" };
+        if (command.includes('"action":"viewport"'))
+          return { exitCode: viewportExitCode, stdout: "" };
         return {
           exitCode: 0,
           stdout: JSON.stringify({
@@ -124,6 +126,22 @@ it("resizes only the bound browser session and returns a fresh frame", async () 
   expect(result.width).toBe(390);
   expect(result.height).toBe(844);
 });
+
+it("does not return a new image or coordinate space when resizing fails", async () => {
+  const sandbox = fixture(0, 1);
+  await expect(
+    resizeBrowserViewport(
+      sandbox as unknown as Sandbox,
+      location,
+      "child-one",
+      390,
+      844,
+    ),
+  ).rejects.toThrow("Browser preview disconnected");
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.files.read).not.toHaveBeenCalled();
+});
+
 it("rejects unbounded viewport dimensions before executing a command", async () => {
   const sandbox = fixture();
   await expect(
