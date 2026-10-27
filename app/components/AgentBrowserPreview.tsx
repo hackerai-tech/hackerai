@@ -656,7 +656,7 @@ export function AgentBrowserPreview({
     }
   };
 
-  const sendInput = (input: BrowserInput) => {
+  const sendInput = (input: BrowserInput, coalesceMove = true) => {
     const activeGrant = grantRef.current;
     if (
       !activeGrant ||
@@ -677,6 +677,7 @@ export function AgentBrowserPreview({
     const previous = buffer.at(-1);
     const penultimate = buffer.at(-2);
     if (
+      coalesceMove &&
       input.kind === "move" &&
       previous?.kind === "move" &&
       previous.buttons === input.buttons &&
@@ -742,8 +743,12 @@ export function AgentBrowserPreview({
     if (!mouse) return;
     // Flush the final position before release, even if the last pointermove
     // was throttled or a request was still in flight.
-    if (mouse.moved)
+    if (mouse.moved) {
       sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 });
+      // Entering a new native drop target only fires dragenter. A distinct
+      // final move must deliver dragover before release, even at the same point.
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 }, false);
+    }
     sendInput({ kind: "up", x: mouse.x, y: mouse.y });
   };
   useLayoutEffect(() => {

@@ -650,9 +650,11 @@ it("preserves drag initiation and the final movement before release during slow 
     { kind: "down", x: 200, y: 200 },
     { kind: "move", x: 400, y: 200, buttons: 1 },
     { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
     { kind: "up", x: 600, y: 200 },
     { kind: "down", x: 200, y: 200 },
     { kind: "move", x: 400, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
     { kind: "move", x: 600, y: 200, buttons: 1 },
     { kind: "up", x: 600, y: 200 },
   ]);
@@ -660,9 +662,11 @@ it("preserves drag initiation and the final movement before release during slow 
     { eventType: "mousePressed", button: "left" },
     { eventType: "mouseMoved", button: "left", x: 400 },
     { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
     { eventType: "mouseReleased", button: "left", x: 600 },
     { eventType: "mousePressed", button: "left" },
     { eventType: "mouseMoved", button: "left", x: 400 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
     { eventType: "mouseMoved", button: "left", x: 600 },
     { eventType: "mouseReleased", button: "left", x: 600 },
   ]);
