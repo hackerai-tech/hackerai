@@ -52,11 +52,17 @@ const getReusableApprovalDescription = (
   if (grant.kind === "terminal_command") {
     // JSON keeps bidi controls literal; escape them so displayed order cannot
     // disguise the selected scope. The submitted argv remains unchanged.
-    const displayedArgv = JSON.stringify(grant.argv).replace(
-      /\p{Bidi_Control}/gu,
-      (character) =>
-        `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
-    );
+    const displayedArgv = `[${grant.argv
+      .map((argument) => {
+        const escaped = JSON.stringify(argument).replace(
+          /\p{Bidi_Control}/gu,
+          (character) =>
+            `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+        );
+        // Isolate each argument so natural RTL text cannot reorder neighbors.
+        return `\u2068${escaped}\u2069`;
+      })
+      .join(",")}]`;
     return `Commands starting with ${displayedArgv}, with any following arguments`;
   }
   if (grant.kind === "terminal_interaction") {
@@ -360,7 +366,7 @@ export function AgentApprovalPrompt({
                     onSelect={() => void submitApproval(true)}
                   >
                     <span>{reusableApprovalLabel}</span>
-                    <span className="min-w-0 max-w-full whitespace-normal text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    <span className="min-w-0 max-w-full whitespace-pre-wrap text-xs text-muted-foreground [overflow-wrap:anywhere]">
                       {reusableApprovalDescription}
                     </span>
                   </DropdownMenuItem>

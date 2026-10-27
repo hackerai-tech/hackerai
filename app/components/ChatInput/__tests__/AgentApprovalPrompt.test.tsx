@@ -263,12 +263,12 @@ describe("AgentApprovalPrompt", () => {
     );
     expect(
       await screen.findByText(
-        'Commands starting with ["ping","-c","4"], with any following arguments',
+        'Commands starting with [\u2068"ping"\u2069,\u2068"-c"\u2069,\u2068"4"\u2069], with any following arguments',
       ),
     ).toBeVisible();
     fireEvent.click(
       await screen.findByRole("menuitem", {
-        name: 'Allow this conversation: Commands starting with ["ping","-c","4"], with any following arguments',
+        name: 'Allow this conversation: Commands starting with [\u2068"ping"\u2069,\u2068"-c"\u2069,\u2068"4"\u2069], with any following arguments',
       }),
     );
 
@@ -284,11 +284,22 @@ describe("AgentApprovalPrompt", () => {
     );
   });
 
-  it("shows directional controls literally without changing the approved argv", async () => {
-    const argv = ["printf", "\u202Eelif--\u202C", "café"];
+  it("keeps argument boundaries explicit without changing the approved argv", async () => {
+    const argv = [
+      "printf",
+      "\u202Eelif--\u202C",
+      "café",
+      "אב",
+      "גד",
+      "two  spaces",
+    ];
     render(
       <AgentApprovalPrompt
-        request={{ ...request, target: argv.join(" "), prefixRule: argv }}
+        request={{
+          ...request,
+          target: argv.map((argument) => `'${argument}'`).join(" "),
+          prefixRule: argv,
+        }}
         onStop={mockOnStop}
       />,
     );
@@ -297,13 +308,18 @@ describe("AgentApprovalPrompt", () => {
       { key: "ArrowDown", code: "ArrowDown" },
     );
     const description =
-      'Commands starting with ["printf","\\u202eelif--\\u202c","café"], with any following arguments';
-    expect(await screen.findByText(description)).toBeVisible();
-    fireEvent.click(
-      screen.getByRole("menuitem", {
-        name: `Allow this conversation: ${description}`,
-      }),
+      'Commands starting with [\u2068"printf"\u2069,\u2068"\\u202eelif--\\u202c"\u2069,\u2068"café"\u2069,\u2068"אב"\u2069,\u2068"גד"\u2069,\u2068"two  spaces"\u2069], with any following arguments';
+    expect(
+      await screen.findByText(description, { normalizer: (text) => text }),
+    ).toBeVisible();
+    const option = screen.getByRole("menuitem", {
+      name: /^Allow this conversation:/,
+    });
+    expect(option).toHaveAttribute(
+      "aria-label",
+      `Allow this conversation: ${description}`,
     );
+    fireEvent.click(option);
     await waitFor(() =>
       expect(mockSendToolApproval).toHaveBeenCalledWith({
         approvalId: "approval-1",
@@ -347,12 +363,12 @@ describe("AgentApprovalPrompt", () => {
     );
     expect(
       await screen.findByText(
-        'Commands starting with ["rm"], with any following arguments',
+        'Commands starting with [\u2068"rm"\u2069], with any following arguments',
       ),
     ).toBeVisible();
     fireEvent.click(
       await screen.findByRole("menuitem", {
-        name: 'Allow this conversation: Commands starting with ["rm"], with any following arguments',
+        name: 'Allow this conversation: Commands starting with [\u2068"rm"\u2069], with any following arguments',
       }),
     );
     await waitFor(() =>
