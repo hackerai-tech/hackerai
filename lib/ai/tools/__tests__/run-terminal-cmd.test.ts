@@ -646,7 +646,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
-  test("collects bounded script evidence only for automatic review", async () => {
+  test("leaves script inspection unresolved and permits human-approved execution", async () => {
     const run = jest.fn(
       async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
         opts?.onStdout?.("ok\n");
@@ -677,22 +677,15 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         command: "bash scripts/test.sh",
         inspection: {
           kind: "script",
-          status: "resolved",
-          scripts: [
-            {
-              source: "file",
-              path: "/workspace/project/scripts/test.sh",
-              content: "#!/bin/sh\necho ok\n",
-            },
-          ],
-          fingerprint: expect.any(String),
+          status: "unresolved",
+          reason: "inspection_failed",
         },
       });
       return {
         approved: true as const,
         approvalId: "approval-1",
         sandboxIdentity: "connection:desktop-a" as const,
-        approvalSource: "auto_review" as const,
+        approvalSource: "user" as const,
       };
     });
     const { context } = makeContext({
@@ -711,7 +704,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(result.result.exitCode).toBe(0);
     expect(result.result.output).toContain("ok");
-    expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
+    expect(sandbox.files.readText).not.toHaveBeenCalled();
     // Retention can run separately; the approved user command must run only once.
     expect(
       run.mock.calls.filter(([command]) =>
@@ -792,24 +785,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
-  test("blocks execution when inspected script contents change after automatic review", async () => {
-    const readText = jest
+  test("blocks execution when inspected deletion target changes after automatic review", async () => {
+    const stat = jest
       .fn()
       .mockResolvedValueOnce({
-        type: "file_read_result" as const,
-        requestId: "request-1",
-        path: "/workspace/project/scripts/test.sh",
+        kind: "file" as const,
         sizeBytes: 8,
-        totalLines: 1,
-        content: "echo ok\n",
       })
       .mockResolvedValueOnce({
-        type: "file_read_result" as const,
-        requestId: "request-2",
-        path: "/workspace/project/scripts/test.sh",
+        kind: "file" as const,
         sizeBytes: 9,
-        totalLines: 1,
-        content: "echo bad\n",
       });
     const run = jest.fn();
     const sandbox = {
@@ -818,7 +803,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getWorkingDirectory: () => "/workspace/project",
       isWindows: () => false,
       supportsNativeFileRelay: () => true,
-      files: { readText },
+      files: { stat },
       commands: { run },
     };
     const requestToolApproval = jest.fn(async () => ({
@@ -834,8 +819,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
 
     const result = (await runTool(createRunTerminalCmd(context), {
-      command: "bash scripts/test.sh",
-      brief: "run focused tests",
+      command: "rm -rf build",
+      brief: "remove build output",
       is_background: false,
       timeout: 5,
       interactive: false,
@@ -844,6 +829,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.error).toContain(
       "inspected files changed after automatic review",
     );
+    expect(stat).toHaveBeenCalledTimes(2);
     expect(run).not.toHaveBeenCalled();
   });
 

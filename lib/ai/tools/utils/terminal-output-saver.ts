@@ -1,6 +1,8 @@
+import { getLocalFileRequestFailure } from "./local-sandbox-errors";
 import {
   classifyPersistenceFailure as classifyTerminalOutputPersistenceFailure,
   persistenceCommandError,
+  PersistenceError,
   type PersistenceFailureCategory as TerminalOutputPersistenceFailureCategory,
 } from "./persistence-failure";
 import { createHash } from "node:crypto";
@@ -76,7 +78,32 @@ const getPersistenceSandboxFields = (
   };
 };
 
+// Transport selection and client identity are different: an older Desktop
+// bridge can fall back to the command transport. Never send host names or paths.
+const getClientFields = (sandbox: AnySandbox) => {
+  if (!isCentrifugoSandbox(sandbox)) return { client_surface: "cloud" };
+  const info = sandbox.getConnectionInfo?.();
+  const platform = info?.osInfo?.platform;
+  return {
+    client_surface:
+      info?.isDesktop === true ? "desktop" : info ? "local" : "unknown",
+    client_platform: ["win32", "darwin", "linux"].includes(platform ?? "")
+      ? platform
+      : "unknown",
+    native_file_relay: sandbox.supportsNativeFileRelay?.() ?? null,
+    command_stdin: sandbox.supportsCommandStdin?.() ?? null,
+    operation_channels: info?.capabilities?.operationChannels === true,
+  };
+};
+
+type TimeoutVerification =
+  "matched_size" | "size_mismatch" | "probe_failed" | "unavailable";
+
 const emitPersistenceFailure = (args: {
+  sandbox: AnySandbox;
+  error?: unknown;
+  timeoutVerification?: TimeoutVerification;
+  verificationError?: unknown;
   provider: TerminalOutputPersistenceProvider;
   attemptCount: number;
   result: "recovered" | "failed";
@@ -88,6 +115,15 @@ const emitPersistenceFailure = (args: {
 }): void => {
   const fields = {
     ...getPersistenceSandboxFields(args.provider),
+    ...getClientFields(args.sandbox),
+    local_file_failure: getLocalFileRequestFailure(args.error),
+    command_exit_code:
+      args.error instanceof PersistenceError ? args.error.exitCode : undefined,
+    timeout_verification: args.timeoutVerification,
+    verification_failure_category:
+      args.verificationError === undefined
+        ? undefined
+        : classifyTerminalOutputPersistenceFailure(args.verificationError),
     // Retained for existing dashboards; use sandbox_provider for cloud backend.
     provider: args.provider,
     attempt_count: args.attemptCount,
@@ -113,6 +149,11 @@ const emitPersistenceFailure = (args: {
   if (args.result === "recovered") console.info(payload);
   else console.warn(payload);
 
+  // Exactly one result event per eligible save, including retry recovery.
+  phLogger.event("terminal_output_persistence_result", {
+    ...(args.telemetry?.userId && { userId: args.telemetry.userId }),
+    ...fields,
+  });
   phLogger.event("terminal_output_persistence_failure", {
     ...(args.telemetry?.userId && { userId: args.telemetry.userId }),
     ...fields,
@@ -194,9 +235,9 @@ export async function saveFullOutputToFile(
       failureStage = "write_output";
       await writeOwnerOnlyPosixFile(sandbox, root, dir, filePath, fullOutput);
     } else {
-      // Native file writes create parents and enforce the project boundary.
-      // Avoid an unquoted POSIX shell command on Desktop (including Windows).
-      if (provider !== "desktop") {
+      // Local file adapters already create parents using their platform-aware
+      // path handling; native writes also enforce the project boundary.
+      if (!isCentrifugoSandbox(sandbox)) {
         const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
           timeoutMs: 5000,
         });
@@ -234,7 +275,20 @@ export async function saveFullOutputToFile(
 
   let attemptCount = 1;
   try {
-    return await save();
+    const savedPath = await save();
+    phLogger.event("terminal_output_persistence_result", {
+      ...(telemetry?.userId && { userId: telemetry.userId }),
+      ...getPersistenceSandboxFields(provider),
+      ...getClientFields(sandbox),
+      provider,
+      result: "saved",
+      attempt_count: attemptCount,
+      service: telemetry?.service ?? "unknown",
+      environment: telemetry?.environment ?? "unknown",
+      request_id: telemetry?.requestId ?? null,
+      trigger_run_id: telemetry?.triggerRunId ?? null,
+    });
+    return savedPath;
   } catch (firstError) {
     const firstStage = failureStage;
     const firstCategory = classifyTerminalOutputPersistenceFailure(firstError);
@@ -245,10 +299,15 @@ export async function saveFullOutputToFile(
         }
       ).stat;
       if (stat) {
+        let timeoutVerification: TimeoutVerification = "size_mismatch";
+        let verificationError: unknown;
         try {
-          const metadata = await stat(filePath);
+          const metadata = await stat.call(sandbox.files, filePath);
           if (metadata.sizeBytes === Buffer.byteLength(fullOutput, "utf8")) {
             emitPersistenceFailure({
+              sandbox,
+              error: firstError,
+              timeoutVerification: "matched_size",
               provider,
               attemptCount,
               result: "recovered",
@@ -259,10 +318,16 @@ export async function saveFullOutputToFile(
             });
             return filePath;
           }
-        } catch {
+        } catch (error) {
+          timeoutVerification = "probe_failed";
+          verificationError = error;
           // A bounded metadata probe is only a fallback for a lost write ack.
         }
         emitPersistenceFailure({
+          sandbox,
+          error: firstError,
+          timeoutVerification,
+          verificationError,
           provider,
           attemptCount,
           result: "failed",
@@ -276,6 +341,12 @@ export async function saveFullOutputToFile(
     }
     if (!canRetryPersistenceFailure(provider, firstCategory)) {
       emitPersistenceFailure({
+        sandbox,
+        error: firstError,
+        timeoutVerification:
+          provider === "desktop" && firstCategory === "timeout"
+            ? "unavailable"
+            : undefined,
         provider,
         attemptCount,
         result: "failed",
@@ -295,6 +366,8 @@ export async function saveFullOutputToFile(
     try {
       const savedPath = await save();
       emitPersistenceFailure({
+        sandbox,
+        error: firstError,
         provider,
         attemptCount,
         result: "recovered",
@@ -306,6 +379,8 @@ export async function saveFullOutputToFile(
       return savedPath;
     } catch (retryError) {
       emitPersistenceFailure({
+        sandbox,
+        error: retryError,
         provider,
         attemptCount,
         result: "failed",
@@ -350,8 +425,18 @@ export async function saveTruncatedOutput(opts: {
   );
 
   if (!savedPath) {
-    await terminalWriter(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
-    return FULL_OUTPUT_SAVE_FAILED_MESSAGE;
+    const missingPrivateTransport =
+      usesOwnerOnlyPosixFileTransport(sandbox) &&
+      isCentrifugoSandbox(sandbox) &&
+      sandbox.supportsCommandStdin?.() === false;
+    const recovery = missingPrivateTransport
+      ? sandbox.getConnectionInfo?.()?.isDesktop
+        ? "\n[Desktop file access is unavailable. Ask the user to restart or update the Desktop app and reconnect this computer. Do not work around the private-storage guard.]"
+        : "\n[The local client has not enabled private artifact storage. Ask the user to reconnect an up-to-date local client; if it persists, check the local client's private-storage startup error. Do not bypass the ownership checks.]"
+      : "";
+    const message = FULL_OUTPUT_SAVE_FAILED_MESSAGE + recovery;
+    await terminalWriter(message);
+    return message;
   }
   opts.onSavedPath?.(savedPath);
 

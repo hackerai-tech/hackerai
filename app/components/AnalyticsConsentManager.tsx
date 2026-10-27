@@ -277,6 +277,7 @@ export function AnalyticsConsentManager({
     <AnalyticsConsentPreferencesContext.Provider value={preferences}>
       <PostHogProvider
         analyticsAllowed={analyticsAllowed}
+        consentDeclined={consent === "declined"}
         consentRequired={effectiveConsentRequired}
         firstTouchAttribution={firstTouchAttribution}
       >

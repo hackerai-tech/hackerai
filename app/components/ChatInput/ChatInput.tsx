@@ -13,7 +13,6 @@ import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
-import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   isTauriEnvironment,
@@ -68,8 +67,6 @@ interface ChatInputProps {
   status: ChatStatus;
   isCentered?: boolean;
   hasMessages?: boolean;
-  isAtBottom?: boolean;
-  onScrollToBottom?: () => void;
   hideStop?: boolean;
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
@@ -255,8 +252,6 @@ const ChatInputContent = ({
   status,
   isCentered = false,
   hasMessages = false,
-  isAtBottom = true,
-  onScrollToBottom,
   hideStop = false,
   isNewChat = false,
   clearDraftOnSubmit = true,
@@ -1015,16 +1010,6 @@ const ChatInputContent = ({
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
-          </div>
-        )}
-
-        {onScrollToBottom && (
-          <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
-            <ScrollToBottomButton
-              onClick={onScrollToBottom}
-              hasMessages={hasMessages}
-              isAtBottom={isAtBottom}
-            />
           </div>
         )}
       </div>

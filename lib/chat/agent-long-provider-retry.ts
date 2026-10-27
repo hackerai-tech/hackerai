@@ -145,6 +145,9 @@ export type ProviderDisconnectContinuation = {
   preservedTextPartCount: number;
 };
 
+export type ProviderDisconnectContinuationRejection =
+  "missing_assistant" | "missing_step_boundary";
+
 const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
@@ -221,10 +224,21 @@ export const getNextProviderDisconnectRetryModel = ({
 export const prepareProviderDisconnectContinuation = (
   messages: UIMessage[],
   {
-    allowCompletedTail = false,
     allowEmptyResponse = false,
-  }: { allowCompletedTail?: boolean; allowEmptyResponse?: boolean } = {},
+    onRejected,
+  }: {
+    allowEmptyResponse?: boolean;
+    onRejected?: (reason: ProviderDisconnectContinuationRejection) => void;
+  } = {},
 ): ProviderDisconnectContinuation | undefined => {
+  const reject = (reason: ProviderDisconnectContinuationRejection) => {
+    try {
+      onRejected?.(reason);
+    } catch {
+      // Diagnostics cannot change the existing recovery decision.
+    }
+    return undefined;
+  };
   const assistantIndex = messages.findLastIndex(
     (message) => message.role === "assistant",
   );
@@ -238,7 +252,7 @@ export const prepareProviderDisconnectContinuation = (
         preservedUnknownToolCount: 0,
         preservedTextPartCount: 0,
       };
-    return undefined;
+    return reject("missing_assistant");
   }
 
   const assistant = messages[assistantIndex];
@@ -246,7 +260,7 @@ export const prepareProviderDisconnectContinuation = (
   const lastStepStartIndex = parts.findLastIndex(
     (part) => getPartType(part) === "step-start",
   );
-  if (lastStepStartIndex < 0) return undefined;
+  if (lastStepStartIndex < 0) return reject("missing_step_boundary");
 
   const lastCompletedToolIndex = parts.findLastIndex(isCompletedToolPart);
   const preserveUntil = Math.max(
@@ -256,7 +270,8 @@ export const prepareProviderDisconnectContinuation = (
       : lastStepStartIndex,
   );
   const removedPartCount = parts.length - preserveUntil;
-  if (removedPartCount <= 0 && !allowCompletedTail) return undefined;
+  // A completed tool can be the last part when the next provider request fails
+  // before emitting a new step. Its result is durable even with no tail to trim.
 
   const preservedParts = parts.slice(0, preserveUntil);
   let preservedUnknownToolCount = 0;

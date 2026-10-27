@@ -481,6 +481,41 @@ describe("provider error classification", () => {
     expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
   });
 
+  it("recognizes the Node read-reset cause without retrying generic fetch failures", () => {
+    const error = new TypeError("fetch failed", {
+      cause: new Error("read ECONNRESET"),
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+      "stream_terminated",
+    );
+    expect(isRetriableProviderStreamDisconnectError(error)).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(new TypeError("fetch failed")),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 400, cause: error }),
+      ),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        new DOMException("The operation was aborted", "AbortError"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([400, 401, 403, 429])(
+    "keeps numeric %s codes ahead of disconnect wording",
+    (code) => {
+      const error = { code, message: "read ECONNRESET" };
+      expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+        code === 429 ? "rate_limited" : "provider_4xx",
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(false);
+    },
+  );
+
   it("allows transient 5xx failures without requiring provider-specific wording", () => {
     expect(
       isRetriableProviderStreamDisconnectError(

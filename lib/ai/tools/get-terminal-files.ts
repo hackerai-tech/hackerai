@@ -7,7 +7,10 @@ import {
   type GeneratedFileUploadPhase,
   type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
-import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  getLocalFileRequestFailure,
+  isLocalCommandRelayUnsubscribedError,
+} from "./utils/local-sandbox-errors";
 import {
   getSandboxLogFields,
   isCentrifugoSandbox,
@@ -138,6 +141,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         }
       };
       try {
+        abortSignal?.throwIfAborted();
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
@@ -174,20 +178,29 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               onNativeStatFailure: observeNativeStatFailure,
             });
           } catch (error) {
+            const nativeMetadataRelayRejected =
+              currentPhase === "file_metadata" &&
+              getLocalFileRequestFailure(error) === "relay_unsubscribed";
             if (
+              abortSignal?.aborted ||
+              relayRecoveryAttempted ||
               !isCentrifugoSandbox(sandbox) ||
-              !isLocalCommandRelayUnsubscribedError(error) ||
+              (!isLocalCommandRelayUnsubscribedError(error) &&
+                !nativeMetadataRelayRejected) ||
               !sandboxManager.recoverLocalConnection
             ) {
               throw error;
             }
 
+            // One recovery budget covers every file and candidate path in
+            // this call, including a failed reconnect.
             relayRecoveryAttempted = true;
             currentPhase = "relay_recovery";
             await sandboxManager.recoverLocalConnection(
               sandbox.getConnectionId(),
               "command_relay_unsubscribed",
             );
+            abortSignal?.throwIfAborted();
             const { sandbox: recoveredSandbox } =
               await getSandboxWithFallbackGuard({ sandboxManager });
             observeSandboxType(recoveredSandbox);
@@ -196,6 +209,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 "The selected local sandbox changed during file recovery. Reconnect it and try again.",
               );
             }
+            abortSignal?.throwIfAborted();
             sandbox = recoveredSandbox;
             relayRecoverySucceeded = true;
             // Relay presence rejected the first command before publication.
@@ -227,6 +241,17 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          if (abortSignal?.aborted) {
+            const remainingFiles = files.slice(i);
+            countFailure("unknown", remainingFiles.length);
+            blockedFiles.push(
+              ...remainingFiles.map((path) => ({
+                path,
+                reason: "File delivery canceled before this file was retrieved",
+              })),
+            );
+            break;
+          }
           currentPhase = "sandbox_setup";
           setupStage = "path_preparation";
           const originalPath = files[i];
@@ -282,8 +307,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
+              abortSignal?.throwIfAborted();
               currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
+              // A returned upload has already been durably registered. Keep its
+              // receipt even if cancellation arrived in flight; the outer loop
+              // stops subsequent files without hiding the completed side effect.
               currentPhase = "finalization";
 
               context.fileAccumulator.add({
@@ -338,8 +367,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
-              lastFailurePhase = currentPhase;
+              lastFailurePhase = abortSignal?.aborted
+                ? "unknown"
+                : currentPhase;
               lastMetadataFailureReason = currentMetadataFailureReason;
+              if (abortSignal?.aborted) break;
               // Continue to try next path
             }
           }
