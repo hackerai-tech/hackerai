@@ -48,7 +48,8 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     .split("\n")
     .filter(createProseLineFilter())
     .join("\n")
-    .replace(/`+|\*\*|__/g, "")
+    .replace(/`+|\*+|__/g, "")
+    .replace(/(?<!\w)_(?=\S)|(?<=\S)_(?!\w)/g, "")
     .replace(/^\s*>.*$|"[^"\n]*"|“[^”\n]*”/gm, "");
   if (
     /\b(?:don't|do not|never|no need to)\s+(?:(?:want|need)(?: you)? to\s+)?(?:wait|hand\s*over|handoff|call\s+browser_handoff|take\s+(?:control|over))\b/i.test(
@@ -58,12 +59,26 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     return false;
   // A tool name in an explanation is not an instruction to pause. Match a
   // direct request clause; inline formatting does not change its intent.
-  if (
-    !/(?:^|[.!?;:,\n]\s*|\b(?:and|then)\s+)\s*(?:[-*]\s+)?(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:(?:call|use|invoke|run)\s+browser_handoff\b|(?:wait(?: here)? for me to\s+(?:click\s+(?:the\s+)?)?|let me\s+|allow me to\s+|i (?:want|need|would like)(?: to)?\s+|i(?:'ll| will| can)\s+(?:click\s+(?:the\s+)?)?|can i\s+)?take\s+(?:control|over)\b|(?:hand\s+over|handoff|hand\s+off)(?:\s+(?:the\s+)?(?:browser|control))?\b|browser\s+handoff\b)/i.test(
-      text,
-    )
-  )
-    return false;
+  const requested = [
+    ...text.matchAll(
+      /(?:^|[.!?;:,\n]\s*|\b(?:and|then)\s+)\s*(?:[-*]\s+)?(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:(?:call|use|invoke|run)\s+browser_handoff\b|(?:wait(?: here)? for me to\s+(?:click\s+(?:the\s+)?)?|let me\s+|allow me to\s+|i (?:want|need|would like)(?: to)?\s+|i(?:'ll| will| can)\s+(?:click\s+(?:the\s+)?)?|can i\s+)?take\s+(?:control|over)\b|(?:hand\s+over|handoff|hand\s+off)(?:\s+(?:the\s+)?(?:browser|control))?\b|browser\s+handoff\b)/gi,
+    ),
+  ].some((match) => {
+    const continuation = text.slice(match.index + match[0].length);
+    const prefix =
+      text
+        .slice(0, match.index)
+        .split(/[.!?\n]/)
+        .at(-1) ?? "";
+    // A future user prerequisite cannot be inferred from browser readiness.
+    return (
+      !/^\s*(?:,\s*)?(?:but\s+)?(?:only\s+)?(?:after|once|when|until)\s+(?:i|we)\b/i.test(
+        continuation,
+      ) &&
+      !/^\s*(?:only\s+)?(?:after|once|when|until)\s+(?:i|we)\b/i.test(prefix)
+    );
+  });
+  if (!requested) return false;
   // Never repair a second wait after a real call, including an errored call:
   // its outcome must be handled by the Agent rather than silently retried.
   return !params.prompt
@@ -84,7 +99,8 @@ function promisedImmediateHandoff(text: string): boolean {
   const prose = text
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/^\s*>.*$/gm, "")
-    .replace(/\*\*|__/g, "");
+    .replace(/\*+|__/g, "")
+    .replace(/(?<!\w)_(?=\S)|(?<=\S)_(?!\w)/g, "");
   if (
     /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i.test(
       prose,

@@ -131,6 +131,8 @@ it.each([
   "I’ll wait for you to take control. Choose Send and continue when done.",
   "I'm pausing now and waiting for you to take control.",
   "The browser is now ready for you to take control.",
+  "*I'll wait for you to take control now.*",
+  "_I'll wait for you to take control now._",
   "I'll wait for you to take control now.",
   "I'll wait for you to take control in the browser sidebar.",
   "I'll wait for you to take control, then I'll continue after you resume.",
@@ -270,6 +272,9 @@ it.each([
   "Explain what browser_handoff does.",
   "Describe how to call `browser_handoff`.",
   "What does `take control` mean?",
+  "Call browser_handoff only after I finish configuring the page.",
+  "After I finish configuring the page, call browser_handoff.",
+  "Let me take control when I finish configuring the page.",
   "Do not wait for me to take control.",
   "Don’t wait for me to take control.",
   "Don't call browser_handoff. Just describe it.",
@@ -318,6 +323,9 @@ it.each([
   "Hand over the browser now.",
   "Open the page\n- **WAIT for me to TAKE CONTROL**.",
   "I will click the Take control button.",
+  "Open the page and *wait* for me to take control.",
+  "Open the page and _wait_ for me to take control.",
+  "Please call _browser_handoff_ now.",
 ])(
   "recognizes an affirmative request despite inline formatting: %s",
   async (text) => {
