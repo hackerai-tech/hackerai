@@ -201,7 +201,7 @@ describe("useChatHandlers steer todo handoff", () => {
         },
       },
     );
-    return { ...hook, isSendingNowRef };
+    return { ...hook, isSendingNowRef, hasManuallyStoppedRef };
   };
 
   it("finishes summarizing before Send now cancels and sends exactly once", async () => {
@@ -386,6 +386,129 @@ describe("useChatHandlers steer todo handoff", () => {
       check.mockRestore();
     }
   });
+
+  it("invalidates a submission stopped while token validation is pending", async () => {
+    mockInput = "Stopped submission";
+    let finishValidation!: (status: { exceedsLimit: false }) => void;
+    const check = jest
+      .spyOn(
+        require("@/lib/utils/client-token-validation"),
+        "getInputTokenLimitStatus",
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishValidation = resolve;
+          }),
+      );
+    try {
+      const { result, hasManuallyStoppedRef } = renderSummarySteer();
+      let submitting!: Promise<boolean>;
+      act(() => {
+        submitting = result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as any);
+      });
+      await act(async () => {
+        await result.current.handleStop();
+      });
+      // A later action can clear the manual-stop boolean; it cannot revive
+      // an older submission that was stopped during validation.
+      hasManuallyStoppedRef.current = false;
+      await act(async () => {
+        finishValidation({ exceedsLimit: false });
+        expect(await submitting).toBe(false);
+      });
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+      expect(result.current.hasPendingSummarySteer).toBe(false);
+    } finally {
+      check.mockRestore();
+    }
+  });
+
+  it("honors Stop while a deferred Send now handoff is settling", async () => {
+    let finishSave!: (value: null) => void;
+    mockCancelStream.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const { result, rerender } = renderSummarySteer();
+    rerender({
+      isSummarizing: false,
+      chatId: "chat-1",
+      currentMessages: messages,
+    });
+    let steering!: Promise<void>;
+    act(() => {
+      steering = result.current.handleSendNow("queued-1");
+    });
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    await act(async () => {
+      finishSave(null);
+      await steering;
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["text", "attachments"])(
+    "preserves newer %s while admitting the captured submission after validation",
+    async (change) => {
+      mockInput = "Original submission";
+      let finishValidation!: (status: { exceedsLimit: false }) => void;
+      const check = jest
+        .spyOn(
+          require("@/lib/utils/client-token-validation"),
+          "getInputTokenLimitStatus",
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finishValidation = resolve;
+            }),
+        );
+      try {
+        const { result, rerender } = renderSummarySteer();
+        let submitting!: Promise<boolean>;
+        act(() => {
+          submitting = result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any);
+        });
+        if (change === "text") mockInput = "New draft";
+        else
+          mockUploadedFiles = [
+            {
+              file: new File(["new"], "new.txt"),
+              uploaded: true,
+              fileId: "new-file",
+            },
+          ];
+        rerender({
+          isSummarizing: true,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+        await act(async () => {
+          finishValidation({ exceedsLimit: false });
+          expect(await submitting).toBe(true);
+        });
+        expect(mockQueueMessage).toHaveBeenCalledWith(
+          "Original submission",
+          [],
+        );
+        expect(mockClearInput).not.toHaveBeenCalled();
+        expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+      } finally {
+        check.mockRestore();
+      }
+    },
+  );
 
   it("preserves an oversized Ask attachment submitted during summarization", async () => {
     mockChatMode = "ask";

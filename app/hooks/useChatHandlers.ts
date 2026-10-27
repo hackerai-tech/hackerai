@@ -176,6 +176,8 @@ export const useChatHandlers = ({
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
+  const uploadedFilesRef = useCommittedRef(uploadedFiles);
+  const stopGenerationRef = useRef(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
   const [summarySteer, setSummarySteer] = useState<{
@@ -186,6 +188,9 @@ export const useChatHandlers = ({
 
   useEffect(() => {
     setSummarySteer(null);
+    return () => {
+      stopGenerationRef.current += 1;
+    };
   }, [chatId]);
 
   const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
@@ -514,10 +519,17 @@ export const useChatHandlers = ({
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
     if (sendDisabledReasonRef.current) return false;
+    const stopGeneration = stopGenerationRef.current;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
     const input = getInput();
+    const clearSubmittedDraft = () => {
+      if (getInput() === input && uploadedFilesRef.current === uploadedFiles) {
+        clearInput();
+        clearUploadedFiles();
+      }
+    };
 
     // The visible composer normally blocks this path while offline. Check the
     // browser snapshot again here so a connectivity race cannot clear a draft.
@@ -629,7 +641,11 @@ export const useChatHandlers = ({
       });
       return false;
     }
-    if (sendDisabledReasonRef.current || currentChatIdRef.current !== chatId)
+    if (
+      sendDisabledReasonRef.current ||
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== stopGeneration
+    )
       return false;
 
     // While an Agent run is starting or streaming, honor the queue behavior.
@@ -658,8 +674,7 @@ export const useChatHandlers = ({
           subscription_tier: subscription,
           queued: true,
         });
-        clearInput();
-        clearUploadedFiles();
+        clearSubmittedDraft();
         return true;
       } else if (queueBehavior === "stop-and-send") {
         try {
@@ -675,7 +690,11 @@ export const useChatHandlers = ({
         // Continue to send the new message immediately below (don't return)
       }
     }
-    if (sendDisabledReasonRef.current || currentChatIdRef.current !== chatId)
+    if (
+      sendDisabledReasonRef.current ||
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== stopGeneration
+    )
       return false;
     // Admission can fail before a task exists. The transport finalizes the
     // saved-task route after admission; keep rejected submissions on the draft.
@@ -732,12 +751,12 @@ export const useChatHandlers = ({
       subscription_tier: subscription,
       queued: false,
     });
-    clearInput();
-    clearUploadedFiles();
+    clearSubmittedDraft();
     return true;
   };
 
   const handleStop = async () => {
+    stopGenerationRef.current += 1;
     setSummarySteer(null);
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
@@ -1186,6 +1205,7 @@ export const useChatHandlers = ({
       setSummarySteer({ chatId, messageId, options });
       return;
     }
+    const stopGeneration = stopGenerationRef.current;
     resetAutoContinueCount?.();
 
     // Set flag to prevent auto-processing from interfering
@@ -1200,7 +1220,12 @@ export const useChatHandlers = ({
         if (!(await stopActiveRunForSteer("send_now"))) return;
       }
 
-      if (sendDisabledReasonRef.current) return;
+      if (
+        sendDisabledReasonRef.current ||
+        currentChatIdRef.current !== chatId ||
+        stopGenerationRef.current !== stopGeneration
+      )
+        return;
       if (
         sendQueuedMessage &&
         (chatModeRef.current === "agent" || message.deliveryStatus)
