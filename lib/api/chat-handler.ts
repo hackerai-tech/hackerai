@@ -970,6 +970,7 @@ export const createChatHandler = () => {
               getToolsForModel,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
+              canRecoverBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -1715,6 +1716,7 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              canRecoverBrowserHandoff,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,

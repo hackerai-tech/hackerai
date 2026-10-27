@@ -2846,6 +2846,7 @@ export const agentLongTask = task({
               getToolsForModel,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
+              canRecoverBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -3760,6 +3761,7 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              canRecoverBrowserHandoff,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,

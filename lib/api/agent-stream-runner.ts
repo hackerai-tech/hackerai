@@ -1,5 +1,6 @@
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
+import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
   restoreProviderRecoveryContext,
@@ -439,6 +440,7 @@ export type AgentStreamState = {
   /** One actual context-budget exposure across retries in this run. */
   agentContextBudgetExposed?: boolean;
   requestSizeRecovery?: { attempted: boolean };
+  browserHandoffRecovery?: { attempted?: boolean };
   providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
@@ -768,6 +770,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
@@ -1179,7 +1182,14 @@ export async function createAgentStream(
       maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     });
     return namespaceLanguageModelToolCalls(
-      guardedModel,
+      ctx.mode === "agent" &&
+        ctx.canRecoverBrowserHandoff &&
+        stepIndex + 1 < configuredMaxSteps
+        ? recoverBrowserHandoffCompletion(guardedModel, {
+            state: (state.browserHandoffRecovery ??= {}),
+            canRecover: ctx.canRecoverBrowserHandoff,
+          })
+        : guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
   };

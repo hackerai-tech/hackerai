@@ -20,11 +20,13 @@ async function owner(agentId = "parent") {
     serviceKey: "test-key",
   });
   const run = jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" }));
+  const read = jest.fn(async () => "default");
   await sessions.prepare({
     sandboxId: agentId,
     commands: { run },
+    files: { read },
   } as unknown as AnySandbox);
-  return { sessions, run };
+  return { sessions, run, read };
 }
 
 beforeEach(() => {
@@ -33,6 +35,59 @@ beforeEach(() => {
   mockMutation.mockReset().mockResolvedValue(true);
 });
 afterEach(() => jest.useRealTimers());
+
+it("only permits recovery for this run's already connected private browser", async () => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({ runActive: true, state: "agent" });
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      success: true,
+      data: { connected: true, port: 9223 },
+    }),
+  });
+  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(true);
+  expect(run).toHaveBeenLastCalledWith(
+    expect.stringContaining("'status' '/dev/shm/hackerai-browser-"),
+    expect.objectContaining({ user: "root", timeoutMs: 5000 }),
+  );
+});
+
+it.each([
+  { connected: false, port: 9223 },
+  { connected: true },
+  { connected: true, port: 0 },
+  { connected: true, port: 65536 },
+])("does not recover a missing or disconnected stream: %j", async (data) => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({ runActive: true });
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({ success: true, data }),
+  });
+  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
+});
+
+it("does not inspect another owner's browser or reopen a closed one", async () => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({ runActive: false });
+  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
+  expect(run).toHaveBeenCalledTimes(1); // preparation only
+  mockQuery.mockResolvedValue({ runActive: true });
+  run.mockRejectedValue(new Error("active session removed"));
+  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
+  expect(run).toHaveBeenCalledTimes(2);
+});
+
+it("stops a pending recovery probe without admitting a wait", async () => {
+  const { sessions, read } = await owner();
+  mockQuery.mockReturnValue(new Promise(() => {}));
+  const stop = new AbortController();
+  const probe = sessions.canRecoverHumanHandoff(stop.signal);
+  stop.abort();
+  await expect(probe).resolves.toBe(false);
+  expect(read).not.toHaveBeenCalled();
+});
 
 it.each(["waiting", "claiming", "human", "recovery", "resuming"])(
   "holds Agent progression in %s until explicit resume",
