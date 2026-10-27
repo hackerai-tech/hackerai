@@ -23,25 +23,31 @@ export function CloudWorkspaceRecovery({
   const [error, setError] = useState(false);
   const exposed = useRef<string | null>(null);
   const statusReadGeneration = useRef(0);
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    const generation = ++statusReadGeneration.current;
-    const response = await fetch("/api/sandbox/recovery", {
-      cache: "no-store",
-      signal,
-    });
-    if (!response.ok) throw new Error("Recovery status unavailable");
-    const next = await response.json();
-    if (!signal?.aborted && generation === statusReadGeneration.current) {
-      setView(next);
-      setError(false);
-    }
-  }, []);
+  const refresh = useCallback(
+    async (signal?: AbortSignal, reportError = true) => {
+      const generation = ++statusReadGeneration.current;
+      const isCurrent = () =>
+        !signal?.aborted && generation === statusReadGeneration.current;
+      try {
+        const response = await fetch("/api/sandbox/recovery", {
+          cache: "no-store",
+          signal,
+        });
+        if (!response.ok) throw new Error("Recovery status unavailable");
+        const next = await response.json();
+        if (isCurrent()) {
+          setView(next);
+          setError(false);
+        }
+      } catch {
+        if (isCurrent() && reportError) setError(true);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal).catch(() => {
-      if (!controller.signal.aborted && surface === "cloud_connection_error")
-        setError(true);
-    });
+    void refresh(controller.signal, surface === "cloud_connection_error");
     return () => controller.abort();
   }, [refresh, surface]);
   useEffect(() => {
@@ -65,11 +71,7 @@ export function CloudWorkspaceRecovery({
     let hiddenChecks = 0;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      try {
-        await refresh(controller.signal);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
-      }
+      await refresh(controller.signal);
       if (
         !controller.signal.aborted &&
         (!checkingRecordedFailure || ++hiddenChecks < 6)
@@ -120,7 +122,7 @@ export function CloudWorkspaceRecovery({
       // The server may have accepted consent. Read status; never repeat POST.
       setView({ status: "recovering", step: "queued" });
       setError(true);
-      void refresh().catch(() => {});
+      void refresh();
     } finally {
       setBusy(false);
     }
@@ -236,7 +238,7 @@ export function CloudWorkspaceRecovery({
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => void refresh().catch(() => setError(true))}
+            onClick={() => void refresh()}
           >
             Check status
           </Button>
