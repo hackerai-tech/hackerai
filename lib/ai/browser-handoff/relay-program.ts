@@ -163,6 +163,34 @@ export function browserRelayProgram() {
   );
 }
 
+// Requests can finish out of order, including after an HTTP timeout. Serialize
+// the read/max/replace so an older deadline cannot undo a successful renewal.
+export const RELAY_RENEW_PROGRAM = String.raw`
+const fs = require('node:fs');
+const d = process.argv[1], deadline = Number(process.argv[2]);
+(async () => {
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Invalid lease');
+  let locked = false;
+  for (let i = 0; i < 100; i++) {
+    try { fs.mkdirSync(d + '/lease.lock', {mode: 0o700}); locked = true; break; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  if (!locked) throw new Error('Renewal busy');
+  const next = d + '/lease.next-' + process.pid;
+  try {
+    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) throw new Error('Revoked');
+    const previous = Number(fs.readFileSync(d + '/lease', 'utf8'));
+    if (!Number.isFinite(previous) || previous <= Date.now()) throw new Error('Expired');
+    fs.writeFileSync(next, String(Math.max(previous, deadline)), {mode: 0o600});
+    fs.renameSync(next, d + '/lease');
+  } finally {
+    fs.rmSync(next, {force: true});
+    fs.rmdirSync(d + '/lease.lock');
+  }
+})().catch(() => { process.exitCode = 1; });
+`;
+
 export const RELAY_START_PROGRAM = String.raw`
 const fs = require('node:fs');
 const {spawn} = require('node:child_process');

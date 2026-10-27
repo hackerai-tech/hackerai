@@ -44,6 +44,15 @@ type BrowserInput =
 
 const FRAME_STALE_MS = 10_000;
 
+class BrowserRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export function AgentBrowserPreview({
   chatId,
   agentId,
@@ -111,6 +120,7 @@ export function AgentBrowserPreview({
   const relaySequence = useRef(0);
   const [relayReconnect, setRelayReconnect] = useState(0);
   const [grant, setGrant] = useState<string | null>(null);
+  const [renewalPending, setRenewalPending] = useState(false);
   const [exitOpen, setExitOpen] = useState(false);
   const [note, setNote] = useState("");
   const [hasTakenControl, setHasTakenControl] = useState(false);
@@ -215,6 +225,7 @@ export function AgentBrowserPreview({
     setError(null);
     setPasteError(null);
     setGrant(null);
+    setRenewalPending(false);
     setRelayUrl(null);
     relaySequence.current = 0;
     grantRef.current = null;
@@ -231,7 +242,11 @@ export function AgentBrowserPreview({
   }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
-    async (body: Record<string, unknown>, keepalive = false) => {
+    async (
+      body: Record<string, unknown>,
+      keepalive = false,
+      signal?: AbortSignal,
+    ) => {
       if (!endpoint) throw new Error("Browser session expired");
       const response = await fetch(endpoint, {
         method: "POST",
@@ -240,12 +255,16 @@ export function AgentBrowserPreview({
         body: JSON.stringify(body),
         cache: "no-store",
         keepalive,
+        signal,
       });
       const data = await response.json().catch(() => null);
       if (!data || typeof data !== "object" || Array.isArray(data))
-        throw new Error("Browser unavailable");
+        throw new BrowserRequestError("Browser unavailable", response.status);
       if (!response.ok)
-        throw new Error(data.state ?? data.error ?? "Browser unavailable");
+        throw new BrowserRequestError(
+          data.state ?? data.error ?? "Browser unavailable",
+          response.status,
+        );
       return data;
     },
     [endpoint],
@@ -327,27 +346,97 @@ export function AgentBrowserPreview({
   useEffect(() => {
     if (!endpoint || !grant || !activeSessionId) return;
     let stopped = false;
-    const timer = setInterval(() => {
-      void post({ action: "heartbeat", grant }).catch(() => {
-        if (
-          stopped ||
-          resumingRef.current ||
-          !mountedRef.current ||
-          sessionIdRef.current !== sessionId ||
-          grantRef.current !== grant
-        )
+    let timer: ReturnType<typeof setTimeout>;
+    let controller: AbortController | undefined;
+    let inFlight = false;
+    let failures = 0;
+    let confirmedUntil = Date.now() + 20_000;
+    const current = () =>
+      !stopped &&
+      !resumingRef.current &&
+      mountedRef.current &&
+      sessionIdRef.current === sessionId &&
+      grantRef.current === grant;
+    const renew = async () => {
+      if (!current() || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 8_000);
+      const startedAt = Date.now();
+      try {
+        const data = await post(
+          { action: "heartbeat", grant },
+          false,
+          controller.signal,
+        );
+        if (!current()) return;
+        const remaining = Number.isFinite(data.leaseValidForMs)
+          ? Math.max(
+              0,
+              Math.min(25_000, data.leaseValidForMs) - (Date.now() - startedAt),
+            )
+          : 20_000 - (Date.now() - startedAt);
+        if (remaining <= 0) throw new Error("Renewal arrived after its lease");
+        confirmedUntil = Date.now() + remaining;
+        failures = 0;
+        setRenewalPending(false);
+        setError((previous) =>
+          previous === "Reconnecting browser control. Input is paused."
+            ? null
+            : previous,
+        );
+        timer = setTimeout(
+          renew,
+          Math.max(250, Math.min(8_000, remaining / 3)),
+        );
+      } catch (cause) {
+        if (!current()) return;
+        const status = cause instanceof BrowserRequestError ? cause.status : 0;
+        const rejected =
+          status >= 400 && status < 500 && status !== 408 && status !== 429;
+        // A temporary transport failure is not proof that ownership expired.
+        // Pause input while retrying, but never renew concurrently or forever.
+        if (!rejected && ++failures < 3 && Date.now() < confirmedUntil) {
+          setRenewalPending(true);
+          setError("Reconnecting browser control. Input is paused.");
+          timer = setTimeout(
+            renew,
+            Math.min(1_000, confirmedUntil - Date.now()),
+          );
           return;
+        }
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError(
-          "Control expired. Reconnect or choose Exit takeover to continue.",
+          rejected
+            ? "Control expired. Reconnect or choose Exit takeover to continue."
+            : "Browser connection lost. Reconnect or choose Exit takeover to continue.",
         );
-      });
-    }, 10_000);
+        // Relinquish only this grant, keeping the Agent paused. This avoids a
+        // fresh 30-second wait when the database renewed but its relay failed.
+        if (!rejected)
+          void post({ action: "release", grant }, true).catch(() => undefined);
+      } finally {
+        clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
+    const wake = () => {
+      if (!document.hidden) void renew();
+    };
+    // Renew promptly after acquisition and after returning from a throttled tab.
+    timer = setTimeout(renew, 1_000);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
+      controller?.abort();
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [endpoint, grant, post, sessionId, activeSessionId]);
 
@@ -370,6 +459,7 @@ export function AgentBrowserPreview({
   }, [endpoint]);
 
   const frameStale =
+    renewalPending ||
     !session ||
     !frame ||
     previewState !== "ready" ||
@@ -418,6 +508,7 @@ export function AgentBrowserPreview({
       }
       grantRef.current = data.grant;
       setGrant(data.grant);
+      setRenewalPending(false);
       setRelayUrl(data.relayUrl ?? null);
       relaySequence.current = 0;
       setFullScreen(true);

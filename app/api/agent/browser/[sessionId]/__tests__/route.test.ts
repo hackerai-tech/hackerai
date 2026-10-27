@@ -7,6 +7,7 @@ const mockStartRelay = jest.fn(async () => {
 const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
+const mockRenewRelay = jest.fn(async (..._args: unknown[]) => undefined);
 const mockCapture = jest.fn(async () => {
   if (mockFailure === "capture" || mockFailure === "unpause")
     throw new Error("Capture failed");
@@ -83,7 +84,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
-  renewBrowserRelay: async () => undefined,
+  renewBrowserRelay: (...args: unknown[]) => mockRenewRelay(...args),
   stopBrowserRelays: () => mockStopRelay(),
   connectBrowserSandbox: async () => ({}),
   getActiveBrowserSessionName: async () =>
@@ -133,6 +134,36 @@ const take = () =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+const heartbeat = () =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+      }),
+      body: jsonBody({ action: "heartbeat", grant: "g".repeat(32) }),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it("reports only the remaining confirmed relay lease after renewal", async () => {
+  const result = await heartbeat();
+  expect(result.status).toBe(200);
+  const data = await result.json();
+  expect(data.state).toBe("human");
+  expect(data.leaseValidForMs).toBeGreaterThan(0);
+  expect(data.leaseValidForMs).toBeLessThanOrEqual(25_000);
+  expect(mockRenewRelay).toHaveBeenCalledTimes(1);
+});
+
+it("does not renew a rejected grant", async () => {
+  mockMutation.mockResolvedValueOnce(false);
+  const result = await heartbeat();
+  expect(result.status).toBe(409);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+});
 
 it.each(["identity", "capture", "claim"])(
   "keeps recovery paused after a %s failure",

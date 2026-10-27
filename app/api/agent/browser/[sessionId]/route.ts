@@ -443,7 +443,12 @@ export async function POST(
         return json({ state: "recovery" }, 503);
       }
     }
-    return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
+    return valid
+      ? json({
+          state: "human",
+          leaseValidForMs: Math.max(0, lease - Date.now()),
+        })
+      : json({ state: "recovery" }, 409);
   }
   if (body.action === "input" || body.action === "viewport") {
     const resizing = body.action === "viewport";

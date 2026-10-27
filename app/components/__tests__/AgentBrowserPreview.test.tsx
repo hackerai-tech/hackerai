@@ -17,8 +17,8 @@ const frame = {
   capturedAt: 1,
   browserSessionName: "default",
 };
-const response = (data: unknown, ok = true) =>
-  ({ ok, json: async () => data }) as Response;
+const response = (data: unknown, ok = true, status = ok ? 200 : 503) =>
+  ({ ok, status, json: async () => data }) as Response;
 const originalFetch = global.fetch;
 let actions: Array<Record<string, unknown>>;
 let handleAction: (body: Record<string, unknown>) => Promise<Response>;
@@ -1136,6 +1136,165 @@ it("ignores a heartbeat failure while ownership is being returned", async () => 
   });
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("keeps only one renewal in flight when a heartbeat is slow", async () => {
+  let finish!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "heartbeat"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(1);
+  await act(async () => {
+    finish(response({ state: "human" }));
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("recovers a temporary renewal failure without acquiring a new grant", async () => {
+  let heartbeats = 0;
+  handleAction = async (body) => {
+    if (body.action === "heartbeat") {
+      heartbeats++;
+      return heartbeats === 1
+        ? response({ state: "recovery" }, false)
+        : response({ state: "human" });
+    }
+    return response({ grant: "grant-a", frame });
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "A",
+  });
+  await act(async () => {});
+  expect(heartbeats).toBe(2);
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-a" });
+});
+
+it.each([401, 403, 404, 409, 410])(
+  "stops input immediately after renewal is rejected with %s",
+  async (status) => {
+    handleAction = async (body) =>
+      body.action === "heartbeat"
+        ? response({ state: "recovery" }, false, status)
+        : response({ grant: "grant-a", frame });
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByText(/Control expired/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("application", { hidden: true }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("img"), { key: "x" });
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+    });
+    expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(
+      1,
+    );
+    expect(
+      actions.some(
+        (body) => body.action === "input" || body.action === "resume",
+      ),
+    ).toBe(false);
+  },
+);
+
+it("bounds failed renewals and releases only the lost grant without resuming", async () => {
+  handleAction = async (body) =>
+    body.action === "heartbeat"
+      ? response({ state: "recovery" }, false)
+      : response({ grant: "grant-a", frame });
+  await mount();
+  await takeControl();
+  for (let i = 0; i < 3; i++)
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+  expect(screen.getByText(/Browser connection lost/)).toBeInTheDocument();
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(3);
+  expect(actions.at(-1)).toEqual({ action: "release", grant: "grant-a" });
+  expect(actions.some((body) => body.action === "resume")).toBe(false);
+});
+
+it("renews on focus without waiting for the next scheduled heartbeat", async () => {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.focus(window);
+  });
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(1);
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("times out a stalled renewal and recovers before sending more input", async () => {
+  let firstSignal!: AbortSignal;
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    if (++calls > 1)
+      return response({ state: "human", leaseValidForMs: 25_000 });
+    firstSignal = (global.fetch as jest.Mock).mock.lastCall[1].signal;
+    return new Promise((_resolve, reject) =>
+      firstSignal.addEventListener(
+        "abort",
+        () => reject(new Error("Timed out")),
+        { once: true },
+      ),
+    );
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(8_000);
+  });
+  expect(firstSignal.aborted).toBe(true);
+  expect(
+    screen.getByText("Reconnecting browser control. Input is paused."),
+  ).toBeInTheDocument();
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  expect(calls).toBe(2);
+  expect(
+    screen.queryByText("Reconnecting browser control. Input is paused."),
+  ).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  await act(async () => {});
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-a" });
 });
 
 it.each([false, true])(
