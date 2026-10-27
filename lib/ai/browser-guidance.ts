@@ -1,3 +1,5 @@
+import type { SandboxInfo } from "@/types";
+
 // Shared by the parent and every worker. Runtime skills should describe the
 // installed browser's practical workflow without assuming a connected host has it.
 export const AGENT_BROWSER_GUIDANCE = `<agent_browser>
@@ -45,10 +47,28 @@ Screenshots and evidence:
 
 Session lifetime and recovery:
 - The cloud browser shuts down after 15 minutes without an agent-browser command. After relaunch, assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
-- Before reopening immediately after \`close\`, wait for that session's daemon to exit (its socket and PID files disappear); close can return before shutdown finishes. Do not blindly replay an action after an unknown outcome.
 - For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry. Do not run global repair that affects another session.
 - For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
 - Only when HACKERAI_BROWSER_STATE_DIR is set by the managed Cloud runtime, you may checkpoint an authorized test login: \`agent-browser --session alice state save "$HACKERAI_BROWSER_STATE_DIR/alice.json"\`. The runtime encrypts it; use the returned .enc path, scoped to that identity, with \`agent-browser --session alice state load "$HACKERAI_BROWSER_STATE_DIR/alice.json.enc"\` after relaunch. Then reopen the target, verify the actual identity and re-snapshot. State recovery does not refresh expired server sessions and does not preserve every browser storage mechanism.
 - Checkpoints are private, memory-backed and limited to this run. Cleanup closes managed browsers and erases checkpoints at completion/cancellation; a sandbox watchdog expires them within 6 hours 5 minutes after runtime creation if the worker disappears. Never read, print, attach or copy checkpoint contents or AGENT_BROWSER_ENCRYPTION_KEY.
 - Do not use \`--session-name\`, \`--profile\`, auth-vault persistence, automatic state saving, or save checkpoints outside the managed directory for idle recovery. If the directory is unavailable, state cannot be restored, or authentication has expired, authenticate again through the user-approved flow. Do not promise recovery across Agent runs.
 </agent_browser>`;
+
+/** Add image-specific guidance only after the actual cloud workspace is known. */
+export function getSandboxBrowserGuidance(
+  info: SandboxInfo | null | undefined,
+): string {
+  if (info?.type !== "cloud" || info.provider !== "e2b") return "";
+  if (info.sandboxVersion === "v13") {
+    return `\n<agent_browser_runtime>
+The attached Cloud workspace is v13 (agent-browser 0.39.3).
+Before reopening immediately after \`close\`, wait for that session's daemon to exit (its socket and PID files disappear); close can return before shutdown finishes. Do not blindly replay an action after an unknown outcome.
+</agent_browser_runtime>\n`;
+  }
+  if (info.sandboxVersion === "v12") {
+    return `\n<agent_browser_runtime>
+The attached Cloud workspace is v12. Use its installed agent-browser version and consult its help for supported syntax. Preserve its files and browser setup; do not upgrade or replace the workspace to use newer browser features.
+</agent_browser_runtime>\n`;
+  }
+  return "";
+}

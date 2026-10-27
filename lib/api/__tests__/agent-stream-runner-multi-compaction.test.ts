@@ -881,6 +881,93 @@ describe("createAgentStream repeated compaction", () => {
     mockSummaryGenerateText.mockReset();
   });
 
+  it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
+    let version: string | undefined;
+    const manager = {
+      getSandboxType: () => "cloud",
+      getSandboxInfo: () => ({
+        type: "cloud",
+        provider: "e2b",
+        sandboxVersion: version,
+      }),
+      supportsInteractivePty: async () => true,
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      sandboxManager: manager,
+      cloudNetworkPrompt: async () => "\nNetwork policy stays present.\n",
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(stream.system).not.toContain("<agent_browser_runtime>");
+    const prepare = () =>
+      stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+    version = "v12";
+    const legacy = await prepare();
+    expect(legacy.system).toContain("workspace is v12");
+    expect(legacy.system).not.toContain("agent-browser 0.39.3");
+    version = "v13";
+    const upgraded = await prepare();
+    expect(upgraded.system).toContain("agent-browser 0.39.3");
+    expect(upgraded.system).toContain("socket and PID files disappear");
+    expect(upgraded.system).not.toContain("workspace is v12");
+    expect(upgraded.system).toContain("Network policy stays present");
+    version = undefined;
+    expect((await prepare()).system).not.toContain("<agent_browser_runtime>");
+  });
+
+  it.each([
+    ["ask", "cloud", "e2b", "v13"],
+    ["agent", "desktop", undefined, "v13"],
+    ["agent", "remote-connection", undefined, "v13"],
+    ["agent", "cloud", "daytona", "v13"],
+    ["agent", "cloud", "e2b", "v14"],
+  ])(
+    "does not assume E2B browser capabilities for %s / %s / %s / %s",
+    async (mode, type, provider, sandboxVersion) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          sandboxManager: {
+            getSandboxType: () => type,
+            getSandboxInfo: () => ({ type, provider, sandboxVersion }),
+            supportsInteractivePty: async () => true,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      expect(stream.system).not.toContain("<agent_browser_runtime>");
+      expect(
+        (
+          await stream.prepareStep({
+            steps: [],
+            stepNumber: 0,
+            messages: stream.messages,
+          })
+        ).system,
+      ).not.toContain("<agent_browser_runtime>");
+    },
+  );
+
   it("compacts free Ask history with the context meter disabled", async () => {
     const { generateSummaryText, buildSummaryMessage } = jest.requireActual(
       "@/lib/chat/summarization/helpers",

@@ -1,3 +1,4 @@
+import { isRecoverableE2BSandboxVersion } from "@/lib/ai/tools/utils/e2b-sandbox-version";
 import { createHmac } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
@@ -91,7 +92,7 @@ function targetAuthorization(userId: string, consent: RecoveryConsent) {
       .update(process.env.NEXT_PUBLIC_POSTHOG_KEY)
       .digest("hex") !== config.expectedPostHogKeyHmacSha256 ||
     consent.target.template !== cluster.template ||
-    consent.target.sandboxVersion !== "v12"
+    !isRecoverableE2BSandboxVersion(consent.target.sandboxVersion)
   )
     throw new RecoveryUnavailable();
   return validateDiskRecoveryAuthorization({

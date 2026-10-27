@@ -1,3 +1,4 @@
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { verifySubagentResultAfterHandoff } from "@/lib/ai/subagents/result-handoff";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
@@ -1077,6 +1078,7 @@ export const subagentTask = task({
               );
             const {
               cloudNetworkPrompt,
+              sandboxManager,
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
               getBrowserHandoffNotes,
@@ -1362,7 +1364,10 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt + (await cloudNetworkPrompt()),
+                system:
+                  systemPrompt +
+                  (await cloudNetworkPrompt()) +
+                  getSandboxBrowserGuidance(sandboxManager.getSandboxInfo()),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1523,7 +1528,12 @@ export const subagentTask = task({
                       generationAttempt,
                       steps.length,
                     ),
-                    system: systemPrompt + (await cloudNetworkPrompt()),
+                    system:
+                      systemPrompt +
+                      (await cloudNetworkPrompt()) +
+                      getSandboxBrowserGuidance(
+                        sandboxManager.getSandboxInfo(),
+                      ),
                     messages: compacted.messages as ModelMessage[],
                   };
                 },

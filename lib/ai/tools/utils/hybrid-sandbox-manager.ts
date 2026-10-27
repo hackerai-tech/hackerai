@@ -1,3 +1,4 @@
+import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import { ChatSDKError } from "@/lib/errors";
 import {
   Centrifuge,
@@ -590,6 +591,9 @@ export class HybridSandboxManager implements SandboxManager {
       return {
         type: "cloud",
         provider: this.activeCloudProvider,
+        sandboxVersion: isE2BSandbox(this.sandbox)
+          ? getE2BSandboxVersion(this.sandbox)
+          : undefined,
       };
     }
     const type: SandboxType = isDesktopPreference(this.sandboxPreference)
