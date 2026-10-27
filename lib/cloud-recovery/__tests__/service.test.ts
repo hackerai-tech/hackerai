@@ -1,6 +1,13 @@
 import { createHmac } from "node:crypto";
 import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
-import { Sandbox } from "@e2b/code-interpreter";
+import {
+  Sandbox,
+  SandboxError,
+  ServiceBusyError,
+  RateLimitError,
+  AuthenticationError,
+  NotFoundError,
+} from "@e2b/code-interpreter";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import {
   getActiveTriggerRunsForUser,
@@ -28,7 +35,10 @@ import {
   reopenRecovery,
 } from "../service";
 
+// Template parsing is unrelated to status reads; keep the SDK's real error types.
+jest.mock("dockerfile-ast", () => ({}));
 jest.mock("@e2b/code-interpreter", () => ({
+  ...jest.requireActual("@e2b/code-interpreter"),
   Sandbox: { getInfo: jest.fn(), list: jest.fn() },
 }));
 jest.mock("@/lib/posthog/server", () => ({
@@ -230,6 +240,65 @@ it("offers only after server-owned identity, idle and provider checks", async ()
   expect(offerConsent).toHaveBeenCalledWith("owner", target);
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });
+describe.each([false, true])(
+  "provider status reads with existing offer=%s",
+  (existing) => {
+    it.each([
+      new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      ),
+      new RateLimitError("rate limited"),
+      Object.assign(new SandboxError("unavailable"), { statusCode: 502 }),
+    ])(
+      "keeps temporary getInfo failure %s retryable without authorizing recovery",
+      async (error) => {
+        if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
+        jest.mocked(Sandbox.getInfo).mockRejectedValueOnce(error);
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "waiting",
+        });
+        expect(offerConsent).not.toHaveBeenCalled();
+        expect(decideConsent).not.toHaveBeenCalled();
+        expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "offered",
+          token,
+        });
+      },
+    );
+    it("rechecks inventory after a temporary provider refusal", async () => {
+      if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
+      jest.mocked(Sandbox.list).mockReturnValueOnce({
+        hasNext: false,
+        nextItems: async () => {
+          throw new ServiceBusyError("busy");
+        },
+      } as never);
+      expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+      expect(decideConsent).not.toHaveBeenCalled();
+      expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+      expect(await recoveryView("owner")).toMatchObject({
+        status: "offered",
+        token,
+      });
+    });
+  },
+);
+it.each([
+  new AuthenticationError("invalid key"),
+  new NotFoundError("sandbox absent"),
+  new Error("unknown failure"),
+])(
+  "keeps definitive or unknown provider errors as support: %s",
+  async (error) => {
+    jest.mocked(readConsent).mockResolvedValue(consent);
+    jest.mocked(Sandbox.getInfo).mockRejectedValueOnce(error);
+    expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+    expect(decideConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);
 it.each([undefined])(
   "cannot recover an unverified autoResume=%s workspace",
   async (autoResume) => {

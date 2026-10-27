@@ -1,5 +1,10 @@
 import { createHmac } from "node:crypto";
-import { Sandbox } from "@e2b/code-interpreter";
+import {
+  Sandbox,
+  SandboxError,
+  RateLimitError,
+  ServiceBusyError,
+} from "@e2b/code-interpreter";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { z } from "zod";
 import {
@@ -63,6 +68,19 @@ export type RecoveryView = {
 };
 export class RecoveryUnavailable extends Error {}
 class RecoveryBusy extends RecoveryUnavailable {}
+function eligibilityFailureStatus(error: unknown): "waiting" | "support" {
+  // Only retry status reads. Consent and recovery mutations still fail closed.
+  // The SDK's REST request deadline rejects with a DOM TimeoutError.
+  const temporaryReadFailure =
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    error instanceof RateLimitError ||
+    error instanceof ServiceBusyError ||
+    (error instanceof SandboxError &&
+      [500, 502, 504].includes(error.statusCode ?? 0));
+  return error instanceof RecoveryBusy || temporaryReadFailure
+    ? "waiting"
+    : "support";
+}
 function targetAuthorization(userId: string, consent: RecoveryConsent) {
   const all = z
     .partialRecord(
@@ -301,7 +319,7 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
       await assertEligible(userId, consent);
       return { status: "offered", token: consent.token };
     } catch (error) {
-      return { status: error instanceof RecoveryBusy ? "waiting" : "support" };
+      return { status: eligibilityFailureStatus(error) };
     }
   }
   const failures = await readFailures(userId);
@@ -317,7 +335,7 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
   try {
     await assertEligible(userId, candidate);
   } catch (error) {
-    return { status: error instanceof RecoveryBusy ? "waiting" : "support" };
+    return { status: eligibilityFailureStatus(error) };
   }
   const offered = await offerConsent(userId, failures);
   return offered.status === "offered"
