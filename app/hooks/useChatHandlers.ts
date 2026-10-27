@@ -184,13 +184,6 @@ export const useChatHandlers = ({
     options?: RetryOptions;
   } | null>(null);
 
-  const deferSteerUntilSummary = (
-    messageId: string,
-    options?: RetryOptions,
-  ) => {
-    setSummarySteer({ chatId, messageId, options });
-  };
-
   useEffect(() => {
     setSummarySteer(null);
   }, [chatId]);
@@ -652,7 +645,13 @@ export const useChatHandlers = ({
         // summary settles. Ordinary queue mode waits for the full response.
         const queuedId = queueMessage(input, validFiles);
         if (!queuedId) return false;
-        if (deferForSummary) deferSteerUntilSummary(queuedId);
+        if (deferForSummary) {
+          setSummarySteer((current) =>
+            current?.chatId === chatId
+              ? current
+              : { chatId, messageId: queuedId },
+          );
+        }
         captureAuthenticatedEvent("chat_user_submission", {
           definition_version: 1,
           mode: currentChatMode,
@@ -1184,7 +1183,7 @@ export const useChatHandlers = ({
       return;
     if (isSummarizingRef.current) {
       hasManuallyStoppedRef.current = false;
-      deferSteerUntilSummary(messageId, options);
+      setSummarySteer({ chatId, messageId, options });
       return;
     }
     resetAutoContinueCount?.();
@@ -1263,6 +1262,13 @@ export const useChatHandlers = ({
   const handleSendNowRef = useCommittedRef(handleSendNow);
   useEffect(() => {
     if (!summarySteer || summarySteer.chatId !== chatId) return;
+    const message = messageQueue.find(
+      (item) => item.id === summarySteer.messageId,
+    );
+    if (!message) {
+      setSummarySteer(null);
+      return;
+    }
     if (
       isSummarizing ||
       sendDisabledReason ||
@@ -1272,11 +1278,7 @@ export const useChatHandlers = ({
       return;
     }
 
-    const message = messageQueue.find(
-      (item) => item.id === summarySteer.messageId,
-    );
     setSummarySteer(null);
-    if (!message) return;
     // Use the latest handler/messages/todos after the completion event, rather
     // than the snapshot from when the user submitted during compaction.
     void handleSendNowRef.current(message.id, summarySteer.options);

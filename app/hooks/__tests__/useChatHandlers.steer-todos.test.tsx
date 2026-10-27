@@ -309,6 +309,60 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(result.current.hasPendingSummarySteer).toBe(false);
   });
 
+  it.each([false, true])(
+    "preserves deferred submission order unless Send now explicitly selects another message (override: %s)",
+    async (override) => {
+      mockMessageQueue = [];
+      mockQueueMessage
+        .mockImplementationOnce(() => {
+          mockMessageQueue = [
+            { id: "queued-1", text: "First", timestamp: 123 },
+          ];
+          return "queued-1";
+        })
+        .mockImplementationOnce(() => {
+          mockMessageQueue = [
+            ...mockMessageQueue,
+            { id: "queued-2", text: "Second", timestamp: 124 },
+          ];
+          return "queued-2";
+        });
+      const { result, rerender } = renderSummarySteer();
+      mockInput = "First";
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any);
+      });
+      mockInput = "Second";
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any);
+      });
+      rerender({
+        isSummarizing: true,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+      if (override) {
+        await act(async () => result.current.handleSendNow("queued-2"));
+      }
+      expect(mockStop).not.toHaveBeenCalled();
+      await act(async () => {
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+      });
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: override ? "Second" : "First" }),
+        expect.any(Object),
+      );
+      expect(mockRemoveQueuedMessage).toHaveBeenCalledWith(
+        override ? "queued-2" : "queued-1",
+      );
+    },
+  );
+
   it("rejects an oversized deferred submission before clearing the draft or interrupting compaction", async () => {
     mockInput = "Too large";
     const validation = require("@/lib/utils/client-token-validation");
