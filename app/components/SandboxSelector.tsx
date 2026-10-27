@@ -38,6 +38,7 @@ interface SandboxSelectorProps {
   size?: "sm" | "toolbar" | "md";
   triggerLabel?: string;
   compact?: boolean;
+  menuAlign?: "start" | "center" | "end";
 }
 
 interface ConnectionOption {
@@ -55,6 +56,7 @@ export function SandboxSelector({
   size = "sm",
   triggerLabel,
   compact = false,
+  menuAlign = "start",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -357,7 +359,7 @@ export function SandboxSelector({
       <PopoverContent
         data-chat-input-agent-menu
         className="w-[240px] p-1"
-        align="start"
+        align={menuAlign}
       >
         <div className="space-y-0.5">
           <button

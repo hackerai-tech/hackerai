@@ -948,7 +948,7 @@ const ChatInputContent = ({
             >
               <div className="min-h-0 overflow-hidden">
                 <div
-                  className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "mb-2 flex-nowrap items-center gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                  className={`${isEmptyNewChat ? "mb-3 flex-col items-end gap-1 px-2" : "mb-2 flex-nowrap items-center justify-end gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
                   data-compact={compactAgentControls ? "true" : "false"}
                   data-testid="chat-input-agent-context"
                   onPointerDownCapture={() => {
@@ -959,7 +959,7 @@ const ChatInputContent = ({
                   }}
                 >
                   <div
-                    className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
+                    className="min-w-0 max-w-full"
                     data-testid="chat-input-mobile-sandbox"
                   >
                     <SandboxSelector
@@ -967,6 +967,7 @@ const ChatInputContent = ({
                       onChange={setSandboxPreference}
                       compact={!isEmptyNewChat}
                       size={isEmptyNewChat ? "md" : "sm"}
+                      menuAlign="end"
                     />
                   </div>
                 </div>

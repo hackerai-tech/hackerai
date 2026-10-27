@@ -1037,7 +1037,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("chat-input-surface")).toHaveClass("order-2");
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",
-        "flex-1",
+        "max-w-full",
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
         "shrink-0",
