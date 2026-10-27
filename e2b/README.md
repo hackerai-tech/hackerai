@@ -96,7 +96,11 @@ old snapshot also cannot establish that a new agent was installed.
 
    Valid targets are `us-dev`, `eu-dev`, `us-prod`, and `eu-prod`; the target selects
    an alias/domain, not an account. The key's account still needs independent
-   verification. The command requires an existing default tag and refuses a reused
+   verification. For EU targets, `E2B_EU_TEMPLATE` must be unset or match the
+   target's default alias: `terminal-agent-sandbox-dev` for `eu-dev`, or
+   `terminal-agent-sandbox` for `eu-prod`. Custom EU aliases require a separately
+   authorized operator build; this candidate command rejects them.
+   The command requires an existing default tag and refuses a reused
    candidate tag. It rebuilds without changing capacity, verifies the candidate
    points at the returned build, and verifies the previous default is unchanged.
    It does not promote, create a sandbox, or migrate files. Keep the returned build
