@@ -429,41 +429,41 @@ export function AgentGoalPanel({
           </li>
         ))}
       </ul>
-      <details>
-        <summary className="cursor-pointer">
-          {goal.state === "achieved"
-            ? "Verification and evidence"
-            : "Completion contract and evidence"}
-        </summary>
-        <div className="space-y-1 py-2">
-          {goal.verificationCommand && (
-            <p>
-              Verification:{" "}
-              <code className="whitespace-pre-wrap">
-                {goal.verificationCommand}
-              </code>
-            </p>
-          )}
-          {goal.constraints && <p>Preserve: {goal.constraints}</p>}
-          {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
-          {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
-          {goal.evidence.map((e) => (
-            <p key={e.criterion}>
-              Criterion {e.criterion + 1}: {e.explanation} ·{" "}
-              <a
-                className="underline"
-                href={getSourceMessageHref(chatId, e.messageId ?? e.runId)}
-                onClick={() => {
-                  setExpanded(false);
-                  setMobileOpen(false);
-                }}
-              >
-                saved run evidence
-              </a>
-            </p>
-          ))}
-        </div>
-      </details>
+      {goal.state === "achieved" && (
+        <details>
+          <summary className="cursor-pointer">
+            Verification and evidence
+          </summary>
+          <div className="space-y-1 py-2">
+            {goal.verificationCommand && (
+              <p>
+                Verification:{" "}
+                <code className="whitespace-pre-wrap">
+                  {goal.verificationCommand}
+                </code>
+              </p>
+            )}
+            {goal.constraints && <p>Preserve: {goal.constraints}</p>}
+            {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
+            {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
+            {goal.evidence.map((e) => (
+              <p key={e.criterion}>
+                Criterion {e.criterion + 1}: {e.explanation} ·{" "}
+                <a
+                  className="underline"
+                  href={getSourceMessageHref(chatId, e.messageId ?? e.runId)}
+                  onClick={() => {
+                    setExpanded(false);
+                    setMobileOpen(false);
+                  }}
+                >
+                  saved run evidence
+                </a>
+              </p>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
   const goalLabel =

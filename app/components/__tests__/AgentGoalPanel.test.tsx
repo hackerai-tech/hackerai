@@ -344,28 +344,43 @@ describe("goal controls", () => {
     },
   );
 
-  it("does not mark saved evidence as verified for an unfinished goal", async () => {
-    setMockQueryResult({
-      ...goal,
-      evidence: [{ criterion: 0, runId: "r1", explanation: "File read" }],
-    });
-    render(
-      <AgentGoalPanel
-        chatId="chat"
-        exists
-        eligible
-        idle
-        send={jest.fn()}
-        settings={settings}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
-    expect(
-      screen.getByText(/Evidence saved, awaiting verification/),
-    ).toBeVisible();
-    expect(screen.queryByText(/✓/)).not.toBeInTheDocument();
-    await act(async () => {});
-  });
+  it.each(["running", "paused", "needs_input", "budget_exhausted"])(
+    "keeps completion evidence hidden for an unfinished %s goal",
+    async (state) => {
+      setMockQueryResult({
+        ...goal,
+        state,
+        evidence: [{ criterion: 0, runId: "r1", explanation: "File read" }],
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show goal details" }),
+      );
+      expect(
+        screen.getByText(/Evidence saved, awaiting verification/),
+      ).toBeVisible();
+      expect(screen.queryByText(/✓/)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Completion contract and evidence"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Verification and evidence"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: "saved run evidence" }),
+      ).not.toBeInTheDocument();
+      await act(async () => {});
+    },
+  );
 
   it.each(["-1", "0.5", "8"])(
     "rejects an invalid additional budget of %s before sending",
