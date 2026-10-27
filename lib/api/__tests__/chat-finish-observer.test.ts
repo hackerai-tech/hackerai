@@ -155,7 +155,7 @@ it("exports only closed stages and validated opaque context", async () => {
   await result;
 });
 
-it("instruments both actual title awaits with one request-scoped observer", async () => {
+it("attributes the first title wait separately from settlement in every finishing caller", async () => {
   const filename = path.resolve(__dirname, "../chat-handler.ts");
   const source = ts.createSourceFile(
     filename,
@@ -164,41 +164,76 @@ it("instruments both actual title awaits with one request-scoped observer", asyn
     true,
   );
   const initializers: ts.CallExpression[] = [];
-  const titleAwaits: ts.CallExpression[] = [];
+  const usageCalls: ts.Expression[] = [];
+  let usageHelper: ts.ArrowFunction | undefined;
   const walk = (node: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(source) === "deductAccumulatedUsage" &&
+      node.initializer &&
+      ts.isArrowFunction(node.initializer)
+    )
+      usageHelper = node.initializer;
     if (ts.isCallExpression(node)) {
       if (node.expression.getText(source) === "createChatFinishObserver")
         initializers.push(node);
-      if (
-        node.expression.getText(source) === "observeFinish" &&
-        ts.isStringLiteral(node.arguments[0]) &&
-        node.arguments[0].text === "wait_title_generation"
-      )
-        titleAwaits.push(node);
+      if (node.expression.getText(source) === "deductAccumulatedUsage") {
+        let parent: ts.Node = node.parent;
+        if (ts.isArrowFunction(parent) && ts.isCallExpression(parent.parent))
+          parent = parent.parent.parent;
+        if (ts.isAwaitExpression(parent)) usageCalls.push(parent.expression);
+      }
     }
     ts.forEachChild(node, walk);
   };
   walk(source);
   expect(initializers).toHaveLength(1);
-  expect(titleAwaits).toHaveLength(2);
-  const observeFinish = vm.runInNewContext(initializers[0].getText(source), {
-    createChatFinishObserver,
-    ...context,
-  });
+  expect(usageCalls).toHaveLength(3);
+  expect(usageHelper).toBeDefined();
   const phases: string[] = [];
-  for (const expression of titleAwaits) {
+  for (const call of usageCalls) {
+    warn.mockClear();
     const title = deferred<string>();
-    const pending = vm.runInNewContext(expression.getText(source), {
+    const sandbox = deferred<{ totalCostDollars: number }>();
+    const observeFinish = vm.runInNewContext(initializers[0].getText(source), {
+      createChatFinishObserver,
+      ...context,
+    });
+    const releaseFreeRunLockOnce = jest.fn(async () => {});
+    const helperText = ts.transpile(`(${usageHelper!.getText(source)})`);
+    const deductAccumulatedUsage = vm.runInNewContext(helperText, {
       observeFinish,
       titlePromise: title.promise,
+      assistantMessageId: "assistant",
+      hasRecordedUsage: false,
+      getSandboxSessionUsage: () => sandbox.promise,
+      usageTracker: { hasUsage: false },
+      paidDailyFreeAllowanceReservation: null,
+      releaseFreeRunLockOnce,
+    });
+    const pending = vm.runInNewContext(call.getText(source), {
+      observeFinish,
+      deductAccumulatedUsage,
+      retryMessageId: "retry",
     });
     await jest.advanceTimersByTimeAsync(10_000);
-    phases.push(JSON.parse(warn.mock.calls.at(-1)![0] as string).phase);
-    title.resolve("saved title");
-    await expect(pending).resolves.toBe("saved title");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+      stage: "wait_title_generation",
+      warning_index: 1,
+    });
+    phases.push(JSON.parse(warn.mock.calls[0][0] as string).phase);
+    title.resolve("title");
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(warn.mock.calls[1][0] as string)).toMatchObject({
+      stage: "settle_usage",
+      warning_index: 2,
+    });
+    sandbox.resolve({ totalCostDollars: 0 });
+    await expect(pending).resolves.toBeUndefined();
+    expect(releaseFreeRunLockOnce).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
   }
-  expect(phases.sort()).toEqual(["primary", "provider_retry"]);
-  await jest.advanceTimersByTimeAsync(120_000);
-  expect(warn).toHaveBeenCalledTimes(2);
-  expect(jest.getTimerCount()).toBe(0);
+  expect(phases.sort()).toEqual(["primary", "primary", "provider_retry"]);
 });

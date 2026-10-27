@@ -18,6 +18,7 @@ import fs from "fs";
 import path from "path";
 import ts from "typescript";
 
+/** Find awaited settlements so billing-before-continuation guards survive diagnostics. */
 function awaitedUsageDeductions(text: string) {
   const source = ts.createSourceFile(
     "caller.ts",
@@ -1917,8 +1918,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
-    expect(chatHandlerSrc).toMatch(
-      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    const source = ts.createSourceFile(
+      "handler.ts",
+      chatHandlerSrc,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let usageMessageParameter: ts.ParameterDeclaration | undefined;
+    const findUsageHelper = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(source) === "deductAccumulatedUsage" &&
+        node.initializer &&
+        ts.isArrowFunction(node.initializer)
+      )
+        usageMessageParameter = node.initializer.parameters[0];
+      ts.forEachChild(node, findUsageHelper);
+    };
+    findUsageHelper(source);
+    expect(usageMessageParameter?.name.getText(source)).toBe(
+      "assistantMessageIdForUsage",
+    );
+    expect(usageMessageParameter?.initializer?.getText(source)).toBe(
+      "assistantMessageId",
     );
     expect(
       chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),

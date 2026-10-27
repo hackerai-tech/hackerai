@@ -1293,251 +1293,270 @@ export const createChatHandler = () => {
                 : createUsageSettlementState(rateLimitInfo);
             let usageSettlementSequence = 0;
 
+            // Observe title cost readiness before settlement, without overlapping timers.
             const deductAccumulatedUsage = async (
               assistantMessageIdForUsage = assistantMessageId,
+              finishPhase: "primary" | "provider_retry" = "primary",
             ) => {
               try {
                 if (hasRecordedUsage) return;
                 // Title generation starts in parallel with the main stream.
                 // Wait for it so its provider cost is included exactly once.
-                await titlePromise;
-                // Add cloud sandbox session cost (duration-based).
-                const sandboxUsage = await getSandboxSessionUsage();
-                const sandboxCost = sandboxUsage.totalCostDollars;
-                if (sandboxCost > 0) {
-                  usageTracker.providerCost += sandboxCost;
-                  usageTracker.nonModelCost += sandboxCost;
-                  chatLogger?.getBuilder().addToolCost(sandboxCost);
-                }
+                await observeFinish(
+                  "wait_title_generation",
+                  () => titlePromise,
+                  finishPhase,
+                );
+                await observeFinish(
+                  "settle_usage",
+                  async () => {
+                    // Add cloud sandbox session cost (duration-based).
+                    const sandboxUsage = await getSandboxSessionUsage();
+                    const sandboxCost = sandboxUsage.totalCostDollars;
+                    if (sandboxCost > 0) {
+                      usageTracker.providerCost += sandboxCost;
+                      usageTracker.nonModelCost += sandboxCost;
+                      chatLogger?.getBuilder().addToolCost(sandboxCost);
+                    }
 
-                if (!usageTracker.hasUsage) {
-                  // Release an unused rescue lease so a failed provider start
-                  // does not block the user's next sequential rescue.
-                  if (paidDailyFreeAllowanceReservation) {
-                    await releasePaidDailyFreeAllowanceReservation();
-                    hasRecordedUsage = paidDailyFreeAllowanceFinalized;
-                  }
-                  return;
-                }
-                hasRecordedUsage = true;
-                const usageRecordArgs = {
-                  selectedModel,
-                  selectedModelOverride,
-                  responseModel: state.responseModel,
-                  configuredModelId,
-                  accountingModel: resolveServedModelForCostAccounting({
-                    modelName: activeModelName,
-                    responseModel: state.responseModel,
-                    mode,
-                  }),
-                  rateLimitInfo,
-                };
-                let usageCostRecord =
-                  usageTracker.createUsageCostRecord(usageRecordArgs);
+                    if (!usageTracker.hasUsage) {
+                      // Release an unused rescue lease so a failed provider start
+                      // does not block the user's next sequential rescue.
+                      if (paidDailyFreeAllowanceReservation) {
+                        await releasePaidDailyFreeAllowanceReservation();
+                        hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                      }
+                      return;
+                    }
+                    hasRecordedUsage = true;
+                    const usageRecordArgs = {
+                      selectedModel,
+                      selectedModelOverride,
+                      responseModel: state.responseModel,
+                      configuredModelId,
+                      accountingModel: resolveServedModelForCostAccounting({
+                        modelName: activeModelName,
+                        responseModel: state.responseModel,
+                        mode,
+                      }),
+                      rateLimitInfo,
+                    };
+                    let usageCostRecord =
+                      usageTracker.createUsageCostRecord(usageRecordArgs);
 
-                // Use the same resolved provider/hybrid total that powers
-                // mid-run settlement. This preserves authoritative step costs
-                // and estimates only the individual steps missing provider cost.
-                const settledCostDollars = usageCostRecord.costDollars;
+                    // Use the same resolved provider/hybrid total that powers
+                    // mid-run settlement. This preserves authoritative step costs
+                    // and estimates only the individual steps missing provider cost.
+                    const settledCostDollars = usageCostRecord.costDollars;
 
-                if (paidDailyFreeAllowanceReservation) {
-                  const allowanceCostRecord =
-                    await recordPaidDailyFreeAllowanceCost(
-                      userId,
-                      usageCostRecord.costDollars,
-                      paidDailyFreeAllowanceReservation,
-                    );
-                  paidDailyFreeAllowanceFinalized =
-                    allowanceCostRecord.recorded;
-                  if (!allowanceCostRecord.recorded) {
-                    phLogger.warn(
-                      "Paid daily free allowance cost recording failed",
-                      {
+                    if (paidDailyFreeAllowanceReservation) {
+                      const allowanceCostRecord =
+                        await recordPaidDailyFreeAllowanceCost(
+                          userId,
+                          usageCostRecord.costDollars,
+                          paidDailyFreeAllowanceReservation,
+                        );
+                      paidDailyFreeAllowanceFinalized =
+                        allowanceCostRecord.recorded;
+                      if (!allowanceCostRecord.recorded) {
+                        phLogger.warn(
+                          "Paid daily free allowance cost recording failed",
+                          {
+                            userId,
+                            chatId,
+                            endpoint,
+                            mode,
+                            subscription,
+                            selected_model: selectedModel,
+                            cost_dollars: usageCostRecord.costDollars,
+                            cost_record_failure_reason:
+                              allowanceCostRecord.unavailableReason,
+                          },
+                        );
+                      }
+                      usageTracker.log({
                         userId,
+                        organizationId,
                         chatId,
+                        assistantMessageId: assistantMessageIdForUsage,
                         endpoint,
                         mode,
                         subscription,
-                        selected_model: selectedModel,
-                        cost_dollars: usageCostRecord.costDollars,
-                        cost_record_failure_reason:
-                          allowanceCostRecord.unavailableReason,
-                      },
-                    );
-                  }
-                  usageTracker.log({
-                    userId,
-                    organizationId,
-                    chatId,
-                    assistantMessageId: assistantMessageIdForUsage,
-                    endpoint,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    accountingModel: usageRecordArgs.accountingModel,
-                    rateLimitInfo,
-                  });
-                  const cutOff = state.stoppedDueToBudgetExhaustion;
-                  capturePaidDailyFreeAllowanceServerEvent({
-                    event: cutOff
-                      ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
-                      : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
-                    userId,
-                    subscription,
-                    mode,
-                    chatId,
-                    endpoint,
-                    reservation: paidDailyFreeAllowanceReservation,
-                    extra: {
-                      cost_dollars: usageCostRecord.costDollars,
-                      model_cost_dollars: usageCostRecord.modelCostDollars,
-                      non_model_cost_dollars:
-                        usageCostRecord.nonModelCostDollars,
-                      selected_model: selectedModel,
-                      response_model: state.responseModel,
-                      cost_source: usageCostRecord.costSource,
-                      paid_daily_free_allowance_cost_recorded:
-                        allowanceCostRecord.recorded,
-                      paid_daily_free_allowance_cost_record_failure_reason:
-                        allowanceCostRecord.recorded
-                          ? undefined
-                          : allowanceCostRecord.unavailableReason,
-                      paid_daily_free_allowance_cost_record_next_dollars:
-                        allowanceCostRecord.recorded
-                          ? allowanceCostRecord.nextCostDollars
-                          : undefined,
-                    },
-                  });
-                } else if (subscription === "free") {
-                  if (freeDailySettlement) {
-                    await freeDailySettlement.settle(
-                      usageCostRecord.costDollars,
-                    );
-                  } else {
-                    await recordFreeMonthlyCost(
-                      freeUsageSubject,
-                      usageCostRecord.costDollars,
-                    );
-                  }
-                } else {
-                  const deductionResult = await deductUsage(
-                    userId,
-                    subscription,
-                    estimatedInputTokens,
-                    usageTracker.inputTokens,
-                    usageTracker.outputTokens,
-                    extraUsageConfig,
-                    settledCostDollars,
-                    selectedModel,
-                    usageTracker.nonModelCost,
-                    organizationId,
-                    usageSettlementState
-                      ? getUsageSettlementInitialDeduction(usageSettlementState)
-                      : rateLimitInfo,
-                    usageRecordArgs.accountingModel,
-                    usageTracker.usageSettlementId,
-                  );
-                  if (usageSettlementState) {
-                    usageRefundTracker.recordDeductions({
-                      ...rateLimitInfo,
-                      pointsDeducted: deductionResult.includedPointsDeducted,
-                      extraUsagePointsDeducted:
-                        deductionResult.extraUsagePointsDeducted,
-                    });
-                    replaceUsageSettlementState(
-                      usageSettlementState,
-                      deductionResult,
-                    );
-                  }
-                  if (deductionResult.uncoveredPoints > 0) {
-                    state.stoppedDueToBudgetExhaustion = true;
-                    if (state.streamFinishReason !== "error") {
-                      state.streamFinishReason =
-                        BUDGET_EXHAUSTION_FINISH_REASON;
+                        selectedModel,
+                        selectedModelOverride,
+                        responseModel: state.responseModel,
+                        configuredModelId,
+                        accountingModel: usageRecordArgs.accountingModel,
+                        rateLimitInfo,
+                      });
+                      const cutOff = state.stoppedDueToBudgetExhaustion;
+                      capturePaidDailyFreeAllowanceServerEvent({
+                        event: cutOff
+                          ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
+                          : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint,
+                        reservation: paidDailyFreeAllowanceReservation,
+                        extra: {
+                          cost_dollars: usageCostRecord.costDollars,
+                          model_cost_dollars: usageCostRecord.modelCostDollars,
+                          non_model_cost_dollars:
+                            usageCostRecord.nonModelCostDollars,
+                          selected_model: selectedModel,
+                          response_model: state.responseModel,
+                          cost_source: usageCostRecord.costSource,
+                          paid_daily_free_allowance_cost_recorded:
+                            allowanceCostRecord.recorded,
+                          paid_daily_free_allowance_cost_record_failure_reason:
+                            allowanceCostRecord.recorded
+                              ? undefined
+                              : allowanceCostRecord.unavailableReason,
+                          paid_daily_free_allowance_cost_record_next_dollars:
+                            allowanceCostRecord.recorded
+                              ? allowanceCostRecord.nextCostDollars
+                              : undefined,
+                        },
+                      });
+                    } else if (subscription === "free") {
+                      if (freeDailySettlement) {
+                        await freeDailySettlement.settle(
+                          usageCostRecord.costDollars,
+                        );
+                      } else {
+                        await recordFreeMonthlyCost(
+                          freeUsageSubject,
+                          usageCostRecord.costDollars,
+                        );
+                      }
+                    } else {
+                      const deductionResult = await deductUsage(
+                        userId,
+                        subscription,
+                        estimatedInputTokens,
+                        usageTracker.inputTokens,
+                        usageTracker.outputTokens,
+                        extraUsageConfig,
+                        settledCostDollars,
+                        selectedModel,
+                        usageTracker.nonModelCost,
+                        organizationId,
+                        usageSettlementState
+                          ? getUsageSettlementInitialDeduction(
+                              usageSettlementState,
+                            )
+                          : rateLimitInfo,
+                        usageRecordArgs.accountingModel,
+                        usageTracker.usageSettlementId,
+                      );
+                      if (usageSettlementState) {
+                        usageRefundTracker.recordDeductions({
+                          ...rateLimitInfo,
+                          pointsDeducted:
+                            deductionResult.includedPointsDeducted,
+                          extraUsagePointsDeducted:
+                            deductionResult.extraUsagePointsDeducted,
+                        });
+                        replaceUsageSettlementState(
+                          usageSettlementState,
+                          deductionResult,
+                        );
+                      }
+                      if (deductionResult.uncoveredPoints > 0) {
+                        state.stoppedDueToBudgetExhaustion = true;
+                        if (state.streamFinishReason !== "error") {
+                          state.streamFinishReason =
+                            BUDGET_EXHAUSTION_FINISH_REASON;
+                        }
+                        phLogger.warn("Usage deduction left uncovered cost", {
+                          chatId,
+                          endpoint,
+                          mode,
+                          userId,
+                          organizationId,
+                          subscription,
+                          selectedModel,
+                          uncoveredPoints: deductionResult.uncoveredPoints,
+                          usageDeductionFailureReason:
+                            deductionResult.usageDeductionFailureReason,
+                        });
+                      }
+                      const billingBreakdown =
+                        deductionResult.includedPointsDeducted > 0 ||
+                        deductionResult.extraUsagePointsDeducted > 0 ||
+                        deductionResult.uncoveredPoints > 0 ||
+                        deductionResult.usageDeductionFailed ||
+                        !!deductionResult.usageDeductionFailureReason
+                          ? deductionResult
+                          : undefined;
+                      usageCostRecord = usageTracker.createUsageCostRecord({
+                        ...usageRecordArgs,
+                        billingBreakdown,
+                      });
+                      usageTracker.log({
+                        userId,
+                        organizationId,
+                        chatId,
+                        assistantMessageId: assistantMessageIdForUsage,
+                        endpoint,
+                        mode,
+                        subscription,
+                        selectedModel,
+                        selectedModelOverride,
+                        responseModel: state.responseModel,
+                        configuredModelId,
+                        accountingModel: usageRecordArgs.accountingModel,
+                        rateLimitInfo,
+                        billingBreakdown,
+                      });
                     }
-                    phLogger.warn("Usage deduction left uncovered cost", {
+                    captureUsageCost({
+                      cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                      usageMeasurement:
+                        usageTracker.measurementProperties(selectedModel),
+                      regionalFreeLimits,
+                      posthog,
+                      userId,
+                      subscription,
+                      organizationId,
                       chatId,
                       endpoint,
                       mode,
-                      userId,
-                      organizationId,
-                      subscription,
-                      selectedModel,
-                      uncoveredPoints: deductionResult.uncoveredPoints,
-                      usageDeductionFailureReason:
-                        deductionResult.usageDeductionFailureReason,
+                      usage: usageCostRecord,
+                      ...(sandboxCost > 0 && { sandboxUsage }),
+                      responseModel: state.responseModel,
+                      analyticsRequestContext,
+                      experiment: routingExperimentContext,
+                      freeAgentBudget,
+                      fallbackServed:
+                        state.responseModel && retryUsedFallbackModel
+                          ? true
+                          : state.fallbackServed,
+                      ...(usageSettlementState && {
+                        usageSettlement: {
+                          id: usageTracker.usageSettlementId,
+                          midRunCount: usageSettlementSequence,
+                        },
+                      }),
+                      ...(paidDailyFreeAllowanceReservation && {
+                        paidDailyFreeAllowance:
+                          createPaidDailyFreeAllowanceUsageLogContext(
+                            paidDailyFreeAllowanceReservation,
+                            state.stoppedDueToBudgetExhaustion,
+                          ),
+                      }),
                     });
-                  }
-                  const billingBreakdown =
-                    deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0 ||
-                    deductionResult.uncoveredPoints > 0 ||
-                    deductionResult.usageDeductionFailed ||
-                    !!deductionResult.usageDeductionFailureReason
-                      ? deductionResult
-                      : undefined;
-                  usageCostRecord = usageTracker.createUsageCostRecord({
-                    ...usageRecordArgs,
-                    billingBreakdown,
-                  });
-                  usageTracker.log({
-                    userId,
-                    organizationId,
-                    chatId,
-                    assistantMessageId: assistantMessageIdForUsage,
-                    endpoint,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    accountingModel: usageRecordArgs.accountingModel,
-                    rateLimitInfo,
-                    billingBreakdown,
-                  });
-                }
-                captureUsageCost({
-                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
-                  usageMeasurement:
-                    usageTracker.measurementProperties(selectedModel),
-                  regionalFreeLimits,
-                  posthog,
-                  userId,
-                  subscription,
-                  organizationId,
-                  chatId,
-                  endpoint,
-                  mode,
-                  usage: usageCostRecord,
-                  ...(sandboxCost > 0 && { sandboxUsage }),
-                  responseModel: state.responseModel,
-                  analyticsRequestContext,
-                  experiment: routingExperimentContext,
-                  freeAgentBudget,
-                  fallbackServed:
-                    state.responseModel && retryUsedFallbackModel
-                      ? true
-                      : state.fallbackServed,
-                  ...(usageSettlementState && {
-                    usageSettlement: {
-                      id: usageTracker.usageSettlementId,
-                      midRunCount: usageSettlementSequence,
-                    },
-                  }),
-                  ...(paidDailyFreeAllowanceReservation && {
-                    paidDailyFreeAllowance:
-                      createPaidDailyFreeAllowanceUsageLogContext(
-                        paidDailyFreeAllowanceReservation,
-                        state.stoppedDueToBudgetExhaustion,
-                      ),
-                  }),
-                });
+                  },
+                  finishPhase,
+                );
               } finally {
-                await releaseFreeRunLockOnce();
+                await observeFinish(
+                  "release_run_lock",
+                  () => releaseFreeRunLockOnce(),
+                  finishPhase,
+                );
               }
             };
 
@@ -2463,9 +2482,8 @@ export const createChatHandler = () => {
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
-                                await observeFinish(
-                                  "settle_usage",
-                                  () => deductAccumulatedUsage(retryMessageId),
+                                await deductAccumulatedUsage(
+                                  retryMessageId,
                                   "provider_retry",
                                 );
                                 const providerContentBlocked =
@@ -2868,11 +2886,7 @@ export const createChatHandler = () => {
                     // Final reconciliation can change the finish reason to
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
-                    await observeFinish(
-                      "settle_usage",
-                      () => deductAccumulatedUsage(),
-                      "primary",
-                    );
+                    await deductAccumulatedUsage();
                     const finalProviderContentBlocked =
                       isProviderContentFilterFinishReason(
                         state.streamFinishReason,
@@ -3126,11 +3140,7 @@ export const createChatHandler = () => {
                           () => drainBackgroundStreamWork(),
                           "primary",
                         );
-                        await observeFinish(
-                          "settle_usage",
-                          () => deductAccumulatedUsage(),
-                          "primary",
-                        );
+                        await deductAccumulatedUsage();
                         shutdownPostHog(posthog);
                         return;
                       }

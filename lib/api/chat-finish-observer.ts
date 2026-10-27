@@ -43,6 +43,7 @@ export function createChatFinishObserver(context: {
       : undefined,
   };
 
+  /** Observe one pending operation without changing its outcome or retrying it. */
   return async function observeFinish<T>(
     stage: FinishStage,
     operation: () => PromiseLike<T>,
