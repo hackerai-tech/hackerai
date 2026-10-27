@@ -205,6 +205,7 @@ export function AgentPermissionSelector({
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
+          data-chat-input-agent-menu
           side="bottom"
           className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
         >
@@ -224,6 +225,7 @@ export function AgentPermissionSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
+        data-chat-input-agent-menu
         className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
         align="start"
       >

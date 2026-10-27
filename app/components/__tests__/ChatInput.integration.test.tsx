@@ -1032,6 +1032,69 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
+    it("shows compact Agent controls while the input is active", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
+
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasMessages
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+
+      const context = await screen.findByTestId("chat-input-agent-context");
+      const input = screen.getByTestId("chat-input");
+      expect(context).toHaveClass("hidden");
+
+      fireEvent.focus(input);
+      expect(context).toHaveClass("flex");
+
+      const sandboxTrigger = screen
+        .getByTestId("chat-input-mobile-sandbox")
+        .querySelector("button");
+      expect(sandboxTrigger).not.toBeNull();
+      fireEvent.pointerDown(sandboxTrigger!);
+      fireEvent.blur(input, { relatedTarget: sandboxTrigger });
+      expect(context).toHaveClass("flex");
+
+      fireEvent.click(sandboxTrigger!);
+      const menu = await waitFor(() => {
+        const openedMenu = document.querySelector(
+          "[data-chat-input-agent-menu]",
+        );
+        expect(openedMenu).toBeInTheDocument();
+        return openedMenu;
+      });
+      fireEvent.pointerDown(menu!);
+      expect(context).toHaveClass("flex");
+
+      fireEvent.pointerDown(document.body);
+      expect(context).toHaveClass("hidden");
+
+      fireEvent.pointerDown(input);
+      expect(context).toHaveClass("flex");
+    });
+
     it("moves Agent controls below the input when the composer becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },

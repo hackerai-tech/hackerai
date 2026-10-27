@@ -354,7 +354,11 @@ export function SandboxSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[240px] p-1" align="start">
+      <PopoverContent
+        data-chat-input-agent-menu
+        className="w-[240px] p-1"
+        align="start"
+      >
         <div className="space-y-0.5">
           <button
             key={cloudOption.id}

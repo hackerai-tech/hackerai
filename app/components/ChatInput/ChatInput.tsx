@@ -87,11 +87,7 @@ const COMPACT_AGENT_CONTROLS_BREAKPOINT_PX = 720;
 const shouldUseCompactAgentControls = (width: number): boolean =>
   width > 0 && width < COMPACT_AGENT_CONTROLS_BREAKPOINT_PX;
 
-const ChatInputLoadingState = ({
-  showAgentControls,
-}: {
-  showAgentControls: boolean;
-}) => (
+const ChatInputLoadingState = () => (
   <div
     aria-label="Loading task input"
     aria-live="polite"
@@ -107,13 +103,6 @@ const ChatInputLoadingState = ({
         <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
         <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
       </div>
-      {showAgentControls ? (
-        <div
-          aria-hidden="true"
-          className="chat-input-glass-context relative z-0 mx-6 -mt-2 h-10 rounded-b-[18px] border border-t-0 border-black/8 md:hidden dark:border-border/70"
-          data-testid="chat-input-loading-controls"
-        />
-      ) : null}
     </div>
   </div>
 );
@@ -310,6 +299,7 @@ const ChatInputContent = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const isEmptyNewChat = isNewChat && !hasMessages;
   const todoPanelVisible =
     !sidebarOpen && getTodoPanelViewState(todos, status).hasActiveTodos;
   const approvalRequest = useMemo(
@@ -332,7 +322,9 @@ const ChatInputContent = ({
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
+  const agentControlsPointerDownRef = useRef(false);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
 
@@ -363,6 +355,35 @@ const ChatInputContent = ({
     }
   }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
 
+  useEffect(() => {
+    if (!composerFocused) return;
+
+    const isOutsideComposer = (target: EventTarget | null) => {
+      if (!(target instanceof Node)) return false;
+      if (chatInputContainerRef.current?.contains(target)) return false;
+      if (
+        target instanceof Element &&
+        target.closest("[data-chat-input-agent-menu]")
+      )
+        return false;
+      return true;
+    };
+
+    const dismissOnOutsidePointerDown = (event: PointerEvent) => {
+      if (isOutsideComposer(event.target)) setComposerFocused(false);
+    };
+    const dismissOnOutsideFocus = (event: FocusEvent) => {
+      if (isOutsideComposer(event.target)) setComposerFocused(false);
+    };
+
+    document.addEventListener("pointerdown", dismissOnOutsidePointerDown);
+    document.addEventListener("focusin", dismissOnOutsideFocus);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOnOutsidePointerDown);
+      document.removeEventListener("focusin", dismissOnOutsideFocus);
+    };
+  }, [composerFocused]);
+
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
     try {
@@ -375,8 +396,7 @@ const ChatInputContent = ({
     }
   };
 
-  const draftId =
-    isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  const draftId = isEmptyNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
@@ -784,6 +804,7 @@ const ChatInputContent = ({
         isSubmittingAttachmentsRef.current = false;
         return;
       }
+      setComposerFocused(false);
       if (clearDraftOnSubmit) {
         uploadedFilesRef.current = [];
         removeDraft(draftId);
@@ -838,7 +859,7 @@ const ChatInputContent = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState showAgentControls={!!user && isAgent} />;
+    return <ChatInputLoadingState />;
   }
 
   return (
@@ -929,14 +950,16 @@ const ChatInputContent = ({
         )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
-          <FileUploadPreview
-            uploadedFiles={uploadedFiles}
-            onRemoveFile={handleRemoveFile}
-            onRetryFile={handleRetryFile}
-            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
-            onShowGeneratedTextInField={handleShowGeneratedTextInField}
-            generatedTextAttachmentsAvailable={isAgent}
-          />
+          <div className={isEmptyNewChat ? "order-2" : undefined}>
+            <FileUploadPreview
+              uploadedFiles={uploadedFiles}
+              onRemoveFile={handleRemoveFile}
+              onRetryFile={handleRetryFile}
+              onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+              onShowGeneratedTextInField={handleShowGeneratedTextInField}
+              generatedTextAttachmentsAvailable={isAgent}
+            />
+          </div>
         )}
 
         <input
@@ -957,7 +980,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${isEmptyNewChat ? "" : "sm:order-1"} ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
           >
             <ChatInputTextarea
@@ -967,6 +990,20 @@ const ChatInputContent = ({
               minRows={isCentered ? 3 : 1}
               placeholder={placeholder}
               autoFocus={autoFocus}
+              onFocus={() => setComposerFocused(true)}
+              onPointerDown={() => setComposerFocused(true)}
+              onBlur={(event) => {
+                if (agentControlsPointerDownRef.current) return;
+                const next = event.relatedTarget;
+                if (
+                  next instanceof Node &&
+                  (chatInputContainerRef.current?.contains(next) ||
+                    (next instanceof Element &&
+                      next.closest("[data-chat-input-agent-menu]")))
+                )
+                  return;
+                setComposerFocused(false);
+              }}
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}
@@ -986,29 +1023,39 @@ const ChatInputContent = ({
           </div>
         )}
 
-        {/* Compact Agent controls below the input. The composer switches to
-            this strip whenever its own width is constrained, even on desktop. */}
+        {/* Keep compact Agent controls available while composing. New chats
+            place them above the input without a separate surface. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+            className={`${isEmptyNewChat ? "order-1 mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context order-3 mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative z-0 min-w-0 ${composerFocused ? "flex" : "hidden"} ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
+            onPointerDownCapture={() => {
+              agentControlsPointerDownRef.current = true;
+              window.setTimeout(() => {
+                agentControlsPointerDownRef.current = false;
+              }, 0);
+            }}
           >
             <div
-              className="min-w-0 flex-1"
+              className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
               data-testid="chat-input-mobile-sandbox"
             >
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
-                compact
+                compact={!isEmptyNewChat}
+                size={isEmptyNewChat ? "md" : "sm"}
               />
             </div>
             <div
-              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
+              <AgentPermissionSelector
+                analyticsSurface="chat_input"
+                size={isEmptyNewChat ? "md" : "sm"}
+              />
             </div>
           </div>
         )}
