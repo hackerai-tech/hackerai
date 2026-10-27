@@ -1,4 +1,4 @@
-import { useRef, RefObject } from "react";
+import { useRef, RefObject, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -69,6 +69,7 @@ interface UseChatHandlersProps {
   isExistingChat: boolean;
   isUserMessagePersisted?: (messageId: string) => boolean | Promise<boolean>;
   status: ChatStatus;
+  isSummarizing?: boolean;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
@@ -114,6 +115,7 @@ export const useChatHandlers = ({
   isExistingChat,
   isUserMessagePersisted,
   status,
+  isSummarizing = false,
   isSendingNowRef,
   hasManuallyStoppedRef,
   activeTriggerRunRef,
@@ -141,6 +143,7 @@ export const useChatHandlers = ({
     messageQueue,
     removeQueuedMessage,
     queueBehavior,
+    editingQueuedMessageId,
     sandboxPreference,
     desktopEnvironmentId,
     agentPermissionMode,
@@ -174,6 +177,22 @@ export const useChatHandlers = ({
   const statusRef = useLatestRef(status);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
+  const [summarySteer, setSummarySteer] = useState<{
+    chatId: string;
+    messageId: string;
+    options?: RetryOptions;
+  } | null>(null);
+
+  const deferSteerUntilSummary = (
+    messageId: string,
+    options?: RetryOptions,
+  ) => {
+    setSummarySteer({ chatId, messageId, options });
+  };
+
+  useEffect(() => {
+    setSummarySteer(null);
+  }, [chatId]);
 
   const isSendableUploadedFile = (file: (typeof uploadedFiles)[number]) =>
     file.uploaded &&
@@ -589,9 +608,18 @@ export const useChatHandlers = ({
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
 
-      if (queueBehavior === "queue") {
-        // Queue the message - will auto-send after current response completes
-        queueMessage(input, validFiles);
+      if (isSummarizing || queueBehavior === "queue") {
+        // During compaction, accept the draft now and steer as soon as the
+        // summary settles. Ordinary queue mode waits for the full response.
+        if (isSummarizing && messageQueue.length >= 10) {
+          toast.error("Queue is full", {
+            description:
+              "Please wait for queued messages to send before adding more.",
+          });
+          return false;
+        }
+        const queuedId = queueMessage(input, validFiles);
+        if (isSummarizing) deferSteerUntilSummary(queuedId);
         captureAuthenticatedEvent("chat_user_submission", {
           definition_version: 1,
           mode: currentChatMode,
@@ -711,6 +739,7 @@ export const useChatHandlers = ({
   };
 
   const handleStop = async () => {
+    setSummarySteer(null);
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
@@ -1153,6 +1182,11 @@ export const useChatHandlers = ({
       isSendingNowRef.current
     )
       return;
+    if (isSummarizing) {
+      hasManuallyStoppedRef.current = false;
+      deferSteerUntilSummary(messageId, options);
+      return;
+    }
     resetAutoContinueCount?.();
 
     // Set flag to prevent auto-processing from interfering
@@ -1226,7 +1260,39 @@ export const useChatHandlers = ({
     }
   };
 
+  const handleSendNowRef = useCommittedRef(handleSendNow);
+  useEffect(() => {
+    if (!summarySteer || summarySteer.chatId !== chatId) return;
+    if (
+      isSummarizing ||
+      sendDisabledReason ||
+      editingQueuedMessageId != null ||
+      hasManuallyStoppedRef.current
+    ) {
+      return;
+    }
+
+    const message = messageQueue.find(
+      (item) => item.id === summarySteer.messageId,
+    );
+    setSummarySteer(null);
+    if (!message) return;
+    // Use the latest handler/messages/todos after the completion event, rather
+    // than the snapshot from when the user submitted during compaction.
+    void handleSendNowRef.current(message.id, summarySteer.options);
+  }, [
+    summarySteer,
+    chatId,
+    isSummarizing,
+    sendDisabledReason,
+    editingQueuedMessageId,
+    hasManuallyStoppedRef,
+    messageQueue,
+    handleSendNowRef,
+  ]);
+
   return {
+    hasPendingSummarySteer: summarySteer?.chatId === chatId,
     handleSubmit,
     handleStop,
     handleRegenerate,

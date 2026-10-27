@@ -139,7 +139,7 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
-  queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  queueMessage: (text: string, files?: FileMessagePart[]) => string;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
@@ -1173,6 +1173,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Message queue handlers
   const queueMessage = useCallback(
     (text: string, files?: FileMessagePart[]) => {
+      const id = uuidv4();
       setMessageQueue((prev) => {
         // Limit queue size to 10 messages
         if (prev.length >= 10) {
@@ -1184,13 +1185,14 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         }
 
         const newMessage: QueuedMessage = {
-          id: uuidv4(),
+          id,
           text,
           files,
           timestamp: Date.now(),
         };
         return [...prev, newMessage];
       });
+      return id;
     },
     [],
   );

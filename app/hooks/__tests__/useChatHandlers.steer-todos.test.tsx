@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import type { ChatMessage, Todo } from "@/types";
+import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 
 const mockCaptureAuthenticatedEvent = jest.fn();
@@ -38,7 +38,8 @@ let mockInput = "";
 let mockUploadedFiles: any[] = [];
 let mockSandboxPreference = "e2b";
 let mockChatMode = "agent";
-let mockQueueBehavior = "queue";
+let mockQueueBehavior: QueueBehavior = "queue";
+let mockMessageQueue: QueuedMessage[];
 let mockQueuedDeliveryStatus: "failed" | undefined;
 
 const todos: Todo[] = [
@@ -90,15 +91,10 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     isUploadingFiles: false,
     subscription: "pro",
     queueMessage: mockQueueMessage,
-    messageQueue: [
-      {
-        id: "queued-1",
-        deliveryStatus: mockQueuedDeliveryStatus,
-        text: "Change direction",
-        files: [],
-        timestamp: 123,
-      },
-    ],
+    messageQueue: mockMessageQueue.map((message) => ({
+      ...message,
+      deliveryStatus: message.deliveryStatus ?? mockQueuedDeliveryStatus,
+    })),
     removeQueuedMessage: mockRemoveQueuedMessage,
     queueBehavior: mockQueueBehavior,
     sandboxPreference: mockSandboxPreference,
@@ -152,6 +148,9 @@ describe("useChatHandlers steer todo handoff", () => {
     mockChatMode = "agent";
     mockQueueBehavior = "queue";
     mockQueuedDeliveryStatus = undefined;
+    mockMessageQueue = [
+      { id: "queued-1", text: "Change direction", files: [], timestamp: 123 },
+    ];
     Object.defineProperty(navigator, "onLine", {
       configurable: true,
       value: true,
@@ -166,6 +165,193 @@ describe("useChatHandlers steer todo handoff", () => {
           }) as Response,
       ),
     });
+  });
+
+  const renderSummarySteer = () => {
+    const isSendingNowRef = { current: false };
+    const hasManuallyStoppedRef = { current: false };
+    const hook = renderHook(
+      ({ isSummarizing, chatId, currentMessages }) =>
+        useChatHandlers({
+          chatId,
+          messages: currentMessages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSummarizing,
+          isSendingNowRef,
+          hasManuallyStoppedRef,
+          activeTriggerRunRef: { current: "run-1" },
+        }),
+      {
+        initialProps: {
+          isSummarizing: true,
+          chatId: "chat-1",
+          currentMessages: messages,
+        },
+      },
+    );
+    return { ...hook, isSendingNowRef };
+  };
+
+  it("finishes summarizing before Send now cancels and sends exactly once", async () => {
+    const { result, rerender, isSendingNowRef } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    expect(result.current.hasPendingSummarySteer).toBe(true);
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockCancelStream).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+
+    // A summary heartbeat must not release the pending steer.
+    rerender({
+      isSummarizing: true,
+      chatId: "chat-1",
+      currentMessages: messages,
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    const completedMessages: ChatMessage[] = [
+      ...messages.slice(0, -1),
+      { ...messages[1], parts: [{ type: "text", text: "Latest progress" }] },
+    ];
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: completedMessages,
+      });
+    });
+    expect(mockStop).toHaveBeenCalledTimes(1);
+    expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ parts: completedMessages[1].parts }),
+    );
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Change direction" }),
+      expect.any(Object),
+    );
+    rerender({
+      isSummarizing: false,
+      chatId: "chat-1",
+      currentMessages: completedMessages,
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["queue", "stop-and-send"] as const)(
+    "queues a new %s submission during summarization and steers immediately afterward",
+    async (behavior) => {
+      mockQueueBehavior = behavior;
+      mockInput = "Change direction";
+      mockMessageQueue = [
+        { id: "older", text: "Older queued message", timestamp: 100 },
+      ];
+      mockQueueMessage.mockImplementationOnce(() => {
+        mockMessageQueue = [
+          ...mockMessageQueue,
+          { id: "queued-1", text: mockInput, files: [], timestamp: 123 },
+        ];
+        return "queued-1";
+      });
+      const { result, rerender } = renderSummarySteer();
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any),
+        ).toBe(true);
+      });
+      expect(mockQueueMessage).toHaveBeenCalledWith("Change direction", []);
+      expect(mockClearInput).toHaveBeenCalledTimes(1);
+      expect(mockClearUploadedFiles).toHaveBeenCalledTimes(1);
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      await act(async () => {
+        rerender({
+          isSummarizing: false,
+          chatId: "chat-1",
+          currentMessages: messages,
+        });
+      });
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "Change direction" }),
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("keeps the draft when the queue is full during summarization", async () => {
+    mockInput = "Keep my draft";
+    mockMessageQueue = Array.from({ length: 10 }, (_, index) => ({
+      id: `queued-${index}`,
+      text: "Already queued",
+      timestamp: index,
+    }));
+    const { result, isSendingNowRef } = renderSummarySteer();
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(false);
+    });
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+    expect(isSendingNowRef.current).toBe(false);
+  });
+
+  it("lets explicit Stop cancel summarization and discard the deferred steer", async () => {
+    const { result, rerender } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    expect(mockStop).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send a removed deferred message", async () => {
+    const { result, rerender, isSendingNowRef } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    mockMessageQueue = [];
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-1",
+        currentMessages: messages,
+      });
+    });
+    expect(isSendingNowRef.current).toBe(false);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
+  });
+
+  it("does not carry a deferred steer into another chat", async () => {
+    const { result, rerender, isSendingNowRef } = renderSummarySteer();
+    await act(async () => result.current.handleSendNow("queued-1"));
+    await act(async () => {
+      rerender({
+        isSummarizing: false,
+        chatId: "chat-2",
+        currentMessages: messages,
+      });
+    });
+    expect(isSendingNowRef.current).toBe(false);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
   });
 
   it.each(["agent", "ask"])(
