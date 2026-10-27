@@ -5,7 +5,13 @@ import { BROWSER_DAEMON_PROGRAM } from "../daemon-program";
 
 const directory = "/dev/shm/hackerai-browser-0123456789abcdef";
 function daemon(
-  options: { directory?: string; invalidPath?: string; action?: string } = {},
+  options: {
+    directory?: string;
+    invalidPath?: string;
+    action?: string;
+    uid?: number;
+    name?: string;
+  } = {},
 ) {
   const socket = new EventEmitter() as EventEmitter & {
     write: jest.Mock;
@@ -26,7 +32,7 @@ function daemon(
       if (name === "node:fs")
         return {
           lstatSync: (file: string) => ({
-            uid: 1000,
+            uid: options.uid ?? 1000,
             isDirectory: () => file !== options.invalidPath,
             isSocket: () => file !== options.invalidPath,
           }),
@@ -37,7 +43,7 @@ function daemon(
       argv: [
         "node",
         options.directory ?? directory,
-        "default",
+        options.name ?? "default",
         JSON.stringify({ action: options.action ?? "stream_status" }),
       ],
       getuid: () => 1000,
@@ -116,7 +122,15 @@ it.each([
   },
 );
 
-it.each([{ directory: "/tmp/hackerai-browser-owned" }, { action: "open" }])(
+it.each([
+  { directory: "/tmp/hackerai-browser-owned" },
+  { action: "open" },
+  { uid: 0 },
+  { name: "../escape" },
+  { name: "a".repeat(81) },
+  { name: "" },
+  { name: "bad\nname" },
+])(
   "never starts or reconfigures a browser for an invalid request",
   (options) => {
     const d = daemon(options);
