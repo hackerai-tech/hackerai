@@ -502,6 +502,49 @@ describe("current experiment reservation", () => {
   };
   beforeEach(() => jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000));
   afterEach(() => jest.restoreAllMocks());
+  it.each(["control", "test"])(
+    "retains the original shown Pro invitation after follow-ups in %s",
+    async (variant) => {
+      const { ctx } = setup();
+      const row = await invoke(reserveExperiment, ctx, {
+        ...experimentArgs,
+        experiment_key: "abliterated_pro_three_steps_v1",
+        feedback_phase: "abliterated_pro_three_steps_feedback_v1",
+        experiment_variant: variant,
+      });
+      const followup = { chat_id: args.chat_id, message_id: "later-answer" };
+      expect(await invoke(getForMessage, ctx, followup)).toBeNull();
+      await invoke(record, ctx, { id: row._id, action: "shown" });
+      expect(await invoke(getForMessage, ctx, followup)).toMatchObject({
+        _id: row._id,
+        message_id: args.message_id,
+        experiment_request_id: args.request_id,
+      });
+      expect(
+        await invoke(getForMessage, ctx, {
+          ...followup,
+          chat_id: "other-chat",
+        }),
+      ).toBeNull();
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      });
+      expect(await invoke(getForMessage, ctx, followup)).toBeNull();
+    },
+  );
+  it("keeps other survey phases pinned to their original message", async () => {
+    const { ctx } = setup();
+    const row = await invoke(reserveExperiment, ctx, experimentArgs);
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(
+      await invoke(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: "later-answer",
+      }),
+    ).toBeNull();
+  });
   it.each([
     [
       "abliterated_paid_first_step_v2",
