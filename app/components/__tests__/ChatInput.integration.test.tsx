@@ -1062,17 +1062,22 @@ describe("ChatInput - Integration Tests", () => {
         </TestWrapper>,
       );
 
-      const context = await screen.findByTestId("chat-input-agent-context");
+      const context = await screen.findByTestId(
+        "chat-input-agent-context-reveal",
+      );
       const input = screen.getByTestId("chat-input");
-      expect(context).toHaveClass("hidden");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
 
       fireEvent.focus(input);
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
 
       fireEvent.change(input, { target: { value: "A harmless follow-up" } });
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
 
       const sandboxTrigger = screen
         .getByTestId("chat-input-mobile-sandbox")
@@ -1080,7 +1085,8 @@ describe("ChatInput - Integration Tests", () => {
       expect(sandboxTrigger).not.toBeNull();
       fireEvent.pointerDown(sandboxTrigger!);
       fireEvent.blur(input, { relatedTarget: sandboxTrigger });
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
 
       fireEvent.click(sandboxTrigger!);
       const menu = await waitFor(() => {
@@ -1091,16 +1097,20 @@ describe("ChatInput - Integration Tests", () => {
         return openedMenu;
       });
       fireEvent.pointerDown(menu!);
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveClass("hidden");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
 
       fireEvent.pointerDown(input);
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveClass("hidden");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
       rerender(
         <TestWrapper>
           <ChatInput
@@ -1112,9 +1122,11 @@ describe("ChatInput - Integration Tests", () => {
           />
         </TestWrapper>,
       );
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveClass("flex");
+      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("inert");
     });
 
     it("moves Agent controls below the input when the composer becomes narrow", async () => {

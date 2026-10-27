@@ -323,6 +323,7 @@ const ChatInputContent = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
+  const agentControlsVisible = isEmptyNewChat || composerFocused;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const agentControlsPointerDownRef = useRef(false);
   const showAgentApprovalPrompt =
@@ -1026,35 +1027,44 @@ const ChatInputContent = ({
             Existing chats reveal the lower strip while composing. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`${isEmptyNewChat ? "order-1 mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context order-3 mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative z-0 min-w-0 ${isEmptyNewChat || composerFocused ? "flex" : "hidden"} ${compactAgentControls ? "" : "md:hidden"}`}
-            data-compact={compactAgentControls ? "true" : "false"}
-            data-testid="chat-input-agent-context"
-            onPointerDownCapture={() => {
-              agentControlsPointerDownRef.current = true;
-              window.setTimeout(() => {
-                agentControlsPointerDownRef.current = false;
-              }, 0);
-            }}
+            className={`relative z-0 grid min-w-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${isEmptyNewChat ? "order-1" : "order-3"} ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+            data-testid="chat-input-agent-context-reveal"
+            aria-hidden={!agentControlsVisible}
+            inert={!agentControlsVisible}
           >
-            <div
-              className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
-              data-testid="chat-input-mobile-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                compact={!isEmptyNewChat}
-                size={isEmptyNewChat ? "md" : "sm"}
-              />
-            </div>
-            <div
-              className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
-              data-testid="chat-input-mobile-permission"
-            >
-              <AgentPermissionSelector
-                analyticsSurface="chat_input"
-                size={isEmptyNewChat ? "md" : "sm"}
-              />
+            <div className="min-h-0 overflow-hidden">
+              <div
+                className={`${isEmptyNewChat ? "mb-3 flex-col items-start gap-1 px-2" : "chat-input-glass-context mx-2 -mt-2 min-h-10 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+                data-compact={compactAgentControls ? "true" : "false"}
+                data-testid="chat-input-agent-context"
+                onPointerDownCapture={() => {
+                  agentControlsPointerDownRef.current = true;
+                  window.setTimeout(() => {
+                    agentControlsPointerDownRef.current = false;
+                  }, 0);
+                }}
+              >
+                <div
+                  className={isEmptyNewChat ? "min-w-0" : "min-w-0 flex-1"}
+                  data-testid="chat-input-mobile-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    compact={!isEmptyNewChat}
+                    size={isEmptyNewChat ? "md" : "sm"}
+                  />
+                </div>
+                <div
+                  className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
+                  data-testid="chat-input-mobile-permission"
+                >
+                  <AgentPermissionSelector
+                    analyticsSurface="chat_input"
+                    size={isEmptyNewChat ? "md" : "sm"}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         )}
