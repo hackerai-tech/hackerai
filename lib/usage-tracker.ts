@@ -103,7 +103,7 @@ export class UsageTracker {
   providerCost = 0;
   /**
    * Provider cost for the streamed model leg only. Summarization is tracked
-   * separately because it survives resetModelLeg() during a fallback retry.
+   * separately because it survives prepareModelRetry() during a fallback retry.
    */
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
@@ -131,12 +131,18 @@ export class UsageTracker {
   private summarizationCacheTelemetryObserved = false;
 
   /**
-   * Discard the model leg's accumulated usage before a fallback retry runs.
+   * Prepare accounting before a fallback retry. Loop recovery retains recorded
+   * work: user-influenced repetition must not refund earlier model output.
+   * Ordinary provider failures discard the failed model leg's usage.
    * Keeps nonModelCost (sandbox/tool spend already incurred) and all
    * summarization usage, so the final deduction only replaces the streamed
    * model leg with the fallback model.
    */
-  resetModelLeg() {
+  prepareModelRetry({
+    isLoopRecovery = false,
+  }: { isLoopRecovery?: boolean } = {}) {
+    if (isLoopRecovery) return;
+
     this.discardedModelSteps.push(...this.modelStepCosts);
     this.retryResets++;
     this.providerCost -= this.modelProviderCost;
@@ -248,7 +254,7 @@ export class UsageTracker {
       modelName: usage.model,
     });
     if (rawCost > 0) {
-      // Summarization survives resetModelLeg(), so do not include it in
+      // Summarization survives prepareModelRetry(), so do not include it in
       // modelProviderCost (the amount removed for a streamed-model retry).
       this.providerCost += rawCost;
     }

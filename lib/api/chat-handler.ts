@@ -1930,7 +1930,7 @@ export const createChatHandler = () => {
                 // Discard the failed primary leg's model usage so the user is
                 // only billed for the fallback. Non-model spend (sandbox/tools)
                 // is preserved.
-                usageTracker.resetModelLeg();
+                usageTracker.prepareModelRetry();
                 if (
                   shouldRecoverVisionApiError &&
                   !shouldRecoverAbliterationApiError
@@ -2344,7 +2344,9 @@ export const createChatHandler = () => {
                             emptyResponseContinuation ??
                             prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
-                            usageTracker.resetModelLeg();
+                            usageTracker.prepareModelRetry({
+                              isLoopRecovery: loopTriggeredRetry,
+                            });
                           }
                           if (
                             continuation &&
@@ -2368,17 +2370,20 @@ export const createChatHandler = () => {
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
                               imageRecovery.messages,
                             );
                         } else {
-                          // Discard the failed primary leg's model usage so the
-                          // user is only billed for the fallback. Non-model spend
-                          // (sandbox/tools) is preserved.
-                          usageTracker.resetModelLeg();
+                          // Ordinary failed-provider retries replace model usage;
+                          // loop recovery retains work already delivered.
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);

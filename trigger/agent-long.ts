@@ -4333,7 +4333,7 @@ export const agentLongTask = task({
                 resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                usageTracker.resetModelLeg();
+                usageTracker.prepareModelRetry();
                 if (
                   shouldRecoverVisionApiError &&
                   !shouldRecoverAbliterationApiError
@@ -4713,6 +4713,9 @@ export const agentLongTask = task({
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
                       ) {
+                        const loopTriggeredRetry =
+                          stoppedDueToAssistantContentLoop ||
+                          state.stoppedDueToDoomLoop;
                         const retryReason =
                           terminalEmptyResponse &&
                           shouldContinueAfterProviderDisconnect
@@ -4827,7 +4830,9 @@ export const agentLongTask = task({
                         resetAgentStreamStateForRetry(state);
                         if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -4860,7 +4865,9 @@ export const agentLongTask = task({
                               normalizedRetryMessages,
                             );
                         } else {
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         }
                         if (providerDisconnectContinuation) {
                           const preservedFileIds = getFileAccumulator()
