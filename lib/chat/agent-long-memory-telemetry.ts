@@ -43,6 +43,7 @@ type MemoryCheckpointEvent = {
   rss_bytes: number;
   rss_high_water_bytes: number;
   process_rss_os_high_water_bytes?: number;
+  process_memory_constraint_bytes?: number;
   heap_total_bytes: number;
   heap_used_bytes: number;
   heap_used_high_water_bytes: number;
@@ -73,6 +74,17 @@ const readProcessRssOsHighWaterBytes = (): number | undefined => {
     // Node reports OS maxRSS in KiB for the process lifetime. It can include
     // previous runs in a reused process and is not a container/kill-time peak.
     const bytes = process.resourceUsage().maxRSS * 1024;
+    return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readProcessMemoryConstraintBytes = (): number | undefined => {
+  try {
+    // Node returns zero for an unknown or unconstrained OS memory bound.
+    // This is a process constraint reading, not a measured kill-time limit.
+    const bytes = process.constrainedMemory();
     return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
   } catch {
     return undefined;
@@ -159,6 +171,7 @@ export class AgentLongMemoryTelemetry {
       if (!reason) return false;
 
       const processRssOsHighWater = readProcessRssOsHighWaterBytes();
+      const processMemoryConstraint = readProcessMemoryConstraintBytes();
       this.options.emit({
         level: "info",
         event: "agent_long_memory_checkpoint",
@@ -179,6 +192,9 @@ export class AgentLongMemoryTelemetry {
         ...(processRssOsHighWater === undefined
           ? {}
           : { process_rss_os_high_water_bytes: processRssOsHighWater }),
+        ...(processMemoryConstraint === undefined
+          ? {}
+          : { process_memory_constraint_bytes: processMemoryConstraint }),
         heap_total_bytes: heapTotal,
         heap_used_bytes: heapUsed,
         heap_used_high_water_bytes: this.heapUsedHighWater,
