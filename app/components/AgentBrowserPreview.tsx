@@ -667,16 +667,21 @@ export function AgentBrowserPreview({
     if (resizingRef.current && ["move", "down", "wheel"].includes(input.kind))
       return;
     // Hover is advisory. Held movement must survive a slow request, or a drag
-    // becomes a press/release without any displacement. Coalesce only adjacent
-    // movement, never across a press, release, wheel event or keystroke.
+    // becomes a press/release without any displacement. Native HTML5 dragging
+    // also needs an initial move to start dragging before moving over a target.
+    // Keep the first and latest adjacent held moves; never coalesce across a
+    // press, release, wheel event or keystroke.
     if (input.kind === "move" && !input.buttons && drainingInputs.current)
       return;
     const buffer = bufferedInputs.current;
     const previous = buffer.at(-1);
+    const penultimate = buffer.at(-2);
     if (
       input.kind === "move" &&
       previous?.kind === "move" &&
-      previous.buttons === input.buttons
+      previous.buttons === input.buttons &&
+      (!input.buttons ||
+        (penultimate?.kind === "move" && penultimate.buttons === input.buttons))
     )
       buffer[buffer.length - 1] = input;
     else buffer.push(input);

@@ -616,7 +616,7 @@ async function dragImage() {
   return image;
 }
 
-it("keeps the final held drag movement ahead of release while input is in flight", async () => {
+it("preserves drag initiation and the final movement before release during slow input", async () => {
   let finish!: (value: Response) => void;
   let pending = true;
   handleAction = (body) =>
@@ -631,6 +631,7 @@ it("keeps the final held drag movement ahead of release while input is in flight
   });
   await act(async () => {
     pointer(image, "pointermove", 300, 1);
+    pointer(image, "pointermove", 350, 1);
     pointer(image, "pointerup", 400, 0);
   });
   expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
@@ -643,11 +644,13 @@ it("keeps the final held drag movement ahead of release while input is in flight
     .flatMap((body) => body.inputs);
   expect(inputs).toEqual([
     { kind: "down", x: 200, y: 200 },
+    { kind: "move", x: 400, y: 200, buttons: 1 },
     { kind: "move", x: 600, y: 200, buttons: 1 },
     { kind: "up", x: 600, y: 200 },
   ]);
   expect(normalizeBrowserInputBatch(inputs)).toMatchObject([
     { eventType: "mousePressed", button: "left" },
+    { eventType: "mouseMoved", button: "left", x: 400 },
     { eventType: "mouseMoved", button: "left", x: 600 },
     { eventType: "mouseReleased", button: "left", x: 600 },
   ]);
