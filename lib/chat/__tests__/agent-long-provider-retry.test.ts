@@ -863,7 +863,45 @@ describe("provider recovery decisions", () => {
       completed_tool_count: 1,
       has_durable_output: true,
       has_step_boundary: true,
+      uncertain_tool_outcome: false,
     });
+    expect(JSON.stringify(diagnostics)).not.toContain("private");
+  });
+  it.each([
+    [
+      "unconfirmed execution",
+      { state: "input-available", input: "private input" },
+      true,
+    ],
+    [
+      "nested unknown execution despite an available result",
+      {
+        state: "output-available",
+        output: { result: { executionOutcome: "unknown" } },
+      },
+      true,
+    ],
+    [
+      "confirmed execution",
+      { state: "output-available", output: "private" },
+      false,
+    ],
+    [
+      "interrupted input before execution",
+      { state: "input-streaming", input: "private partial input" },
+      false,
+    ],
+    ["incomplete tool identity", { state: "input-streaming" }, true],
+  ])("distinguishes %s in output diagnostics", (_name, tool, uncertain) => {
+    const diagnostics = getProviderOutputDiagnostics([
+      { type: "step-start" },
+      { type: "text", text: "private answer" },
+      { type: "tool-save", ...tool },
+    ]);
+    // Durable output and a step boundary alone cannot explain recovery safety.
+    expect(diagnostics.has_durable_output).toBe(true);
+    expect(diagnostics.has_step_boundary).toBe(true);
+    expect(diagnostics.uncertain_tool_outcome).toBe(uncertain);
     expect(JSON.stringify(diagnostics)).not.toContain("private");
   });
 });
