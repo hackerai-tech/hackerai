@@ -5567,7 +5567,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
 
-  it("allows compaction after a smaller provider rejection recovery", async () => {
+  it("allows compaction after provider rejection recovery without usage", async () => {
     const sdk = jest.requireActual("ai");
     const wrap = jest.mocked(require("ai").wrapLanguageModel);
     wrap.mockImplementation(sdk.wrapLanguageModel);
@@ -5662,7 +5662,6 @@ describe("createAgentStream repeated compaction", () => {
         "Keep verified facts.",
       );
       await stream.onStepFinish({
-        usage: { inputTokens: 1_000, outputTokens: 10 },
         response: { modelId: "test-model", messages: [] },
       });
 

@@ -161,7 +161,10 @@ import {
   getRecentCompleteModelTail,
   estimateSummaryInputTokens,
 } from "@/lib/chat/summarization/helpers";
-import { withProviderRequestSizeRecovery } from "@/lib/chat/provider-request-size-recovery";
+import {
+  withProviderRequestSizeRecovery,
+  type ProviderRequestRetryParams,
+} from "@/lib/chat/provider-request-size-recovery";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 
@@ -1612,7 +1615,10 @@ export async function createAgentStream(
       .map((message) => message.content)
       .join("\n\n");
   };
-  const commitRejectedRequestSummary = (summary: string) => {
+  const commitRejectedRequestSummary = (
+    summary: string,
+    retryParams: ProviderRequestRetryParams,
+  ) => {
     if (!rejectedRequestSource) return;
     // The provider wrapper commits a smaller replacement request. Wait for
     // the retried provider call before deciding whether it cleared pressure.
@@ -1633,8 +1639,21 @@ export async function createAgentStream(
       rejectedRequestSource.rawMessages,
     );
     lastCompactionRawMessageCount = rejectedRequestSource.rawMessages.length;
+    // The retry bypasses normal preparation; include its system prompt and
+    // fixed request controls before using the missing-usage fallback.
     lastPreparedInputEstimate =
-      safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens;
+      Math.max(
+        safeCountTokens(JSON.stringify(retryParams.prompt)),
+        safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens,
+      ) +
+      safeCountTokens(
+        JSON.stringify({
+          tools: retryParams.tools,
+          toolChoice: retryParams.toolChoice,
+          providerOptions: retryParams.providerOptions,
+        }),
+      );
+    pendingCompactionInputEstimate = lastPreparedInputEstimate;
     lastCompletedResponseMessages = [];
     state.ctxUsage = {
       usedTokens: lastPreparedInputEstimate,
