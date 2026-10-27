@@ -339,7 +339,7 @@ export function AgentApprovalPrompt({
                   side="top"
                   align="end"
                   sideOffset={6}
-                  className="min-w-56 max-w-[min(28rem,calc(100vw-2rem))] rounded-xl p-1.5"
+                  className="min-w-[min(14rem,calc(100vw-2rem))] max-w-[min(28rem,calc(100vw-2rem))] rounded-xl p-1.5"
                 >
                   <DropdownMenuItem
                     className="min-h-10 rounded-lg px-3 text-sm"
