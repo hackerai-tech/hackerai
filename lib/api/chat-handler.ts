@@ -2089,11 +2089,12 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         state.streamFinishReason,
                       );
-                    const emptyResponseContinuation =
-                      terminalEmptyResponse &&
-                      !hasUncertainProviderToolOutcome(
+                    const uncertainToolOutcome =
+                      hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
-                      )
+                      );
+                    const emptyResponseContinuation =
+                      terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
                     const imageRecovery =
@@ -2123,6 +2124,7 @@ export const createChatHandler = () => {
                       new Error("Direct vision route failed");
 
                     if (
+                      !uncertainToolOutcome &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||

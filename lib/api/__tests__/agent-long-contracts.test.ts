@@ -1750,7 +1750,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
     );
     expect(taskSrc).toMatch(
-      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(/hasCandidate:\s*!uncertainToolOutcome &&/);
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
@@ -1781,6 +1788,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
     expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
+  });
+
+  test("Ask also blocks automatic recovery after an uncertain tool result", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /if \(\s*!uncertainToolOutcome &&\s*\(shouldRecoverAbliterationStreamError/,
+    );
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {

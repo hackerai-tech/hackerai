@@ -238,6 +238,30 @@ describe("getNextProviderDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it("treats a completed terminal result with unknown execution as unsafe to retry", () => {
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: {
+            result: { exitCode: null, executionOutcome: "unknown" },
+          },
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-error",
+          errorText: "transport failed",
+          executionOutcome: "unknown",
+        },
+      ]),
+    ).toBe(true);
+  });
+
   it("keeps an unknown tool outcome out of automatic empty-answer recovery", () => {
     const parts = [
       {
@@ -438,6 +462,8 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       },
     ];
+
+    expect(hasUncertainProviderToolOutcome(parts)).toBe(false);
 
     expect(
       shouldRetryAgentLongWithFallback(parts, {

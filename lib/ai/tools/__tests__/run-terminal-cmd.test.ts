@@ -2135,15 +2135,38 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         interactive: false,
         timeout: 5,
       })) as {
-        result: { output: string; error?: string; exitCode?: number | null };
+        result: {
+          output: string;
+          error?: string;
+          exitCode?: number | null;
+          executionOutcome?: string;
+        };
       };
       expect(run).toHaveBeenCalledTimes(1);
       expect(result.result.exitCode).toBeNull();
+      expect(result.result.executionOutcome).toBe("unknown");
       expect(result.result.error).toContain("Do not rerun");
       if (!background)
         expect(result.result.output).toContain("already started");
     },
   );
+
+  test("preserves an unknown execution outcome from an unexpected transport failure", async () => {
+    const { context, sandboxManager } = makeContext({ sandbox: null });
+    sandboxManager.getSandbox.mockRejectedValueOnce(
+      Object.assign(new Error("transport failed"), {
+        executionOutcome: "unknown",
+      }),
+    );
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bounded command",
+      brief: "test transport failure",
+      is_background: false,
+      interactive: false,
+      timeout: 5,
+    })) as { result: { executionOutcome?: string } };
+    expect(result.result.executionOutcome).toBe("unknown");
+  });
 
   test.each([false, true])(
     "saves large unknown-outcome output with a closed notification stream: %s",
