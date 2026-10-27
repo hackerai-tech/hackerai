@@ -1001,11 +1001,11 @@ const ChatInputContent = ({
             type="button"
             onMouseDown={(e) => e.preventDefault()}
             onClick={selectGoal}
-            className="order-1 mb-2 flex w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted p-3 text-left hover:bg-accent"
+            className="order-1 mb-2 flex min-h-10 w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted px-3 py-1.5 text-left hover:bg-accent"
           >
             <GoalTargetIcon className="size-4 shrink-0" />
-            <span>Goal</span>
-            <span className="text-sm text-muted-foreground">
+            <span className="shrink-0">Goal</span>
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
               Set a goal to keep pursuing
             </span>
           </button>
