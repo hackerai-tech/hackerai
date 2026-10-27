@@ -37,24 +37,19 @@ beforeEach(() => {
 afterEach(() => jest.useRealTimers());
 
 it("only permits recovery for this run's already connected private browser", async () => {
-  const { sessions, run, read } = await owner();
+  const { sessions, run } = await owner();
   mockQuery.mockResolvedValue({ runActive: true, state: "agent" });
   run.mockResolvedValue({
     exitCode: 0,
-    stdout: JSON.stringify({ data: { connected: true, port: 9223 } }),
+    stdout: JSON.stringify({
+      success: true,
+      data: { connected: true, port: 9223 },
+    }),
   });
   await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(true);
-  expect(read).toHaveBeenCalledWith(
-    expect.stringMatching(/\/active-session$/),
-    expect.objectContaining({ user: "root" }),
-  );
   expect(run).toHaveBeenLastCalledWith(
-    expect.stringContaining(
-      'test -S "$AGENT_BROWSER_SOCKET_DIR/$AGENT_BROWSER_SESSION.sock"',
-    ),
-    expect.objectContaining({
-      envs: expect.objectContaining({ AGENT_BROWSER_SESSION: "default" }),
-    }),
+    expect.stringContaining("'status' '/dev/shm/hackerai-browser-"),
+    expect.objectContaining({ user: "root", timeoutMs: 5000 }),
   );
 });
 
@@ -66,19 +61,22 @@ it.each([
 ])("does not recover a missing or disconnected stream: %j", async (data) => {
   const { sessions, run } = await owner();
   mockQuery.mockResolvedValue({ runActive: true });
-  run.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ data }) });
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({ success: true, data }),
+  });
   await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
 });
 
 it("does not inspect another owner's browser or reopen a closed one", async () => {
-  const { sessions, run, read } = await owner();
+  const { sessions, run } = await owner();
   mockQuery.mockResolvedValue({ runActive: false });
   await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
-  expect(read).not.toHaveBeenCalled();
-  mockQuery.mockResolvedValue({ runActive: true });
-  read.mockRejectedValue(new Error("active session removed"));
-  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
   expect(run).toHaveBeenCalledTimes(1); // preparation only
+  mockQuery.mockResolvedValue({ runActive: true });
+  run.mockRejectedValue(new Error("active session removed"));
+  await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(false);
+  expect(run).toHaveBeenCalledTimes(2);
 });
 
 it("stops a pending recovery probe without admitting a wait", async () => {

@@ -128,6 +128,7 @@ it.each([
   "The page is open. **Handing control to you now** — use Take control.",
   "The page is open.\nHanding browser control over to you right now: click Take control.",
   "I'll wait for you to take control. Choose Send and continue when done.",
+  "I’ll wait for you to take control. Choose Send and continue when done.",
   "The browser is now ready for you to take control.",
 ])(
   "recovers an immediate declaration with case and punctuation: %s",
@@ -155,6 +156,7 @@ it.each([
   "I am not handing control over now.",
   "> Handing control over now. Take control in the sidebar.",
   "```text\nHanding control over now.\n```",
+  "```text\nHanding control over now.",
   'The phrase "Handing control over now" describes the button.',
 ])(
   "leaves informational, future, negated and quoted text alone: %s",
@@ -168,6 +170,7 @@ it.each([
 it.each([
   "Explain how the browser works.",
   "Do not wait for me to take control.",
+  "Don’t wait for me to take control.",
   "Don't call browser_handoff. Just describe it.",
   "I don't want to take control.",
   'Explain the text "take control".',
@@ -195,6 +198,7 @@ it.each([
     input: "{}",
   },
   { type: "tool-input-start", id: "partial", toolName: "browser_handoff" },
+  { type: "tool-input-delta", id: "partial", delta: "{" },
   { type: "error", error: new Error("provider failed") },
 ])("does not duplicate or replay a tool/error output: $type", async (part) => {
   const { output, canRecover } = await parts(promise, { extra: [part] });

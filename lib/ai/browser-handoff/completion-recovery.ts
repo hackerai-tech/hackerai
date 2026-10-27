@@ -20,7 +20,9 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n")
-    .replace(/```[\s\S]*?```|^\s*>.*$|"[^"\n]*"|“[^”\n]*”/gm, "");
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/```[\s\S]*?(?:```|$)/g, "")
+    .replace(/^\s*>.*$|"[^"\n]*"|“[^”\n]*”/gm, "");
   if (
     /\b(?:don't|do not|never|no need to)\s+(?:(?:want|need)(?: you)? to\s+)?(?:wait|hand\s*over|handoff|call\s+browser_handoff|take\s+(?:control|over))\b/i.test(
       text,
@@ -47,7 +49,9 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
 
 function promisedImmediateHandoff(text: string): boolean {
   const prose = text
-    .replace(/```[\s\S]*?```|^\s*>.*$/gm, "")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/```[\s\S]*?(?:```|$)/g, "")
+    .replace(/^\s*>.*$/gm, "")
     .replace(/\*\*|__/g, "");
   return [
     /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i,
@@ -96,11 +100,7 @@ export function recoverBrowserHandoffCompletion(
               async transform(part, controller) {
                 if (part.type === "text-delta")
                   text = (text + part.delta).slice(-4000);
-                if (
-                  part.type === "tool-input-start" ||
-                  part.type === "tool-call" ||
-                  part.type === "error"
-                )
+                if (part.type.startsWith("tool-") || part.type === "error")
                   hasToolOrError = true;
                 if (
                   part.type === "finish" &&

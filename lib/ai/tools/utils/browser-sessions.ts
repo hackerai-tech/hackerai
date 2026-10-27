@@ -80,27 +80,12 @@ export class BrowserSessions {
           signal,
         );
         if (!state?.runActive) continue;
-        const name = (
-          await withCancellation(
-            session.sandbox.files.read(`${session.directory}/active-session`, {
-              user: "root",
-              requestTimeoutMs: 8_000,
-            }),
-            signal,
-          )
-        ).trim();
-        if (!/^[^/\u0000\r\n]{1,80}$/.test(name)) return false;
         const result = await withCancellation(
           session.sandbox.commands.run(
-            'test -S "$AGENT_BROWSER_SOCKET_DIR/$AGENT_BROWSER_SESSION.sock" && agent-browser --json stream status',
+            browserSessionCommand("status", session.directory, this.expiresAt),
             {
               ...buildSandboxCommandOptions(session.sandbox),
-              envs: {
-                AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-                AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-                AGENT_BROWSER_SESSION: name,
-              },
-              timeoutMs: 7_000,
+              timeoutMs: 5_000,
             },
           ),
           signal,
@@ -111,7 +96,8 @@ export class BrowserSessions {
         return (
           !this.closed &&
           !signal?.aborted &&
-          data.connected !== false &&
+          parsed.success === true &&
+          data.connected === true &&
           Number.isInteger(data.port) &&
           data.port > 0 &&
           data.port <= 65535
