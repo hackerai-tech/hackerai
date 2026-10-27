@@ -870,7 +870,9 @@ const ChatInputContent = ({
         className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
-        <div className="flex min-h-0 flex-col overflow-y-auto">
+        {/* Reserve the header, textarea/action row and bottom padding before
+            scrolling notices, queued messages and attachment previews. */}
+        <div className="flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto">
           {isOffline && (
             <div
               role="status"
