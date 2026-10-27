@@ -368,7 +368,9 @@ export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
   parts.some(
     (part) =>
       isToolPart(part) &&
-      (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part)),
+      (hasUnknownExecutionOutcome(part) ||
+        (!isCompletedToolPart(part) &&
+          !isRestartableInterruptedToolInput(part))),
   );
 
 export const PROVIDER_EMPTY_RESPONSE_MESSAGE =

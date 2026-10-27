@@ -463,6 +463,8 @@ describe("shouldRetryAgentLongWithFallback", () => {
       },
     ];
 
+    expect(hasUncertainProviderToolOutcome(parts)).toBe(false);
+
     expect(
       shouldRetryAgentLongWithFallback(parts, {
         hasTerminalProviderStreamError: true,
