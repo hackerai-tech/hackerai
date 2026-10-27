@@ -27,6 +27,52 @@ describe("auxiliary vision", () => {
     jest.useRealTimers();
   });
 
+  it.each([
+    [503, "provider_5xx"],
+    [400, "provider_4xx"],
+    [undefined, "unknown"],
+    ["PRIVATE_STATUS", "unknown"],
+  ] as const)(
+    "records bounded provider diagnostics for status %s without changing the failure",
+    async (statusCode, category) => {
+      const error = new Error("PRIVATE_PROVIDER_MESSAGE", {
+        cause: Object.assign(new Error("PRIVATE_CAUSE"), {
+          statusCode,
+          responseBody: "PRIVATE_RESPONSE_BODY",
+          url: "https://private.invalid/image",
+          requestBodyValues: { image: "PRIVATE_IMAGE" },
+        }),
+      });
+      const modelRunner = jest.fn().mockRejectedValue(error);
+      await expect(
+        describeImageWithAuxiliaryVision({
+          image: "PRIVATE_IMAGE",
+          filename: "PRIVATE_FILENAME",
+          mediaType: "image/png",
+          source: "attachment",
+          modelRunner,
+          canRetry: () => false,
+        }),
+      ).rejects.toBe(error);
+      expect(modelRunner).toHaveBeenCalledTimes(1);
+      const warnings = (console.warn as jest.Mock).mock.calls.map(([line]) =>
+        JSON.parse(String(line)),
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        event: "auxiliary_vision_description_failed",
+        provider_error_category: category,
+        failure_reason: "provider_error",
+        attempt: 1,
+        will_retry: false,
+      });
+      if (typeof statusCode === "number")
+        expect(warnings[0].provider_status_code).toBe(statusCode);
+      else expect(warnings[0]).not.toHaveProperty("provider_status_code");
+      expect(JSON.stringify(warnings)).not.toMatch(/PRIVATE|private\.invalid/);
+    },
+  );
+
   it("uses MiniMax only for the final vision-summary recovery", () => {
     expect(AUXILIARY_VISION_PROVIDER_OPTIONS).toEqual({
       openrouter: {

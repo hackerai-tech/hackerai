@@ -12,6 +12,7 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
   extractErrorDetails,
   getProviderErrorCategory,
+  getProviderStatusCode,
   isRetriableProviderStreamDisconnectError,
 } from "@/lib/utils/error-utils";
 
@@ -327,7 +328,9 @@ export async function describeImageWithAuxiliaryVision({
         : timeoutController.signal.aborted
           ? new AuxiliaryVisionTimeoutError(timeoutMs, error)
           : error;
-      const category = getProviderErrorCategory(extractErrorDetails(failure));
+      const details = extractErrorDetails(failure);
+      const category = getProviderErrorCategory(details);
+      const providerStatusCode = getProviderStatusCode(details);
       const willRetry =
         attempt === 0 &&
         !abortSignal?.aborted &&
@@ -352,6 +355,10 @@ export async function describeImageWithAuxiliaryVision({
           duration_ms: Date.now() - startedAt,
           attempt: attempt + 1,
           will_retry: willRetry,
+          provider_error_category: category,
+          ...(providerStatusCode && {
+            provider_status_code: providerStatusCode,
+          }),
           failure_reason: abortSignal?.aborted
             ? "caller_aborted"
             : category === "timeout"
