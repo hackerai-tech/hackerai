@@ -9,10 +9,15 @@ function daemon(
     directory?: string;
     invalidPath?: string;
     action?: string;
-    uid?: number;
+    unownedPath?: string;
     name?: string;
   } = {},
 ) {
+  const socketPath = path.join(
+    options.directory ?? directory,
+    "sockets",
+    `${options.name ?? "default"}.sock`,
+  );
   const socket = new EventEmitter() as EventEmitter & {
     write: jest.Mock;
     destroy: jest.Mock;
@@ -32,9 +37,10 @@ function daemon(
       if (name === "node:fs")
         return {
           lstatSync: (file: string) => ({
-            uid: options.uid ?? 1000,
-            isDirectory: () => file !== options.invalidPath,
-            isSocket: () => file !== options.invalidPath,
+            uid: file === options.unownedPath ? 0 : 1000,
+            isDirectory: () =>
+              file !== socketPath && file !== options.invalidPath,
+            isSocket: () => file === socketPath && file !== options.invalidPath,
           }),
         };
       throw new Error("Unexpected process or module access");
@@ -125,7 +131,9 @@ it.each([
 it.each([
   { directory: "/tmp/hackerai-browser-owned" },
   { action: "open" },
-  { uid: 0 },
+  { unownedPath: directory },
+  { unownedPath: directory + "/sockets" },
+  { unownedPath: directory + "/sockets/default.sock" },
   { name: "../escape" },
   { name: "a".repeat(81) },
   { name: "" },
