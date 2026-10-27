@@ -8,6 +8,7 @@ on:
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
+      - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
       - "pnpm-lock.yaml"
       - "jest.config.js"
@@ -19,6 +20,7 @@ on:
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
+      - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
       - "pnpm-lock.yaml"
       - "jest.config.js"
@@ -45,3 +47,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify real Windows file metadata commands
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts --runInBand --ci
+      - name: Verify Windows shell discovery
+        run: pnpm exec jest packages/local/src/__tests__/windows-shell-discovery.test.ts --runInBand --ci

@@ -625,6 +625,33 @@ export const buildAgentToolApprovalRequester = ({
         };
       }
 
+      // Claiming the shared approval slot may checkpoint for longer than the
+      // free-run lease. Settle and release before that wait, not only before
+      // waiting for the user's response.
+      if (beforeSuspend) {
+        try {
+          await beforeSuspend();
+        } catch (error) {
+          metadata.set("approvalStatus", "pre_suspend_check_failed");
+          triggerLogger.warn(
+            "[agent-long] approval suspension preparation failed",
+            {
+              chatId,
+              userId,
+              runId,
+              approvalId,
+              error_name: error instanceof Error ? error.name : "UnknownError",
+            },
+          );
+          onPostWaitAuthorizationDenied();
+          return {
+            approved: false,
+            approvalId,
+            reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
+          };
+        }
+      }
+
       approvalPendingMarked = await claimApprovalSlot(
         buildPendingApprovalRequest({
           approvalId,
@@ -685,29 +712,6 @@ export const buildAgentToolApprovalRequester = ({
       });
 
       const session = triggerSessions.open(approvalSessionId);
-      if (beforeSuspend) {
-        try {
-          await beforeSuspend();
-        } catch (error) {
-          metadata.set("approvalStatus", "pre_suspend_check_failed");
-          triggerLogger.warn(
-            "[agent-long] approval suspension preparation failed",
-            {
-              chatId,
-              userId,
-              runId,
-              approvalId,
-              error_name: error instanceof Error ? error.name : "UnknownError",
-            },
-          );
-          onPostWaitAuthorizationDenied();
-          return {
-            approved: false,
-            approvalId,
-            reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
-          };
-        }
-      }
       let approvalWaitCounted = false;
       while (!signal.aborted) {
         const approvalWaitStartedAt = Date.now();

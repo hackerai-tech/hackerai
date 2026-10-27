@@ -63,6 +63,53 @@ export class BrowserSessions {
     return !!this.handoffScope;
   }
 
+  /** A completion repair may only wait on this owner's already-live browser. */
+  async canRecoverHumanHandoff(signal?: AbortSignal): Promise<boolean> {
+    if (!this.handoffScope || this.closed || Date.now() >= this.expiresAt)
+      return false;
+    const scope = this.handoffScope;
+    for (const session of [...this.sessions.values()].reverse()) {
+      if (!session.registered || !isE2BSandbox(session.sandbox)) continue;
+      try {
+        const state = await withCancellation(
+          getConvexClient().query(api.browserHandoffs.getForBackend, {
+            serviceKey: scope.serviceKey,
+            userId: scope.userId,
+            sessionId: session.sessionId,
+          }),
+          signal,
+        );
+        if (!state?.runActive) continue;
+        const result = await withCancellation(
+          session.sandbox.commands.run(
+            browserSessionCommand("status", session.directory, this.expiresAt),
+            {
+              ...buildSandboxCommandOptions(session.sandbox),
+              timeoutMs: 5_000,
+            },
+          ),
+          signal,
+        );
+        if (result.exitCode !== 0) return false;
+        const parsed = JSON.parse(result.stdout);
+        const data = parsed.data ?? parsed;
+        return (
+          !this.closed &&
+          !signal?.aborted &&
+          parsed.success === true &&
+          data.connected === true &&
+          Number.isInteger(data.port) &&
+          data.port > 0 &&
+          data.port <= 65535
+        );
+      } catch {
+        // Missing ownership, socket or stream is not permission to reopen it.
+        return false;
+      }
+    }
+    return false;
+  }
+
   /** Retry failed setup on the next call, retaining every attempt for cleanup. */
   async prepare(sandbox: AnySandbox): Promise<Record<string, string>> {
     if (this.closed) {

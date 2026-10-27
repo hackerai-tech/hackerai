@@ -16,6 +16,40 @@ import {
 import type { UIMessage } from "ai";
 
 describe("prepareProviderDisconnectContinuation", () => {
+  it.each([
+    [[], "missing_assistant"],
+    [
+      [
+        {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "private output" }],
+        },
+      ],
+      "missing_step_boundary",
+    ],
+  ])(
+    "explains a rejected transcript without exposing its contents (%s)",
+    (messages, reason) => {
+      const onRejected = jest.fn();
+      const options = { onRejected };
+
+      expect(
+        prepareProviderDisconnectContinuation(messages as UIMessage[], options),
+      ).toBeUndefined();
+      expect(onRejected.mock.calls).toEqual([[reason]]);
+    },
+  );
+
+  it("keeps the existing rejection when diagnostic collection throws", () => {
+    const options = {
+      onRejected: () => {
+        throw new Error("diagnostics unavailable");
+      },
+    };
+    expect(prepareProviderDisconnectContinuation([], options)).toBeUndefined();
+  });
+
   it("leaves provider-executed pending calls under provider ownership", () => {
     const pending = {
       type: "tool-search",
@@ -111,7 +145,7 @@ describe("prepareProviderDisconnectContinuation", () => {
     expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
   });
 
-  it("preserves tools completed before an Abliteration error even without a partial tail", () => {
+  it("continues after a completed tool without requiring a discarded suffix", () => {
     const messages = [
       {
         id: "assistant",
@@ -128,16 +162,15 @@ describe("prepareProviderDisconnectContinuation", () => {
         ],
       },
     ] as UIMessage[];
-    expect(prepareProviderDisconnectContinuation(messages)).toBeUndefined();
+    const onRejected = jest.fn();
     expect(
-      prepareProviderDisconnectContinuation(messages, {
-        allowCompletedTail: true,
-      }),
+      prepareProviderDisconnectContinuation(messages, { onRejected }),
     ).toMatchObject({
       messages,
       removedPartCount: 0,
       preservedCompletedToolCount: 1,
     });
+    expect(onRejected).not.toHaveBeenCalled();
   });
 
   it("removes an entirely incomplete first assistant step", () => {

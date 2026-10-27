@@ -51,6 +51,15 @@ the E2B SDK. They do not overwrite or reuse `E2B_API_KEY`. Set
 `E2B_EU_TEMPLATE` only when the EU template alias should differ from
 `terminal-agent-sandbox-dev` or `terminal-agent-sandbox`.
 
+Builds publish both `default` and `v13` tags. New workspace creation uses the
+exact resolved build and records `v13` only when that build carries the `v13`
+tag. An older or rolled-back default continues creating `v12` workspaces.
+Deploying app code alone does not upgrade a template. Configured template tags
+are respected.
+Existing workspaces retain their identity, generation and files. Both `v12`
+and `v13` remain eligible for guarded recovery, and Agent browser guidance
+follows the attached workspace rather than the latest template.
+
 ## Upgrading envd and existing workspaces
 
 E2B provisions the guest agent, envd, during a template rebuild. The installed

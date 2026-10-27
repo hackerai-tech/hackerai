@@ -769,3 +769,45 @@ it.each(["confirmed", "executing", "failed"] as const)(
     expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
   },
 );
+
+it.each(["v12", "v13"])(
+  "offers and executes consent-bound recovery for %s",
+  async (version) => {
+    const versionTarget = { ...target, sandboxVersion: version };
+    const versionInfo = {
+      ...info,
+      metadata: { ...info.metadata, sandboxVersion: version },
+    };
+    const versionConsent = { ...consent, target: versionTarget };
+    jest.mocked(readFailures).mockResolvedValue(versionTarget);
+    jest.mocked(Sandbox.getInfo).mockResolvedValue(versionInfo as never);
+    jest.mocked(Sandbox.list).mockReturnValue({
+      hasNext: false,
+      nextItems: async () => [versionInfo],
+    } as never);
+    jest.mocked(offerConsent).mockResolvedValue(versionConsent);
+    expect(await recoveryView("owner")).toMatchObject({ status: "offered" });
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...versionConsent, status: "confirmed" });
+    await expect(
+      executeCustomerRecovery("owner", token, "us-east-1"),
+    ).resolves.toEqual({ status: "verified" });
+    expect(recoverE2BDiskOnly).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedSandboxVersion: version }),
+      expect.anything(),
+    );
+  },
+);
+
+it.each([undefined, "v11", "v14"])(
+  "does not offer recovery for unsupported generation %s",
+  async (version) => {
+    jest
+      .mocked(readFailures)
+      .mockResolvedValue({ ...target, sandboxVersion: version } as never);
+    expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+    expect(offerConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);

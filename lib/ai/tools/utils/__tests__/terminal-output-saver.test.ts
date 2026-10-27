@@ -544,6 +544,35 @@ describe("saveFullOutputToFile", () => {
     warnSpy.mockRestore();
   });
 
+  it.each([true, false])(
+    "explains unavailable private storage (Desktop=%s) without unsafe fallback",
+    async (isDesktop) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo" }),
+        supportsCommandStdin: () => false,
+        getConnectionInfo: () => ({ isDesktop }),
+      };
+      const terminalWriter = jest.fn(async () => undefined);
+      const message = await saveTruncatedOutput({
+        handler: {
+          wasTruncated: () => true,
+          getFullOutput: () => "full output",
+        } as any,
+        sandbox: sandbox as any,
+        terminalWriter,
+      });
+      expect(message).toContain(
+        isDesktop
+          ? "restart or update the Desktop app"
+          : "private-storage startup error",
+      );
+      expect(message).toContain("Do not rerun the original command unchanged");
+      expect(terminalWriter).toHaveBeenCalledWith(message);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    },
+  );
+
   it("removes saved outputs beyond the per-chat retention limit", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
     const listedFiles = [
@@ -619,3 +648,15 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
     );
   });
 });
+
+it.each([
+  ["bash: syntax error near unexpected token PRIVATE", "shell_syntax"],
+  ["base64: command not found PRIVATE", "missing_utility"],
+])(
+  "classifies shell diagnostics without including content: %s",
+  (message, category) => {
+    expect(classifyTerminalOutputPersistenceFailure(new Error(message))).toBe(
+      category,
+    );
+  },
+);

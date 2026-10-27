@@ -7,6 +7,7 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { browserBridgeCommand } from "./bridge-program";
+import { browserDaemonCommand } from "./daemon-program";
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
@@ -89,14 +90,11 @@ export async function getPrivateStreamPort(
   browserSessionName: string,
 ) {
   const result = await sandbox.commands.run(
-    "agent-browser --json stream status",
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "stream_status",
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
@@ -271,14 +269,14 @@ export async function captureBrowserFrame(
     capturedAt = Date.now();
     try {
       const screenshot = await sandbox.commands.run(
-        `agent-browser --json --screenshot-format jpeg --screenshot-quality 65 screenshot '${path}'`,
+        browserDaemonCommand(session.directory, browserSessionName, {
+          action: "screenshot",
+          path,
+          format: "jpeg",
+          quality: 65,
+        }),
         {
           ...buildSandboxCommandOptions(sandbox),
-          envs: {
-            AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-            AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-            AGENT_BROWSER_SESSION: browserSessionName,
-          },
           timeoutMs: 8_000,
         },
       );
@@ -336,20 +334,28 @@ export async function resizeBrowserViewport(
   )
     throw new Error("Invalid browser viewport");
   const result = await sandbox.commands.run(
-    `agent-browser set viewport ${width} ${height} 1`,
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "viewport",
+      width,
+      height,
+      deviceScaleFactor: 1,
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
   if (result.exitCode !== 0)
     throw new BrowserPreviewUnavailable("disconnected");
-  return captureBrowserFrame(sandbox, session, browserSessionName, true);
+  const frame = await captureBrowserFrame(
+    sandbox,
+    session,
+    browserSessionName,
+    true,
+  );
+  // The fresh screenshot uses the new viewport, but the stream can replay
+  // metadata from before the resize. Keep input coordinates in the new space.
+  return { ...frame, width, height };
 }
 
 export async function sendBrowserInput(
