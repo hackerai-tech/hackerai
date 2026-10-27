@@ -493,6 +493,35 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("allows a slow successful probe its original startup budget", async () => {
+    jest.useFakeTimers();
+    const original = mockInvokeHandler;
+    let probes = 0;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request") {
+        probes++;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      const started = bridge.start();
+      await jest.advanceTimersByTimeAsync(2001);
+      await started;
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({ files: true }),
+        }),
+      );
+      expect(probes).toBe(1);
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
   it("does not block terminal startup on a hung file probe", async () => {
     jest.useFakeTimers();
     const original = mockInvokeHandler;
