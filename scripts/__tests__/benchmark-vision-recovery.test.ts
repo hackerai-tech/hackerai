@@ -1,5 +1,3 @@
-jest.mock("next/dist/server/image-optimizer", () => ({ getSharp: jest.fn() }));
-
 import { scoreVisionAnswer } from "../benchmark-vision-recovery";
 
 describe("vision benchmark answer validation", () => {
