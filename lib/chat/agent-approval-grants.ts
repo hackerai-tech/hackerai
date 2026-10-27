@@ -46,31 +46,6 @@ type AgentApprovalGrantSelection = Pick<
 const serializeCommandScope = (argv: string[]): string =>
   JSON.stringify(["agent-command-prefix-v2", argv]);
 
-// These deletion tools always require fresh approval. This is a bounded
-// exclusion, not a claim that every other executable is harmless: users must
-// still explicitly approve the displayed scope for other tools.
-const NON_REUSABLE_DELETION_COMMANDS = new Set([
-  "rm",
-  "unlink",
-  "rmdir",
-  "shred",
-  "del",
-  "erase",
-  "rd",
-  "remove-item",
-  "ri",
-]);
-
-const permitsCommandReuse = (executable: string): boolean => {
-  const basename = executable
-    .replace(/\\/g, "/")
-    .split("/")
-    .pop()
-    ?.toLowerCase()
-    .replace(/\.(exe|com|cmd|bat)$/, "");
-  return !!basename && !NON_REUSABLE_DELETION_COMMANDS.has(basename);
-};
-
 const SHELL_CONTROL_CHARACTERS = new Set([
   ";",
   "|",
@@ -347,10 +322,7 @@ const deriveTerminalCommandGrant = (
     approvedArgv.length <= argv.length &&
     approvedArgv.every((argument, index) => argument === argv[index]);
 
-  return executable &&
-    permitsCommandReuse(executable) &&
-    argv &&
-    prefixMatchesCommand
+  return executable && argv && prefixMatchesCommand
     ? {
         kind: "terminal_command",
         targetPrefix: serializeCommandScope(approvedArgv),
@@ -430,7 +402,6 @@ export const matchesAgentApprovalTargetGrant = (
     grant.kind === "terminal_command" &&
     (grant.argv.length === 0 ||
       grant.executable !== grant.argv[0] ||
-      !permitsCommandReuse(grant.executable) ||
       grant.targetPrefix !== serializeCommandScope(grant.argv))
   )
     return false;

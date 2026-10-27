@@ -302,22 +302,35 @@ describe("AgentApprovalPrompt", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps deletion available for one-time approval without offering reuse", async () => {
+  it("offers deletion reuse with the same explicit scope disclosure", async () => {
     render(
       <AgentApprovalPrompt
         request={{ ...request, target: "rm scratch.txt", prefixRule: ["rm"] }}
         onStop={mockOnStop}
       />,
     );
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "More approval options" }),
+      { key: "ArrowDown", code: "ArrowDown" },
+    );
     expect(
-      screen.queryByRole("button", { name: "More approval options" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+      await screen.findByText(
+        'Commands starting with ["rm"], with any following arguments',
+      ),
+    ).toBeVisible();
+    fireEvent.click(
+      await screen.findByRole("menuitem", {
+        name: 'Allow this conversation: Commands starting with ["rm"], with any following arguments',
+      }),
+    );
     await waitFor(() =>
       expect(mockSendToolApproval).toHaveBeenCalledWith({
         approvalId: "approval-1",
         toolCallId: "tool-1",
         decision: "approve",
+        grant: "target_prefix",
+        targetKind: "terminal_command",
+        targetPrefix: '["agent-command-prefix-v2",["rm"]]',
       }),
     );
   });

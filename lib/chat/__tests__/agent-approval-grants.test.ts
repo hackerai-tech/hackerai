@@ -53,17 +53,23 @@ describe("agent approval grants", () => {
     "RM.EXE",
     "/usr/bin/shred",
   ])(
-    "requires fresh approval for deletion via %s, including old grants",
+    "allows explicitly approved deletion prefixes for %s but rejects old grants",
     (executable) => {
       const target = `${executable} scratch.txt`;
+      const pending = request("terminal_execute", target, [executable]);
+      const grant = deriveAgentApprovalTargetGrant(pending)!;
+      expect(grant).toMatchObject({
+        kind: "terminal_command",
+        executable,
+        argv: [executable],
+      });
       expect(
-        deriveAgentApprovalTargetGrant(
-          request("terminal_execute", target, [executable]),
-        ),
-      ).toBeNull();
-      expect(
-        deriveAgentApprovalTargetGrant(request("terminal_execute", target)),
-      ).toBeNull();
+        deriveApprovedAgentTargetGrant(pending, {
+          grant: "target_prefix",
+          targetKind: grant.kind,
+          targetPrefix: grant.targetPrefix,
+        }),
+      ).toEqual(grant);
       expect(
         matchesAgentApprovalTargetGrant(
           request("terminal_execute", `${executable} important.txt`),
@@ -78,17 +84,9 @@ describe("agent approval grants", () => {
       expect(
         matchesAgentApprovalTargetGrant(
           request("terminal_execute", `${executable} important.txt`),
-          {
-            kind: "terminal_command",
-            executable,
-            argv: [executable],
-            targetPrefix: JSON.stringify([
-              "agent-command-prefix-v2",
-              [executable],
-            ]),
-          },
+          grant,
         ),
-      ).toBe(false);
+      ).toBe(true);
     },
   );
 
