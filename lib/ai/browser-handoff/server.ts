@@ -363,8 +363,11 @@ export async function sendBrowserInput(
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const handle = await sandbox.commands.run(
     browserBridgeCommand(port, "input"),
     {

@@ -18,6 +18,7 @@ let sequence = 0;
 let expectedInput = 1;
 let lastInputBody = '';
 let lastSent = 0;
+let heldMouse;
 const socket = new WebSocket('ws://127.0.0.1:' + config.port);
 const root = config.root;
 function valid() {
@@ -34,6 +35,11 @@ function stop() {
   clearInterval(timer);
   if (viewer) viewer.end();
   server.close();
+  if (heldMouse && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({type: 'input_mouse', eventType: 'mouseReleased',
+      x: heldMouse.x, y: heldMouse.y, button: 'left'}));
+    heldMouse = undefined;
+  }
   // The close handshake follows accepted input on the same ordered socket.
   // Resume waits for this acknowledgement before capturing/unpausing.
   socket.close();
@@ -112,7 +118,17 @@ const server = http.createServer(async (req, res) => {
     if (parsed.sequence !== expectedInput || socket.bufferedAmount > 65536) {
       reply(res, 409, {}); return;
     }
-    for (const event of events) socket.send(JSON.stringify(event));
+    for (const event of events) {
+      socket.send(JSON.stringify(event));
+      if (event.type === 'input_mouse') {
+        if (event.eventType === 'mousePressed' ||
+            (event.eventType === 'mouseMoved' && event.button === 'left')) {
+          heldMouse = {x: event.x, y: event.y};
+        } else if (event.eventType === 'mouseReleased' || event.eventType === 'mouseMoved') {
+          heldMouse = undefined;
+        }
+      }
+    }
     expectedInput++;
     lastInputBody = body;
     reply(res, 200, {ok: true});

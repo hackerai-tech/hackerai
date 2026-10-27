@@ -1,5 +1,6 @@
 type Input =
-  | { kind: "click" | "move" | "down" | "up"; x: number; y: number }
+  | { kind: "click" | "down" | "up"; x: number; y: number }
+  | { kind: "move"; x: number; y: number; buttons?: 0 | 1 }
   | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
   | { kind: "key"; key: string; code: string; modifiers?: number }
   | { kind: "text"; text: string };
@@ -91,7 +92,24 @@ export function createBrowserInputNormalizer() {
       const x = Math.round(input.x as number);
       const y = Math.round(input.y as number);
       if (input.kind === "move") {
-        return [{ type: "input_mouse", eventType: "mouseMoved", x, y }];
+        if (
+          input.buttons !== undefined &&
+          input.buttons !== 0 &&
+          input.buttons !== 1
+        )
+          return null;
+        // Both supported stream versions forward `button` to CDP, but omit
+        // its optional `buttons` bitmask. Chrome derives the held state from
+        // this field when the bitmask is absent.
+        return [
+          {
+            type: "input_mouse",
+            eventType: "mouseMoved",
+            x,
+            y,
+            button: input.buttons === 1 ? "left" : "none",
+          },
+        ];
       }
       if (input.kind === "down" || input.kind === "up") {
         return [

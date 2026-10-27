@@ -208,10 +208,28 @@ export async function POST(
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // A previous grant may have disconnected while dragging. Drain its
+      // accepted input and release the pointer before exposing a new grant.
+      await stopBrowserRelays(sandbox, session);
       const streamPort = await getPrivateStreamPort(
         sandbox,
         session,
         body.browserSessionName,
+      );
+      await sendBrowserInput(
+        sandbox,
+        session,
+        body.browserSessionName,
+        [
+          {
+            type: "input_mouse",
+            eventType: "mouseReleased",
+            x: 0,
+            y: 0,
+            button: "left",
+          },
+        ],
+        streamPort,
       );
       // Both jobs use the same paused browser. Drain both before rollback so
       // a late relay cannot outlive a failed capture and reopen revoked input.
@@ -326,6 +344,17 @@ export async function POST(
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // Also cover the HTTP fallback and a vanished relay. The resuming state
+      // excludes new input until the pointer is released and a frame is fresh.
+      await sendBrowserInput(sandbox, session, body.browserSessionName, [
+        {
+          type: "input_mouse",
+          eventType: "mouseReleased",
+          x: 0,
+          y: 0,
+          button: "left",
+        },
+      ]);
       const frame = await captureBrowserFrame(
         sandbox,
         session,

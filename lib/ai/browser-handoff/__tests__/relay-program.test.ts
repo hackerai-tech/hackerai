@@ -195,6 +195,47 @@ it("preserves input order, rejects arbitrary commands, and deduplicates response
   });
 });
 
+it("forwards held movement across requests and releases a drag before relay shutdown", async () => {
+  expect(
+    (await input({ sequence: 1, inputs: [{ kind: "down", x: 10, y: 20 }] }))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await input({
+        sequence: 2,
+        inputs: [{ kind: "move", x: 40, y: 50, buttons: 1 }],
+      })
+    ).status,
+  ).toBe(200);
+  await writeFile(join(directory, "revoked"), "1");
+  await once(child, "exit");
+  expect(received).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mousePressed",
+      x: 10,
+      y: 20,
+      button: "left",
+      clickCount: 1,
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseMoved",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+  ]);
+});
+
 it.each(["expiry", "browser replacement", "Agent resume", "run cleanup"])(
   "closes frames and rejects further input after %s",
   async (reason) => {

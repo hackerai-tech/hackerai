@@ -580,6 +580,111 @@ it("maps full-screen clicks and scrolling to the displayed browser pixels", asyn
   ]);
 });
 
+function pointer(
+  image: HTMLElement,
+  type: string,
+  x: number,
+  buttons: number,
+  button = 0,
+) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: 150,
+    buttons,
+    button,
+  });
+  Object.defineProperties(event, {
+    pointerId: { value: 7 },
+    pointerType: { value: "mouse" },
+  });
+  fireEvent(image, event);
+}
+
+async function dragImage() {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  const image = screen.getByAltText("Current Agent browser viewport");
+  image.getBoundingClientRect = () =>
+    ({ left: 100, top: 50, width: 400, height: 300 }) as DOMRect;
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  return image;
+}
+
+it("keeps the final held drag movement ahead of release while input is in flight", async () => {
+  let finish!: (value: Response) => void;
+  let pending = true;
+  handleAction = (body) =>
+    body.action === "input" && pending
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  const image = await dragImage();
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 1);
+  });
+  await act(async () => {
+    pointer(image, "pointermove", 300, 1);
+    pointer(image, "pointerup", 400, 0);
+  });
+  expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
+  pending = false;
+  await act(async () => {
+    finish(response({ ok: true }));
+  });
+  const inputs = actions
+    .filter((body) => body.action === "input")
+    .flatMap((body) => body.inputs);
+  expect(inputs).toEqual([
+    { kind: "down", x: 200, y: 200 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "up", x: 600, y: 200 },
+  ]);
+  expect(normalizeBrowserInputBatch(inputs)).toMatchObject([
+    { eventType: "mousePressed", button: "left" },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseReleased", button: "left", x: 600 },
+  ]);
+});
+
+it.each(["pointercancel", "lostpointercapture", "blur"])(
+  "releases a held pointer exactly once after %s",
+  async (reason) => {
+    const image = await dragImage();
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1);
+    });
+    await act(async () => {
+      if (reason === "blur") fireEvent(window, new Event("blur"));
+      else pointer(image, reason, 200, 0);
+      pointer(image, "pointerup", 200, 0);
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "up", x: 200, y: 200 },
+    ]);
+  },
+);
+
+it("does not translate a secondary pointer press into a left-button drag", async () => {
+  const image = await dragImage();
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 2, 2);
+    pointer(image, "pointerup", 200, 0, 2);
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+});
+
 it("batches rapid typing in order and drains the entire burst before resuming", async () => {
   const finish: Array<(value: Response) => void> = [];
   handleAction = (body) =>

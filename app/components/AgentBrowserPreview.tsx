@@ -36,7 +36,8 @@ type BrowserFrame = {
 };
 
 type BrowserInput =
-  | { kind: "move" | "down" | "up"; x: number; y: number }
+  | { kind: "down" | "up"; x: number; y: number }
+  | { kind: "move"; x: number; y: number; buttons?: 0 | 1 }
   | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
   | { kind: "key"; key: string; code: string; modifiers: number }
   | { kind: "text"; text: string };
@@ -128,6 +129,13 @@ export function AgentBrowserPreview({
   const bufferedInputs = useRef<BrowserInput[]>([]);
   const drainingInputs = useRef(false);
   const lastMoveAt = useRef(0);
+  const mouseRef = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  const releaseMouseRef = useRef<(() => void) | null>(null);
   const wheelHandlerRef = useRef<
     ((event: WheelEvent, element: HTMLImageElement) => void) | null
   >(null);
@@ -218,6 +226,8 @@ export function AgentBrowserPreview({
     composingRef.current = false;
     bufferedInputs.current = [];
     drainingInputs.current = false;
+    mouseRef.current = null;
+    touchRef.current = null;
   }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
@@ -480,6 +490,7 @@ export function AgentBrowserPreview({
 
   const resumeAgent = async () => {
     if (!canResume || resumingRef.current) return;
+    releaseMouseRef.current?.();
     resumingRef.current = true;
     const activeGrant = grantRef.current;
     setBusy(true);
@@ -549,16 +560,28 @@ export function AgentBrowserPreview({
 
   const sendInput = (input: BrowserInput) => {
     const activeGrant = grantRef.current;
-    if (!activeGrant || frameStale || resumingRef.current) return;
     if (
-      resizingRef.current &&
-      ["move", "down", "up", "wheel"].includes(input.kind)
+      !activeGrant ||
+      (frameStale && input.kind !== "up") ||
+      resumingRef.current
     )
       return;
-    // Moves are advisory; do not let them delay clicks or keystrokes.
-    if (input.kind === "move" && drainingInputs.current) return;
+    if (resizingRef.current && ["move", "down", "wheel"].includes(input.kind))
+      return;
+    // Hover is advisory. Held movement must survive a slow request, or a drag
+    // becomes a press/release without any displacement. Coalesce only adjacent
+    // movement, never across a press, release, wheel event or keystroke.
+    if (input.kind === "move" && !input.buttons && drainingInputs.current)
+      return;
     const buffer = bufferedInputs.current;
-    buffer.push(input);
+    const previous = buffer.at(-1);
+    if (
+      input.kind === "move" &&
+      previous?.kind === "move" &&
+      previous.buttons === input.buttons
+    )
+      buffer[buffer.length - 1] = input;
+    else buffer.push(input);
     if (drainingInputs.current) return;
     drainingInputs.current = true;
     // Keep one ordered request in flight. Input arriving during its round trip
@@ -608,6 +631,36 @@ export function AgentBrowserPreview({
         }
       });
   };
+
+  const releaseMouse = () => {
+    const mouse = mouseRef.current;
+    mouseRef.current = null;
+    if (!mouse) return;
+    // Flush the final position before release, even if the last pointermove
+    // was throttled or a request was still in flight.
+    if (mouse.moved)
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 });
+    sendInput({ kind: "up", x: mouse.x, y: mouse.y });
+  };
+  useLayoutEffect(() => {
+    releaseMouseRef.current = releaseMouse;
+  });
+  useEffect(() => {
+    const release = () => releaseMouseRef.current?.();
+    const visibility = () => {
+      if (document.hidden) release();
+    };
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    if (frameStale || !human || exitOpen || resizing)
+      releaseMouseRef.current?.();
+  }, [frameStale, human, exitOpen, resizing]);
 
   // Layout follows the visible area, including keyboard occlusion and rotation.
   useEffect(() => {
@@ -985,6 +1038,13 @@ export function AgentBrowserPreview({
               }}
               onPointerDown={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
+                if (
+                  (mouseRef.current &&
+                    mouseRef.current.id !== event.pointerId) ||
+                  (touchRef.current && touchRef.current.id !== event.pointerId)
+                )
+                  return;
                 event.preventDefault();
                 if (event.pointerType === "touch") {
                   setTouchDevice(true);
@@ -1000,11 +1060,14 @@ export function AgentBrowserPreview({
                 keyboardRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
+                releaseMouse();
+                mouseRef.current = { id: event.pointerId, ...xy, moved: false };
                 event.currentTarget.setPointerCapture(event.pointerId);
                 sendInput({ kind: "down", ...xy });
               }}
               onPointerUp={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
                 const xy = point(event);
                 const touch = touchRef.current;
                 if (touch && touch.id === event.pointerId) {
@@ -1013,14 +1076,30 @@ export function AgentBrowserPreview({
                     sendInput({ kind: "up", ...xy });
                   }
                   touchRef.current = null;
-                } else if (xy) sendInput({ kind: "up", ...xy });
-                event.currentTarget.releasePointerCapture(event.pointerId);
+                } else if (mouseRef.current?.id === event.pointerId) {
+                  if (xy) {
+                    const mouse = mouseRef.current;
+                    mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                    Object.assign(mouse, xy);
+                  }
+                  releaseMouse();
+                }
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+                  event.currentTarget.releasePointerCapture(event.pointerId);
               }}
-              onPointerCancel={() => {
-                touchRef.current = null;
+              onPointerCancel={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
+              }}
+              onLostPointerCapture={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
               }}
               onPointerMove={(event) => {
                 const touch = touchRef.current;
+                if (touch && touch.id !== event.pointerId) return;
                 if (touch && touch.id === event.pointerId) {
                   const dx = touch.x - event.clientX,
                     dy = touch.y - event.clientY;
@@ -1038,15 +1117,26 @@ export function AgentBrowserPreview({
                     });
                   return;
                 }
+                const mouse = mouseRef.current;
+                if (mouse && mouse.id !== event.pointerId) return;
+                if (mouse && event.buttons === 0) {
+                  releaseMouse();
+                  return;
+                }
+                const xy = point(event);
+                if (mouse && mouse.id === event.pointerId && xy) {
+                  mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                  Object.assign(mouse, xy);
+                }
                 if (
                   !human ||
                   frameStale ||
-                  Date.now() - lastMoveAt.current < 120
+                  Date.now() - lastMoveAt.current < (mouse ? 16 : 120)
                 )
                   return;
                 lastMoveAt.current = Date.now();
-                const xy = point(event);
-                if (xy) sendInput({ kind: "move", ...xy });
+                if (xy)
+                  sendInput({ kind: "move", ...xy, buttons: mouse ? 1 : 0 });
               }}
               ref={attachWheelListener}
             />
