@@ -484,7 +484,7 @@ export function AgentGoalPanel({
     return (
       <section
         aria-label="Agent goal"
-        className="relative z-10 order-1 flex min-w-0 shrink-0 justify-center py-2"
+        className="relative z-10 order-1 flex min-w-0 shrink-0 justify-center py-1.5"
       >
         <Popover open={mobileOpen} onOpenChange={setMobileOpen}>
           <PopoverTrigger asChild>
@@ -494,10 +494,10 @@ export function AgentGoalPanel({
               aria-label={
                 mobileOpen ? "Hide goal controls" : "Show goal controls"
               }
-              className="flex min-h-11 max-w-full items-center gap-2 rounded-full border bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex min-h-8 max-w-full items-center gap-1.5 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <GoalTargetIcon
-                className={`size-4 shrink-0 ${mobileOpen ? "" : statusColor}`}
+                className={`size-3.5 shrink-0 ${mobileOpen ? "" : statusColor}`}
                 aria-hidden="true"
               />
               <span
