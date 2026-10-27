@@ -48,6 +48,7 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     .split("\n")
     .filter(createProseLineFilter())
     .join("\n")
+    .replace(/`+|\*\*|__/g, "")
     .replace(/^\s*>.*$|"[^"\n]*"|“[^”\n]*”/gm, "");
   if (
     /\b(?:don't|do not|never|no need to)\s+(?:(?:want|need)(?: you)? to\s+)?(?:wait|hand\s*over|handoff|call\s+browser_handoff|take\s+(?:control|over))\b/i.test(
@@ -55,7 +56,13 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     )
   )
     return false;
-  if (!/\b(?:browser_handoff|take\s+control|take\s*over|handoff)\b/i.test(text))
+  // A tool name in an explanation is not an instruction to pause. Match a
+  // direct request clause; inline formatting does not change its intent.
+  if (
+    !/(?:^|[.!?;:,\n]\s*|\b(?:and|then)\s+)\s*(?:[-*]\s+)?(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:(?:call|use|invoke|run)\s+browser_handoff\b|(?:wait(?: here)? for me to\s+(?:click\s+(?:the\s+)?)?|let me\s+|allow me to\s+|i (?:want|need|would like)(?: to)?\s+|i(?:'ll| will| can)\s+(?:click\s+(?:the\s+)?)?|can i\s+)?take\s+(?:control|over)\b|(?:hand\s+over|handoff|hand\s+off)(?:\s+(?:the\s+)?(?:browser|control))?\b|browser\s+handoff\b)/i.test(
+      text,
+    )
+  )
     return false;
   // Never repair a second wait after a real call, including an errored call:
   // its outcome must be handled by the Agent rather than silently retried.

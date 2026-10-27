@@ -266,6 +266,10 @@ it.each([
 
 it.each([
   "Explain how the browser works.",
+  "Explain what `browser_handoff` does.",
+  "Explain what browser_handoff does.",
+  "Describe how to call `browser_handoff`.",
+  "What does `take control` mean?",
   "Do not wait for me to take control.",
   "Don’t wait for me to take control.",
   "Don't call browser_handoff. Just describe it.",
@@ -292,6 +296,32 @@ it.each([
     const { output } = await parts(promise, {
       input: params(example + request),
     });
+    expect(output).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "browser_handoff",
+      }),
+    );
+  },
+);
+
+it.each([
+  "Call `browser_handoff` now.",
+  "Please call browser_handoff.",
+  "Can you use `browser_handoff` now?",
+  "Open the page, then let me take control.",
+  "I want to take control.",
+  "I would like to take control.",
+  "Can I take control?",
+  "Please take control.",
+  "Browser handoff please.",
+  "Hand over the browser now.",
+  "Open the page\n- **WAIT for me to TAKE CONTROL**.",
+  "I will click the Take control button.",
+])(
+  "recognizes an affirmative request despite inline formatting: %s",
+  async (text) => {
+    const { output } = await parts(promise, { input: params(text) });
     expect(output).toContainEqual(
       expect.objectContaining({
         type: "tool-call",
