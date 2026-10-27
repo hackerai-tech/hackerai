@@ -1244,6 +1244,35 @@ it("bounds failed renewals and releases only the lost grant without resuming", a
   expect(actions.some((body) => body.action === "resume")).toBe(false);
 });
 
+it("allows reconnect when queued input fails during a renewal retry", async () => {
+  let failInput!: (cause: Error) => void;
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((_resolve, reject) => {
+          failInput = reject;
+        })
+      : Promise.resolve(
+          body.action === "heartbeat"
+            ? response({ state: "recovery" }, false)
+            : response({ grant: "grant-a", frame }),
+        );
+  await mount();
+  await takeControl();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  await act(async () => {});
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  await act(async () => {
+    failInput(new Error("Input disconnected"));
+  });
+  expect(
+    screen.getByRole("button", { name: "Reconnect control" }),
+  ).toBeEnabled();
+});
+
 it("renews on focus without waiting for the next scheduled heartbeat", async () => {
   await mount();
   await takeControl();

@@ -712,6 +712,7 @@ export function AgentBrowserPreview({
           return;
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError("Browser input disconnected. Reconnect before continuing.");
       })
