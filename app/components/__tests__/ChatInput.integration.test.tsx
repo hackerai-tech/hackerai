@@ -294,6 +294,112 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it.each([
+    ["Create a marker /goal", "Create a marker", "Enter"],
+    ["Create /goal a marker", "Create a marker", "Tab"],
+    ["Create /GOAL a marker", "Create a marker", "click"],
+    [
+      "Create a marker\n/goal\nCriteria: Read it back",
+      "Create a marker\n\nCriteria: Read it back",
+      "Enter",
+    ],
+    ["Create /go a marker", "Create a marker", "Tab"],
+  ])(
+    "selects an inline command in %s without losing draft content",
+    async (draft, objective, selection) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      mockOnSubmit.mockResolvedValue(true);
+      const file: UploadedFileState = {
+        file: new File(["fixture"], "inline-goal.txt", { type: "text/plain" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "inline-goal-file",
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach inline context" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Attach inline context" }),
+      );
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: draft } });
+      const suggestion = await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      });
+      if (selection === "click") fireEvent.click(suggestion);
+      else fireEvent.keyDown(input, { key: selection });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue(objective);
+      expect(screen.getByText("inline-goal.txt")).toBeVisible();
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          `/goal start ${objective}`,
+        ),
+      );
+    },
+  );
+
+  it("dismisses an inline goal suggestion without changing the draft", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    render(
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Explain /goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    expect(input).toHaveValue("Explain /goal");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(expect.anything(), undefined),
+    );
+  });
+
   it("waits for attachment removal before accepting a message", async () => {
     const attachment: UploadedFileState = {
       file: new File(["fixture"], "removing.txt", { type: "text/plain" }),

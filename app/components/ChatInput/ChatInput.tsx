@@ -56,6 +56,7 @@ import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { GoalModeButton } from "./GoalModeButton";
+import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
@@ -805,12 +806,13 @@ const ChatInputContent = ({
     return () => abort.abort();
   }, [chatId, chatMode, subscription, setGoalMode]);
   useEffect(() => setDismissedGoalSuggestion(false), [input]);
+  const goalSuggestionDraft = getGoalSuggestionDraft(input);
   const showGoalSuggestion =
     !showAgentApprovalPrompt &&
     goalEnabled &&
     !goalMode &&
     !dismissedGoalSuggestion &&
-    /^\/(?:g(?:o(?:a(?:l)?)?)?)?$/i.test(input.trim());
+    goalSuggestionDraft !== null;
   const goalExposure = useRef(false);
   useEffect(() => {
     if (showGoalSuggestion && !goalExposure.current) {
@@ -821,8 +823,9 @@ const ChatInputContent = ({
     }
   }, [showGoalSuggestion]);
   const selectGoal = () => {
+    if (goalSuggestionDraft === null) return;
     setGoalMode(true);
-    setInput("");
+    setInput(goalSuggestionDraft);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
