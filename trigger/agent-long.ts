@@ -4498,6 +4498,10 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           state.streamFinishReason,
                         );
+                      const uncertainToolOutcome =
+                        hasUncertainProviderToolOutcome(
+                          lastAssistantMessageParts,
+                        );
                       const imageRecovery =
                         state.providerRejectedMultimodalToolResults
                           ? omitImageViewToolResultsForProviderRetry(
@@ -4542,12 +4546,10 @@ export const agentLongTask = task({
                         | ProviderDisconnectContinuationRejection
                         | "not_evaluated" = "not_evaluated";
                       const providerDisconnectContinuation =
+                        !uncertainToolOutcome &&
                         (hasTerminalProviderStreamError ||
                           terminalEmptyResponse) &&
-                        ((terminalEmptyResponse &&
-                          !hasUncertainProviderToolOutcome(
-                            lastAssistantMessageParts,
-                          )) ||
+                        (terminalEmptyResponse ||
                           shouldRecoverAbliterationStreamError ||
                           isRetriableProviderStreamDisconnectError(
                             state.providerError,
@@ -4577,11 +4579,12 @@ export const agentLongTask = task({
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
                         hasCandidate:
-                          shouldRecoverAbliterationStreamError ||
-                          shouldRetryWithFallback ||
-                          shouldRetryWithoutImageToolResults ||
-                          shouldRetryWithVisionSummary ||
-                          shouldContinueAfterProviderDisconnect,
+                          !uncertainToolOutcome &&
+                          (shouldRecoverAbliterationStreamError ||
+                            shouldRetryWithFallback ||
+                            shouldRetryWithoutImageToolResults ||
+                            shouldRetryWithVisionSummary ||
+                            shouldContinueAfterProviderDisconnect),
                         modelEligible:
                           isAutoModel ||
                           shouldRecoverAbliterationStreamError ||
