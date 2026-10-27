@@ -1330,6 +1330,90 @@ it("times out a stalled renewal and recovers before sending more input", async (
   expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-a" });
 });
 
+it("does not count slow server renewal work twice when recovering the next heartbeat", async () => {
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    calls++;
+    if (calls === 1)
+      return new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve(
+              response({
+                state: "human",
+                leaseValidForMs: 18_000,
+                processingDurationMs: 7_000,
+              }),
+            ),
+          7_000,
+        ),
+      );
+    if (calls === 2)
+      return new Promise((resolve) =>
+        setTimeout(
+          () => resolve(response({ state: "recovery" }, false)),
+          7_500,
+        ),
+      );
+    return response({
+      state: "human",
+      leaseValidForMs: 25_000,
+      processingDurationMs: 0,
+    });
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(23_000);
+  });
+  expect(calls).toBe(3);
+  expect(actions.some((body) => body.action === "release")).toBe(false);
+  expect(
+    screen.queryByText(/Browser connection lost|Control expired/),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("application", { hidden: true })).toBeInTheDocument();
+});
+
+it("keeps input paused when a renewal acknowledgement arrives after its lease", async () => {
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    if (++calls > 1) return response({ state: "recovery" }, false, 409);
+    return new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            response({
+              state: "human",
+              leaseValidForMs: 1_000,
+              processingDurationMs: 0,
+            }),
+          ),
+        2_000,
+      ),
+    );
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(3_000);
+  });
+  expect(
+    screen.getByText("Reconnecting browser control. Input is paused."),
+  ).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(1_000);
+  });
+  expect(screen.getByText(/Control expired/)).toBeInTheDocument();
+});
+
 it.each([false, true])(
   "reports unavailable for a non-JSON response (ok: %s)",
   async (ok) => {

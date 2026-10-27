@@ -117,6 +117,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
+  const processingStartedAt = performance.now();
   const origin = request.headers.get("origin");
   if (!origin || origin !== new URL(request.url).origin)
     return json({ error: "Invalid origin" }, 403);
@@ -457,6 +458,10 @@ export async function POST(
       ? json({
           state: "human",
           leaseValidForMs: Math.max(0, lease - Date.now()),
+          processingDurationMs: Math.max(
+            0,
+            performance.now() - processingStartedAt,
+          ),
         })
       : json({ state: "recovery" }, 409);
   }

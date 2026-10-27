@@ -164,6 +164,8 @@ it("reports only the remaining confirmed relay lease after renewal", async () =>
   expect(data.state).toBe("human");
   expect(data.leaseValidForMs).toBeGreaterThan(0);
   expect(data.leaseValidForMs).toBeLessThanOrEqual(25_000);
+  expect(Number.isFinite(data.processingDurationMs)).toBe(true);
+  expect(data.processingDurationMs).toBeGreaterThanOrEqual(0);
   expect(mockRenewRelay).toHaveBeenCalledTimes(1);
 });
 

@@ -363,7 +363,7 @@ export function AgentBrowserPreview({
       inFlight = true;
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
-      const startedAt = Date.now();
+      const startedAt = performance.now();
       try {
         const data = await post(
           { action: "heartbeat", grant },
@@ -371,12 +371,19 @@ export function AgentBrowserPreview({
           controller.signal,
         );
         if (!current()) return;
+        const roundTrip = Math.max(0, performance.now() - startedAt);
+        const serverWork = Number.isFinite(data.processingDurationMs)
+          ? Math.max(0, Math.min(roundTrip, data.processingDurationMs))
+          : 0;
+        // The server's remaining lease already excludes its processing time.
+        // Subtract only the rest of the round trip as a conservative bound on
+        // response transit, without requiring synchronized machine clocks.
         const remaining = Number.isFinite(data.leaseValidForMs)
           ? Math.max(
               0,
-              Math.min(25_000, data.leaseValidForMs) - (Date.now() - startedAt),
+              Math.min(25_000, data.leaseValidForMs) - (roundTrip - serverWork),
             )
-          : 20_000 - (Date.now() - startedAt);
+          : 20_000 - roundTrip;
         if (remaining <= 0) throw new Error("Renewal arrived after its lease");
         confirmedUntil = Date.now() + remaining;
         failures = 0;
