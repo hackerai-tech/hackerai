@@ -33,7 +33,6 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
-import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
@@ -949,8 +948,8 @@ const ChatInputContent = ({
           </div>
         )}
 
-        {/* New chats always show compact Agent controls above the input.
-            Existing chats reveal them in the same position while composing. */}
+        {/* New chats always show the sandbox selector above the input.
+            Existing chats reveal it in the same position while composing. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
             className={`relative z-0 order-1 grid min-w-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
@@ -978,15 +977,6 @@ const ChatInputContent = ({
                     value={sandboxPreference}
                     onChange={setSandboxPreference}
                     compact={!isEmptyNewChat}
-                    size={isEmptyNewChat ? "md" : "sm"}
-                  />
-                </div>
-                <div
-                  className={`${isEmptyNewChat ? "min-w-0" : "ml-auto min-w-0 max-w-full shrink-0"} ${compactAgentControls ? "" : "md:hidden"}`}
-                  data-testid="chat-input-mobile-permission"
-                >
-                  <AgentPermissionSelector
-                    analyticsSurface="chat_input"
                     size={isEmptyNewChat ? "md" : "sm"}
                   />
                 </div>

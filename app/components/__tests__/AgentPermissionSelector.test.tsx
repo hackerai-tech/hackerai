@@ -173,11 +173,15 @@ describe("AgentPermissionSelector", () => {
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
   });
 
-  it("opens an accessible mobile sheet and closes after selecting a permission", () => {
+  it("opens the mobile sheet from a named icon and closes after selecting a permission", () => {
     mockIsMobile = true;
-    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+    render(<AgentPermissionSelector analyticsSurface="chat_input" iconOnly />);
 
-    fireEvent.click(screen.getByRole("button", { name: /^full access$/i }));
+    const trigger = screen.getByRole("button", {
+      name: "Agent permissions: Full access",
+    });
+    expect(trigger.textContent).toBe("");
+    fireEvent.click(trigger);
     expect(
       screen.getByRole("dialog", {
         name: /how should HackerAI actions be approved/i,

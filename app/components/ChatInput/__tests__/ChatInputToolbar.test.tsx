@@ -202,7 +202,7 @@ describe("ChatInputToolbar", () => {
     expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
     expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
     expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
       "data-size",
@@ -246,7 +246,7 @@ describe("ChatInputToolbar", () => {
     );
   });
 
-  it("moves Agent controls out of the toolbar in compact layout", () => {
+  it("keeps the permission icon in the toolbar and moves the sandbox above in compact layout", () => {
     mockAuthUser({ id: "user_123" });
 
     render(
@@ -279,7 +279,7 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
   });
 
   it("removes only the mode selector for free Desktop Agent-only mode", () => {
@@ -289,7 +289,7 @@ describe("ChatInputToolbar", () => {
     render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
 
     expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
       "data-neutral-agent-style",

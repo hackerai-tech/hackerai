@@ -58,6 +58,14 @@ export function ChatInputToolbar({
             disabled={!isOnline}
           />
         </div>
+        {user && isAgentMode(chatMode) ? (
+          <div
+            className={compactAgentControls ? "shrink-0" : "shrink-0 md:hidden"}
+            data-testid="chat-input-mobile-permission"
+          >
+            <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
+          </div>
+        ) : null}
         {user &&
         chatModeAccessResolved &&
         !paidAgentOnlyActive &&

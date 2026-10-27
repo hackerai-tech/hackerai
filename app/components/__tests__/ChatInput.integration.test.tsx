@@ -998,8 +998,6 @@ describe("ChatInput - Integration Tests", () => {
         "flex-1",
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
-        "ml-auto",
-        "max-w-full",
         "shrink-0",
         "md:hidden",
       );
@@ -1068,6 +1066,9 @@ describe("ChatInput - Integration Tests", () => {
       const input = screen.getByTestId("chat-input");
       expect(context).toHaveAttribute("aria-hidden", "true");
       expect(context).toHaveAttribute("inert");
+      expect(
+        screen.getByRole("button", { name: /^Agent permissions:/ }),
+      ).toBeInTheDocument();
 
       fireEvent.focus(input);
       expect(context).toHaveAttribute("aria-hidden", "false");
