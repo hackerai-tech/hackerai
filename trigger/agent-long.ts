@@ -2116,7 +2116,12 @@ export const agentLongTask = task({
       }
 
       const abliteratedExperiment = await evaluateAbliteratedModel({
-        previewEnvironment: ctx.environment.type === "PREVIEW",
+        inferenceEnvironment:
+          ctx.environment.type === "PRODUCTION"
+            ? "production"
+            : ctx.environment.type === "PREVIEW"
+              ? "preview"
+              : undefined,
         posthog,
         userId,
         selectedModel,

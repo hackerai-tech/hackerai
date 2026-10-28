@@ -13,3 +13,5 @@ export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
   "abliterated_paid_moderated_three_steps_default_v1";
 
 export const ABLITERATED_PRO_THREE_STEPS_KEY = "abliterated_pro_three_steps_v1";
+
+export const INFERENCE_CYBER_FLAG = "inference_cyber_v1";

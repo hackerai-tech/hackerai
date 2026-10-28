@@ -6,6 +6,7 @@ import {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  INFERENCE_CYBER_FLAG,
 } from "../experiments/abliteration-keys";
 import type { AbliteratedAssignment } from "../experiments/abliterated-model";
 
@@ -38,6 +39,7 @@ export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
     case ABLITERATED_EXPERIMENT_KEY:
     case ABLITERATED_PAID_THREE_STEPS_KEY:
     case ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY:
+    case INFERENCE_CYBER_FLAG:
       // These routing policies measure operational outcomes; do not reuse an old
       // survey cohort or relabel its historical reservations.
       return undefined;
