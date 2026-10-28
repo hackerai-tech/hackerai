@@ -172,20 +172,24 @@ class DockerSandbox:
     def __init__(self, name: str, docker_env: dict[str, str]):
         self.name = name
         self.docker_env = docker_env
+        # A model step may request several terminal tools at once. Bound the
+        # Docker CLI fan-out so the VM's command bridge stays responsive.
+        self._exec_slots = asyncio.Semaphore(2)
 
     async def _call(self, args: list[str], data: bytes | None = None, timeout: int = 20) -> tuple[int, bytes, bytes]:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "-i", self.name, *args,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=self.docker_env,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(data), timeout=timeout)
-        except (TimeoutError, asyncio.CancelledError):
-            proc.kill()
-            await proc.wait()
-            raise
-        return proc.returncode, stdout, stderr
+        async with self._exec_slots:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "exec", "-i", self.name, *args,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, env=self.docker_env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(data), timeout=timeout)
+            except (TimeoutError, asyncio.CancelledError):
+                proc.kill()
+                await proc.wait()
+                raise
+            return proc.returncode, stdout, stderr
 
     async def exec(self, args: list[str], *, input: str | None = None, timeout: int = 20) -> SimpleNamespace:
         code, out, err = await self._call(args, input.encode() if input is not None else None, timeout)
@@ -319,6 +323,7 @@ async def run_one(slug: str, entry: dict, args: argparse.Namespace, docker_env: 
         subprocess.run(["docker", "rm", "--force", container], env=docker_env, capture_output=True, check=False)
     agent_record = run_dir / f"{slug}.json"
     details = json.loads(agent_record.read_text()) if agent_record.exists() else {}
+    transport_failure_count = len(details.get("transportFailures") or [])
     findings_file = output / "findings.json"
     parse_error = None
     count = 0
@@ -331,6 +336,20 @@ async def run_one(slug: str, entry: dict, args: argparse.Namespace, docker_env: 
     else:
         parse_error = "MissingFindingsFile"
         semgrep = {"results": []}
+    if transport_failure_count:
+        return {
+            "task": slug,
+            "agentStatus": "unscored_transport_error",
+            "stopReason": details.get("finishReason"),
+            "parseError": parse_error,
+            "reportedFindings": count,
+            "transportFailureCount": transport_failure_count,
+            "modelCostDollars": details.get("modelCostDollars", final.get("modelCostDollars")),
+            "agentElapsedMs": details.get("elapsedMs", final.get("elapsedMs")),
+            "wallElapsedMs": round((asyncio.get_running_loop().time() - started) * 1000),
+            "continuations": details.get("continuations"),
+            "providerRecoveryAttempts": details.get("providerRecoveryAttempts"),
+        }
     semgrep_path = run_dir / "results.semgrep.json"
     semgrep_path.write_text(json.dumps(semgrep))
     card = score_with_upstream(args.upstream, slug, semgrep_path)
@@ -358,7 +377,7 @@ async def main() -> None:
     parser.add_argument("--results-dir", type=Path)
     parser.add_argument("--agent-model-context-variant", choices=("control", "test"), required=True)
     parser.add_argument("--agent-limit-seconds", type=int, default=480)
-    parser.add_argument("--max-samples", type=int, default=2)
+    parser.add_argument("--max-samples", type=int, default=1)
     parser.add_argument("--docker-host", default=os.environ.get("REALVULN_DOCKER_HOST", f"unix://{Path.home()}/.colima/cvebench-amd64/docker.sock"))
     args = parser.parse_args()
     if not 60 <= args.agent_limit_seconds <= 21600 or not 1 <= args.max_samples <= 4:

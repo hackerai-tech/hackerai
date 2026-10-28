@@ -40,7 +40,8 @@ Check the eligible Pro Agent context flag in the actual environment before
 choosing `test` or `control`. By default the runner audits four small,
 human-authored Python and JavaScript projects. Pass explicit RealVuln slugs to
 select other human-authored projects. `--max-samples` controls concurrency
-(1–4); `--agent-limit-seconds` accepts 60–21600. The runner defaults to the
+(1–4) and defaults to one project at a time because an Agent can issue several
+terminal calls within a single project. `--agent-limit-seconds` accepts 60–21600. The runner defaults to the
 dedicated `cvebench-amd64` Colima Docker socket; set `--docker-host` or
 `REALVULN_DOCKER_HOST` to an explicit isolated daemon. Start that daemon
 separately, and do not stop it while another evaluation uses it.
@@ -52,8 +53,9 @@ each item has repository-relative `path`, one-based `line`, one `cwe`,
 The adapter converts valid items to Semgrep-compatible JSON and calls the
 pinned RealVuln parser, matcher and scorer. Duplicate reports remain separate
 so RealVuln can penalize them. Missing or malformed Agent output is recorded as
-a protocol failure and scored with zero findings; failures before Agent startup
-are unscored. The summary reports per-project TP, FP, FN, F2, F3, cost, runtime,
+a protocol failure and scored with zero findings when the transport is healthy.
+Cases with command transport failures and failures before Agent startup are
+unscored. The summary reports per-project TP, FP, FN, F2, F3, cost, runtime,
 stop reason and continuation count. Aggregate micro-F2 is derived only from
 scored cases, and the scored/unscored denominator is always shown.
 
