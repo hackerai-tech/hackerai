@@ -320,7 +320,7 @@ export const QueuedMessagesPanel = ({
   );
 
   return (
-    <div className="mx-4 rounded-[22px_22px_0px_0px] border border-black/8 dark:border-border border-b-0 bg-input-chat">
+    <div className="mx-0 rounded-[22px_22px_0px_0px] border border-black/8 dark:border-border border-b-0 bg-input-chat md:mx-4">
       <div className="px-4 pt-3 pb-1 space-y-1 max-h-[240px] overflow-y-auto">
         {messages.map(renderMessage)}
       </div>

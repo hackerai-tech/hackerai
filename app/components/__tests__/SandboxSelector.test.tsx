@@ -184,7 +184,7 @@ describe("SandboxSelector", () => {
 
     expect(screen.getByRole("button", { name: hostname })).toHaveClass(
       "max-w-full",
-      "sm:max-w-64",
+      "sm:max-w-[min(100%,16rem)]",
       "min-w-0",
     );
     expect(screen.getByTitle(hostname)).toBeInTheDocument();

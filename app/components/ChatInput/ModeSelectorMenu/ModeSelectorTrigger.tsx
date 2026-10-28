@@ -17,7 +17,7 @@ const PAID_MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
 };
 
 const baseClasses =
-  "h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0";
+  "h-7 gap-0 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0 max-md:size-8 max-md:p-0 md:gap-2";
 
 export interface ModeSelectorTriggerProps {
   chatMode: ChatMode;
@@ -37,6 +37,7 @@ export function ModeSelectorTrigger({
       <Button
         variant="ghost"
         size="sm"
+        aria-label={`Chat mode: ${chatMode === "agent" ? "Agent" : "Ask"}`}
         data-testid="mode-selector"
         className={`${baseClasses} ${modeVariantClasses[chatMode]}`}
       >
@@ -51,7 +52,7 @@ export function ModeSelectorTrigger({
             <span className="hidden md:inline">Ask</span>
           </>
         )}
-        <ChevronDown className="w-3 h-3 ml-1" />
+        <ChevronDown className="hidden w-3 h-3 ml-1 md:block" />
       </Button>
     </DropdownMenuTrigger>
   );

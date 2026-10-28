@@ -38,6 +38,7 @@ interface SandboxSelectorProps {
   size?: "sm" | "toolbar" | "md";
   triggerLabel?: string;
   compact?: boolean;
+  menuAlign?: "start" | "center" | "end";
 }
 
 interface ConnectionOption {
@@ -55,6 +56,7 @@ export function SandboxSelector({
   size = "sm",
   triggerLabel,
   compact = false,
+  menuAlign = "start",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -322,7 +324,7 @@ export function SandboxSelector({
     size === "md"
       ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
       : size === "toolbar"
-        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-64"
+        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-[min(100%,16rem)]"
         : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
@@ -354,7 +356,11 @@ export function SandboxSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[240px] p-1" align="start">
+      <PopoverContent
+        data-chat-input-agent-menu
+        className="w-[240px] p-1"
+        align={menuAlign}
+      >
         <div className="space-y-0.5">
           <button
             key={cloudOption.id}
@@ -444,6 +450,7 @@ export function SandboxSelector({
                 </button>
               </PopoverTrigger>
               <PopoverContent
+                data-chat-input-agent-menu
                 side="top"
                 sideOffset={8}
                 className="w-[240px] p-4"

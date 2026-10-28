@@ -477,6 +477,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       : isAuto
         ? "Auto"
         : selected.label;
+  const mobileTriggerLabel = triggerLabel.replace(/^HackerAI /, "");
 
   const handleAutoSelect = () => {
     onChange("auto");
@@ -527,9 +528,17 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       onClick={isMobile ? () => setOpen(true) : undefined}
       aria-expanded={isMobile ? open : undefined}
       aria-haspopup={isMobile ? "dialog" : undefined}
-      className="h-7 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      aria-label={triggerLabel}
+      title={triggerLabel}
+      className="h-7 max-w-20 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink min-[360px]:max-w-32 md:max-w-none"
     >
-      <span className="truncate">{triggerLabel}</span>
+      <span className="truncate min-[360px]:hidden">
+        {mobileTriggerLabel === "Standard" ? "Std" : mobileTriggerLabel}
+      </span>
+      <span className="hidden truncate min-[360px]:inline md:hidden">
+        {mobileTriggerLabel}
+      </span>
+      <span className="hidden truncate md:inline">{triggerLabel}</span>
       <ChevronDown className="h-3 w-3 ml-0.5 shrink-0" />
     </Button>
   );

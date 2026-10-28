@@ -28,6 +28,11 @@ import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
 
+let mockIsMobile = false;
+jest.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => mockIsMobile,
+}));
+
 let mockSandboxState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
@@ -246,6 +251,7 @@ describe("ChatInput - Integration Tests", () => {
   const mockOnReconnect = jest.fn();
 
   beforeEach(() => {
+    mockIsMobile = false;
     jest.clearAllMocks();
     mockSandboxState = {};
     jest.mocked(isTauriEnvironment).mockReturnValue(false);
@@ -968,7 +974,44 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
-    it("renders a glass composer with a narrower sandbox context strip", async () => {
+    it("keeps sandbox controls before progress and queued messages in reading order", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { chatMode: "agent" };
+
+      render(
+        <TestWrapper>
+          <TaskPanelsSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      const progress = await screen.findByRole("button", {
+        name: "Expand todos",
+      });
+      const sandbox = await screen.findByTestId("chat-input-agent-context");
+      const queued = screen.getByText("Private queued message");
+      const composer = screen.getByTestId("chat-input-surface");
+      for (const [before, after] of [
+        [sandbox, progress],
+        [progress, queued],
+        [queued, composer],
+      ]) {
+        expect(
+          before.compareDocumentPosition(after) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      }
+    });
+
+    it("renders compact Agent controls above the glass composer", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -1003,22 +1046,23 @@ describe("ChatInput - Integration Tests", () => {
         "z-10",
       );
       expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
-        "chat-input-glass-context",
-        "mx-2",
-        "sm:mx-6",
-        "-mt-2",
-        "min-h-10",
-        "flex-nowrap",
-        "rounded-b-[18px]",
+        "mb-1",
+        "px-2",
+        "justify-end",
         "md:hidden",
       );
+      expect(
+        screen
+          .getByTestId("chat-input-agent-context")
+          .compareDocumentPosition(screen.getByTestId("chat-input-surface")) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(screen.getByTestId("chat-input-surface")).toHaveClass("order-2");
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",
-        "flex-1",
+        "max-w-full",
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
-        "ml-auto",
-        "max-w-full",
         "shrink-0",
         "md:hidden",
       );
@@ -1051,7 +1095,8 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", async () => {
+    it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
+      mockIsMobile = true;
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -1069,30 +1114,192 @@ describe("ChatInput - Integration Tests", () => {
           : undefined,
       );
 
-      let resizeCallback: ResizeObserverCallback | null = null;
-      const originalResizeObserverDescriptor = Object.getOwnPropertyDescriptor(
-        globalThis,
-        "ResizeObserver",
+      const { rerender } = render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasMessages
+            autoFocus={false}
+          />
+        </TestWrapper>,
       );
 
-      class ResizeObserverMock implements ResizeObserver {
-        constructor(private readonly callback: ResizeObserverCallback) {}
+      const context = await screen.findByTestId("chat-input-agent-context");
+      const input = screen.getByTestId("chat-input");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
+      expect(
+        screen.getByRole("button", { name: /^Agent permissions:/ }),
+      ).toBeInTheDocument();
 
-        disconnect = jest.fn();
-        observe = (element: Element) => {
-          if (
-            (element as HTMLElement).dataset.testid === "chat-input-container"
-          ) {
-            resizeCallback = this.callback;
-          }
-        };
-        unobserve = jest.fn();
-      }
+      fireEvent.focus(input);
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
 
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        configurable: true,
-        value: ResizeObserverMock,
+      fireEvent.blur(input, { relatedTarget: null });
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
+      fireEvent.focus(input);
+
+      fireEvent.change(input, { target: { value: "A harmless follow-up" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+
+      const sandboxTrigger = screen
+        .getByTestId("chat-input-mobile-sandbox")
+        .querySelector("button");
+      expect(sandboxTrigger).not.toBeNull();
+      fireEvent.pointerDown(sandboxTrigger!);
+      fireEvent.blur(input, { relatedTarget: sandboxTrigger });
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+
+      fireEvent.click(sandboxTrigger!);
+      const menu = await waitFor(() => {
+        const openedMenu = document.querySelector(
+          "[data-chat-input-agent-menu]",
+        );
+        expect(openedMenu).toBeInTheDocument();
+        return openedMenu;
       });
+      jest.useFakeTimers();
+      try {
+        fireEvent.pointerUp(sandboxTrigger!);
+        act(() => jest.runOnlyPendingTimers());
+        expect(context).not.toHaveAttribute("inert");
+      } finally {
+        jest.useRealTimers();
+      }
+      fireEvent.pointerDown(menu!);
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+
+      fireEvent.pointerDown(document.body);
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
+
+      fireEvent.pointerDown(input);
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+
+      fireEvent.pointerDown(document.body);
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
+      rerender(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            isNewChat
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+      fireEvent.pointerDown(document.body);
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
+    });
+
+    it.each([
+      ["sandbox", "pointerup"],
+      ["permissions", "pointercancel"],
+    ])(
+      "keeps %s usable through delayed touch blur until %s",
+      async (target, release) => {
+        mockIsMobile = true;
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? [
+                {
+                  connectionId: "local-sandbox",
+                  name: "Local sandbox",
+                  isDesktop: false,
+                },
+              ]
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const context = await screen.findByTestId("chat-input-agent-context");
+        const input = screen.getByTestId("chat-input");
+        const trigger =
+          target === "sandbox"
+            ? screen
+                .getByTestId("chat-input-mobile-sandbox")
+                .querySelector("button")!
+            : screen.getByRole("button", { name: /^Agent permissions:/ });
+        jest.useFakeTimers();
+        try {
+          act(() => input.focus());
+          fireEvent.pointerDown(input, { pointerType: "touch" });
+          fireEvent.pointerUp(input, { pointerType: "touch" });
+          act(() => jest.runOnlyPendingTimers());
+          expect(context).not.toHaveAttribute("inert");
+
+          fireEvent.pointerDown(trigger, { pointerType: "touch" });
+          act(() => jest.advanceTimersByTime(100));
+          act(() => input.blur());
+          expect(context).not.toHaveAttribute("aria-hidden", "true");
+          expect(context).not.toHaveAttribute("inert");
+
+          fireEvent(document, new Event(release, { bubbles: true }));
+          act(() => jest.runOnlyPendingTimers());
+          expect(context).toHaveAttribute("aria-hidden", "true");
+          expect(context).toHaveAttribute("inert");
+        } finally {
+          jest.useRealTimers();
+        }
+      },
+    );
+
+    it("keeps desktop controls when the sidebar narrows the composer", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
+
+      const originalRect = HTMLElement.prototype.getBoundingClientRect;
+      const rectSpy = jest
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          const rect = originalRect.call(this);
+          return this.dataset.testid === "chat-input-container"
+            ? { ...rect, width: 700 }
+            : rect;
+        });
 
       try {
         render(
@@ -1107,51 +1314,17 @@ describe("ChatInput - Integration Tests", () => {
         );
 
         await screen.findByTestId("chat-input-surface");
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 700 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "true",
-        );
-        expect(screen.getByTestId("chat-input-agent-context")).not.toHaveClass(
-          "md:hidden",
-        );
-        expect(
-          screen.getByTestId("chat-input-desktop-permission"),
-        ).not.toHaveClass("md:block");
-
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 740 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "false",
-        );
         expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
           "md:hidden",
         );
         expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
           "md:block",
         );
+        expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+          "md:block",
+        );
       } finally {
-        if (originalResizeObserverDescriptor) {
-          Object.defineProperty(
-            globalThis,
-            "ResizeObserver",
-            originalResizeObserverDescriptor,
-          );
-        } else {
-          Reflect.deleteProperty(globalThis, "ResizeObserver");
-        }
+        rectSpy.mockRestore();
       }
     });
 
