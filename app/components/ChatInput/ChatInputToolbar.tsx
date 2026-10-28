@@ -15,12 +15,10 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
-  compactAgentControls?: boolean;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
-  compactAgentControls = false,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -66,7 +64,7 @@ export function ChatInputToolbar({
         </div>
         {user && isAgentMode(chatMode) ? (
           <div
-            className={compactAgentControls ? "shrink-0" : "shrink-0 md:hidden"}
+            className="shrink-0 md:hidden"
             data-testid="chat-input-mobile-permission"
           >
             <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
@@ -79,17 +77,13 @@ export function ChatInputToolbar({
         {user && isAgentMode(chatMode) ? (
           <>
             <div
-              className={
-                compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
-              }
+              className="hidden shrink-0 md:block"
               data-testid="chat-input-desktop-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
             <div
-              className={
-                compactAgentControls ? "hidden" : "hidden min-w-0 md:block"
-              }
+              className="hidden min-w-0 md:block"
               data-testid="chat-input-desktop-sandbox"
             >
               <SandboxSelector

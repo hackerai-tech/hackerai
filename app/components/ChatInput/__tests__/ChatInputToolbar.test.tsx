@@ -243,31 +243,6 @@ describe("ChatInputToolbar", () => {
     );
   });
 
-  it("keeps the permission icon in the toolbar while compact sandbox controls live above it", () => {
-    mockAuthUser({ id: "user_123" });
-
-    render(
-      <ChatInputToolbar
-        {...defaultProps}
-        chatMode="agent"
-        compactAgentControls
-      />,
-    );
-
-    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
-      "hidden",
-    );
-    expect(screen.getByTestId("chat-input-desktop-permission")).not.toHaveClass(
-      "md:block",
-    );
-    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
-      "hidden",
-    );
-    expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
-      "md:block",
-    );
-  });
-
   it("removes only the mode selector for paid Agent-only mode", () => {
     mockAuthUser({ id: "user_123" });
     mockSubscription = "pro";

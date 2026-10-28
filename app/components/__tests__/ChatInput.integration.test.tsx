@@ -1273,7 +1273,7 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
-    it("keeps Agent controls above the input when the composer becomes narrow", async () => {
+    it("keeps desktop controls when the sidebar narrows the composer", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -1291,30 +1291,15 @@ describe("ChatInput - Integration Tests", () => {
           : undefined,
       );
 
-      let resizeCallback: ResizeObserverCallback | null = null;
-      const originalResizeObserverDescriptor = Object.getOwnPropertyDescriptor(
-        globalThis,
-        "ResizeObserver",
-      );
-
-      class ResizeObserverMock implements ResizeObserver {
-        constructor(private readonly callback: ResizeObserverCallback) {}
-
-        disconnect = jest.fn();
-        observe = (element: Element) => {
-          if (
-            (element as HTMLElement).dataset.testid === "chat-input-container"
-          ) {
-            resizeCallback = this.callback;
-          }
-        };
-        unobserve = jest.fn();
-      }
-
-      Object.defineProperty(globalThis, "ResizeObserver", {
-        configurable: true,
-        value: ResizeObserverMock,
-      });
+      const originalRect = HTMLElement.prototype.getBoundingClientRect;
+      const rectSpy = jest
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          const rect = originalRect.call(this);
+          return this.dataset.testid === "chat-input-container"
+            ? { ...rect, width: 700 }
+            : rect;
+        });
 
       try {
         render(
@@ -1329,51 +1314,17 @@ describe("ChatInput - Integration Tests", () => {
         );
 
         await screen.findByTestId("chat-input-surface");
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 700 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "true",
-        );
-        expect(screen.getByTestId("chat-input-agent-context")).not.toHaveClass(
-          "md:hidden",
-        );
-        expect(
-          screen.getByTestId("chat-input-desktop-permission"),
-        ).not.toHaveClass("md:block");
-
-        act(() => {
-          (resizeCallback as ResizeObserverCallback)(
-            [{ contentRect: { width: 740 } } as ResizeObserverEntry],
-            {} as ResizeObserver,
-          );
-        });
-
-        expect(screen.getByTestId("chat-input-agent-context")).toHaveAttribute(
-          "data-compact",
-          "false",
-        );
         expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
           "md:hidden",
         );
         expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
           "md:block",
         );
+        expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+          "md:block",
+        );
       } finally {
-        if (originalResizeObserverDescriptor) {
-          Object.defineProperty(
-            globalThis,
-            "ResizeObserver",
-            originalResizeObserverDescriptor,
-          );
-        } else {
-          Reflect.deleteProperty(globalThis, "ResizeObserver");
-        }
+        rectSpy.mockRestore();
       }
     });
 

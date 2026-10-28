@@ -82,11 +82,6 @@ interface ChatInputProps {
   isResolvingInitialState?: boolean;
 }
 
-const COMPACT_AGENT_CONTROLS_BREAKPOINT_PX = 720;
-
-const shouldUseCompactAgentControls = (width: number): boolean =>
-  width > 0 && width < COMPACT_AGENT_CONTROLS_BREAKPOINT_PX;
-
 const ChatInputLoadingState = () => (
   <div
     aria-label="Loading task input"
@@ -322,7 +317,6 @@ const ChatInputContent = ({
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
-  const [compactAgentControls, setCompactAgentControls] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
@@ -366,27 +360,6 @@ const ChatInputContent = ({
       document.removeEventListener("pointercancel", releasePointer);
       window.clearTimeout(composerPointerReleaseTimerRef.current);
     };
-  }, []);
-
-  useLayoutEffect(() => {
-    const container = chatInputContainerRef.current;
-    if (!container) return;
-
-    const updateCompactLayout = (width: number) => {
-      const nextCompact = shouldUseCompactAgentControls(width);
-      setCompactAgentControls((current) =>
-        current === nextCompact ? current : nextCompact,
-      );
-    };
-
-    updateCompactLayout(container.getBoundingClientRect().width);
-    if (typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) updateCompactLayout(entry.contentRect.width);
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -1011,8 +984,7 @@ const ChatInputContent = ({
               its selector, so focus changes never move the composer. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 mb-1 flex min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"} ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
-              data-compact={compactAgentControls ? "true" : "false"}
+              className={`relative z-0 mb-1 flex min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
               data-testid="chat-input-agent-context"
               aria-hidden={mobileSandboxHidden || undefined}
               inert={mobileSandboxHidden || undefined}
@@ -1116,7 +1088,6 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
-              compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
