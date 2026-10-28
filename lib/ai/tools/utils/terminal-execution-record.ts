@@ -25,7 +25,49 @@ import { pruneLocalTerminalRecords } from "./local-terminal-retention";
 // a persisted PID must never be used to reconnect to or kill a process.
 export const TERMINAL_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 64;
+const RETENTION_IO_CONCURRENCY = 4;
 const lastPrunedAt = new Map<string, number>();
+const pruningDirectories = new Set<string>();
+let activeRetentionOperations = 0;
+const retentionWaiters: Array<() => void> = [];
+
+async function withRetentionIo<T>(operation: () => Promise<T>): Promise<T> {
+  if (activeRetentionOperations >= RETENTION_IO_CONCURRENCY) {
+    await new Promise<void>((resolve) => retentionWaiters.push(resolve));
+  } else {
+    activeRetentionOperations++;
+  }
+  try {
+    return await operation();
+  } finally {
+    const next = retentionWaiters.shift();
+    // Transfer the reserved slot directly so another store cannot overtake it.
+    if (next) next();
+    else activeRetentionOperations--;
+  }
+}
+// Batch before queueing so one scan cannot enqueue every relay read at once.
+async function mapRetentionIo<T, R>(
+  items: T[],
+  operation: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let start = 0; start < items.length; start += RETENTION_IO_CONCURRENCY) {
+    const batch = await Promise.allSettled(
+      items
+        .slice(start, start + RETENTION_IO_CONCURRENCY)
+        .map((item) => withRetentionIo(() => operation(item))),
+    );
+    // A failed operation must not release the directory guard while siblings
+    // still own remote file/relay work.
+    for (const result of batch) {
+      if (result.status === "rejected") throw result.reason;
+      results.push(result.value);
+    }
+  }
+  return results;
+}
+
 const recordSchema = z.object({
   version: z.literal(1),
   session: z.string().regex(/^[a-f0-9]{8}$/),
@@ -167,7 +209,10 @@ export function createTerminalRecordStore(
     async prune(): Promise<void> {
       // Avoid rereading every retained record on every command. This cache
       // bounds only retention work; it is never used for record retrieval.
-      if (Date.now() - (lastPrunedAt.get(directory) ?? 0) < 60_000) {
+      if (
+        pruningDirectories.has(directory) ||
+        Date.now() - (lastPrunedAt.get(directory) ?? 0) < 60_000
+      ) {
         recordTerminalMaintenance(sandbox, {
           operation: "prune_route",
           outcome: "throttled",
@@ -178,63 +223,65 @@ export function createTerminalRecordStore(
       lastPrunedAt.set(directory, Date.now());
       if (lastPrunedAt.size > 256)
         lastPrunedAt.delete(lastPrunedAt.keys().next().value!);
+      pruningDirectories.add(directory);
       let fallbackStarted = false;
       let fallbackOutcome: "success" | "failure" = "failure";
       try {
         if (
-          await pruneLocalTerminalRecords(sandbox, {
-            root,
-            directory,
-            sandboxInstance: terminalSandboxInstance(sandbox),
-            schema: z.toJSONSchema(recordSchema),
-            cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
-            maxRecords: MAX_RECORDS,
-          })
+          await withRetentionIo(() =>
+            pruneLocalTerminalRecords(sandbox, {
+              root,
+              directory,
+              sandboxInstance: terminalSandboxInstance(sandbox),
+              schema: z.toJSONSchema(recordSchema),
+              cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
+              maxRecords: MAX_RECORDS,
+            }),
+          )
         )
           return;
         fallbackStarted = true;
-        const entries = ownerOnlyPosix
-          ? await listOwnerOnlyPosixFiles(sandbox, root, directory)
-          : await files.list(directory);
-        const records = await Promise.all(
-          entries.map(async ({ name }) => {
-            // Never trust paths from a sandbox directory listing.
-            const match = /^([a-f0-9]{8})\.json$/.exec(
-              name.split(/[\\/]/).pop() ?? "",
-            );
-            if (!match) return null;
-            const record = await readRecord(match[1], "retention_read");
-            // A concurrent write or transport error is not proof of expiry.
-            return record
-              ? { session: match[1], updatedAt: record.updatedAt }
-              : null;
-          }),
+        const entries = await withRetentionIo(() =>
+          ownerOnlyPosix
+            ? listOwnerOnlyPosixFiles(sandbox, root, directory)
+            : files.list(directory),
         );
+        const records = await mapRetentionIo(entries, async ({ name }) => {
+          // Never trust paths from a sandbox directory listing.
+          const match = /^([a-f0-9]{8})\.json$/.exec(
+            name.split(/[\\/]/).pop() ?? "",
+          );
+          if (!match) return null;
+          const record = await readRecord(match[1], "retention_read");
+          // A concurrent write or transport error is not proof of expiry.
+          return record
+            ? { session: match[1], updatedAt: record.updatedAt }
+            : null;
+        });
         const sorted = records
           .filter((r) => r !== null)
           .sort((a, b) => b.updatedAt - a.updatedAt);
-        await Promise.all(
-          sorted
-            .filter(
-              (r, i) =>
-                i >= MAX_RECORDS ||
-                r.updatedAt < Date.now() - TERMINAL_RECORD_RETENTION_MS,
-            )
-            .map((r) =>
-              ownerOnlyPosix
-                ? removeOwnerOnlyPosixFile(
-                    sandbox,
-                    root,
-                    directory,
-                    pathFor(r.session),
-                  )
-                : files.remove(pathFor(r.session)),
-            ),
+        await mapRetentionIo(
+          sorted.filter(
+            (r, i) =>
+              i >= MAX_RECORDS ||
+              r.updatedAt < Date.now() - TERMINAL_RECORD_RETENTION_MS,
+          ),
+          (r) =>
+            ownerOnlyPosix
+              ? removeOwnerOnlyPosixFile(
+                  sandbox,
+                  root,
+                  directory,
+                  pathFor(r.session),
+                )
+              : files.remove(pathFor(r.session)),
         );
         fallbackOutcome = "success";
       } catch {
         /* Retention is best effort when the sandbox disconnects. */
       } finally {
+        pruningDirectories.delete(directory);
         if (fallbackStarted)
           recordTerminalMaintenance(sandbox, {
             operation: "prune_fallback",
