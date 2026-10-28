@@ -1,5 +1,5 @@
 import {
-  INFERENCE_CYBER_PREVIEW_FLAG,
+  INFERENCE_CYBER_FLAG,
   isInferenceConfigured,
 } from "@/lib/ai/inference";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -42,7 +42,8 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
-    | typeof ABLITERATED_PRO_THREE_STEPS_KEY;
+    | typeof ABLITERATED_PRO_THREE_STEPS_KEY
+    | typeof INFERENCE_CYBER_FLAG;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -98,7 +99,7 @@ export async function evaluateAbliteratedModel({
   messages,
   limitRescue = false,
   diagnosticContext,
-  previewEnvironment = false,
+  inferenceEnvironment,
 }: {
   posthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
@@ -113,7 +114,7 @@ export async function evaluateAbliteratedModel({
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
-  previewEnvironment?: boolean;
+  inferenceEnvironment?: "preview" | "production";
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
   const proThreeStepsEligible =
@@ -122,16 +123,20 @@ export async function evaluateAbliteratedModel({
     moderationChecked &&
     allowsAbliterationContinuation &&
     newUserTurn;
-  const reportDecision = (reason: string, variant?: string) => {
+  const reportDecision = (
+    reason: string,
+    variant?: string,
+    experimentKey = proThreeStepsEligible
+      ? ABLITERATED_PRO_THREE_STEPS_KEY
+      : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ) => {
     if (!diagnosticContext?.logAll) return;
     try {
       phLogger.info("Abliteration assignment decision", {
         userId,
         chatId: diagnosticContext.chatId,
         requestId: diagnosticContext.requestId,
-        experiment_key: proThreeStepsEligible
-          ? ABLITERATED_PRO_THREE_STEPS_KEY
-          : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        experiment_key: experimentKey,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -165,21 +170,46 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  // Only trusted runtime callers supply Preview identity. Missing flags, keys
-  // and evaluation errors retain the existing provider route.
+  // Only trusted deployed callers supply environment identity. The rollout is
+  // independent of the historical Pro experiment; disabling it restores that
+  // experiment and the existing moderated Abliteration route.
   let inferenceCyberEnabled = false;
-  if (previewEnvironment && isInferenceConfigured() && posthog) {
+  if (inferenceEnvironment && isInferenceConfigured() && posthog) {
     try {
       inferenceCyberEnabled =
         (await getPostHogFlagWithoutExposure(
           posthog,
-          INFERENCE_CYBER_PREVIEW_FLAG,
+          INFERENCE_CYBER_FLAG,
           userId,
           { subscription, subscription_tier: subscription },
         )) === true;
     } catch {
       /* Keep Abliteration on unavailable assignment. */
     }
+  }
+
+  if (inferenceCyberEnabled) {
+    const baselineModel = proThreeStepsEligible
+      ? resolvePaidProAutoModel({
+          userId,
+          subscription,
+          selectedModel,
+          selectedModelOverride,
+          limitRescue,
+        })
+      : selectedModel;
+    reportDecision("inference_cyber_rollout", "test", INFERENCE_CYBER_FLAG);
+    return {
+      key: INFERENCE_CYBER_FLAG,
+      variant: "test",
+      modelKey: ABLITERATION_MODEL_KEY,
+      baselineModel,
+      generationStepLimit: 3,
+      inferenceCyberEnabled: true,
+      selectionSource: proThreeStepsEligible ? "paid_first_step" : "moderation",
+      moderationEligible,
+      moderationChecked,
+    };
   }
 
   if (proThreeStepsEligible && posthog) {
