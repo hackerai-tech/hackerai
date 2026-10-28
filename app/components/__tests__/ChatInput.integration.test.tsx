@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, StrictMode, useEffect, useState } from "react";
 import {
   CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
@@ -275,6 +275,144 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+  });
+
+  describe("Keyboard and draft edge cases", () => {
+    it("restores a saved draft through StrictMode mount effects", async () => {
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "saved-draft",
+              content: "Previously saved draft",
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      render(
+        <StrictMode>
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="saved-draft"
+            />
+          </TestWrapper>
+        </StrictMode>,
+      );
+      expect(await screen.findByTestId("chat-input")).toHaveValue(
+        "Previously saved draft",
+      );
+      expect(getDraftContentById("saved-draft")).toBe("Previously saved draft");
+    });
+
+    it.each([{ isComposing: true }, { keyCode: 229 }])(
+      "does not submit Enter while an IME candidate is being confirmed: %j",
+      async (compositionEvent) => {
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="ime-chat"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, { target: { value: "日本語の下書き" } });
+        fireEvent.keyDown(input, { key: "Enter", ...compositionEvent });
+        await act(async () => {});
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(input).toHaveValue("日本語の下書き");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
+    it.each(["unmount", "pagehide"])(
+      "keeps the latest draft when %s happens before the autosave delay",
+      async (boundary) => {
+        const { unmount } = render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="fast-draft"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, {
+          target: { value: "Last characters before leaving" },
+        });
+        if (boundary === "unmount") unmount();
+        else fireEvent(window, new Event("pagehide"));
+        expect(getDraftContentById("fast-draft")).toBe(
+          "Last characters before leaving",
+        );
+      },
+    );
+
+    it("keeps an unsaved queued edit mounted when a free user's Agent becomes ready", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { subscription: "free", isCheckingProPlan: false };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      const view = (status: "streaming" | "ready") => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <TaskPanelsSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status={status}
+            hasMessages
+            chatId="queued-edit"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(view("streaming"));
+      const options = await screen.findByRole("button", {
+        name: "More options for queued message: Private queued message",
+      });
+      fireEvent.keyDown(options, { key: "Enter" });
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Edit message" }),
+      );
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+        { target: { value: "Unsaved revised message" } },
+      );
+      rerender(view("ready"));
+      await act(async () => {});
+      expect(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+      ).toHaveValue("Unsaved revised message");
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "A new request while editing" },
+      });
+      fireEvent.keyDown(screen.getByTestId("chat-input"), { key: "Enter" });
+      await act(async () => {});
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Save", exact: true }),
+      );
+      expect(
+        await screen.findByTestId("regional-subscription-offer"),
+      ).toBeVisible();
+    });
   });
 
   describe("Sandbox disconnect warnings", () => {
@@ -2820,12 +2958,10 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   it("moves goal controls clear of files, approvals, and mobile panels without remounting their draft", async () => {
-    jest
-      .mocked(useAuth)
-      .mockReturnValue({
-        user: { id: "user_123" },
-        entitlements: [],
-      } as ReturnType<typeof useAuth>);
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "user_123" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
     mockSandboxState = {
       chatMode: "agent",
       subscription: "pro",
@@ -2896,6 +3032,52 @@ describe("ChatInput - Integration Tests", () => {
     );
     expect(reply).toHaveValue("Keep these instructions");
   });
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "preserves inline goal text while an IME candidate is being confirmed: %j",
+    async (compositionEvent) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: "日本語 /goal" } });
+      await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      });
+      for (const key of ["Tab", "Enter", "Escape"]) {
+        fireEvent.keyDown(input, { key, ...compositionEvent });
+        expect(input).toHaveValue("日本語 /goal");
+        expect(
+          screen.getByRole("button", {
+            name: "Goal Set a goal to keep pursuing",
+          }),
+        ).toBeVisible();
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+      }
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(input).toHaveValue("日本語");
+      fireEvent.keyDown(input, { key: "Escape", ...compositionEvent });
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
+    },
+  );
 
   it("selects /goal without sending and submits its objective through goal mode", async () => {
     mockSandboxState = {

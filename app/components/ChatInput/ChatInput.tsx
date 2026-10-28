@@ -233,6 +233,7 @@ const uploadedFileToDraftAttachment = (
 
 export const ChatInput = (props: ChatInputProps) => {
   const { activeToolApprovalRequest } = useAgentApproval();
+  const { editingQueuedMessageId } = useGlobalState();
   return (
     <RegionalSubscriptionGate
       fallbackHeader={
@@ -247,7 +248,8 @@ export const ChatInput = (props: ChatInputProps) => {
         props.status === "submitted" ||
         props.status === "streaming" ||
         !!activeToolApprovalRequest ||
-        !!props.storedApprovalRequest
+        !!props.storedApprovalRequest ||
+        !!editingQueuedMessageId
       }
     >
       <ChatInputContent {...props} />
@@ -290,6 +292,7 @@ const ChatInputContent = ({
     isUploadingFiles,
     messageQueue,
     updateQueuedMessage,
+    editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
     queueBehavior,
@@ -849,6 +852,9 @@ const ChatInputContent = ({
       ? "Wait for the attachment to finish removing."
       : undefined) ??
     sendDisabledReason ??
+    (status === "ready" && editingQueuedMessageId
+      ? "Finish editing the queued message before sending a new request"
+      : undefined) ??
     (user
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);

@@ -50,6 +50,14 @@ export function createChatFinishObserver(context: {
     phase: FinishPhase = "primary",
   ): Promise<T> {
     const startedAt = Date.now();
+    let firstWarningIndex: number | undefined;
+    let lastWarningIndex: number | undefined;
+    const stageContext = {
+      stage: FINISH_STAGES.includes(stage) ? stage : "unknown",
+      phase: phase === "provider_retry" ? phase : "primary",
+      mode: ["ask", "agent"].includes(context.mode) ? context.mode : undefined,
+      ...identifiers,
+    };
     const timers =
       warningCount >= 2
         ? []
@@ -57,6 +65,8 @@ export function createChatFinishObserver(context: {
             const timer = setTimeout(() => {
               if (warningCount >= 2) return;
               warningCount++;
+              firstWarningIndex ??= warningCount;
+              lastWarningIndex = warningCount;
               const elapsedMs = Math.max(0, Date.now() - startedAt);
               try {
                 console.warn(
@@ -67,16 +77,11 @@ export function createChatFinishObserver(context: {
                     route: "/api/chat",
                     timestamp: new Date().toISOString(),
                     outcome: "pending",
-                    stage: FINISH_STAGES.includes(stage) ? stage : "unknown",
-                    phase: phase === "provider_retry" ? phase : "primary",
-                    mode: ["ask", "agent"].includes(context.mode)
-                      ? context.mode
-                      : undefined,
+                    ...stageContext,
                     stage_elapsed_ms: elapsedMs,
                     warning_threshold_ms: thresholdMs,
                     timer_lateness_ms: Math.max(0, elapsedMs - thresholdMs),
                     warning_index: warningCount,
-                    ...identifiers,
                   }),
                 );
               } catch {
@@ -86,10 +91,35 @@ export function createChatFinishObserver(context: {
             timer.unref?.();
             return timer;
           });
+    let outcome: "fulfilled" | "rejected" = "fulfilled";
     try {
       return await operation();
+    } catch (error) {
+      outcome = "rejected";
+      throw error;
     } finally {
       for (const timer of timers) clearTimeout(timer);
+      // Only waits that used the shared warning budget emit an outcome.
+      if (firstWarningIndex !== undefined) {
+        try {
+          console.info(
+            JSON.stringify({
+              event: "chat_finish_wait_settled",
+              level: "info",
+              service: "chat-handler",
+              route: "/api/chat",
+              timestamp: new Date().toISOString(),
+              ...stageContext,
+              outcome,
+              stage_elapsed_ms: Math.max(0, Date.now() - startedAt),
+              first_warning_index: firstWarningIndex,
+              last_warning_index: lastWarningIndex,
+            }),
+          );
+        } catch {
+          // Diagnostics must not replace the finishing result or error.
+        }
+      }
     }
   };
 }

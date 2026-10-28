@@ -2,6 +2,9 @@ import "@testing-library/jest-dom";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+let mockIsMobile: boolean | undefined = false;
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
+
 const mockGlobalState = {
   subscription: "free",
   localConnections: [] as
@@ -41,6 +44,23 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
+  it.each([true, false])(
+    "closes the menu when the mobile layout changes from %s",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const { rerender } = render(<SandboxSelector value="e2b" />);
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+      mockIsMobile = !mobile;
+      rerender(<SandboxSelector value="e2b" />);
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+    },
+  );
+
   it("keeps its trigger within constrained mobile toolbars", () => {
     render(<SandboxSelector value="desktop" />);
 
@@ -52,6 +72,7 @@ describe("SandboxSelector", () => {
   });
 
   beforeEach(() => {
+    mockIsMobile = false;
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";

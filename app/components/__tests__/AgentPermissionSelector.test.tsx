@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const setAgentPermissionMode = jest.fn();
@@ -42,6 +42,41 @@ describe("AgentPermissionSelector", () => {
     resolveAgentAutoReviewAvailability.mockClear();
     captureAuthenticatedEvent.mockClear();
   });
+
+  it.each([true, false])(
+    "closes the permission menu when the mobile layout changes from %s",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const view = (
+        <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
+      );
+      const { rerender } = render(view);
+      fireEvent.click(screen.getByRole("button", { name: /full access/i }));
+      expect(
+        screen.getByRole("button", {
+          name: /ask for approval always ask before commands and file changes/i,
+        }),
+      ).toBeVisible();
+      mockIsMobile = !mobile;
+      rerender(
+        <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", {
+            name: /ask for approval always ask before commands and file changes/i,
+          }),
+        ).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /full access/i }));
+      expect(
+        screen.getByRole("button", {
+          name: /ask for approval always ask before commands and file changes/i,
+        }),
+      ).toBeVisible();
+      expect(setAgentPermissionMode).not.toHaveBeenCalled();
+    },
+  );
 
   it("resolves availability when the selector is encountered", () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
