@@ -377,6 +377,108 @@ export const isTerminalEmptyAssistantResponse = (
   finishReason === "stop" &&
   parts.every((part) => isFallbackSafeProviderPart(part) || isToolPart(part));
 
+export const AGENT_FINISH_CONTINUATION_PROMPT =
+  "Your previous response stopped without completing the next action. Continue from the completed work and tool results already shown. Do not repeat a tool action whose outcome is unknown. Either finish the next useful action, report a concrete blocker, or give a clear, verified partial result.";
+export const AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE =
+  "\n\nI stopped before completing the next action. The work above is preserved, but I could not verify the remaining result. You can continue this chat to investigate further.";
+
+export type AgentFinishContinuation = {
+  reason: "empty_after_tools" | "announced_next_action";
+  messages: UIMessage[];
+};
+
+/** One safe continuation for a normal Agent stop that did not finish its work. */
+export const prepareAgentFinishContinuation = (
+  messages: UIMessage[],
+  finishReason?: string,
+): AgentFinishContinuation | undefined => {
+  if (finishReason !== "stop") return undefined;
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  if (!assistant) return undefined;
+  const parts = assistant.parts ?? [];
+  if (
+    messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        (message.parts ?? []).some(
+          (part) =>
+            isToolPart(part) &&
+            (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part)),
+        ),
+    )
+  )
+    return undefined;
+
+  const completedToolCount = parts.filter(isCompletedToolPart).length;
+  if (
+    completedToolCount &&
+    isTerminalEmptyAssistantResponse(parts, finishReason)
+  ) {
+    const continuation = prepareProviderDisconnectContinuation(messages);
+    return continuation
+      ? { reason: "empty_after_tools", messages: continuation.messages }
+      : undefined;
+  }
+
+  const lastToolIndex = parts.findLastIndex(isToolPart);
+  const finalText = parts
+    .slice(lastToolIndex + 1)
+    .filter((part) => getPartType(part) === "text")
+    .map((part) => getPartText(part) ?? "")
+    .join(" ")
+    .trim();
+  // Only a short, explicit promise by the assistant to do work is eligible.
+  // A result, blocker, partial report, or proposed user action is a valid stop.
+  if (finalText.length === 0 || finalText.length > 400) return undefined;
+  const finalParagraph =
+    finalText
+      .split(/\n\s*\n/)
+      .at(-1)
+      ?.trim() ?? "";
+  if (
+    /[.!?]\s+\S/.test(finalParagraph) ||
+    !/^(?:I(?:'|’)?ll|I will|I need to|I(?:'|’)?m going to|Let me|Next,? I(?:'|’)?ll)\s+(?:check|test|inspect|verify|run|read|search|review|trace|try|examine|compare|investigate|reproduce|probe|look\s+(?:at|for|into))\b/i.test(
+      finalParagraph,
+    ) ||
+    /\b(?:if you(?:'|’)?d like|if you want|once you|you can|unable to|cannot|can(?:'|’)?t)\b/i.test(
+      finalParagraph,
+    )
+  )
+    return undefined;
+
+  return { reason: "announced_next_action", messages };
+};
+
+/** Make the bounded second stop honest in both the live stream and saved chat. */
+export const appendAgentFinishContinuationLimit = (
+  messages: UIMessage[],
+  writer: UIMessageStreamWriter,
+  messageId: string,
+): void => {
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  if (!assistant) return;
+  assistant.parts = [
+    ...assistant.parts,
+    {
+      type: "text",
+      text: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      state: "done",
+    },
+  ];
+  const textId = `agent-finish-limit-${messageId}`;
+  writer.write({ type: "text-start", id: textId });
+  writer.write({
+    type: "text-delta",
+    id: textId,
+    delta: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+  });
+  writer.write({ type: "text-end", id: textId });
+};
+
 /** Unknown tool outcomes require review before automatic provider recovery. */
 export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
   parts.some(

@@ -1,5 +1,8 @@
 import {
+  AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+  appendAgentFinishContinuationLimit,
   appendProviderEmptyResponseFailure,
+  prepareAgentFinishContinuation,
   createAssistantContentLoopMonitor,
   decideProviderRecovery,
   getProviderOutputDiagnostics,
@@ -15,6 +18,101 @@ import {
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
 import type { UIMessage } from "ai";
+
+describe("prepareAgentFinishContinuation", () => {
+  const completedTool = {
+    type: "tool-run_terminal_cmd",
+    toolCallId: "completed",
+    state: "output-available",
+    input: { command: "check" },
+    output: { ok: true },
+  };
+  const assistant = (parts: unknown[]) =>
+    [{ id: "assistant", role: "assistant", parts }] as UIMessage[];
+
+  it("continues an empty normal stop after completed work without repeating the tool", () => {
+    const messages = assistant([
+      { type: "step-start" },
+      completedTool,
+      { type: "step-start" },
+      { type: "reasoning", text: "private" },
+    ]);
+    const continuation = prepareAgentFinishContinuation(messages, "stop");
+    expect(continuation?.reason).toBe("empty_after_tools");
+    expect(continuation?.messages[0].parts).toEqual([
+      { type: "step-start" },
+      completedTool,
+    ]);
+    expect(prepareAgentFinishContinuation(messages, "error")).toBeUndefined();
+  });
+
+  it("preserves the transcript when the assistant promises a next action but stops", () => {
+    const messages = assistant([
+      { type: "step-start" },
+      completedTool,
+      { type: "step-start" },
+      { type: "text", text: "I'll verify the result now." },
+    ]);
+    expect(prepareAgentFinishContinuation(messages, "stop")).toEqual({
+      reason: "announced_next_action",
+      messages,
+    });
+  });
+
+  it.each([
+    "The result is verified and the task is complete.",
+    "I found a blocker: the service is unavailable. Here is what I verified.",
+    "I verified the first result. The second needs your approval.",
+    "If you want, I'll check another case.",
+    "I'll check the result. The result is good.",
+  ])("allows a genuine result or blocker to finish: %s", (text) => {
+    expect(
+      prepareAgentFinishContinuation(
+        assistant([{ type: "text", text }]),
+        "stop",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("refuses an uncertain tool outcome even if a later tool completed", () => {
+    expect(
+      prepareAgentFinishContinuation(
+        assistant([
+          { type: "step-start" },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "unknown",
+            state: "input-available",
+            input: {},
+          },
+          completedTool,
+          { type: "text", text: "I'll verify the result now." },
+        ]),
+        "stop",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reports an unfinished second stop in both the saved answer and live stream", () => {
+    const messages = assistant([
+      { type: "text", text: "I'll check the remaining result." },
+    ]);
+    const write = jest.fn();
+    appendAgentFinishContinuationLimit(messages, { write } as any, "assistant");
+    expect(messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        type: "text",
+        text: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      }),
+    );
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "text-delta",
+        delta: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      }),
+    );
+  });
+});
 
 describe("prepareProviderDisconnectContinuation", () => {
   it.each([

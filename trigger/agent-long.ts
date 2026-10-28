@@ -284,6 +284,8 @@ import {
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
+  AGENT_FINISH_CONTINUATION_PROMPT,
+  appendAgentFinishContinuationLimit,
   appendProviderEmptyResponseFailure,
   decideProviderRecovery,
   detectAssistantContentLoopFromParts,
@@ -291,6 +293,7 @@ import {
   hasUncertainProviderToolOutcome,
   isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
+  prepareAgentFinishContinuation,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   type ProviderDisconnectContinuationRejection,
@@ -3192,6 +3195,7 @@ export const agentLongTask = task({
               : null;
 
             let isRetryWithFallback = false;
+            let finishContinuationAttempted = false;
             let retryUsedFallbackModel = false;
             let providerRecoveryAttempts = 0;
             const providerRecoveryModels: string[] = [];
@@ -4069,6 +4073,24 @@ export const agentLongTask = task({
                   retryMessageId,
                   writer,
                 );
+              } else if (
+                finishContinuationAttempted &&
+                !retryAborted &&
+                !userStopSignal.signal.aborted &&
+                prepareAgentFinishContinuation(
+                  retryMessages.map((message) =>
+                    message.role === "assistant"
+                      ? stripAgentLongHeartbeatParts(message)
+                      : message,
+                  ),
+                  state.streamFinishReason,
+                )
+              ) {
+                appendAgentFinishContinuationLimit(
+                  retryMessages,
+                  writer,
+                  retryMessageId,
+                );
               }
               const fallbackCacheRead =
                 usageTracker.cacheReadTokens - preFallbackCacheRead;
@@ -4553,6 +4575,26 @@ export const agentLongTask = task({
                             message.role !== "assistant" ||
                             (message.parts?.length ?? 0) > 0,
                         );
+                      const finishContinuation =
+                        mode === "agent" &&
+                        !isAborted &&
+                        !userStopSignal.signal.aborted &&
+                        !isRetryWithFallback &&
+                        !hasTerminalProviderStreamError &&
+                        !agentLongDurationExceeded &&
+                        !state.stoppedDueToStepLimit &&
+                        !state.stoppedDueToTokenExhaustion &&
+                        !state.stoppedDueToElapsedTimeout &&
+                        !state.stoppedDueToBudgetExhaustion &&
+                        !state.stoppedDueToAgentRunSpendCap &&
+                        !state.stoppedDueToPostSummarizationIncomplete &&
+                        !state.stoppedDueToDoomLoop &&
+                        !stoppedDueToAssistantContentLoop
+                          ? prepareAgentFinishContinuation(
+                              normalizedFinishedMessages,
+                              state.streamFinishReason,
+                            )
+                          : undefined;
                       let continuationRejection:
                         | ProviderDisconnectContinuationRejection
                         | "not_evaluated" = "not_evaluated";
@@ -4596,6 +4638,7 @@ export const agentLongTask = task({
                             shouldRetryWithFallback ||
                             shouldRetryWithoutImageToolResults ||
                             shouldRetryWithVisionSummary ||
+                            Boolean(finishContinuation) ||
                             shouldContinueAfterProviderDisconnect),
                         modelEligible:
                           isAutoModel ||
@@ -4607,6 +4650,7 @@ export const agentLongTask = task({
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
                           shouldRetryExplicitDeepSeekProReasoning ||
+                          Boolean(finishContinuation) ||
                           shouldContinueAfterProviderDisconnect,
                       });
                       const shouldAttemptProviderRetry =
@@ -4731,9 +4775,10 @@ export const agentLongTask = task({
                         const loopTriggeredRetry =
                           stoppedDueToAssistantContentLoop ||
                           state.stoppedDueToDoomLoop;
-                        const retryReason =
-                          terminalEmptyResponse &&
-                          shouldContinueAfterProviderDisconnect
+                        const retryReason = finishContinuation
+                          ? `agent_finish_${finishContinuation.reason}`
+                          : terminalEmptyResponse &&
+                              shouldContinueAfterProviderDisconnect
                             ? "empty_answer_continuation"
                             : terminalEmptyResponse
                               ? "empty_answer"
@@ -4761,26 +4806,28 @@ export const agentLongTask = task({
                           : undefined;
                         const retryModel = shouldRecoverAbliterationStreamError
                           ? fallbackModel
-                          : shouldRetryWithVisionSummary
-                            ? selectModel(
-                                mode,
-                                subscription,
-                                selectedModelOverride,
-                                false,
-                                false,
-                                { extraUsageAvailable },
-                              )
-                            : shouldRetryWithoutImageToolResults
-                              ? selectedModel
-                              : providerContentBlocked &&
-                                  selectedModelOverride !== "hackerai-max"
-                                ? getContentFilterRetryModel(
-                                    selectedModel,
-                                    mode,
-                                    blockedProviderModel,
-                                    fallbackModel,
-                                  )
-                                : fallbackModel;
+                          : finishContinuation
+                            ? selectedModel
+                            : shouldRetryWithVisionSummary
+                              ? selectModel(
+                                  mode,
+                                  subscription,
+                                  selectedModelOverride,
+                                  false,
+                                  false,
+                                  { extraUsageAvailable },
+                                )
+                              : shouldRetryWithoutImageToolResults
+                                ? selectedModel
+                                : providerContentBlocked &&
+                                    selectedModelOverride !== "hackerai-max"
+                                  ? getContentFilterRetryModel(
+                                      selectedModel,
+                                      mode,
+                                      blockedProviderModel,
+                                      fallbackModel,
+                                    )
+                                  : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
                         streamCtx.ignoredProviderSlugs =
@@ -4835,6 +4882,8 @@ export const agentLongTask = task({
                           });
                         }
                         isRetryWithFallback = true;
+                        finishContinuationAttempted =
+                          Boolean(finishContinuation);
                         streamError = undefined;
                         const fallbackStartTime = Date.now();
                         preFallbackCacheRead = usageTracker.cacheReadTokens;
@@ -4843,7 +4892,22 @@ export const agentLongTask = task({
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetAgentStreamStateForRetry(state);
-                        if (shouldRetryWithVisionSummary) {
+                        if (finishContinuation) {
+                          state.finalMessages = [
+                            ...state.finalMessages,
+                            ...finishContinuation.messages,
+                            {
+                              id: generateId(),
+                              role: "user",
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_FINISH_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                        } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
                           usageTracker.prepareModelRetry({
                             isLoopRecovery: loopTriggeredRetry,
@@ -4884,11 +4948,15 @@ export const agentLongTask = task({
                             isLoopRecovery: loopTriggeredRetry,
                           });
                         }
-                        if (providerDisconnectContinuation) {
+                        if (
+                          finishContinuation ||
+                          providerDisconnectContinuation
+                        ) {
                           const preservedFileIds = getFileAccumulator()
                             .getAll()
                             .map((file) => file.fileId);
-                          for (const message of providerDisconnectContinuation.messages) {
+                          for (const message of (finishContinuation ??
+                            providerDisconnectContinuation)!.messages) {
                             if (message.role !== "assistant") continue;
                             await saveMessage({
                               chatId,
