@@ -568,6 +568,7 @@ export function AgentBrowserPreview({
   const canTake =
     !frameStale &&
     !human &&
+    !exitRetryAvailable &&
     (effectiveState === "agent" ||
       effectiveState === "waiting" ||
       effectiveState === "recovery");
@@ -1520,9 +1521,11 @@ export function AgentBrowserPreview({
         {fullScreen && session && !human && hasTakenControl && (
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-center text-sm shadow-lg">
             <p role="status" className="text-muted-foreground">
-              {effectiveState === "human" || effectiveState === "claiming"
-                ? "Waiting for the previous control session to release…"
-                : "Browser control disconnected. Reconnect to click and type."}
+              {exitRetryAvailable
+                ? "Finish the pending exit or return to chat before taking control again."
+                : effectiveState === "human" || effectiveState === "claiming"
+                  ? "Waiting for the previous control session to release…"
+                  : "Browser control disconnected. Reconnect to click and type."}
             </p>
             <button
               type="button"

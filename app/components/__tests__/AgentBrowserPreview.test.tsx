@@ -2317,6 +2317,11 @@ it("restores the resume request id and note after returning to chat and reopenin
   fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
   view.unmount();
   await mount();
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeDisabled();
+  await takeControl();
+  expect(actions.filter((a) => a.action === "take")).toHaveLength(1);
   expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
   expect(screen.getByRole("textbox")).toHaveValue("Keep my context");
