@@ -1262,6 +1262,7 @@ describe("getMessagesByChatId", () => {
   it.each([
     {
       name: "empty history",
+      hasClientMessages: false,
       mode: "agent",
       regenerate: false,
       page: [],
@@ -1271,6 +1272,7 @@ describe("getMessagesByChatId", () => {
     },
     {
       name: "over-budget history",
+      hasClientMessages: false,
       mode: "ask",
       regenerate: false,
       page: [
@@ -1286,6 +1288,7 @@ describe("getMessagesByChatId", () => {
     },
     {
       name: "assistant-only regeneration",
+      hasClientMessages: false,
       mode: "agent",
       regenerate: true,
       page: [
@@ -1299,12 +1302,41 @@ describe("getMessagesByChatId", () => {
       before: 1,
       reason: "regenerate_removed_all",
     },
+    {
+      name: "empty regeneration candidate with ignored client messages",
+      hasClientMessages: true,
+      mode: "agent",
+      regenerate: true,
+      page: [],
+      fileTokens: [],
+      before: 0,
+      reason: "no_candidate_messages",
+    },
   ] as const)(
     "diagnoses $name without changing its empty return",
-    async ({ mode, regenerate, page, fileTokens, before, reason }) => {
+    async ({
+      mode,
+      regenerate,
+      page,
+      fileTokens,
+      before,
+      reason,
+      hasClientMessages,
+    }) => {
       const { getMessagesByChatId, mockQuery } =
         await loadSaveMessageWithMocks();
       const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const newMessages = hasClientMessages
+        ? [
+            {
+              id: "client-only",
+              role: "user" as const,
+              parts: [
+                { type: "text" as const, text: "private-client-content" },
+              ],
+            },
+          ]
+        : [];
       try {
         mockQuery
           .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
@@ -1318,7 +1350,7 @@ describe("getMessagesByChatId", () => {
           chatId: "chat-1",
           userId: "user-1",
           subscription: "pro",
-          newMessages: [],
+          newMessages,
           regenerate,
           mode,
         });
@@ -1338,7 +1370,7 @@ describe("getMessagesByChatId", () => {
             mode,
             regenerate,
             fetched_messages_count: page.length,
-            new_messages_count: 0,
+            new_messages_count: newMessages.length,
             projected_messages_before_regenerate_count: before,
             projected_messages_count: 0,
             pages_fetched: 1,

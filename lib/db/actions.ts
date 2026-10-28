@@ -1451,6 +1451,11 @@ export async function updateChatTitle({
   }
 }
 
+/**
+ * Rehydrate persisted history within the request's context budget. Regeneration
+ * uses stored history without appending client messages. Empty paginated
+ * projections retain the caller's fallback behavior and emit bounded diagnostics.
+ */
 export async function getMessagesByChatId({
   chatId,
   userId,
@@ -1755,7 +1760,8 @@ export async function getMessagesByChatId({
                   projection_reason:
                     projectedMessageCountBeforeRegenerate > 0
                       ? "regenerate_removed_all"
-                      : fetchedDesc.length === 0 && newMessages.length === 0
+                      : fetchedDesc.length === 0 &&
+                          (regenerate || newMessages.length === 0)
                         ? "no_candidate_messages"
                         : "token_projection_empty",
                 },
