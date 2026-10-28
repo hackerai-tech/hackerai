@@ -579,6 +579,43 @@ describe("goal controls", () => {
     },
   );
 
+  it.each([false, true])(
+    "allows an achieved goal to be edited again (mobile=%s)",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const savedGoal = { ...goal, state: "achieved", generation: 7 };
+      setMockQueryResult(savedGoal);
+      const loaded = jest.fn();
+      const onEdit = jest.fn(async (value, prepare) => {
+        expect(prepare()).toBe(true);
+        loaded(value);
+        return true;
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+          onEdit={onEdit}
+        />,
+      );
+      await act(async () => {});
+      if (mobile)
+        fireEvent.click(
+          screen.getByRole("button", { name: "Show goal details" }),
+        );
+      fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+      await waitFor(() => expect(loaded).toHaveBeenCalledWith(savedGoal));
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({ method: "POST" }),
+      );
+    },
+  );
+
   it("resumes a paused mobile goal from its popover and then dismisses it", async () => {
     mockIsMobile = true;
     setMockQueryResult({ ...goal, state: "paused", maxRuns: 3 });

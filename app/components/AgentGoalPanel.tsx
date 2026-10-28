@@ -363,7 +363,7 @@ export function AgentGoalPanel({
                       goal.state,
                     ) || goal.activeRunId
                       ? control("pause")
-                      : Promise.resolve(true),
+                      : true,
                   );
                   if (loaded) {
                     openingEditor.current = isMobile === true;
@@ -581,6 +581,10 @@ export function AgentGoalPanel({
             sideOffset={8}
             collisionPadding={12}
             aria-label="Goal achievement details"
+            onCloseAutoFocus={(event) => {
+              if (openingEditor.current) event.preventDefault();
+              openingEditor.current = false;
+            }}
             className="w-[calc(100vw-2rem)] max-w-md max-h-[min(60dvh,var(--radix-popover-content-available-height))] space-y-3 overflow-y-auto overscroll-contain rounded-xl p-3 break-words [overflow-wrap:anywhere]"
           >
             <div className="flex items-center justify-between gap-2">
@@ -590,7 +594,7 @@ export function AgentGoalPanel({
             {details}
           </PopoverContent>
         </Popover>
-        {!isMobile && deleteAction}
+        {!isMobile && actions}
       </section>
     );
   }

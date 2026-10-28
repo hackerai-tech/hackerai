@@ -108,7 +108,7 @@ export type EditableGoal = GoalContract & {
 };
 export type EditGoalInComposer = (
   goal: EditableGoal,
-  prepare: () => Promise<boolean>,
+  prepare: () => boolean | Promise<boolean>,
 ) => Promise<boolean>;
 export function goalEditText(goal: EditableGoal): string {
   const lines = [goal.objective];

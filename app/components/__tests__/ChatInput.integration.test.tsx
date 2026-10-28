@@ -3391,6 +3391,10 @@ describe("ChatInput - Integration Tests", () => {
       await waitFor(() => expect(input).toHaveFocus());
       expect(screen.getByText("edit-context.txt")).toBeVisible();
       fireEvent.change(input, { target: { value: "Read the updated marker" } });
+      fireEvent.click(screen.getByRole("button", { name: "Edit saved goal" }));
+      expect(input).toHaveValue("Read the updated marker");
+      expect(input).toHaveFocus();
+      expect(prepare).toHaveBeenCalledTimes(1);
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() =>
         expect(mockOnSubmit).toHaveBeenCalledWith(

@@ -866,12 +866,24 @@ const ChatInputContent = ({
       : undefined);
 
   const [goalMode, setGoalMode, editGeneration] = useComposerGoalMode(draftId);
+  const focusGoalComposer = () => {
+    if (!isMountedRef.current || prevDraftIdRef.current !== draftId) return;
+    const textarea = chatInputContainerRef.current?.querySelector("textarea");
+    textarea?.focus();
+    textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+  };
   const loadGoalForEdit: EditGoalInComposer = async (goal, prepare) => {
+    if (goalMode && editGeneration === goal.generation) {
+      focusGoalComposer();
+      return true;
+    }
     if (getInput().trim()) {
       toast.info("Send or clear your draft before editing the goal.");
       return false;
     }
-    if (!(await prepare())) return false;
+    const prepared = prepare();
+    if (!(typeof prepared === "boolean" ? prepared : await prepared))
+      return false;
     // Stop/save can take time. Do not replace text typed in the meantime or
     // load an old chat's goal after navigation.
     if (!isMountedRef.current || prevDraftIdRef.current !== draftId)
@@ -882,11 +894,10 @@ const ChatInputContent = ({
     }
     setInput(goalEditText(goal));
     setGoalMode(true, goal.generation);
-    requestAnimationFrame(() => {
-      const textarea = chatInputContainerRef.current?.querySelector("textarea");
-      textarea?.focus();
-      textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
+    // Preserve tap activation for the mobile keyboard when no async stop is
+    // needed, then restore the caret after React commits the loaded value.
+    focusGoalComposer();
+    requestAnimationFrame(focusGoalComposer);
     return true;
   };
   const [goalEnabled, setGoalEnabled] = useState(false);
