@@ -72,6 +72,12 @@ export function AgentPermissionSelector({
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
   const isMobile = useIsMobile();
+  const [menuLayout, setMenuLayout] = useState(isMobile);
+  // Close before committing a different menu/focus scope at the breakpoint.
+  if (menuLayout !== isMobile) {
+    setMenuLayout(isMobile);
+    setOpen(false);
+  }
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
   const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
     useAgentAutoReviewAvailability();

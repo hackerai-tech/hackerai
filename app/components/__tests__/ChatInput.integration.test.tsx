@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, StrictMode, useEffect, useState } from "react";
 import {
   CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
@@ -275,6 +275,144 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+  });
+
+  describe("Keyboard and draft edge cases", () => {
+    it("restores a saved draft through StrictMode mount effects", async () => {
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "saved-draft",
+              content: "Previously saved draft",
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      render(
+        <StrictMode>
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="saved-draft"
+            />
+          </TestWrapper>
+        </StrictMode>,
+      );
+      expect(await screen.findByTestId("chat-input")).toHaveValue(
+        "Previously saved draft",
+      );
+      expect(getDraftContentById("saved-draft")).toBe("Previously saved draft");
+    });
+
+    it.each([{ isComposing: true }, { keyCode: 229 }])(
+      "does not submit Enter while an IME candidate is being confirmed: %j",
+      async (compositionEvent) => {
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="ime-chat"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, { target: { value: "日本語の下書き" } });
+        fireEvent.keyDown(input, { key: "Enter", ...compositionEvent });
+        await act(async () => {});
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(input).toHaveValue("日本語の下書き");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
+    it.each(["unmount", "pagehide"])(
+      "keeps the latest draft when %s happens before the autosave delay",
+      async (boundary) => {
+        const { unmount } = render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="fast-draft"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, {
+          target: { value: "Last characters before leaving" },
+        });
+        if (boundary === "unmount") unmount();
+        else fireEvent(window, new Event("pagehide"));
+        expect(getDraftContentById("fast-draft")).toBe(
+          "Last characters before leaving",
+        );
+      },
+    );
+
+    it("keeps an unsaved queued edit mounted when a free user's Agent becomes ready", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { subscription: "free", isCheckingProPlan: false };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      const view = (status: "streaming" | "ready") => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <TaskPanelsSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status={status}
+            hasMessages
+            chatId="queued-edit"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(view("streaming"));
+      const options = await screen.findByRole("button", {
+        name: "More options for queued message: Private queued message",
+      });
+      fireEvent.keyDown(options, { key: "Enter" });
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Edit message" }),
+      );
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+        { target: { value: "Unsaved revised message" } },
+      );
+      rerender(view("ready"));
+      await act(async () => {});
+      expect(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+      ).toHaveValue("Unsaved revised message");
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "A new request while editing" },
+      });
+      fireEvent.keyDown(screen.getByTestId("chat-input"), { key: "Enter" });
+      await act(async () => {});
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Save", exact: true }),
+      );
+      expect(
+        await screen.findByTestId("regional-subscription-offer"),
+      ).toBeVisible();
+    });
   });
 
   describe("Sandbox disconnect warnings", () => {
@@ -1095,6 +1233,59 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
+    it.each(["surface", "writing-area"])(
+      "focuses the mobile editor on the first %s tap and accepts a draft",
+      async (targetName) => {
+        mockIsMobile = true;
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        const target =
+          targetName === "surface"
+            ? screen.getByTestId("chat-input-surface")
+            : input.parentElement!;
+        expect(input).not.toHaveFocus();
+        fireEvent.click(target);
+        expect(input).toHaveFocus();
+        fireEvent.change(input, { target: { value: "First tap draft" } });
+        expect(input).toHaveValue("First tap draft");
+      },
+    );
+
+    it("does not focus the editor on a scroll gesture or an upload button click", async () => {
+      mockIsMobile = true;
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status="ready"
+            hasMessages
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByTestId("chat-input");
+      const surface = screen.getByTestId("chat-input-surface");
+      fireEvent.pointerDown(surface, { pointerType: "touch" });
+      fireEvent.pointerCancel(surface, { pointerType: "touch" });
+      expect(input).not.toHaveFocus();
+      fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+      expect(input).not.toHaveFocus();
+    });
+
     it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
       mockIsMobile = true;
       jest.mocked(useAuth).mockReturnValue({
@@ -1153,10 +1344,20 @@ describe("ChatInput - Integration Tests", () => {
         .getByTestId("chat-input-mobile-sandbox")
         .querySelector("button");
       expect(sandboxTrigger).not.toBeNull();
-      fireEvent.pointerDown(sandboxTrigger!);
-      fireEvent.blur(input, { relatedTarget: sandboxTrigger });
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      act(() => input.focus());
+      fireEvent.pointerDown(sandboxTrigger!, { pointerType: "touch" });
+      jest.useFakeTimers();
+      try {
+        fireEvent.pointerUp(sandboxTrigger!, { pointerType: "touch" });
+        // Safari may deliver compatibility mouse events in a later task,
+        // blurring the textarea without focusing the tapped button.
+        act(() => jest.advanceTimersByTime(0));
+        act(() => input.blur());
+        expect(context).not.toHaveAttribute("aria-hidden", "true");
+        expect(context).not.toHaveAttribute("inert");
+      } finally {
+        jest.useRealTimers();
+      }
 
       fireEvent.click(sandboxTrigger!);
       const menu = await waitFor(() => {
@@ -1182,7 +1383,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).toHaveAttribute("aria-hidden", "true");
       expect(context).toHaveAttribute("inert");
 
-      fireEvent.pointerDown(input);
+      fireEvent.pointerDown(input, { pointerType: "touch" });
+      expect(context).toHaveAttribute("inert");
+      fireEvent.focus(input);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
@@ -1527,6 +1730,7 @@ describe("ChatInput - Integration Tests", () => {
             chatId="approval-chat"
             hasMessages
             isResolvingInitialState
+            topNotice={<button>Take control</button>}
           />
         </TestWrapper>,
       );
@@ -1534,6 +1738,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         await screen.findByTestId("chat-input-loading-state"),
       ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Take control" }),
+      ).toBeVisible();
       expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
         "h-[98px]",
       );

@@ -174,6 +174,19 @@ describe("QueuedMessagesPanel", () => {
 
     const editor = screen.getByRole("textbox", { name: "Edit queued message" });
     fireEvent.change(editor, { target: { value: "do ping carefully" } });
+    for (const compositionEvent of [{ isComposing: true }, { keyCode: 229 }]) {
+      fireEvent.keyDown(editor, { key: "Escape", ...compositionEvent });
+      fireEvent.keyDown(editor, {
+        key: "Enter",
+        ctrlKey: true,
+        ...compositionEvent,
+      });
+      expect(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+      ).toHaveValue("do ping carefully");
+      expect(onEdit).not.toHaveBeenCalled();
+      expect(onEditingMessageChange).toHaveBeenLastCalledWith("message-1");
+    }
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onEdit).toHaveBeenCalledWith("message-1", "do ping carefully");

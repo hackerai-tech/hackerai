@@ -1169,11 +1169,14 @@ export async function saveMessage({
       isHidden,
     };
 
-    // A request-scoped client avoids changing the shared singleton's fetch
-    // options while another request or task is persisting its own result.
-    const client = signal
-      ? createServiceConvexClient(getConvexUrl(), { signal })
-      : getConvexClient();
+    // Browser snapshots are independent HTTP requests. Keep their writes out of
+    // the singleton's SDK queue so an unrelated pending mutation cannot hold a
+    // partial save past its request deadline. Signal-specific clients also keep
+    // their fetch options separate. Retries still share this invocation's client.
+    const client =
+      signal || clientSnapshot
+        ? createServiceConvexClient(getConvexUrl(), { signal })
+        : getConvexClient();
     for (let attemptIndex = 0; ; attemptIndex++) {
       signal?.throwIfAborted();
       try {
@@ -1451,6 +1454,11 @@ export async function updateChatTitle({
   }
 }
 
+/**
+ * Rehydrate persisted history within the request's context budget. Paginated
+ * regeneration excludes new client messages. Empty paginated
+ * projections retain the caller's fallback behavior and emit bounded diagnostics.
+ */
 export async function getMessagesByChatId({
   chatId,
   userId,
@@ -1616,6 +1624,8 @@ export async function getMessagesByChatId({
           }
         }
 
+        const projectedMessageCountBeforeRegenerate =
+          truncatedFromLoop?.length ?? 0;
         // In regenerate mode the conversation must end with a user message.
         // The client should have deleted the last assistant message before
         // calling regenerate, but if that hasn't propagated yet we must
@@ -1729,6 +1739,39 @@ export async function getMessagesByChatId({
               independentAbliterationResponses:
                 countIndependentAbliterationResponses(abliterationHistory),
             };
+          }
+
+          if (truncatedFromLoop.length === 0) {
+            try {
+              // This early return bypasses the fallback empty-prompt diagnostics.
+              // Counts distinguish an empty source from projection/regen loss
+              // without exporting message contents or changing the return.
+              logChatMessagePreparationFailure(
+                "chat_history_projection_empty",
+                "warn",
+                {
+                  chat_id: chatId,
+                  user_id: userId,
+                  mode,
+                  regenerate: !!regenerate,
+                  fetched_messages_count: fetchedDesc.length,
+                  new_messages_count: newMessages.length,
+                  projected_messages_before_regenerate_count:
+                    projectedMessageCountBeforeRegenerate,
+                  projected_messages_count: 0,
+                  pages_fetched: pagesFetched,
+                  projection_reason:
+                    projectedMessageCountBeforeRegenerate > 0
+                      ? "regenerate_removed_all"
+                      : fetchedDesc.length === 0 &&
+                          (regenerate || newMessages.length === 0)
+                        ? "no_candidate_messages"
+                        : "token_projection_empty",
+                },
+              );
+            } catch {
+              // Optional diagnostics must not change history/fallback behavior.
+            }
           }
 
           // No summary injection (ask mode or no summary), return as normal

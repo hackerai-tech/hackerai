@@ -2664,10 +2664,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       isAtBottom={isAtBottom}
                     />
                   </div>
-                  {showChatLayout && (
-                    <BrowserHandoffEntry chatId={chatId} messages={messages} />
-                  )}
                   <ChatInput
+                    topNotice={
+                      showChatLayout ? (
+                        <BrowserHandoffEntry
+                          chatId={chatId}
+                          messages={messages}
+                        />
+                      ) : undefined
+                    }
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
