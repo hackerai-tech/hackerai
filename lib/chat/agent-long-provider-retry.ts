@@ -451,6 +451,32 @@ export const prepareAgentFinishContinuation = (
   return { reason: "announced_next_action", messages };
 };
 
+/** Prefer the bounded finish message over generic provider-empty handling. */
+export const classifyAgentRetryFinalization = ({
+  messages,
+  finishReason,
+  finishContinuationAttempted,
+  aborted,
+}: {
+  messages: UIMessage[];
+  finishReason?: string;
+  finishContinuationAttempted: boolean;
+  aborted: boolean;
+}): "finish_continuation_limit" | "terminal_empty" | undefined => {
+  if (aborted) return undefined;
+  if (
+    finishContinuationAttempted &&
+    prepareAgentFinishContinuation(messages, finishReason)
+  )
+    return "finish_continuation_limit";
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  return isTerminalEmptyAssistantResponse(assistant?.parts ?? [], finishReason)
+    ? "terminal_empty"
+    : undefined;
+};
+
 /** Make the bounded second stop honest in both the live stream and saved chat. */
 export const appendAgentFinishContinuationLimit = (
   messages: UIMessage[],

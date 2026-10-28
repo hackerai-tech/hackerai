@@ -1,6 +1,7 @@
 import {
   AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
   appendAgentFinishContinuationLimit,
+  classifyAgentRetryFinalization,
   appendProviderEmptyResponseFailure,
   prepareAgentFinishContinuation,
   createAssistantContentLoopMonitor,
@@ -111,6 +112,34 @@ describe("prepareAgentFinishContinuation", () => {
         delta: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
       }),
     );
+  });
+
+  it("uses the bounded finish message when the second stop has only completed tool output", () => {
+    const messages = assistant([{ type: "step-start" }, completedTool]);
+    const options = {
+      messages,
+      finishReason: "stop",
+      aborted: false,
+    };
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: true,
+      }),
+    ).toBe("finish_continuation_limit");
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: false,
+      }),
+    ).toBe("terminal_empty");
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: true,
+        aborted: true,
+      }),
+    ).toBeUndefined();
   });
 });
 

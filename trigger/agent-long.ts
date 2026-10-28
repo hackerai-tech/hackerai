@@ -287,6 +287,7 @@ import {
   AGENT_FINISH_CONTINUATION_PROMPT,
   appendAgentFinishContinuationLimit,
   appendProviderEmptyResponseFailure,
+  classifyAgentRetryFinalization,
   decideProviderRecovery,
   detectAssistantContentLoopFromParts,
   getProviderOutputDiagnostics,
@@ -4051,19 +4052,23 @@ export const agentLongTask = task({
               retryMessageId: string;
               retryStartTime: number;
             }) => {
-              const lastRetryAssistant = retryMessages.findLast(
-                (message) => message.role === "assistant",
-              );
-              if (
-                !retryAborted &&
-                !userStopSignal.signal.aborted &&
-                isTerminalEmptyAssistantResponse(
-                  stripAgentLongHeartbeatParts(
-                    lastRetryAssistant ?? { parts: [] },
-                  ).parts ?? [],
-                  state.streamFinishReason,
-                )
-              ) {
+              const finalization = classifyAgentRetryFinalization({
+                messages: retryMessages.map((message) =>
+                  message.role === "assistant"
+                    ? stripAgentLongHeartbeatParts(message)
+                    : message,
+                ),
+                finishReason: state.streamFinishReason,
+                finishContinuationAttempted,
+                aborted: retryAborted || userStopSignal.signal.aborted,
+              });
+              if (finalization === "finish_continuation_limit") {
+                appendAgentFinishContinuationLimit(
+                  retryMessages,
+                  writer,
+                  retryMessageId,
+                );
+              } else if (finalization === "terminal_empty") {
                 state.streamFinishReason = "error";
                 state.providerError = new Error(
                   "Provider completed without a usable answer",
@@ -4072,24 +4077,6 @@ export const agentLongTask = task({
                   retryMessages,
                   retryMessageId,
                   writer,
-                );
-              } else if (
-                finishContinuationAttempted &&
-                !retryAborted &&
-                !userStopSignal.signal.aborted &&
-                prepareAgentFinishContinuation(
-                  retryMessages.map((message) =>
-                    message.role === "assistant"
-                      ? stripAgentLongHeartbeatParts(message)
-                      : message,
-                  ),
-                  state.streamFinishReason,
-                )
-              ) {
-                appendAgentFinishContinuationLimit(
-                  retryMessages,
-                  writer,
-                  retryMessageId,
                 );
               }
               const fallbackCacheRead =
