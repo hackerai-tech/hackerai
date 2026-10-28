@@ -11,6 +11,7 @@ import { browserDaemonCommand } from "./daemon-program";
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
 
@@ -180,9 +181,8 @@ export async function renewBrowserRelay(
 ) {
   const directory = relayDirectory(session, grant);
   // Atomic replacement avoids a transient empty lease read in the relay.
-  const program = `const fs=require('node:fs');const d=process.argv[1];if(fs.existsSync(d)){if(fs.existsSync(d+'/revoked')||fs.existsSync(d+'/closed'))process.exit(1);fs.writeFileSync(d+'/lease.next',process.argv[2],{mode:384});fs.renameSync(d+'/lease.next',d+'/lease');}`;
   const result = await sandbox.commands.run(
-    `node -e ${quote(program)} ${quote(directory)} ${lease}`,
+    `node -e ${quote(RELAY_RENEW_PROGRAM)} ${quote(directory)} ${lease}`,
     {
       ...buildSandboxCommandOptions(sandbox),
       timeoutMs: 5000,
@@ -363,8 +363,11 @@ export async function sendBrowserInput(
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const handle = await sandbox.commands.run(
     browserBridgeCommand(port, "input"),
     {

@@ -1,5 +1,13 @@
 import { createHmac } from "node:crypto";
-import { Sandbox } from "@e2b/code-interpreter";
+import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
+import {
+  Sandbox,
+  SandboxError,
+  ServiceBusyError,
+  RateLimitError,
+  AuthenticationError,
+  NotFoundError,
+} from "@e2b/code-interpreter";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import {
   getActiveTriggerRunsForUser,
@@ -27,7 +35,10 @@ import {
   reopenRecovery,
 } from "../service";
 
+// Template parsing is unrelated to status reads; keep the SDK's real error types.
+jest.mock("dockerfile-ast", () => ({}));
 jest.mock("@e2b/code-interpreter", () => ({
+  ...jest.requireActual("@e2b/code-interpreter"),
   Sandbox: { getInfo: jest.fn(), list: jest.fn() },
 }));
 jest.mock("@/lib/posthog/server", () => ({
@@ -74,6 +85,7 @@ const target = {
 };
 const consent = {
   token,
+  organizationId: "org-owner",
   target,
   status: "offered" as const,
   issuedAt: Date.now(),
@@ -147,14 +159,71 @@ beforeEach(() => {
 afterAll(() => {
   process.env = prior;
 });
+it("rechecks the confirmed organization's real paid-entitlement resolution before recovery", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValue({ ...consent, status: "confirmed" });
+  jest.mocked(getCurrentAgentEntitlementContext).mockImplementation((input) =>
+    resolveCurrentAgentEntitlementContext(input, {
+      workos: {
+        userManagement: {
+          listOrganizationMemberships: async () => ({ data: [{}] }),
+        },
+        organizations: {
+          getOrganization: async () => ({ stripeCustomerId: "cus-test" }),
+        },
+      },
+      stripe: {
+        subscriptions: {
+          list: async () => ({
+            has_more: false,
+            data: [
+              {
+                id: "sub-test",
+                status: "active",
+                items: {
+                  data: [{ price: { lookup_key: "pro-monthly-plan" } }],
+                },
+              },
+            ],
+          }),
+        },
+      },
+    }),
+  );
+  await expect(
+    executeCustomerRecovery("owner", token, "us-east-1"),
+  ).resolves.toEqual({ status: "verified" });
+  expect(getCurrentAgentEntitlementContext).toHaveBeenCalledWith({
+    userId: "owner",
+    organizationId: "org-owner",
+  });
+  expect(recoverE2BDiskOnly).toHaveBeenCalledTimes(1);
+});
 it("defaults off before inspecting any workspace", async () => {
   delete process.env.CLOUD_DISK_RECOVERY_TARGETS;
   expect(await recoveryView("owner")).toEqual({ status: "hidden" });
   expect(readFailures).not.toHaveBeenCalled();
 });
+it("does not confirm or execute recovery without an authenticated organization binding", async () => {
+  jest.mocked(readConsent).mockResolvedValue(consent);
+  await expect(confirmRecovery("owner", token, true)).rejects.toThrow();
+  expect(decideConsent).not.toHaveBeenCalled();
+  jest.mocked(readConsent).mockResolvedValue({
+    ...consent,
+    organizationId: undefined,
+    status: "confirmed",
+  });
+  await expect(
+    executeCustomerRecovery("owner", token, "us-east-1"),
+  ).rejects.toThrow("support reconciliation");
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
 it("a missing/disabled assignment never authorizes consent", async () => {
   jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(null);
-  await expect(confirmRecovery("owner", token, true)).rejects.toThrow();
+  await expect(
+    confirmRecovery("owner", token, true, "org-owner"),
+  ).rejects.toThrow();
   expect(decideConsent).not.toHaveBeenCalled();
 });
 it("one failed acquisition is a normal retry, not recovery", async () => {
@@ -171,6 +240,73 @@ it("offers only after server-owned identity, idle and provider checks", async ()
   expect(offerConsent).toHaveBeenCalledWith("owner", target);
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });
+describe.each([false, true])(
+  "provider status reads with existing offer=%s",
+  (existing) => {
+    it.each([
+      new DOMException(
+        "The operation was aborted due to timeout",
+        "TimeoutError",
+      ),
+      new RateLimitError("rate limited"),
+      Object.assign(new SandboxError("unavailable"), { statusCode: 502 }),
+      Object.assign(new SandboxError("overloaded"), { statusCode: 529 }),
+      new TypeError("fetch failed"),
+    ])(
+      "keeps temporary getInfo failure %s retryable without authorizing recovery",
+      async (error) => {
+        if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
+        jest.mocked(Sandbox.getInfo).mockRejectedValueOnce(error);
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "waiting",
+        });
+        expect(offerConsent).not.toHaveBeenCalled();
+        expect(decideConsent).not.toHaveBeenCalled();
+        expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "offered",
+          token,
+        });
+      },
+    );
+    it.each([new ServiceBusyError("busy"), new TypeError("fetch failed")])(
+      "rechecks inventory after a temporary provider refusal: %s",
+      async (error) => {
+        if (existing) jest.mocked(readConsent).mockResolvedValue(consent);
+        jest.mocked(Sandbox.list).mockReturnValueOnce({
+          hasNext: false,
+          nextItems: async () => {
+            throw error;
+          },
+        } as never);
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "waiting",
+        });
+        expect(decideConsent).not.toHaveBeenCalled();
+        expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+        expect(await recoveryView("owner")).toMatchObject({
+          status: "offered",
+          token,
+        });
+      },
+    );
+  },
+);
+it.each([
+  new TypeError("programming error"),
+  new AuthenticationError("invalid key"),
+  new NotFoundError("sandbox absent"),
+  new Error("unknown failure"),
+])(
+  "keeps definitive or unknown provider errors as support: %s",
+  async (error) => {
+    jest.mocked(readConsent).mockResolvedValue(consent);
+    jest.mocked(Sandbox.getInfo).mockRejectedValueOnce(error);
+    expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+    expect(decideConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);
 it.each([undefined])(
   "cannot recover an unverified autoResume=%s workspace",
   async (autoResume) => {
@@ -256,19 +392,30 @@ it.each([
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });
 it("rejects consent from another owner or a modified/expired receipt", async () => {
-  await expect(confirmRecovery("other", token, true)).rejects.toThrow();
+  await expect(
+    confirmRecovery("other", token, true, "org-owner"),
+  ).rejects.toThrow();
   jest.mocked(readConsent).mockResolvedValue(consent);
-  await expect(confirmRecovery("owner", "other-token", true)).rejects.toThrow();
+  await expect(
+    confirmRecovery("owner", "other-token", true, "org-owner"),
+  ).rejects.toThrow();
   jest
     .mocked(readConsent)
     .mockResolvedValue({ ...consent, issuedAt: Date.now() - 660000 });
-  await expect(confirmRecovery("owner", token, true)).rejects.toThrow();
+  await expect(
+    confirmRecovery("owner", token, true, "org-owner"),
+  ).rejects.toThrow();
   expect(decideConsent).not.toHaveBeenCalled();
 });
 it("declining cannot invoke recovery and survives later reads", async () => {
   jest.mocked(readConsent).mockResolvedValue(consent);
   expect(await confirmRecovery("owner", token, false)).toBeNull();
-  expect(decideConsent).toHaveBeenCalledWith("owner", consent, false);
+  expect(decideConsent).toHaveBeenCalledWith(
+    "owner",
+    consent,
+    false,
+    undefined,
+  );
   jest
     .mocked(readConsent)
     .mockResolvedValue({ ...consent, status: "declined" });
@@ -286,8 +433,8 @@ it("only one concurrent confirmation dispatches work", async () => {
     .mockResolvedValueOnce(true)
     .mockResolvedValueOnce(false);
   const results = await Promise.all([
-    confirmRecovery("owner", token, true),
-    confirmRecovery("owner", token, true),
+    confirmRecovery("owner", token, true, "org-owner"),
+    confirmRecovery("owner", token, true, "org-owner"),
   ]);
   expect(results.filter(Boolean)).toHaveLength(1);
 });
@@ -565,7 +712,9 @@ it("rollout rollback hides new offers but preserves support for consumed consent
     status: "support",
     reference: "CR-7ad19af5",
   });
-  await expect(confirmRecovery("owner", token, true)).rejects.toThrow();
+  await expect(
+    confirmRecovery("owner", token, true, "org-owner"),
+  ).rejects.toThrow();
   expect(Sandbox.getInfo).not.toHaveBeenCalled();
   expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
 });

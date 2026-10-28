@@ -1,6 +1,6 @@
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
+import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -440,8 +440,7 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const agentModelContextEnabled = await isAgentModelContextEnabled(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,
@@ -1930,7 +1929,7 @@ export const createChatHandler = () => {
                 // Discard the failed primary leg's model usage so the user is
                 // only billed for the fallback. Non-model spend (sandbox/tools)
                 // is preserved.
-                usageTracker.resetModelLeg();
+                usageTracker.prepareModelRetry();
                 if (
                   shouldRecoverVisionApiError &&
                   !shouldRecoverAbliterationApiError
@@ -2089,11 +2088,12 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         state.streamFinishReason,
                       );
-                    const emptyResponseContinuation =
-                      terminalEmptyResponse &&
-                      !hasUncertainProviderToolOutcome(
+                    const uncertainToolOutcome =
+                      hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
-                      )
+                      );
+                    const emptyResponseContinuation =
+                      terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
                     const imageRecovery =
@@ -2123,6 +2123,7 @@ export const createChatHandler = () => {
                       new Error("Direct vision route failed");
 
                     if (
+                      !uncertainToolOutcome &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||
@@ -2344,7 +2345,9 @@ export const createChatHandler = () => {
                             emptyResponseContinuation ??
                             prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
-                            usageTracker.resetModelLeg();
+                            usageTracker.prepareModelRetry({
+                              isLoopRecovery: loopTriggeredRetry,
+                            });
                           }
                           if (
                             continuation &&
@@ -2368,17 +2371,20 @@ export const createChatHandler = () => {
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
                               imageRecovery.messages,
                             );
                         } else {
-                          // Discard the failed primary leg's model usage so the
-                          // user is only billed for the fallback. Non-model spend
-                          // (sandbox/tools) is preserved.
-                          usageTracker.resetModelLeg();
+                          // Ordinary failed-provider retries replace model usage;
+                          // loop recovery retains work already delivered.
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);

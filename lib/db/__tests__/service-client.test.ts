@@ -496,3 +496,267 @@ it("cancels only the request-scoped client's in-flight transport", async () => {
   const ordinary = createServiceConvexClient(deployment);
   await expect(ordinary.mutation(reference, {})).resolves.toBeNull();
 });
+
+describe("SDK mutation wait diagnostics", () => {
+  let warning: jest.SpyInstance;
+  const observations = () =>
+    warning.mock.calls.flatMap(([line]) => {
+      const value = JSON.parse(String(line));
+      return value.event === "convex_service_mutation_wait_pending"
+        ? [value]
+        : [];
+    });
+  const success = (value: string) =>
+    new Response(JSON.stringify({ status: "success", value, logLines: [] }));
+  beforeEach(() => {
+    jest.useFakeTimers();
+    warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it("observes a real SDK follower before dispatch without bypassing its queue", async () => {
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    const transport = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      })
+      .mockImplementation(() => Promise.resolve(success("follower")));
+    globalThis.fetch = transport;
+    const client = createServiceConvexClient(deployment);
+    const first = client.mutation(
+      makeFunctionReference<"mutation">("fixture:held"),
+      {
+        serviceKey: secret,
+        target: "PRIVATE_TARGET",
+      },
+    );
+    await started;
+    const second = client.mutation(
+      makeFunctionReference<"mutation">("fixture:follower"),
+      {
+        serviceKey: secret,
+        target: "PRIVATE_TARGET",
+      },
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+      const follower = observations().find(
+        (x) => x.function_name === "fixture:follower",
+      );
+      expect(follower).toEqual(
+        expect.objectContaining({
+          pending_mutations_at_start: 1,
+          pending_mutations_now: 2,
+          oldest_pending_function_name: "fixture:held",
+          oldest_pending_elapsed_ms: 10000,
+          sdk_elapsed_ms: 10000,
+        }),
+      );
+      expect(follower.client_instance_id).toMatch(/^[a-f0-9-]{36}$/);
+      const rpc = warning.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .find((x) => x.event === "convex_service_rpc_pending");
+      expect(rpc.client_instance_id).toBe(follower.client_instance_id);
+      expect(transport).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(
+        "PRIVATE_TARGET",
+      );
+    } finally {
+      // The SDK consumes real Response streams after dispatch; keep that I/O
+      // outside fake microtasks while still advancing the diagnostic deadline.
+      jest.useRealTimers();
+      release(success("head"));
+      await expect(first).resolves.toBe("head");
+      await expect(second).resolves.toBe("follower");
+    }
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds warning attempts in a rolling minute even when logging throws", async () => {
+    jest.setSystemTime(0);
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      })
+      .mockImplementation(() => Promise.resolve(success("ok")));
+    const client = createServiceConvexClient(deployment);
+    const ref = makeFunctionReference<"mutation">("fixture:wait");
+    const calls: Promise<unknown>[] = [];
+    warning.mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    await jest.advanceTimersByTimeAsync(49000);
+    calls.push(client.mutation(ref, {}));
+    await started;
+    calls.push(client.mutation(ref, {}));
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(observations()).toHaveLength(2);
+      calls.push(client.mutation(ref, {}));
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(observations()).toHaveLength(2);
+      await jest.advanceTimersByTimeAsync(50000);
+      calls.push(client.mutation(ref, {}));
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(observations()).toHaveLength(3);
+      expect(observations()[2].pending_mutations_now).toBe(4);
+    } finally {
+      jest.useRealTimers();
+      release(success("ok"));
+      await expect(Promise.all(calls)).resolves.toEqual([
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+      ]);
+    }
+  });
+
+  it("cleans up a rejected call before observing the next mutation", async () => {
+    const failure = new Error("original failure");
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    globalThis.fetch = jest
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      });
+    const client = createServiceConvexClient(deployment);
+    await expect(
+      client.mutation(makeFunctionReference<"mutation">("fixture:failed"), {}),
+    ).rejects.toBe(failure);
+    const next = client.mutation(
+      makeFunctionReference<"mutation">("fixture:next"),
+      {},
+    );
+    await started;
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(observations()).toEqual([
+        expect.objectContaining({
+          function_name: "fixture:next",
+          pending_mutations_at_start: 0,
+          pending_mutations_now: 1,
+          oldest_pending_function_name: "fixture:next",
+        }),
+      ]);
+    } finally {
+      jest.useRealTimers();
+      release(success("ok"));
+      await expect(next).resolves.toBe("ok");
+    }
+  });
+
+  it("preserves explicit skipQueue and clears fast-operation timers", async () => {
+    jest.useRealTimers();
+    const timers = jest.spyOn(globalThis, "setTimeout");
+    const cleared = jest.spyOn(globalThis, "clearTimeout");
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      })
+      .mockImplementation(() => Promise.resolve(success("parallel")));
+    const client = createServiceConvexClient(deployment);
+    const first = client.mutation(
+      makeFunctionReference<"mutation">("fixture:held"),
+      {},
+    );
+    await started;
+    try {
+      await expect(
+        client.mutation(
+          makeFunctionReference<"mutation">("fixture:parallel"),
+          {},
+          { skipQueue: true },
+        ),
+      ).resolves.toBe("parallel");
+    } finally {
+      release(success("head"));
+      await expect(first).resolves.toBe("head");
+    }
+    const diagnosticTimers = timers.mock.results.filter(
+      (_r, i) => timers.mock.calls[i][1] === 10000,
+    );
+    expect(diagnosticTimers).toHaveLength(4);
+    for (const timer of diagnosticTimers)
+      expect(cleared).toHaveBeenCalledWith(timer.value);
+    expect(observations()).toEqual([]);
+  });
+
+  it("keeps pending counts and correlation scoped to each client", async () => {
+    let release!: (response: Response) => void;
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    let connections = 0;
+    globalThis.fetch = jest.fn(() => {
+      if (++connections === 2) connected();
+      return held.then(() => success("ok"));
+    });
+    const ref = makeFunctionReference<"mutation">("fixture:wait");
+    const calls = [
+      createServiceConvexClient(deployment).mutation(ref, {}),
+      createServiceConvexClient(deployment).mutation(ref, {}),
+    ];
+    await started;
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(observations()).toHaveLength(2);
+      expect(
+        new Set(observations().map((x) => x.client_instance_id)).size,
+      ).toBe(2);
+      expect(observations().map((x) => x.pending_mutations_now)).toEqual([
+        1, 1,
+      ]);
+    } finally {
+      jest.useRealTimers();
+      release(success("unused"));
+      await expect(Promise.all(calls)).resolves.toEqual(["ok", "ok"]);
+    }
+  });
+});

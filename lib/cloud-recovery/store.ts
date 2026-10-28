@@ -26,6 +26,7 @@ export const consentSchema = z.object({
   status: z.enum(["offered", "declined", "confirmed", "executing", "failed"]),
   issuedAt: z.number(),
   confirmedAt: z.number().optional(),
+  organizationId: z.string().min(1).optional(),
 });
 export type RecoveryConsent = z.infer<typeof consentSchema>;
 export function recoveryRedis() {
@@ -116,11 +117,12 @@ export async function decideConsent(
   userId: string,
   consent: RecoveryConsent,
   confirmed: boolean,
+  organizationId?: string,
 ) {
   const next = {
     ...consent,
     status: confirmed ? "confirmed" : "declined",
-    ...(confirmed && { confirmedAt: Date.now() }),
+    ...(confirmed && { confirmedAt: Date.now(), organizationId }),
   };
   const changed = await recoveryRedis().eval(
     `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end

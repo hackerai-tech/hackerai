@@ -3,7 +3,7 @@ import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import {
-  getAgentModelContextVariant,
+  isExpandedAgentContextEligible,
   getAgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
@@ -1947,17 +1947,19 @@ export const agentLongTask = task({
       }
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const agentModelContextVariant = await getAgentModelContextVariant(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,
       );
+      // Keep attribution compatible with historical records and feedback selection.
+      const agentModelContextVariant = agentModelContextEnabled
+        ? ("test" as const)
+        : undefined;
       runReporting.setAgentModelContextVariant(
         agentModelContextVariant,
         getAgentModelContextFlag(selectedModelOverride),
       );
-      const agentModelContextEnabled = agentModelContextVariant === "test";
       const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
         posthog,
         userId,
@@ -4333,7 +4335,7 @@ export const agentLongTask = task({
                 resetAgentStreamStateForRetry(state);
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
-                usageTracker.resetModelLeg();
+                usageTracker.prepareModelRetry();
                 if (
                   shouldRecoverVisionApiError &&
                   !shouldRecoverAbliterationApiError
@@ -4498,6 +4500,10 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           state.streamFinishReason,
                         );
+                      const uncertainToolOutcome =
+                        hasUncertainProviderToolOutcome(
+                          lastAssistantMessageParts,
+                        );
                       const imageRecovery =
                         state.providerRejectedMultimodalToolResults
                           ? omitImageViewToolResultsForProviderRetry(
@@ -4542,12 +4548,10 @@ export const agentLongTask = task({
                         | ProviderDisconnectContinuationRejection
                         | "not_evaluated" = "not_evaluated";
                       const providerDisconnectContinuation =
+                        !uncertainToolOutcome &&
                         (hasTerminalProviderStreamError ||
                           terminalEmptyResponse) &&
-                        ((terminalEmptyResponse &&
-                          !hasUncertainProviderToolOutcome(
-                            lastAssistantMessageParts,
-                          )) ||
+                        (terminalEmptyResponse ||
                           shouldRecoverAbliterationStreamError ||
                           isRetriableProviderStreamDisconnectError(
                             state.providerError,
@@ -4577,11 +4581,12 @@ export const agentLongTask = task({
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
                         hasCandidate:
-                          shouldRecoverAbliterationStreamError ||
-                          shouldRetryWithFallback ||
-                          shouldRetryWithoutImageToolResults ||
-                          shouldRetryWithVisionSummary ||
-                          shouldContinueAfterProviderDisconnect,
+                          !uncertainToolOutcome &&
+                          (shouldRecoverAbliterationStreamError ||
+                            shouldRetryWithFallback ||
+                            shouldRetryWithoutImageToolResults ||
+                            shouldRetryWithVisionSummary ||
+                            shouldContinueAfterProviderDisconnect),
                         modelEligible:
                           isAutoModel ||
                           shouldRecoverAbliterationStreamError ||
@@ -4713,6 +4718,9 @@ export const agentLongTask = task({
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
                       ) {
+                        const loopTriggeredRetry =
+                          stoppedDueToAssistantContentLoop ||
+                          state.stoppedDueToDoomLoop;
                         const retryReason =
                           terminalEmptyResponse &&
                           shouldContinueAfterProviderDisconnect
@@ -4827,7 +4835,9 @@ export const agentLongTask = task({
                         resetAgentStreamStateForRetry(state);
                         if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (providerDisconnectContinuation) {
                           state.finalMessages = [
                             ...state.finalMessages,
@@ -4860,7 +4870,9 @@ export const agentLongTask = task({
                               normalizedRetryMessages,
                             );
                         } else {
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         }
                         if (providerDisconnectContinuation) {
                           const preservedFileIds = getFileAccumulator()
@@ -4940,6 +4952,12 @@ export const agentLongTask = task({
                                     isTerminalProviderStreamError(state) &&
                                     isRetriableProviderStreamDisconnectError(
                                       state.providerError,
+                                    ) &&
+                                    !hasUncertainProviderToolOutcome(
+                                      normalizedRetryMessages.findLast(
+                                        (message) =>
+                                          message.role === "assistant",
+                                      )?.parts ?? [],
                                     ) &&
                                     !retryAborted
                                       ? prepareProviderDisconnectContinuation(

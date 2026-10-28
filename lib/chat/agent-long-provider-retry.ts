@@ -18,6 +18,7 @@ type MessagePartLike = {
   output?: unknown;
   result?: unknown;
   errorText?: unknown;
+  executionOutcome?: unknown;
 };
 
 type RetryDecisionOptions = {
@@ -82,6 +83,16 @@ const getPartState = (part: unknown): string | undefined => {
 const isToolPart = (part: unknown): boolean =>
   getPartType(part)?.startsWith("tool-") ?? false;
 
+const hasUnknownExecutionOutcome = (value: unknown, depth = 0): boolean => {
+  if (!value || typeof value !== "object" || depth > 3) return false;
+  const candidate = value as MessagePartLike;
+  return (
+    candidate.executionOutcome === "unknown" ||
+    hasUnknownExecutionOutcome(candidate.output, depth + 1) ||
+    hasUnknownExecutionOutcome(candidate.result, depth + 1)
+  );
+};
+
 const hasToolOutputOrError = (part: unknown): boolean => {
   if (!part || typeof part !== "object") return false;
   const candidate = part as MessagePartLike;
@@ -109,6 +120,7 @@ export const getProviderOutputDiagnostics = (parts: unknown[]) => ({
   completed_tool_count: parts.filter(isCompletedToolPart).length,
   has_durable_output: hasDurableAssistantPart(parts),
   has_step_boundary: parts.some((part) => getPartType(part) === "step-start"),
+  uncertain_tool_outcome: hasUncertainProviderToolOutcome(parts),
 });
 
 /** Shared eligibility and skip reason so telemetry cannot drift from behavior. */
@@ -352,9 +364,15 @@ export const isTerminalEmptyAssistantResponse = (
   finishReason === "stop" &&
   parts.every((part) => isFallbackSafeProviderPart(part) || isToolPart(part));
 
-/** Unknown tool outcomes require user review before any model continuation. */
+/** Unknown tool outcomes require review before automatic provider recovery. */
 export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
-  parts.some((part) => isToolPart(part) && !isCompletedToolPart(part));
+  parts.some(
+    (part) =>
+      isToolPart(part) &&
+      (hasUnknownExecutionOutcome(part) ||
+        (!isCompletedToolPart(part) &&
+          !isRestartableInterruptedToolInput(part))),
+  );
 
 export const PROVIDER_EMPTY_RESPONSE_MESSAGE =
   "The model finished without a usable answer. Any completed tool results remain in this chat, but I could not safely finish the response. Continue this chat to review the work before repeating any action.";

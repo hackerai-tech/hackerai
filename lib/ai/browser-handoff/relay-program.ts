@@ -18,6 +18,7 @@ let sequence = 0;
 let expectedInput = 1;
 let lastInputBody = '';
 let lastSent = 0;
+let heldMouse;
 const socket = new WebSocket('ws://127.0.0.1:' + config.port);
 const root = config.root;
 function valid() {
@@ -34,6 +35,11 @@ function stop() {
   clearInterval(timer);
   if (viewer) viewer.end();
   server.close();
+  if (heldMouse && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({type: 'input_mouse', eventType: 'mouseReleased',
+      x: heldMouse.x, y: heldMouse.y, button: 'left'}));
+    heldMouse = undefined;
+  }
   // The close handshake follows accepted input on the same ordered socket.
   // Resume waits for this acknowledgement before capturing/unpausing.
   socket.close();
@@ -112,7 +118,17 @@ const server = http.createServer(async (req, res) => {
     if (parsed.sequence !== expectedInput || socket.bufferedAmount > 65536) {
       reply(res, 409, {}); return;
     }
-    for (const event of events) socket.send(JSON.stringify(event));
+    for (const event of events) {
+      socket.send(JSON.stringify(event));
+      if (event.type === 'input_mouse') {
+        if (event.eventType === 'mousePressed' ||
+            (event.eventType === 'mouseMoved' && event.button === 'left')) {
+          heldMouse = {x: event.x, y: event.y};
+        } else if (event.eventType === 'mouseReleased' || event.eventType === 'mouseMoved') {
+          heldMouse = undefined;
+        }
+      }
+    }
     expectedInput++;
     lastInputBody = body;
     reply(res, 200, {ok: true});
@@ -146,6 +162,34 @@ export function browserRelayProgram() {
     `(${createBrowserInputNormalizer.toString()})`,
   );
 }
+
+// Requests can finish out of order, including after an HTTP timeout. Serialize
+// the read/max/replace so an older deadline cannot undo a successful renewal.
+export const RELAY_RENEW_PROGRAM = String.raw`
+const fs = require('node:fs');
+const d = process.argv[1], deadline = Number(process.argv[2]);
+(async () => {
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Invalid lease');
+  let locked = false;
+  for (let i = 0; i < 100; i++) {
+    try { fs.mkdirSync(d + '/lease.lock', {mode: 0o700}); locked = true; break; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  if (!locked) throw new Error('Renewal busy');
+  const next = d + '/lease.next-' + process.pid;
+  try {
+    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) throw new Error('Revoked');
+    const previous = Number(fs.readFileSync(d + '/lease', 'utf8'));
+    if (!Number.isFinite(previous) || previous <= Date.now()) throw new Error('Expired');
+    fs.writeFileSync(next, String(Math.max(previous, deadline)), {mode: 0o600});
+    fs.renameSync(next, d + '/lease');
+  } finally {
+    fs.rmSync(next, {force: true});
+    fs.rmdirSync(d + '/lease.lock');
+  }
+})().catch(() => { process.exitCode = 1; });
+`;
 
 export const RELAY_START_PROGRAM = String.raw`
 const fs = require('node:fs');

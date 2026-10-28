@@ -49,10 +49,11 @@ it("records the confirmation timestamp, and no confirmation timestamp for declin
     issuedAt: Date.now() - 9 * 60000,
   };
   const before = Date.now();
-  await decideConsent("owner", consent, true);
+  await decideConsent("owner", consent, true, "session-org");
   const saved = JSON.parse(mockEval.mock.calls[0][2][1]);
   expect(saved.confirmedAt).toBeGreaterThanOrEqual(before);
   expect(saved.issuedAt).toBe(consent.issuedAt);
+  expect(saved.organizationId).toBe("session-org");
   await decideConsent("owner", consent, false);
   expect(JSON.parse(mockEval.mock.calls[1][2][1]).confirmedAt).toBeUndefined();
 });

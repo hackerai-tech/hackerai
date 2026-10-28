@@ -1,6 +1,33 @@
 import { normalizeBrowserInput, normalizeBrowserInputBatch } from "../input";
 
 describe("browser input boundary", () => {
+  it("preserves the held left button during a drag and clears it for hover", () => {
+    expect(
+      normalizeBrowserInput({ kind: "move", x: 25, y: 40, buttons: 1 }),
+    ).toEqual([
+      {
+        type: "input_mouse",
+        eventType: "mouseMoved",
+        x: 25,
+        y: 40,
+        button: "left",
+      },
+    ]);
+    expect(normalizeBrowserInput({ kind: "move", x: 25, y: 40 })).toEqual([
+      {
+        type: "input_mouse",
+        eventType: "mouseMoved",
+        x: 25,
+        y: 40,
+        button: "none",
+      },
+    ]);
+    for (const buttons of [-1, 2, 3, 1.5, "1", null]) {
+      expect(
+        normalizeBrowserInput({ kind: "move", x: 25, y: 40, buttons }),
+      ).toBeNull();
+    }
+  });
   it("preserves physical keys and Shift for email punctuation and uppercase text", () => {
     const events = normalizeBrowserInput({ kind: "text", text: "a.b@c-d!AZ" })!;
     expect(

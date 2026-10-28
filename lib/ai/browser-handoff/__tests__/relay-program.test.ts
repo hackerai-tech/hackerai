@@ -33,6 +33,7 @@ import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
   RELAY_STOP_PROGRAM,
+  RELAY_RENEW_PROGRAM,
 } from "../relay-program";
 
 let root: string;
@@ -111,6 +112,59 @@ const input = (body: unknown, extraHeaders = headers) =>
     headers: { ...extraHeaders, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+async function renewLease(lease: number, path = directory) {
+  const renewal = spawn(
+    process.execPath,
+    ["-e", RELAY_RENEW_PROGRAM, path, String(lease)],
+    { stdio: "ignore" },
+  );
+  const [code] = await once(renewal, "exit");
+  return code;
+}
+
+it("does not shorten the relay lease when a delayed renewal arrives after a newer one", async () => {
+  const newer = Date.now() + 40_000;
+  expect(await renewLease(newer)).toBe(0);
+  expect(await renewLease(newer - 10_000)).toBe(0);
+  expect(Number(await readFile(join(directory, "lease"), "utf8"))).toBe(newer);
+});
+
+it("rejects a missing relay instead of reporting a successful renewal", async () => {
+  expect(await renewLease(Date.now() + 25_000, join(root, "missing"))).not.toBe(
+    0,
+  );
+});
+
+it.each(["revoked", "closed", "expired"])(
+  "does not revive a %s relay",
+  async (state) => {
+    if (state === "expired")
+      await writeFile(join(directory, "lease"), String(Date.now() - 1));
+    else await writeFile(join(directory, state), "1");
+    const previous = await readFile(join(directory, "lease"), "utf8");
+    expect(await renewLease(Date.now() + 25_000)).not.toBe(0);
+    expect(await readFile(join(directory, "lease"), "utf8")).toBe(previous);
+  },
+);
+
+it("serializes concurrent renewals without losing the later deadline", async () => {
+  const deadline = Date.now() + 40_000;
+  expect(
+    await Promise.all([renewLease(deadline), renewLease(deadline - 5_000)]),
+  ).toEqual([0, 0]);
+  expect(Number(await readFile(join(directory, "lease"), "utf8"))).toBe(
+    deadline,
+  );
+  expect(
+    (
+      await input({
+        sequence: 1,
+        inputs: [{ kind: "text", text: "still controlled" }],
+      })
+    ).status,
+  ).toBe(200);
+});
 
 it("requires origin and bearer authorization before exposing frames or input", async () => {
   expect(
@@ -193,6 +247,47 @@ it("preserves input order, rejects arbitrary commands, and deduplicates response
     key: "Backspace",
     eventType: "keyUp",
   });
+});
+
+it("forwards held movement across requests and releases a drag before relay shutdown", async () => {
+  expect(
+    (await input({ sequence: 1, inputs: [{ kind: "down", x: 10, y: 20 }] }))
+      .status,
+  ).toBe(200);
+  expect(
+    (
+      await input({
+        sequence: 2,
+        inputs: [{ kind: "move", x: 40, y: 50, buttons: 1 }],
+      })
+    ).status,
+  ).toBe(200);
+  await writeFile(join(directory, "revoked"), "1");
+  await once(child, "exit");
+  expect(received).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mousePressed",
+      x: 10,
+      y: 20,
+      button: "left",
+      clickCount: 1,
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseMoved",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 40,
+      y: 50,
+      button: "left",
+    },
+  ]);
 });
 
 it.each(["expiry", "browser replacement", "Agent resume", "run cleanup"])(

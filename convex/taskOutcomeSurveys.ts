@@ -20,6 +20,7 @@ import {
   TASK_OUTCOME_EXPIRY_MS,
   reasonsForAnswer,
   experimentTaskOutcomePhase,
+  PRO_THREE_STEPS_TASK_OUTCOME_PHASE,
 } from "../lib/feedback/task-outcome";
 import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
@@ -364,10 +365,18 @@ export const getForMessage = query({
     if (
       !row ||
       row.chat_id !== args.chat_id ||
-      row.message_id !== args.message_id ||
       row.expires_at <= Date.now() ||
       row.dismissed_at ||
       row.answered_at
+    )
+      return null;
+    if (
+      row.message_id !== args.message_id &&
+      !(
+        row.shown_at &&
+        row.survey_kind === "current_experiment" &&
+        row.feedback_phase === PRO_THREE_STEPS_TASK_OUTCOME_PHASE
+      )
     )
       return null;
     if (
