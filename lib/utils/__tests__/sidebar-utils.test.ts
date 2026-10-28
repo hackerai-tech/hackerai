@@ -583,3 +583,51 @@ describe("finding sidebar selection identity", () => {
     ).toBe(false);
   });
 });
+
+describe.each(["tool-file", "tool-file_write"])(
+  "file sidebar compatibility: %s",
+  (type) => {
+    it.each(["write", "append"])(
+      "retains streaming and saved %s content",
+      (action) => {
+        const call = {
+          type,
+          toolCallId: "file-content",
+          input: { action, path: "/project/notes.txt", text: "new content\n" },
+        };
+        const [streaming] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [{ ...call, state: "input-streaming" }],
+        });
+        expect(streaming).toMatchObject({
+          path: "/project/notes.txt",
+          content: "new content\n",
+          action: action === "write" ? "creating" : "appending",
+          toolCallId: "file-content",
+          isExecuting: true,
+        });
+        const [saved] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [
+            {
+              ...call,
+              state: "output-available",
+              output:
+                action === "append"
+                  ? { originalContent: "existing\n" }
+                  : { success: true },
+            },
+          ],
+        });
+        expect(saved).toMatchObject({
+          path: "/project/notes.txt",
+          content:
+            action === "write" ? "new content\n" : "existing\nnew content\n",
+          action: action === "write" ? "writing" : "appending",
+          toolCallId: "file-content",
+          isExecuting: false,
+        });
+      },
+    );
+  },
+);

@@ -11,7 +11,7 @@ jest.mock("@/lib/logger", () => ({
   logger: { error: jest.fn() },
 }));
 
-import { createFile } from "../file";
+import { createFile, createFileWrite } from "../file";
 import {
   getSandboxUploadedFileUrl,
   uploadSandboxFileToConvex,
@@ -156,18 +156,76 @@ function makeNativeDesktopSandbox(connectionId = "desktop-a") {
   };
 }
 
+describe("dedicated file_write executor", () => {
+  test.each(["write", "append"] as const)(
+    "preserves intentional empty content for %s",
+    async (action) => {
+      const { sandbox } = makeNativeDesktopSandbox();
+      const tool = createFileWrite(makeContext(sandbox));
+      const result = await runTool(tool, {
+        action,
+        path: "C:\\repo\\empty.txt",
+        text: "",
+      });
+      expect(result).not.toHaveProperty("error");
+      expect(sandbox.files.write).toHaveBeenCalledWith(
+        "C:\\repo\\empty.txt",
+        action === "append" ? "line one\nline two\n" : "",
+        { user: "user" },
+      );
+    },
+  );
+
+  test("does not retry or claim non-execution after an uncertain write failure", async () => {
+    const { sandbox, commandRun } = makeNativeDesktopSandbox();
+    sandbox.files.write.mockRejectedValueOnce(
+      new Error("connection lost after dispatch"),
+    );
+    const result = await runTool(createFileWrite(makeContext(sandbox)), {
+      action: "write",
+      path: "C:\\repo\\output.txt",
+      text: "complete content",
+    });
+    expect(result).toEqual({ error: "connection lost after dispatch" });
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+});
+
 describe("file tool large text safety", () => {
   test.each([
-    { action: "write", expected: "text is required for write action" },
-    { action: "append", expected: "text is required for append action" },
-    { action: "edit", expected: "edits array is required for edit action" },
+    {
+      createTool: createFile,
+      action: "write",
+      expected: "text is required for write action",
+    },
+    {
+      createTool: createFile,
+      action: "append",
+      expected: "text is required for append action",
+    },
+    {
+      createTool: createFile,
+      action: "edit",
+      expected: "edits array is required for edit action",
+    },
+    {
+      createTool: createFileWrite,
+      action: "write",
+      expected: "text is required for write action",
+    },
+    {
+      createTool: createFileWrite,
+      action: "append",
+      expected: "text is required for append action",
+    },
   ])(
     "rejects malformed $action before approval or sandbox access",
-    async ({ action, expected }) => {
+    async ({ createTool, action, expected }) => {
       const sandbox = makeSandbox(jest.fn());
       const requestToolApproval = jest.fn();
       const context = makeContext(sandbox, { requestToolApproval });
-      const tool = createFile(context);
+      const tool = createTool(context);
 
       await expect(
         runTool(tool, { action, path: "/project/file.txt", brief: "edit" }),
@@ -181,63 +239,70 @@ describe("file tool large text safety", () => {
     },
   );
 
-  test("does not write on a replacement Desktop connection after approval", async () => {
-    const { sandbox } = makeNativeDesktopSandbox("desktop-b");
-    const requestToolApproval = jest.fn(async () => ({
-      approved: true as const,
-      approvalId: "approval-1",
-      sandboxIdentity: "connection:desktop-a" as const,
-    }));
-    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+  test.each([createFile, createFileWrite])(
+    "does not write on a replacement Desktop connection after approval (%p)",
+    async (createTool) => {
+      const { sandbox } = makeNativeDesktopSandbox("desktop-b");
+      const requestToolApproval = jest.fn(async () => ({
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+      }));
+      const tool = createTool(makeContext(sandbox, { requestToolApproval }));
 
-    const result = (await runTool(tool, {
-      action: "write",
-      path: "C:\\repo\\approved-on-a.txt",
-      brief: "test connection binding",
-      text: "must not reach desktop B",
-    })) as { error: string };
-
-    expect(result.error).toContain("selected sandbox changed after approval");
-    expect(sandbox.files.write).not.toHaveBeenCalled();
-  });
-
-  test("preserves an approved write on the same Desktop connection", async () => {
-    const { sandbox } = makeNativeDesktopSandbox("desktop-a");
-    const requestToolApproval = jest.fn(async () => ({
-      approved: true as const,
-      approvalId: "approval-1",
-      sandboxIdentity: "connection:desktop-a" as const,
-    }));
-    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
-
-    await expect(
-      runTool(tool, {
+      const result = (await runTool(tool, {
         action: "write",
         path: "C:\\repo\\approved-on-a.txt",
         brief: "test connection binding",
-        text: "allowed on desktop A",
-      }),
-    ).resolves.toBe("File written: C:\\repo\\approved-on-a.txt");
-    expect(sandbox.files.write).toHaveBeenCalledWith(
-      "C:\\repo\\approved-on-a.txt",
-      "allowed on desktop A",
-      { user: "user" },
-    );
-    expect(requestToolApproval).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolCallId: "call-1",
-        operation: "file_write",
-        target: "C:\\repo\\approved-on-a.txt",
-        autoReviewContext: {
-          type: "file_change",
+        text: "must not reach desktop B",
+      })) as { error: string };
+
+      expect(result.error).toContain("selected sandbox changed after approval");
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([createFile, createFileWrite])(
+    "preserves an approved write on the same Desktop connection (%p)",
+    async (createTool) => {
+      const { sandbox } = makeNativeDesktopSandbox("desktop-a");
+      const requestToolApproval = jest.fn(async () => ({
+        approved: true as const,
+        approvalId: "approval-1",
+        sandboxIdentity: "connection:desktop-a" as const,
+      }));
+      const tool = createTool(makeContext(sandbox, { requestToolApproval }));
+
+      await expect(
+        runTool(tool, {
           action: "write",
           path: "C:\\repo\\approved-on-a.txt",
+          brief: "test connection binding",
           text: "allowed on desktop A",
-          complete: true,
-        },
-      }),
-    );
-  });
+        }),
+      ).resolves.toBe("File written: C:\\repo\\approved-on-a.txt");
+      expect(sandbox.files.write).toHaveBeenCalledWith(
+        "C:\\repo\\approved-on-a.txt",
+        "allowed on desktop A",
+        { user: "user" },
+      );
+      expect(requestToolApproval).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolCallId: "call-1",
+          toolName: createTool === createFileWrite ? "file_write" : "file",
+          operation: "file_write",
+          target: "C:\\repo\\approved-on-a.txt",
+          autoReviewContext: {
+            type: "file_change",
+            action: "write",
+            path: "C:\\repo\\approved-on-a.txt",
+            text: "allowed on desktop A",
+            complete: true,
+          },
+        }),
+      );
+    },
+  );
 
   test("marks oversized file changes incomplete for human fallback", async () => {
     const { sandbox } = makeNativeDesktopSandbox("desktop-a");

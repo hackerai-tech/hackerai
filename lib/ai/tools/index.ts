@@ -10,7 +10,7 @@ import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createInteractTerminalSession } from "./interact-terminal-session";
 import { createGetTerminalFiles } from "./get-terminal-files";
-import { createFile } from "./file";
+import { createFile, createFileWrite } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
@@ -320,6 +320,7 @@ export const createTools = (
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
+      file_write: createFileWrite(context),
       todo_write: createTodoWrite(context),
       create_vulnerability_report: createCreateVulnerabilityReport(
         context,

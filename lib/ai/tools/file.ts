@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { tool, type InferToolInput, type InferToolOutput } from "ai";
 import { createHash } from "crypto";
 import type {
   AgentApprovalSandboxIdentity,
@@ -25,7 +25,7 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import { createFileToolSchema } from "./schemas";
+import { createFileToolSchema, createFileWriteToolSchema } from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -1280,7 +1280,10 @@ async function uploadViewPreviewFiles(args: {
   };
 }
 
-export const createFile = (context: ToolContext) => {
+export const createFile = (
+  context: ToolContext,
+  toolName: "file" | "file_write" = "file",
+) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
   const getAuxiliaryVision = () =>
     context.auxiliaryVision?.isEnabled?.() === false
@@ -1361,7 +1364,7 @@ export const createFile = (context: ToolContext) => {
             exactContent.length <= MAX_AUTO_REVIEW_FILE_CHANGE_CHARS;
           const approval = await context.requestToolApproval?.({
             toolCallId,
-            toolName: "file",
+            toolName,
             operation:
               action === "write"
                 ? "file_write"
@@ -1958,5 +1961,21 @@ export const createFile = (context: ToolContext) => {
       // Fallback: stringify the output
       return { type: "text" as const, value: JSON.stringify(output) };
     },
+  });
+};
+
+// Share the guarded executor and transport behavior with legacy file calls.
+export const createFileWrite = (context: ToolContext) => {
+  const file = createFile(context, "file_write");
+  return tool<
+    InferToolInput<ReturnType<typeof createFileWriteToolSchema>>,
+    InferToolOutput<typeof file>
+  >({
+    ...createFileWriteToolSchema({
+      approvalGated: !!context.requestToolApproval,
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }),
+    execute: (input, options) => file.execute!(input, options),
+    toModelOutput: file.toModelOutput,
   });
 };
