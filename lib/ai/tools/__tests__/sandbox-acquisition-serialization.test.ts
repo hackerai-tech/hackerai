@@ -18,7 +18,10 @@ jest.mock("../interact-terminal-session", () => ({
 jest.mock("../get-terminal-files", () => ({
   createGetTerminalFiles: jest.fn(() => ({})),
 }));
-jest.mock("../file", () => ({ createFile: jest.fn(() => ({})) }));
+jest.mock("../file", () => ({
+  createFile: jest.fn(() => ({})),
+  createFileWrite: jest.fn(() => ({})),
+}));
 jest.mock("../web-search", () => ({ createWebSearch: jest.fn(() => ({})) }));
 jest.mock("../open-url", () => ({ createOpenUrlTool: jest.fn(() => ({})) }));
 jest.mock("../todo-write", () => ({ createTodoWrite: jest.fn(() => ({})) }));

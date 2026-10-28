@@ -4,6 +4,7 @@ import {
   updateVulnerabilityReportToolInputSchema,
   createAgentToolSchemaSet,
   createFileToolSchema,
+  createFileWriteToolSchema,
   createGetTerminalFilesToolSchema,
   createInteractTerminalSessionToolSchema,
   createOpenUrlToolSchema,
@@ -363,7 +364,7 @@ describe("agent tool schema descriptions", () => {
 
     expect(getDescription(fullAccessTool)).not.toContain("approval-gated");
     expect(getDescription(approvalGatedTool)).toContain(
-      "Write, append, and edit actions are approval-gated.",
+      "Edit actions are approval-gated.",
     );
     expect(getDescription(fullAccessTool)).toContain(
       "automatically routes subsequent Agent steps to a vision-capable model",
@@ -399,6 +400,7 @@ describe("agent tool schema descriptions", () => {
     expect(actionSchema.safeParse("view").success).toBe(true);
     expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
       "file",
+      "file_write",
     );
   });
 
@@ -410,6 +412,7 @@ describe("agent tool schema descriptions", () => {
       }),
       get_terminal_files: createGetTerminalFilesToolSchema({ modelName }),
       file: createFileToolSchema({ supportsView: true, modelName }),
+      file_write: createFileWriteToolSchema({ modelName }),
       web_search: createWebSearchToolSchema({ modelName }),
       open_url: createOpenUrlToolSchema({ modelName }),
     });
@@ -421,6 +424,7 @@ describe("agent tool schema descriptions", () => {
       "interact_terminal_session",
       "get_terminal_files",
       "file",
+      "file_write",
       "web_search",
       "open_url",
     ] as const) {

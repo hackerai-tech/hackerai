@@ -171,7 +171,7 @@ export class ToolLoopObserver {
       if (!result) return clear();
       const output = result.output;
       confirmedNonExecution &&=
-        call.toolName === "file" &&
+        (call.toolName === "file" || call.toolName === "file_write") &&
         output !== null &&
         typeof output === "object" &&
         Object.getPrototypeOf(output) === Object.prototype &&

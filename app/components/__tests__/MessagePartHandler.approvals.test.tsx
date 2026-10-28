@@ -24,7 +24,7 @@ function ActiveRequest() {
 }
 
 describe("tool approval message ownership", () => {
-  it.each(["tool-run_terminal_cmd", "tool-file"])(
+  it.each(["tool-run_terminal_cmd", "tool-file", "tool-file_write"])(
     "only registers %s approvals for the latest active message",
     (type) => {
       const part = {
@@ -33,7 +33,7 @@ describe("tool approval message ownership", () => {
         state: "approval-requested",
         approval: { id: "approval-1" },
         input:
-          type === "tool-file"
+          type !== "tool-run_terminal_cmd"
             ? { action: "write", path: "/tmp/qa.txt", text: "test" }
             : { command: "printf test" },
       };

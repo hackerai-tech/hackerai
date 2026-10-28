@@ -31,6 +31,7 @@ import {
 } from "ai";
 
 import { agentUiStream } from "./streams";
+import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
@@ -1818,10 +1819,7 @@ export const subagentTask = task({
         },
       });
 
-      const { waitUntilComplete } = agentUiStream.pipe(
-        sanitizeStream(uiStream),
-      );
-      await waitUntilComplete();
+      await waitForAgentUiStream(agentUiStream.pipe(sanitizeStream(uiStream)));
       runtimeStage = "result_finalization";
       await observeFinalization("stream_completion", Boolean(resultValue), () =>
         markSubagentFinalizing(row.subagent_id, ctx.run.id),
