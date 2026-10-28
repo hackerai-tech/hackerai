@@ -2235,10 +2235,58 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleDrop,
   });
 
+  // The start response can arrive before the Convex subscription catches up.
+  // Keep that exact local run available to Stop after the pending POST settles.
+  const cancellationTriggerRunRef = useCommittedRef(
+    agentLongRunId ?? activeTriggerRunId,
+  );
+
+  // Chat handlers
+  const {
+    handleSubmit,
+    handleStop,
+    handleRegenerate,
+    handleRetry,
+    handleEditMessage,
+    handleSendNow,
+    handleContinue,
+    hasPendingSummarySteer,
+  } = useChatHandlers({
+    chatId,
+    messages,
+    sendMessage,
+    sendQueuedMessage:
+      shouldUseAgentLong ||
+      messageQueue.some((message) => message.deliveryStatus)
+        ? sendQueuedMessage
+        : undefined,
+    stop,
+    regenerate,
+    setMessages,
+    isExistingChat,
+    isUserMessagePersisted: (messageId) =>
+      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
+    status,
+    isSummarizing: summarizationStatus?.status === "started",
+    isSendingNowRef,
+    hasManuallyStoppedRef,
+    activeTriggerRunRef: cancellationTriggerRunRef,
+    resumeActiveRun: resumeStream,
+    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
+    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
+    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
+    onStopCallback: () => {
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+    },
+    resetAutoContinueCount,
+    sendDisabledReason: computerSendDisabledReason,
+  });
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
       status === "ready" &&
+      !hasPendingSummarySteer &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2284,6 +2332,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    hasPendingSummarySteer,
     shouldUseAgentLong,
     messageQueue,
     editingQueuedMessageId,
@@ -2298,51 +2347,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
-
-  // The start response can arrive before the Convex subscription catches up.
-  // Keep that exact local run available to Stop after the pending POST settles.
-  const cancellationTriggerRunRef = useCommittedRef(
-    agentLongRunId ?? activeTriggerRunId,
-  );
-
-  // Chat handlers
-  const {
-    handleSubmit,
-    handleStop,
-    handleRegenerate,
-    handleRetry,
-    handleEditMessage,
-    handleSendNow,
-    handleContinue,
-  } = useChatHandlers({
-    chatId,
-    messages,
-    sendMessage,
-    sendQueuedMessage:
-      shouldUseAgentLong ||
-      messageQueue.some((message) => message.deliveryStatus)
-        ? sendQueuedMessage
-        : undefined,
-    stop,
-    regenerate,
-    setMessages,
-    isExistingChat,
-    isUserMessagePersisted: (messageId) =>
-      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
-    status,
-    isSendingNowRef,
-    hasManuallyStoppedRef,
-    activeTriggerRunRef: cancellationTriggerRunRef,
-    resumeActiveRun: resumeStream,
-    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
-    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
-    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
-    onStopCallback: () => {
-      dispatchStreaming({ type: "RESET_ON_FINISH" });
-    },
-    resetAutoContinueCount,
-    sendDisabledReason: computerSendDisabledReason,
-  });
 
   const handleScrollToBottom = useCallback(() => {
     scrollToBottom({ force: true });

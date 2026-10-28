@@ -25,6 +25,7 @@ import {
   getDraftContentById,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
+import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
 
 let mockSandboxState: Partial<
@@ -158,6 +159,24 @@ const NewChatAttachmentSubmitHarness = ({
         chatId="chat-1"
       />
     </>
+  );
+};
+
+const StableAttachmentSubmitHarness = () => {
+  const { clearUploadedFiles } = useGlobalState();
+  const { clearInput } = useComposerActions();
+  return (
+    <ChatInput
+      onSubmit={async () => {
+        await Promise.resolve();
+        clearInput();
+        clearUploadedFiles();
+        return true;
+      }}
+      onStop={jest.fn()}
+      status="streaming"
+      chatId="stable-attachment"
+    />
   );
 };
 
@@ -1469,6 +1488,181 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Submit Behavior Integration", () => {
+    it("removes an accepted attachment draft without changing the chat id", async () => {
+      const file: UploadedFileState = {
+        file: new File(["image"], "stable.png", { type: "image/png" }),
+        uploaded: true,
+        uploading: false,
+        storage: "s3",
+        fileId: "stable-file",
+        tokens: 12,
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach stable file" />
+          <StableAttachmentSubmitHarness />
+        </TestWrapper>,
+      );
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Submit attachment" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Attach stable file" }),
+      );
+      expect(await screen.findByAltText("stable.png")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(getDraftAttachmentsById("stable-attachment")).toHaveLength(1),
+      );
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => {
+        expect(screen.getByRole("textbox")).toHaveValue("");
+        expect(screen.queryByAltText("stable.png")).not.toBeInTheDocument();
+        expect(getDraftContentById("stable-attachment")).toBeNull();
+        expect(getDraftAttachmentsById("stable-attachment")).toEqual([]);
+      });
+    });
+
+    it("accepts an Enter submission during startup before the first model response", async () => {
+      const submit = jest.fn(async () => true);
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={submit}
+            onStop={mockOnStop}
+            status="submitted"
+            chatId="startup-summary"
+          />
+        </TestWrapper>,
+      );
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Steer during preparation" },
+      });
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    });
+
+    it.each(["rejected", "throws"])(
+      "blocks duplicate Enter presses and unlocks after a submission %s",
+      async (outcome) => {
+        let finish!: (accepted: boolean) => void;
+        let fail!: (error: Error) => void;
+        const pending = new Promise<boolean>((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        });
+        const submit = jest
+          .fn(async () => true)
+          .mockImplementationOnce(() => pending);
+        const log = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          render(
+            <TestWrapper>
+              <ChatInput
+                onSubmit={submit}
+                onStop={mockOnStop}
+                status="streaming"
+                chatId="pending"
+              />
+            </TestWrapper>,
+          );
+          const input = screen.getByRole("textbox");
+          fireEvent.change(input, { target: { value: "One submission" } });
+          fireEvent.keyDown(input, { key: "Enter" });
+          fireEvent.keyDown(input, { key: "Enter" });
+          expect(submit).toHaveBeenCalledTimes(1);
+          await act(async () => {
+            if (outcome === "throws")
+              fail(new Error("Synthetic admission failure"));
+            else finish(false);
+          });
+          expect(input).toHaveValue("One submission");
+          fireEvent.keyDown(input, { key: "Enter" });
+          await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+        } finally {
+          log.mockRestore();
+        }
+      },
+    );
+
+    it("keeps edits and attachments made while admission is pending", async () => {
+      let finish!: (accepted: boolean) => void;
+      const submit = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const nextFile: UploadedFileState = {
+        file: new File(["image"], "next.png", { type: "image/png" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "next-file",
+        url: "https://example.com/next.png",
+        tokens: 12,
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[nextFile]} label="Attach next draft" />
+          <ChatInput
+            onSubmit={submit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="pending-edit"
+          />
+        </TestWrapper>,
+      );
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, { target: { value: "Original submission" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      fireEvent.change(input, { target: { value: "New draft" } });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Attach next draft" }),
+      );
+      await act(async () => finish(true));
+      expect(input).toHaveValue("New draft");
+      expect(await screen.findByAltText("next.png")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(getDraftContentById("pending-edit")).toBe("New draft");
+        expect(getDraftAttachmentsById("pending-edit")).toHaveLength(1);
+      });
+    });
+
+    it("does not clear a new chat's draft when an unmounted composer finishes admission", async () => {
+      let finish!: (accepted: boolean) => void;
+      const submit = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const view = (chatId: string) => (
+        <TestWrapper>
+          <ChatInput
+            key={chatId}
+            onSubmit={submit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId={chatId}
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(view("old-chat"));
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Same text" },
+      });
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      rerender(view("new-chat"));
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Same text" },
+      });
+      await act(async () => finish(true));
+      expect(screen.getByRole("textbox")).toHaveValue("Same text");
+      await waitFor(() =>
+        expect(getDraftContentById("new-chat")).toBe("Same text"),
+      );
+    });
+
     it("does not restore a sent attachment when a new chat gets its real draft id", async () => {
       const uploadedFile: UploadedFileState = {
         file: new File(["image"], "screenshot.png", { type: "image/png" }),
