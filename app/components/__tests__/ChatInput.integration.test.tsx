@@ -971,9 +971,7 @@ describe("ChatInput - Integration Tests", () => {
       const progress = await screen.findByRole("button", {
         name: "Expand todos",
       });
-      const sandbox = await screen.findByTestId(
-        "chat-input-agent-context-reveal",
-      );
+      const sandbox = await screen.findByTestId("chat-input-agent-context");
       const queued = screen.getByText("Private queued message");
       const composer = screen.getByTestId("chat-input-surface");
       for (const [before, after] of [
@@ -1023,14 +1021,14 @@ describe("ChatInput - Integration Tests", () => {
         "z-10",
       );
       expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
-        "mb-2",
+        "mb-1",
         "px-2",
-        "flex-nowrap",
+        "justify-end",
         "md:hidden",
       );
       expect(
         screen
-          .getByTestId("chat-input-agent-context-reveal")
+          .getByTestId("chat-input-agent-context")
           .compareDocumentPosition(screen.getByTestId("chat-input-surface")) &
           Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
@@ -1072,7 +1070,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("shows compact Agent controls while the input is active", async () => {
+    it("keeps compact sandbox controls available before and after focus, menus and submission", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -1102,24 +1100,22 @@ describe("ChatInput - Integration Tests", () => {
         </TestWrapper>,
       );
 
-      const context = await screen.findByTestId(
-        "chat-input-agent-context-reveal",
-      );
+      const context = await screen.findByTestId("chat-input-agent-context");
       const input = screen.getByTestId("chat-input");
-      expect(context).toHaveAttribute("aria-hidden", "true");
-      expect(context).toHaveAttribute("inert");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
       expect(
         screen.getByRole("button", { name: /^Agent permissions:/ }),
       ).toBeInTheDocument();
 
       fireEvent.focus(input);
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.change(input, { target: { value: "A harmless follow-up" } });
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       const sandboxTrigger = screen
@@ -1128,7 +1124,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(sandboxTrigger).not.toBeNull();
       fireEvent.pointerDown(sandboxTrigger!);
       fireEvent.blur(input, { relatedTarget: sandboxTrigger });
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.click(sandboxTrigger!);
@@ -1140,20 +1136,20 @@ describe("ChatInput - Integration Tests", () => {
         return openedMenu;
       });
       fireEvent.pointerDown(menu!);
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveAttribute("aria-hidden", "true");
-      expect(context).toHaveAttribute("inert");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(input);
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveAttribute("aria-hidden", "true");
-      expect(context).toHaveAttribute("inert");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
+      expect(context).not.toHaveAttribute("inert");
       rerender(
         <TestWrapper>
           <ChatInput
@@ -1165,14 +1161,14 @@ describe("ChatInput - Integration Tests", () => {
           />
         </TestWrapper>,
       );
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
       fireEvent.pointerDown(document.body);
-      expect(context).toHaveAttribute("aria-hidden", "false");
+      expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", async () => {
+    it("keeps Agent controls above the input when the composer becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],

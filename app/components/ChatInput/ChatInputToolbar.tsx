@@ -79,18 +79,6 @@ export function ChatInputToolbar({
         {user && isAgentMode(chatMode) ? (
           <>
             <div
-              className="min-w-8 md:hidden"
-              data-testid="chat-input-inline-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                compact
-                size="mobile"
-                iconOnly={showChatModeSelector}
-              />
-            </div>
-            <div
               className={
                 compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
               }

@@ -321,10 +321,7 @@ const ChatInputContent = ({
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
-  const [composerFocused, setComposerFocused] = useState(false);
-  const agentControlsVisible = isEmptyNewChat || composerFocused;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const agentControlsPointerDownRef = useRef(false);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
   const hasJoinedComposerPanels =
@@ -359,35 +356,6 @@ const ChatInputContent = ({
       setIsStoppingAgent(false);
     }
   }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
-
-  useEffect(() => {
-    if (!composerFocused) return;
-
-    const isOutsideComposer = (target: EventTarget | null) => {
-      if (!(target instanceof Node)) return false;
-      if (chatInputContainerRef.current?.contains(target)) return false;
-      if (
-        target instanceof Element &&
-        target.closest("[data-chat-input-agent-menu]")
-      )
-        return false;
-      return true;
-    };
-
-    const dismissOnOutsidePointerDown = (event: PointerEvent) => {
-      if (isOutsideComposer(event.target)) setComposerFocused(false);
-    };
-    const dismissOnOutsideFocus = (event: FocusEvent) => {
-      if (isOutsideComposer(event.target)) setComposerFocused(false);
-    };
-
-    document.addEventListener("pointerdown", dismissOnOutsidePointerDown);
-    document.addEventListener("focusin", dismissOnOutsideFocus);
-    return () => {
-      document.removeEventListener("pointerdown", dismissOnOutsidePointerDown);
-      document.removeEventListener("focusin", dismissOnOutsideFocus);
-    };
-  }, [composerFocused]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -944,40 +912,25 @@ const ChatInputContent = ({
             />
           )}
 
-          {/* Compact desktop composers keep the selector above the panels.
-            Phones use the inline toolbar selector to save vertical space. */}
+          {/* Keep this row present regardless of input focus so the mobile
+              composer never grows or shifts just to reveal its selector. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 hidden min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none md:grid ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
-              data-testid="chat-input-agent-context-reveal"
-              aria-hidden={!agentControlsVisible}
-              inert={!agentControlsVisible}
+              className={`relative z-0 mb-1 flex min-w-0 shrink-0 items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"}`}
+              data-compact={compactAgentControls ? "true" : "false"}
+              data-testid="chat-input-agent-context"
             >
-              <div className="min-h-0 overflow-hidden">
-                <div
-                  className={`${isEmptyNewChat ? "mb-3 flex-col items-end gap-1 px-2" : "mb-2 flex-nowrap items-center justify-end gap-2 px-2"} relative flex min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
-                  data-compact={compactAgentControls ? "true" : "false"}
-                  data-testid="chat-input-agent-context"
-                  onPointerDownCapture={() => {
-                    agentControlsPointerDownRef.current = true;
-                    window.setTimeout(() => {
-                      agentControlsPointerDownRef.current = false;
-                    }, 0);
-                  }}
-                >
-                  <div
-                    className="min-w-0 max-w-full"
-                    data-testid="chat-input-mobile-sandbox"
-                  >
-                    <SandboxSelector
-                      value={sandboxPreference}
-                      onChange={setSandboxPreference}
-                      compact={!isEmptyNewChat}
-                      size={isEmptyNewChat ? "md" : "sm"}
-                      menuAlign="end"
-                    />
-                  </div>
-                </div>
+              <div
+                className="min-w-0 max-w-full"
+                data-testid="chat-input-mobile-sandbox"
+              >
+                <SandboxSelector
+                  value={sandboxPreference}
+                  onChange={setSandboxPreference}
+                  compact
+                  size="sm"
+                  menuAlign="end"
+                />
               </div>
             </div>
           )}
@@ -1046,20 +999,6 @@ const ChatInputContent = ({
               minRows={isCentered ? 3 : 1}
               placeholder={placeholder}
               autoFocus={autoFocus}
-              onFocus={() => setComposerFocused(true)}
-              onPointerDown={() => setComposerFocused(true)}
-              onBlur={(event) => {
-                if (agentControlsPointerDownRef.current) return;
-                const next = event.relatedTarget;
-                if (
-                  next instanceof Node &&
-                  (chatInputContainerRef.current?.contains(next) ||
-                    (next instanceof Element &&
-                      next.closest("[data-chat-input-agent-menu]")))
-                )
-                  return;
-                setComposerFocused(false);
-              }}
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}

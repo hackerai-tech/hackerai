@@ -243,7 +243,7 @@ describe("ChatInputToolbar", () => {
     );
   });
 
-  it("keeps the phone sandbox selector usable when desktop controls move above a compact composer", () => {
+  it("keeps the permission icon in the toolbar while compact sandbox controls live above it", () => {
     mockAuthUser({ id: "user_123" });
 
     render(
@@ -266,13 +266,6 @@ describe("ChatInputToolbar", () => {
     expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
       "md:block",
     );
-
-    const inlineSandbox = within(
-      screen.getByTestId("chat-input-inline-sandbox"),
-    ).getByTestId("sandbox-selector");
-    expect(inlineSandbox).toHaveAttribute("data-value", "e2b");
-    fireEvent.click(inlineSandbox);
-    expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
   });
 
   it("removes only the mode selector for paid Agent-only mode", () => {
