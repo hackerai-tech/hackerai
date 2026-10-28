@@ -272,6 +272,87 @@ describe("AgentLongMemoryTelemetry", () => {
     });
   });
 
+  it.each([
+    ["rss", "rss_growth"],
+    ["external", "external_growth"],
+  ] as const)(
+    "reports %s growth while the JavaScript heap stays flat",
+    (field, reason) => {
+      jest.useFakeTimers();
+      try {
+        const memory = {
+          rss: 220 * MIB,
+          heapTotal: 180 * MIB,
+          heapUsed: 100 * MIB,
+          external: 10 * MIB,
+          arrayBuffers: 0,
+        };
+        const emit = jest.fn();
+        const telemetry = new AgentLongMemoryTelemetry({
+          runId: "run_growth",
+          chatId: "chat_growth",
+          userId: "user_growth",
+          emit,
+          readMemory: () => memory,
+        });
+        telemetry.checkpoint({ phase: "provider_request" });
+        telemetry.startPeriodicCheckpoints();
+        try {
+          memory[field] += 31 * MIB;
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(1);
+          memory[field] += MIB;
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(2);
+          expect(emit.mock.calls[1]?.[0]).toMatchObject({
+            checkpoint_reason: reason,
+            heap_used_bytes: 100 * MIB,
+            rss_bytes: memory.rss,
+            external_bytes: memory.external,
+            sample_gap_ms: 10_000,
+            sample_gap_high_water_ms: 10_000,
+          });
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(2);
+        } finally {
+          telemetry.dispose();
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("retains a sampling gap even when that sample does not emit", () => {
+    let now = 0;
+    let rss = 200 * MIB;
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_gap",
+      chatId: "chat_gap",
+      userId: "user_gap",
+      emit,
+      now: () => now,
+      readMemory: () => ({
+        rss,
+        heapTotal: 180 * MIB,
+        heapUsed: 100 * MIB,
+        external: 0,
+        arrayBuffers: 0,
+      }),
+    });
+    telemetry.checkpoint({ phase: "provider_request" });
+    now = 60_000;
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    now += 10_000;
+    rss += 32 * MIB;
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({
+      sample_gap_ms: 10_000,
+      sample_gap_high_water_ms: 60_000,
+    });
+  });
+
   it("emits an interval checkpoint for long stable streams", () => {
     let now = 0;
     const emit = jest.fn();
