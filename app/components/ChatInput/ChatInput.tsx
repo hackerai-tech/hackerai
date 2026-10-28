@@ -226,7 +226,7 @@ export const ChatInput = (props: ChatInputProps) => {
     <RegionalSubscriptionGate
       fallbackHeader={
         props.topNotice ? (
-          <div className="mx-auto max-h-[25dvh] w-full max-w-[800px] overflow-y-auto bg-background px-4">
+          <div className="mx-auto w-full max-w-[800px] px-4">
             {props.topNotice}
           </div>
         ) : undefined

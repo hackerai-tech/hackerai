@@ -288,7 +288,7 @@ export function RegionalSubscriptionGate({
   if (!eligible) return children;
   if (!current)
     return (
-      <>
+      <div className="mx-auto max-h-[calc(100dvh-4rem)] w-full max-w-[800px] overflow-y-auto bg-background">
         {fallbackHeader}
         <p
           role="status"
@@ -296,14 +296,14 @@ export function RegionalSubscriptionGate({
         >
           Loading task access…
         </p>
-      </>
+      </div>
     );
   if (assignment?.variant === "test")
     return (
-      <>
+      <div className="mx-auto max-h-[calc(100dvh-4rem)] w-full max-w-[800px] overflow-y-auto bg-background">
         {fallbackHeader}
         <SubscriptionOffer assignment={assignment} />
-      </>
+      </div>
     );
   return children;
 }
