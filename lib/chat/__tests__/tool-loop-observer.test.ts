@@ -31,6 +31,29 @@ describe("ToolLoopObserver", () => {
     expect(JSON.stringify(observer)).not.toContain("unchanged");
   });
 
+  it("identifies a repeated confirmed validation failure without treating unknown errors as safe", () => {
+    const observer = new ToolLoopObserver();
+    const rejected = {
+      error: "text is required for write action",
+      executionOutcome: "not_executed",
+    };
+    for (let i = 0; i < 3; i++)
+      observe(observer, { action: "write", path: "/private" }, rejected);
+    expect(observer.getCurrentCycle()).toEqual({
+      toolNames: ["file"],
+      repeatCount: 3,
+      cycleLength: 1,
+      confirmedNonExecution: true,
+    });
+    observe(
+      observer,
+      { action: "write", path: "/private" },
+      { error: "transport error" },
+    );
+    expect(observer.getCurrentCycle()).toBeUndefined();
+    expect(JSON.stringify(observer)).not.toContain("/private");
+  });
+
   it.each([2, 3, 4])("detects repeating %i-step cycles", (period) => {
     const observer = new ToolLoopObserver();
     let result;

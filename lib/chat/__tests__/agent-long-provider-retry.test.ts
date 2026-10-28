@@ -562,6 +562,26 @@ describe("shouldRetryAgentLongWithFallback", () => {
     ).toBe(true);
   });
 
+  it("does not switch providers after a confirmed non-executed tool failure loop", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          {
+            type: "tool-file",
+            toolCallId: "call_1",
+            state: "output-available",
+          },
+        ],
+        {
+          hasTerminalProviderStreamError: false,
+          stoppedDueToDoomLoop: true,
+          confirmedToolFailureLoop: true,
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("can disable fresh repeated-text detection for aborted streams", () => {
     const repeatedLoop = Array.from(
       { length: 5 },

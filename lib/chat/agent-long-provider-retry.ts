@@ -26,6 +26,7 @@ type RetryDecisionOptions = {
   finishReason?: string;
   providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
+  confirmedToolFailureLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
   detectAssistantContentLoop?: boolean;
 };
@@ -569,6 +570,8 @@ export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
 ): boolean => {
+  // A provider switch cannot fix the same call rejected before execution.
+  if (options.confirmedToolFailureLoop) return false;
   // Provider content filters are model-specific. Retry the run once with the
   // configured fallback model; the caller's bounded retry guard keeps a second
   // content-filter finish terminal.

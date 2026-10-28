@@ -4482,6 +4482,12 @@ export const agentLongTask = task({
                           lastAssistantMessageParts,
                           { hasTerminalProviderStreamError },
                         );
+                      // A different provider cannot repair an unchanged call
+                      // that a tool explicitly rejected before execution.
+                      const confirmedFailureLoop =
+                        state.stoppedDueToDoomLoop &&
+                        state.toolLoopObserver.getCurrentCycle()
+                          ?.confirmedNonExecution === true;
                       const shouldRetryWithFallback =
                         shouldRetryAgentLongWithFallback(
                           lastAssistantMessageParts,
@@ -4491,6 +4497,7 @@ export const agentLongTask = task({
                             finishReason: state.streamFinishReason,
                             providerContentBlocked,
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
+                            confirmedToolFailureLoop: confirmedFailureLoop,
                             stoppedDueToAssistantContentLoop,
                             detectAssistantContentLoop: !isAborted,
                           },
@@ -4581,6 +4588,7 @@ export const agentLongTask = task({
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
                         hasCandidate:
+                          !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
                           (shouldRecoverAbliterationStreamError ||
                             shouldRetryWithFallback ||
