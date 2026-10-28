@@ -4,6 +4,7 @@ import {
   decideProviderRecovery,
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
+  isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
   getNextProviderDisconnectRetryModel,
@@ -560,6 +561,63 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       ),
     ).toBe(true);
+  });
+
+  it("does not switch providers after a confirmed non-executed tool failure loop", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          {
+            type: "tool-file",
+            toolCallId: "call_1",
+            state: "output-available",
+          },
+        ],
+        {
+          hasTerminalProviderStreamError: false,
+          stoppedDueToDoomLoop: true,
+          confirmedToolFailureLoop: true,
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("only skips fallback for a single unchanged rejected call", () => {
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 4,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 1,
+      }),
+    ).toBe(true);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 2,
+        confirmedNonExecution: true,
+        toolCallCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 2,
+      }),
+    ).toBe(false);
   });
 
   it("can disable fresh repeated-text detection for aborted streams", () => {

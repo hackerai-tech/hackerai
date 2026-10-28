@@ -273,9 +273,9 @@ export const createFileToolSchema = ({
       ? "- view: View raster image files through multimodal understanding."
       : null,
     "- read: Read file content as text (Markdown, code, logs).",
-    "- write: Overwrite the full content of a text file.",
-    "- append: Append content to a text file.",
-    "- edit: Make targeted edits to a text file.",
+    "- write: Overwrite the full content of a text file. Include the required `text` argument with the complete content.",
+    "- append: Append content to a text file. Include the required `text` argument.",
+    "- edit: Make targeted edits to a text file. Include a nonempty `edits` array.",
   ]
     .filter(Boolean)
     .join("\n");

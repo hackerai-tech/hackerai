@@ -471,6 +471,8 @@ export type AgentStreamState = {
     toolNames: string[];
     repeatCount: number;
     cycleLength: number;
+    confirmedNonExecution?: true;
+    toolCallCount?: number;
   };
   toolCycleRecoveryCount: number;
   /** True only when the final provider attempt stopped at the step condition. */
@@ -1245,9 +1247,22 @@ export async function createAgentStream(
     "[REPEATED TOOL RESULTS] A tool/result cycle has repeated without new output. " +
     "Check whether this is intentional verification or stalled work. If stalled, inspect the error and prerequisites, revise the hypothesis, and choose a different verification step. " +
     "If blocked, explain the specific missing prerequisite and what remains unverified. Do not rerun completed work or treat repeated output as proof of success.";
+  const confirmedFailureCycleNudge =
+    "[REPEATED TOOL RESULTS] The same tool call was rejected without executing an operation. " +
+    "Read the tool error and its required arguments. Do not submit the identical call again. " +
+    "Correct the input or choose a different useful step; if the prerequisite is unavailable, explain what is blocked and what remains unverified.";
+  const pendingToolCycleNudge = () =>
+    state.pendingToolCycleRecovery?.confirmedNonExecution &&
+    state.pendingToolCycleRecovery.cycleLength === 1 &&
+    state.pendingToolCycleRecovery.toolCallCount === 1
+      ? confirmedFailureCycleNudge
+      : toolCycleNudge;
   let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
   const markToolCycleRecoveryPrepared = (recovery: DoomLoopRecovery) => {
-    if (recovery.nudge?.includes(toolCycleNudge))
+    if (
+      recovery.nudge?.includes(toolCycleNudge) ||
+      recovery.nudge?.includes(confirmedFailureCycleNudge)
+    )
       preparedToolCycleRecovery = state.pendingToolCycleRecovery;
   };
 
@@ -1263,7 +1278,9 @@ export async function createAgentStream(
     );
 
     if (loopCheck.severity === "none") {
-      return state.pendingToolCycleRecovery ? { nudge: toolCycleNudge } : {};
+      return state.pendingToolCycleRecovery
+        ? { nudge: pendingToolCycleNudge() }
+        : {};
     }
 
     console.log(
@@ -1284,7 +1301,7 @@ export async function createAgentStream(
     const recovery: DoomLoopRecovery = {
       nudge: [
         generateDoomLoopNudge(loopCheck),
-        ...(state.pendingToolCycleRecovery ? [toolCycleNudge] : []),
+        ...(state.pendingToolCycleRecovery ? [pendingToolCycleNudge()] : []),
       ].join("\n\n"),
     };
     console.log("[doom-loop] Injecting nudge as last user message");
@@ -2846,6 +2863,28 @@ export async function createAgentStream(
           state.stoppedDueToElapsedTimeout = true;
         },
       }),
+      () => {
+        const cycle = state.toolLoopObserver.getCurrentCycle();
+        if (
+          !isAgentMode(ctx.mode) ||
+          !cycle?.confirmedNonExecution ||
+          cycle.cycleLength !== 1 ||
+          cycle.toolCallCount !== 1 ||
+          cycle.repeatCount < 4
+        )
+          return false;
+        // The three-repeat nudge was followed by the same rejected call.
+        // That call never reached the sandbox; stop before another model step.
+        state.stoppedDueToDoomLoop = true;
+        reportGuardrail({
+          reason: "repeated_confirmed_tool_failure",
+          action: "halt",
+          tool_names: cycle.toolNames,
+          repeat_count: cycle.repeatCount,
+          cycle_length: cycle.cycleLength,
+        });
+        return true;
+      },
       doomLoopDetected({
         getToolResultCycle: isAgentMode(ctx.mode)
           ? () => state.toolLoopObserver.getCurrentCycle()

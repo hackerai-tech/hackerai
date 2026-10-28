@@ -4024,6 +4024,182 @@ describe("createAgentStream repeated compaction", () => {
     expect(state.pendingToolCycleRecovery).toBeUndefined();
   });
 
+  it("redirects confirmed non-executed file calls before the hard stop", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: "/private" },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "The same tool call was rejected without executing an operation",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain("/private");
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        {
+          toolCallId: "call-3",
+          toolName: "file",
+          input: { action: "write", path: "/private" },
+        },
+      ],
+      toolResults: [
+        {
+          toolCallId: "call-3",
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        },
+      ],
+    };
+    steps.push(step);
+    await stream.onStepFinish(step);
+    expect(await stream.stopWhen.at(-2)({ steps })).toBe(true);
+    expect(state.stoppedDueToDoomLoop).toBe(true);
+    expect(
+      state.toolLoopObserver.getCurrentCycle()?.confirmedNonExecution,
+    ).toBe(true);
+  });
+
+  it("keeps generic guidance for alternating rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    for (let i = 0; i < 6; i++) {
+      await stream.onStepFinish({
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: `/private-${i % 2}` },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      });
+    }
+    const prepared = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "A tool/result cycle has repeated without new output",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      "The same tool call was rejected",
+    );
+  });
+
+  it("keeps the ordinary stop for repeated batches of rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 5; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: ["/one", "/two"].map((path, index) => ({
+          toolCallId: `call-${i}-${index}`,
+          toolName: "file",
+          input: { action: "write", path },
+        })),
+        toolResults: [0, 1].map((index) => ({
+          toolCallId: `call-${i}-${index}`,
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        })),
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-2)({ steps })).toBe(false);
+    }
+    expect(state.toolLoopObserver.getCurrentCycle()).toEqual({
+      toolNames: ["file"],
+      repeatCount: 5,
+      cycleLength: 1,
+      confirmedNonExecution: true,
+      toolCallCount: 2,
+    });
+    expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
+  });
+
   it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {
     const state = initAgentStreamState(
       [uiMessage("initial", "Inspect the fixture")],
