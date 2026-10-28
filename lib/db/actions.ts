@@ -1452,8 +1452,8 @@ export async function updateChatTitle({
 }
 
 /**
- * Rehydrate persisted history within the request's context budget. Regeneration
- * uses stored history without appending client messages. Empty paginated
+ * Rehydrate persisted history within the request's context budget. Paginated
+ * regeneration excludes new client messages. Empty paginated
  * projections retain the caller's fallback behavior and emit bounded diagnostics.
  */
 export async function getMessagesByChatId({
