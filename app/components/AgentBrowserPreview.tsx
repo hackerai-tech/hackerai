@@ -71,9 +71,7 @@ async function withBrowserDeadline<T>(
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     timer = setTimeout(() => {
-      reject(
-        new Error("Browser request timed out. Reconnect or return to chat."),
-      );
+      reject(new Error("Browser request timed out. Please try again."));
       controller.abort();
     }, timeoutMs);
   });
@@ -678,7 +676,7 @@ export function AgentBrowserPreview({
     try {
       // Finish accepted keystrokes before revoking control. Once resume starts,
       // new input is ignored so the queue cannot grow while it drains.
-      await inputQueue.current;
+      await withBrowserDeadline(() => inputQueue.current, undefined, 10_000);
       if (
         !mountedRef.current ||
         sessionIdRef.current !== sessionId ||

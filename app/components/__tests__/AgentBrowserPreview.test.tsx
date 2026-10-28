@@ -2078,6 +2078,9 @@ it("preserves the note and unlocks exit when resume never responds", async () =>
       ? new Promise(() => {})
       : Promise.resolve(response({ frame }));
   fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Keep my note" },
+  });
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
   });
@@ -2086,6 +2089,7 @@ it("preserves the note and unlocks exit when resume never responds", async () =>
   });
   expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
   expect(screen.getByRole("alert")).toHaveTextContent(/timed out/i);
+  expect(screen.getByRole("textbox")).toHaveValue("Keep my note");
   fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
@@ -2212,7 +2216,7 @@ it.each(["input", "viewport"])(
       );
     });
     await act(async () => {
-      jest.advanceTimersByTime(35_001);
+      jest.advanceTimersByTime(10_001);
     });
     expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
     expect(actions.some((body) => body.action === "resume")).toBe(false);
@@ -2326,4 +2330,26 @@ it("restores the resume request id and note after returning to chat and reopenin
     requestId: firstId,
     note: "Keep my context",
   });
+});
+
+it("does not resume after an already-sent resize fails while the exit note is open", async () => {
+  let failResize!: (reason: Error) => void;
+  handleAction = (body) =>
+    body.action === "viewport"
+      ? new Promise((_resolve, reject) => {
+          failResize = reject;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+    failResize(new Error("Resize lost the connection"));
+  });
+  expect(actions.some((body) => body.action === "resume")).toBe(false);
+  expect(screen.getByRole("button", { name: "Return to chat" })).toBeEnabled();
 });
