@@ -79,6 +79,32 @@ it("keeps a successful primary and does not call the fallback", async () => {
   expect(await collect(await s.run())).toEqual(text);
   expect(s.fallback.doStream).not.toHaveBeenCalled();
 });
+it.each(
+  [
+    [
+      { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
+    ] as Part[],
+    [{ type: "error", error: new Error("disconnect") }] as Part[],
+  ].map((ending) => ({ ending })),
+)("recovers whitespace-only output ending with $ending", async ({ ending }) => {
+  const s = setup([
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: " \n\t" },
+    ...ending,
+  ]);
+  expect(await collect(await s.run())).toEqual(text);
+  expect(s.fallback.doStream).toHaveBeenCalledTimes(1);
+});
+it("retains leading whitespace when a later delta contains a valid answer", async () => {
+  const parts: Part[] = [
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: " \n\t" },
+    ...text.slice(2),
+  ];
+  const s = setup(parts);
+  expect(await collect(await s.run())).toEqual(parts);
+  expect(s.fallback.doStream).not.toHaveBeenCalled();
+});
 it("uses the retained provider on an HTTP failure with its own options namespace", async () => {
   const s = setup();
   s.primary.doStream.mockRejectedValueOnce(new Error("503"));

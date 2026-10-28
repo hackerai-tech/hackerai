@@ -44,7 +44,7 @@ export function withInferenceFallback(
             if (value.type === "error") throw value.error;
             buffered.push(value);
             if (
-              (value.type === "text-delta" && value.delta.length > 0) ||
+              (value.type === "text-delta" && value.delta.trim().length > 0) ||
               value.type === "tool-input-start" ||
               value.type === "tool-call"
             )
