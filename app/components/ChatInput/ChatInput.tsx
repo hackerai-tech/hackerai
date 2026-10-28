@@ -53,6 +53,7 @@ import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRe
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
@@ -321,7 +322,12 @@ const ChatInputContent = ({
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const isMobile = useIsMobile();
+  const sandboxInactive = !isEmptyNewChat && !composerFocused;
+  const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
+  const sandboxPointerDownRef = useRef(false);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
   const hasJoinedComposerPanels =
@@ -356,6 +362,27 @@ const ChatInputContent = ({
       setIsStoppingAgent(false);
     }
   }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
+
+  useEffect(() => {
+    if (!composerFocused) return;
+    const dismissOutsideComposer = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (chatInputContainerRef.current?.contains(target)) return;
+      if (
+        target instanceof Element &&
+        target.closest("[data-chat-input-agent-menu]")
+      )
+        return;
+      setComposerFocused(false);
+    };
+    document.addEventListener("pointerdown", dismissOutsideComposer);
+    document.addEventListener("focusin", dismissOutsideComposer);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutsideComposer);
+      document.removeEventListener("focusin", dismissOutsideComposer);
+    };
+  }, [composerFocused]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -912,13 +939,21 @@ const ChatInputContent = ({
             />
           )}
 
-          {/* Keep this row present regardless of input focus so the mobile
-              composer never grows or shifts just to reveal its selector. */}
+          {/* Keep the row's geometry fixed when an existing mobile chat hides
+              its selector, so focus changes never move the composer. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 mb-1 flex min-w-0 shrink-0 items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"}`}
+              className={`relative z-0 mb-1 flex min-w-0 shrink-0 items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"} ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
               data-compact={compactAgentControls ? "true" : "false"}
               data-testid="chat-input-agent-context"
+              aria-hidden={mobileSandboxHidden || undefined}
+              inert={mobileSandboxHidden || undefined}
+              onPointerDownCapture={() => {
+                sandboxPointerDownRef.current = true;
+                window.setTimeout(() => {
+                  sandboxPointerDownRef.current = false;
+                }, 0);
+              }}
             >
               <div
                 className="min-w-0 max-w-full"
@@ -991,6 +1026,8 @@ const ChatInputContent = ({
             className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
+            onFocusCapture={() => setComposerFocused(true)}
+            onPointerDownCapture={() => setComposerFocused(true)}
           >
             <ChatInputTextarea
               draftId={draftId}
@@ -999,6 +1036,18 @@ const ChatInputContent = ({
               minRows={isCentered ? 3 : 1}
               placeholder={placeholder}
               autoFocus={autoFocus}
+              onBlur={(event) => {
+                if (sandboxPointerDownRef.current) return;
+                const next = event.relatedTarget;
+                if (
+                  next instanceof Node &&
+                  (chatInputContainerRef.current?.contains(next) ||
+                    (next instanceof Element &&
+                      next.closest("[data-chat-input-agent-menu]")))
+                )
+                  return;
+                setComposerFocused(false);
+              }}
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}

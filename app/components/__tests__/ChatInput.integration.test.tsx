@@ -27,6 +27,11 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { toast } from "sonner";
 
+let mockIsMobile = false;
+jest.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => mockIsMobile,
+}));
+
 let mockSandboxState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
@@ -227,6 +232,7 @@ describe("ChatInput - Integration Tests", () => {
   const mockOnReconnect = jest.fn();
 
   beforeEach(() => {
+    mockIsMobile = false;
     jest.clearAllMocks();
     mockSandboxState = {};
     jest.mocked(isTauriEnvironment).mockReturnValue(false);
@@ -1070,7 +1076,8 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("keeps compact sandbox controls available before and after focus, menus and submission", async () => {
+    it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
+      mockIsMobile = true;
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -1102,8 +1109,8 @@ describe("ChatInput - Integration Tests", () => {
 
       const context = await screen.findByTestId("chat-input-agent-context");
       const input = screen.getByTestId("chat-input");
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
       expect(
         screen.getByRole("button", { name: /^Agent permissions:/ }),
       ).toBeInTheDocument();
@@ -1111,6 +1118,11 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.focus(input);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
+
+      fireEvent.blur(input, { relatedTarget: null });
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
+      fireEvent.focus(input);
 
       fireEvent.change(input, { target: { value: "A harmless follow-up" } });
       fireEvent.keyDown(input, { key: "Enter" });
@@ -1140,16 +1152,16 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
 
       fireEvent.pointerDown(input);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
       fireEvent.pointerDown(document.body);
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      expect(context).toHaveAttribute("aria-hidden", "true");
+      expect(context).toHaveAttribute("inert");
       rerender(
         <TestWrapper>
           <ChatInput
