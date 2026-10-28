@@ -15,6 +15,9 @@ export function withInferenceFallback(
   options: {
     abortSignal: AbortSignal;
     onDiscardedUsage: (usage: Usage) => void;
+    prepareFallbackPrompt: (
+      prompt: StreamOptions["params"]["prompt"],
+    ) => Promise<StreamOptions["params"]["prompt"]>;
   },
 ) {
   return wrapLanguageModel({
@@ -90,11 +93,16 @@ export function withInferenceFallback(
           }
           checkAbort();
           if (usage) options.onDiscardedUsage(usage);
+          // Keep the primary's native images intact. Only the retained
+          // provider's leg pays for its smaller image budget's preprocessing.
+          const prompt = await options.prepareFallbackPrompt(params.prompt);
+          checkAbort();
           // Provider namespaces are separate; no OpenRouter options or user ID
           // are forwarded to either direct provider.
           const effort = params.providerOptions?.inference?.reasoningEffort;
           return fallback.doStream({
             ...params,
+            prompt,
             providerOptions: {
               abliteration: {
                 reasoningEffort: effort === "max" ? "max" : "high",

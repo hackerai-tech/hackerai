@@ -3,6 +3,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 export const INFERENCE_CYBER_MODEL_KEY = "model-inference-cyber";
 export const INFERENCE_CYBER_MODEL_ID = "deepseek-v4.1-flash-1017-cyber";
 export const INFERENCE_CYBER_PREVIEW_FLAG = "inference_cyber_preview_v1";
+// Native capacity validated through the normal Agent attachment allowance.
+// Count the entire prompt, including tool screenshots, against this budget.
+export const INFERENCE_MAX_IMAGES_PER_REQUEST = 20;
 
 export const isInferenceCyberModel = (model?: string) =>
   model === INFERENCE_CYBER_MODEL_KEY || model === INFERENCE_CYBER_MODEL_ID;

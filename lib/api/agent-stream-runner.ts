@@ -1,5 +1,6 @@
 import {
   INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_MAX_IMAGES_PER_REQUEST,
   isInferenceCyberModel,
 } from "@/lib/ai/inference";
 import { withInferenceFallback } from "@/lib/ai/inference-fallback";
@@ -1146,6 +1147,8 @@ export async function createAgentStream(
       ) {
         recoveryModel = withInferenceFallback(recoveryModel, fallback, {
           abortSignal,
+          prepareFallbackPrompt: (prompt) =>
+            preprocessAbliterationImages(prompt),
           onDiscardedUsage: (usage) => {
             const inputTokens = usage.inputTokens.total ?? 0;
             const outputTokens = usage.outputTokens.total ?? 0;
@@ -1523,7 +1526,13 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      ? await preprocessAbliterationImages(toolCallRepair.messages, {
+          // The logical route keeps its historical Abliteration alias; use
+          // the actual selected provider's native budget before conversion.
+          maxNativeImages: ctx.abliteratedStepRouting?.inferenceCyberEnabled
+            ? INFERENCE_MAX_IMAGES_PER_REQUEST
+            : undefined,
+        })
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)

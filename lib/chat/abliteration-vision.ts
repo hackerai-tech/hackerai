@@ -103,9 +103,12 @@ export function createAbliterationVisionPreprocessor({
   const cache = new Map<string, Promise<string>>();
   return async <T extends AbliterationImageMessages>(
     messages: T,
-    options?: { force?: boolean },
+    options?: { force?: boolean; maxNativeImages?: number },
   ): Promise<T> => {
-    if (!options?.force && !exceedsAbliterationImageLimit(messages))
+    if (
+      !options?.force &&
+      !exceedsAbliterationImageLimit(messages, options?.maxNativeImages)
+    )
       return messages;
     const tasks: Array<{
       position: string;

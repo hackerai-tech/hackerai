@@ -1,5 +1,12 @@
 import { withInferenceFallback } from "../inference-fallback";
 import type { LanguageModelMiddleware } from "ai";
+import { createAbliterationVisionPreprocessor } from "@/lib/chat/abliteration-vision";
+
+jest.mock("server-only", () => ({}));
+jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  ...jest.requireActual("@/lib/chat/auxiliary-vision"),
+  describeImageWithAuxiliaryVision: jest.fn(),
+}));
 
 type Options = Parameters<
   NonNullable<LanguageModelMiddleware["wrapStream"]>
@@ -48,6 +55,7 @@ function setup(parts: Part[] = text) {
   const wrapped = withInferenceFallback(primary, fallback, {
     abortSignal: controller.signal,
     onDiscardedUsage,
+    prepareFallbackPrompt: async (prompt) => prompt,
   });
   const run = () =>
     wrapped.doStream({
@@ -80,6 +88,86 @@ it("uses the retained provider on an HTTP failure with its own options namespace
       providerOptions: { abliteration: { reasoningEffort: "max" } },
     }),
   );
+});
+it("prepares a twenty-image prompt only for the failed primary's Abliteration fallback", async () => {
+  const s = setup();
+  s.primary.doStream.mockRejectedValueOnce(new Error("503"));
+  const describe = jest.fn(async () => ({
+    description: "visible card evidence",
+    model: "vision",
+    inputTokens: 1,
+    outputTokens: 1,
+    durationMs: 1,
+  }));
+  const prepareFallbackPrompt = createAbliterationVisionPreprocessor({
+    userId: "qa",
+    chatId: "chat",
+    abortSignal: s.controller.signal,
+    onCost: jest.fn(),
+    describe,
+  });
+  const prompt: Options["params"]["prompt"] = [
+    {
+      role: "user",
+      content: Array.from({ length: 20 }, (_, i) => ({
+        type: "image",
+        image: new URL(`https://example.test/${i}.png`),
+        mediaType: "image/png",
+      })),
+    },
+  ];
+  const wrapped = withInferenceFallback(s.primary, s.fallback, {
+    abortSignal: s.controller.signal,
+    onDiscardedUsage: s.onDiscardedUsage,
+    prepareFallbackPrompt,
+  });
+  expect(await collect(await wrapped.doStream({ prompt }))).toEqual(text);
+  expect(s.primary.doStream).toHaveBeenCalledWith(
+    expect.objectContaining({ prompt }),
+  );
+  expect(describe).toHaveBeenCalledTimes(20);
+  const fallbackPrompt = s.fallback.doStream.mock.calls[0]?.[0]?.prompt;
+  expect(fallbackPrompt?.[0]).toMatchObject({
+    role: "user",
+    content: Array.from({ length: 20 }, (_, i) => ({
+      type: "text",
+      text: expect.stringContaining(`index="${i + 1}"`),
+    })),
+  });
+  expect(prompt[0].content).toHaveLength(20);
+  expect(prompt[0].content[0].type).toBe("image");
+});
+
+it("does not start the fallback when canceled during prompt preparation", async () => {
+  const s = setup();
+  s.primary.doStream.mockRejectedValueOnce(new Error("503"));
+  const wrapped = withInferenceFallback(s.primary, s.fallback, {
+    abortSignal: s.controller.signal,
+    onDiscardedUsage: s.onDiscardedUsage,
+    prepareFallbackPrompt: async (prompt) => {
+      s.controller.abort();
+      return prompt;
+    },
+  });
+  await expect(wrapped.doStream({ prompt: [] })).rejects.toMatchObject({
+    name: "AbortError",
+  });
+  expect(s.fallback.doStream).not.toHaveBeenCalled();
+});
+
+it("does not send unprepared images to the fallback if preparation fails", async () => {
+  const s = setup();
+  s.primary.doStream.mockRejectedValueOnce(new Error("503"));
+  const failure = new Error("image preparation failed");
+  const wrapped = withInferenceFallback(s.primary, s.fallback, {
+    abortSignal: s.controller.signal,
+    onDiscardedUsage: s.onDiscardedUsage,
+    prepareFallbackPrompt: async () => {
+      throw failure;
+    },
+  });
+  await expect(wrapped.doStream({ prompt: [] })).rejects.toBe(failure);
+  expect(s.fallback.doStream).not.toHaveBeenCalled();
 });
 it("recovers reasoning-only truncation and records its usage before hiding it", async () => {
   const s = setup([
