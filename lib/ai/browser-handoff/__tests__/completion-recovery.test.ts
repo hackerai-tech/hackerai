@@ -275,6 +275,8 @@ it.each([
   "After setup, I'm pausing for your takeover.",
   "I'm now pausing for your takeover after setup.",
   "Pausing now for your takeover, but not until setup finishes.",
+  "I'm now pausing for your takeover, but not yet: I still need to open the page.",
+  "Pausing now for your takeover — but first I need to take a snapshot.",
   "> I'm now pausing for your takeover.",
   "```text\nI'm now pausing for your takeover.\n```",
   'The phrase "I\'m now pausing for your takeover" describes a handoff.',

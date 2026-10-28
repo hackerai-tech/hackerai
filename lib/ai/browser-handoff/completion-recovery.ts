@@ -116,7 +116,7 @@ function promisedImmediateHandoff(text: string): boolean {
       const continuation = prose.slice(match.index + match[0].length);
       // Accept bounded immediate qualifiers, but not an unfinished setup promise.
       if (
-        /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:not\s+)?(?:until|after|once|when)\b))/i.test(
+        /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:(?:not\s+)?(?:until|after|once|when)|not\s+yet|first)\b))/i.test(
           continuation,
         )
       )
