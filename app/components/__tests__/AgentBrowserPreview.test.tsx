@@ -1575,6 +1575,17 @@ it("resizes to the visible phone viewport and coalesces rotation before acceptin
       screen.getByRole("button", { name: "Show browser keyboard" }),
     ).toBeEnabled();
     await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show browser keyboard" }),
+      );
+    });
+    expect(
+      screen.getByRole("textbox", {
+        name: "Type in remote browser",
+        hidden: true,
+      }),
+    ).toHaveFocus();
+    await act(async () => {
       Object.assign(viewport, { width: 844, height: 390 });
       viewport.dispatchEvent(new Event("resize"));
     });
