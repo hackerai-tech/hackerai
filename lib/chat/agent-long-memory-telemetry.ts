@@ -52,6 +52,7 @@ type MemoryCheckpointEvent = {
   rss_high_water_bytes: number;
   process_rss_os_high_water_bytes?: number;
   process_memory_constraint_bytes?: number;
+  process_available_memory_bytes?: number;
   heap_total_bytes: number;
   heap_used_bytes: number;
   heap_used_high_water_bytes: number;
@@ -94,6 +95,17 @@ const readProcessMemoryConstraintBytes = (): number | undefined => {
     // This is a process constraint reading, not a measured kill-time limit.
     const bytes = process.constrainedMemory();
     return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readProcessAvailableMemoryBytes = (): number | undefined => {
+  try {
+    // OS-reported free headroom, not constraint minus this process's RSS.
+    // Zero is a valid reading; missing/invalid readings stay absent.
+    const bytes = process.availableMemory();
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : undefined;
   } catch {
     return undefined;
   }
@@ -199,6 +211,7 @@ export class AgentLongMemoryTelemetry {
 
       const processRssOsHighWater = readProcessRssOsHighWaterBytes();
       const processMemoryConstraint = readProcessMemoryConstraintBytes();
+      const processAvailableMemory = readProcessAvailableMemoryBytes();
       this.options.emit({
         level: "info",
         event: "agent_long_memory_checkpoint",
@@ -230,6 +243,9 @@ export class AgentLongMemoryTelemetry {
         ...(processMemoryConstraint === undefined
           ? {}
           : { process_memory_constraint_bytes: processMemoryConstraint }),
+        ...(processAvailableMemory === undefined
+          ? {}
+          : { process_available_memory_bytes: processAvailableMemory }),
         heap_total_bytes: heapTotal,
         heap_used_bytes: heapUsed,
         heap_used_high_water_bytes: this.heapUsedHighWater,
