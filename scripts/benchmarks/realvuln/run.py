@@ -46,8 +46,25 @@ from bridge_commands import BenchmarkCommands  # noqa: E402
 from bridge_files import handle_file_request  # noqa: E402
 
 
-def checked(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+def checked(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
+            timeout: int = 120) -> str:
+    try:
+        result = subprocess.run(
+            command, cwd=cwd, env=env, text=True, capture_output=True,
+            check=False, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        log_dir = ARTIFACTS / "command-failures"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log = log_dir / (uuid.uuid4().hex + ".log")
+        stdout = error.stdout or b""
+        stderr = error.stderr or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        log.write_text(stdout[-100_000:] + "\n" + stderr[-100_000:])
+        raise RuntimeError(f"{command[0]} timed out after {timeout}s; private log: {log}") from error
     if result.returncode:
         log_dir = ARTIFACTS / "command-failures"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +127,16 @@ def prepare_target(entry: dict, target: Path) -> None:
     checked(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=target)
     if checked(["git", "rev-parse", "HEAD"], cwd=target) != entry["commit_sha"]:
         raise ValueError("Fetched target revision differs from RealVuln manifest")
+
+
+def read_bounded_findings(path: Path) -> bytes:
+    """Bound untrusted Agent output before allocating its contents."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_OUTPUT_BYTES:
+            raise ValueError("Agent findings file exceeds limit or is not regular")
+        return stream.read(MAX_OUTPUT_BYTES + 1)
 
 
 def normalize_findings(raw: bytes, target: Path) -> tuple[dict, int]:
@@ -308,45 +335,55 @@ async def run_one(slug: str, entry: dict, args: argparse.Namespace, docker_env: 
     container = "hackerai-realvuln-" + uuid.uuid4().hex[:12]
     # Colima bind mounts use the host owner's permissions; container root may
     # be unable to write the private output directory on macOS.
-    checked([
-        "docker", "run", "--detach", "--rm", "--init", "--name", container,
-        "--user", f"{os.getuid()}:{os.getgid()}",
-        "--label", "hackerai.benchmark=realvuln", "--network", "none",
-        "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
-        "--mount", f"type=bind,source={target},target=/app,readonly",
-        "--mount", f"type=bind,source={output},target=/output",
-        image, "sleep", "infinity",
-    ], env=docker_env)
     started = asyncio.get_running_loop().time()
     try:
+        checked([
+            "docker", "run", "--detach", "--rm", "--init", "--name", container,
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "--label", "hackerai.benchmark=realvuln", "--network", "none",
+            "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
+            "--mount", f"type=bind,source={target},target=/app,readonly",
+            "--mount", f"type=bind,source={output},target=/output",
+            image, "sleep", "infinity",
+        ], env=docker_env)
         final = await agent_run(slug, run_dir, container, docker_env, args.agent_limit_seconds, args.agent_model_context_variant)
     finally:
-        subprocess.run(["docker", "rm", "--force", container], env=docker_env, capture_output=True, check=False)
+        try:
+            cleanup = subprocess.run(
+                ["docker", "rm", "--force", container], env=docker_env,
+                capture_output=True, check=False, timeout=20,
+            )
+            if cleanup.returncode:
+                (run_dir / "docker-cleanup-error.log").write_bytes(cleanup.stderr[-100_000:])
+        except subprocess.TimeoutExpired:
+            (run_dir / "docker-cleanup-error.log").write_text("Docker cleanup timed out after 20s")
     agent_record = run_dir / f"{slug}.json"
     details = json.loads(agent_record.read_text()) if agent_record.exists() else {}
     transport_failure_count = len(details.get("transportFailures") or [])
     findings_file = output / "findings.json"
     parse_error = None
     count = 0
-    if findings_file.exists() and not findings_file.is_symlink() and stat.S_ISREG(findings_file.lstat().st_mode):
+    if findings_file.exists():
         try:
-            semgrep, count = normalize_findings(findings_file.read_bytes(), target)
-        except (ValueError, json.JSONDecodeError) as error:
+            semgrep, count = normalize_findings(read_bounded_findings(findings_file), target)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
             parse_error = type(error).__name__
             semgrep = {"results": []}
     else:
         parse_error = "MissingFindingsFile"
         semgrep = {"results": []}
-    if transport_failure_count:
+    infrastructure_failure = final.get("status") == "bridge_failed" or not agent_record.exists()
+    if transport_failure_count or infrastructure_failure:
         return {
             "task": slug,
-            "agentStatus": "unscored_transport_error",
+            "agentStatus": "unscored_transport_error" if transport_failure_count else "unscored_infrastructure_error",
             "stopReason": details.get("finishReason"),
             "parseError": parse_error,
             "reportedFindings": count,
             "transportFailureCount": transport_failure_count,
+            "infrastructureFailure": infrastructure_failure,
             "modelCostDollars": details.get("modelCostDollars", final.get("modelCostDollars")),
             "agentElapsedMs": details.get("elapsedMs", final.get("elapsedMs")),
             "wallElapsedMs": round((asyncio.get_running_loop().time() - started) * 1000),
@@ -395,7 +432,10 @@ async def main() -> None:
     docker_env["DOCKER_HOST"] = args.docker_host
     docker_env.pop("DOCKER_CONTEXT", None)
     image = "hackerai-realvuln-benchmark:" + hashlib.sha256((HERE / "Dockerfile").read_bytes()).hexdigest()[:12]
-    checked(["docker", "build", "--platform", "linux/amd64", "--tag", image, str(HERE)], env=docker_env)
+    checked(
+        ["docker", "build", "--platform", "linux/amd64", "--tag", image, str(HERE)],
+        env=docker_env, timeout=1800,
+    )
     image_id = checked(["docker", "image", "inspect", image, "--format", "{{.Id}}"], env=docker_env)
     (results / "manifest.json").write_text(json.dumps({
         "benchmark": "RealVuln 3.1.0 human-authored source-review subset",
