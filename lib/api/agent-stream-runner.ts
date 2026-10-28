@@ -2860,6 +2860,27 @@ export async function createAgentStream(
           state.stoppedDueToElapsedTimeout = true;
         },
       }),
+      () => {
+        const cycle = state.toolLoopObserver.getCurrentCycle();
+        if (
+          !isAgentMode(ctx.mode) ||
+          !cycle?.confirmedNonExecution ||
+          cycle.cycleLength !== 1 ||
+          cycle.repeatCount < 4
+        )
+          return false;
+        // The three-repeat nudge was followed by the same rejected call.
+        // That call never reached the sandbox; stop before another model step.
+        state.stoppedDueToDoomLoop = true;
+        reportGuardrail({
+          reason: "repeated_confirmed_tool_failure",
+          action: "halt",
+          tool_names: cycle.toolNames,
+          repeat_count: cycle.repeatCount,
+          cycle_length: cycle.cycleLength,
+        });
+        return true;
+      },
       doomLoopDetected({
         getToolResultCycle: isAgentMode(ctx.mode)
           ? () => state.toolLoopObserver.getCurrentCycle()

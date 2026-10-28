@@ -4074,30 +4074,28 @@ describe("createAgentStream repeated compaction", () => {
     );
     expect(JSON.stringify(prepared.messages)).not.toContain("/private");
     stream.experimental_onStepStart({ model: { modelId: "test-model" } });
-    for (let i = 3; i < 5; i++) {
-      const step = {
-        response: { modelId: "test-model" },
-        toolCalls: [
-          {
-            toolCallId: `call-${i}`,
-            toolName: "file",
-            input: { action: "write", path: "/private" },
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        {
+          toolCallId: "call-3",
+          toolName: "file",
+          input: { action: "write", path: "/private" },
+        },
+      ],
+      toolResults: [
+        {
+          toolCallId: "call-3",
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
           },
-        ],
-        toolResults: [
-          {
-            toolCallId: `call-${i}`,
-            output: {
-              error: "text is required for write action",
-              executionOutcome: "not_executed",
-            },
-          },
-        ],
-      };
-      steps.push(step);
-      await stream.onStepFinish(step);
-    }
-    expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
+        },
+      ],
+    };
+    steps.push(step);
+    await stream.onStepFinish(step);
+    expect(await stream.stopWhen.at(-2)({ steps })).toBe(true);
     expect(state.stoppedDueToDoomLoop).toBe(true);
     expect(
       state.toolLoopObserver.getCurrentCycle()?.confirmedNonExecution,
