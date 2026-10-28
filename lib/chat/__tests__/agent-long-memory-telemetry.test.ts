@@ -6,6 +6,7 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import fs from "node:fs";
 
 import { AgentLongMemoryTelemetry } from "../agent-long-memory-telemetry";
 import type {
@@ -14,6 +15,12 @@ import type {
 } from "@/lib/logger";
 
 const MIB = 1024 * 1024;
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const setPlatform = (platform: NodeJS.Platform) =>
+  Object.defineProperty(process, "platform", {
+    ...originalPlatform,
+    value: platform,
+  });
 
 const providerRequest: ProviderRequestDiagnostics = {
   model: "model-grok-4.6",
@@ -49,10 +56,136 @@ const retention: ProviderRequestRetentionDiagnostics = {
 
 describe("AgentLongMemoryTelemetry", () => {
   beforeEach(() => {
+    setPlatform("darwin");
     jest.spyOn(process, "constrainedMemory").mockReturnValue(0);
     jest.spyOn(process, "availableMemory").mockReturnValue(-1);
   });
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    Object.defineProperty(process, "platform", originalPlatform);
+  });
+
+  it("reads only numeric Linux RSS backing on emitted checkpoints", () => {
+    setPlatform("linux");
+    const open = jest.spyOn(fs, "openSync").mockReturnValue(123);
+    const close = jest.spyOn(fs, "closeSync").mockImplementation(() => {});
+    const read = jest
+      .spyOn(fs, "readSync")
+      .mockImplementation((_fd, buffer) => {
+        const status = Buffer.from(
+          "Name:\tprivate-proc-canary\nUid:\t1234\n" +
+            "RssAnon:\t2048 kB\nRssFile:\t1024 kB\nRssShmem:\t0 kB\n",
+        );
+        status.copy(buffer as Buffer);
+        return status.length;
+      });
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_rss",
+      chatId: "chat_rss",
+      userId: "user_rss",
+      emit,
+      now: () => 1000,
+      readMemory: () => ({
+        rss: 300 * MIB,
+        heapTotal: 180 * MIB,
+        heapUsed: 100 * MIB,
+        external: 10 * MIB,
+        arrayBuffers: 0,
+      }),
+    });
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      process_rss_anon_bytes: 2 * MIB,
+      process_rss_file_bytes: MIB,
+      process_rss_shmem_bytes: 0,
+    });
+    expect(open).toHaveBeenCalledWith("/proc/self/status", "r");
+    expect(read).toHaveBeenCalledWith(123, expect.any(Buffer), 0, 8192, 0);
+    expect(close).toHaveBeenCalledWith(123);
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(emit.mock.calls)).not.toMatch(/private-proc|Uid/);
+  });
+
+  it("omits malformed Linux backing counters independently", () => {
+    setPlatform("linux");
+    jest.spyOn(fs, "openSync").mockReturnValue(123);
+    jest.spyOn(fs, "closeSync").mockImplementation(() => {});
+    jest.spyOn(fs, "readSync").mockImplementation((_fd, buffer) => {
+      const status = Buffer.from(
+        "RssAnon: 9007199254740991 kB\nRssFile: 3 MB\nRssShmem: 0 kB\n",
+      );
+      status.copy(buffer as Buffer);
+      return status.length;
+    });
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_invalid_rss",
+      chatId: "chat_rss",
+      userId: "user_rss",
+      emit,
+    });
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      true,
+    );
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      process_rss_shmem_bytes: 0,
+    });
+    expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+      "process_rss_anon_bytes",
+    );
+    expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+      "process_rss_file_bytes",
+    );
+  });
+
+  it.each(["open", "read"])(
+    "keeps checkpoints when the Linux %s fails",
+    (stage) => {
+      setPlatform("linux");
+      const open = jest.spyOn(fs, "openSync").mockReturnValue(123);
+      const read = jest.spyOn(fs, "readSync").mockReturnValue(0);
+      const close = jest.spyOn(fs, "closeSync").mockImplementation(() => {});
+      (stage === "open" ? open : read).mockImplementation(() => {
+        throw new Error("private-proc-read-canary");
+      });
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_no_proc",
+        chatId: "chat_rss",
+        userId: "user_rss",
+        emit,
+      });
+      expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+        true,
+      );
+      expect(emit.mock.calls[0]?.[0]).toMatchObject({
+        event: "agent_long_memory_checkpoint",
+      });
+      expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+        "process_rss_anon_bytes",
+      );
+      expect(close).toHaveBeenCalledTimes(stage === "open" ? 0 : 1);
+      expect(JSON.stringify(emit.mock.calls)).not.toContain("private-proc");
+    },
+  );
+
+  it("does not read Linux process status on another platform", () => {
+    const open = jest.spyOn(fs, "openSync");
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_non_linux",
+      chatId: "chat_rss",
+      userId: "user_rss",
+      emit,
+    });
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+    expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+      "process_rss_anon_bytes",
+    );
+  });
 
   it("separates V8 physical heap and malloc bytes only on emitted checkpoints", () => {
     const readV8Memory = jest.fn(() => ({
