@@ -1169,11 +1169,14 @@ export async function saveMessage({
       isHidden,
     };
 
-    // A request-scoped client avoids changing the shared singleton's fetch
-    // options while another request or task is persisting its own result.
-    const client = signal
-      ? createServiceConvexClient(getConvexUrl(), { signal })
-      : getConvexClient();
+    // Browser snapshots are independent HTTP requests. Keep their writes out of
+    // the singleton's SDK queue so an unrelated pending mutation cannot hold a
+    // partial save past its request deadline. Signal-specific clients also keep
+    // their fetch options separate. Retries still share this invocation's client.
+    const client =
+      signal || clientSnapshot
+        ? createServiceConvexClient(getConvexUrl(), { signal })
+        : getConvexClient();
     for (let attemptIndex = 0; ; attemptIndex++) {
       signal?.throwIfAborted();
       try {
