@@ -36,12 +36,22 @@ type BrowserFrame = {
 };
 
 type BrowserInput =
-  | { kind: "move" | "down" | "up"; x: number; y: number }
+  | { kind: "down" | "up"; x: number; y: number }
+  | { kind: "move"; x: number; y: number; buttons?: 0 | 1 }
   | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
   | { kind: "key"; key: string; code: string; modifiers: number }
   | { kind: "text"; text: string };
 
 const FRAME_STALE_MS = 10_000;
+
+class BrowserRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 export function AgentBrowserPreview({
   chatId,
@@ -110,6 +120,7 @@ export function AgentBrowserPreview({
   const relaySequence = useRef(0);
   const [relayReconnect, setRelayReconnect] = useState(0);
   const [grant, setGrant] = useState<string | null>(null);
+  const [renewalPending, setRenewalPending] = useState(false);
   const [exitOpen, setExitOpen] = useState(false);
   const [note, setNote] = useState("");
   const [hasTakenControl, setHasTakenControl] = useState(false);
@@ -128,6 +139,13 @@ export function AgentBrowserPreview({
   const bufferedInputs = useRef<BrowserInput[]>([]);
   const drainingInputs = useRef(false);
   const lastMoveAt = useRef(0);
+  const mouseRef = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  const releaseMouseRef = useRef<(() => void) | null>(null);
   const wheelHandlerRef = useRef<
     ((event: WheelEvent, element: HTMLImageElement) => void) | null
   >(null);
@@ -207,6 +225,7 @@ export function AgentBrowserPreview({
     setError(null);
     setPasteError(null);
     setGrant(null);
+    setRenewalPending(false);
     setRelayUrl(null);
     relaySequence.current = 0;
     grantRef.current = null;
@@ -218,10 +237,16 @@ export function AgentBrowserPreview({
     composingRef.current = false;
     bufferedInputs.current = [];
     drainingInputs.current = false;
+    mouseRef.current = null;
+    touchRef.current = null;
   }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
-    async (body: Record<string, unknown>, keepalive = false) => {
+    async (
+      body: Record<string, unknown>,
+      keepalive = false,
+      signal?: AbortSignal,
+    ) => {
       if (!endpoint) throw new Error("Browser session expired");
       const response = await fetch(endpoint, {
         method: "POST",
@@ -230,12 +255,16 @@ export function AgentBrowserPreview({
         body: JSON.stringify(body),
         cache: "no-store",
         keepalive,
+        signal,
       });
       const data = await response.json().catch(() => null);
       if (!data || typeof data !== "object" || Array.isArray(data))
-        throw new Error("Browser unavailable");
+        throw new BrowserRequestError("Browser unavailable", response.status);
       if (!response.ok)
-        throw new Error(data.state ?? data.error ?? "Browser unavailable");
+        throw new BrowserRequestError(
+          data.state ?? data.error ?? "Browser unavailable",
+          response.status,
+        );
       return data;
     },
     [endpoint],
@@ -317,27 +346,104 @@ export function AgentBrowserPreview({
   useEffect(() => {
     if (!endpoint || !grant || !activeSessionId) return;
     let stopped = false;
-    const timer = setInterval(() => {
-      void post({ action: "heartbeat", grant }).catch(() => {
-        if (
-          stopped ||
-          resumingRef.current ||
-          !mountedRef.current ||
-          sessionIdRef.current !== sessionId ||
-          grantRef.current !== grant
-        )
+    let timer: ReturnType<typeof setTimeout>;
+    let controller: AbortController | undefined;
+    let inFlight = false;
+    let failures = 0;
+    let confirmedUntil = Date.now() + 20_000;
+    const current = () =>
+      !stopped &&
+      !resumingRef.current &&
+      mountedRef.current &&
+      sessionIdRef.current === sessionId &&
+      grantRef.current === grant;
+    const renew = async () => {
+      if (!current() || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 8_000);
+      const startedAt = performance.now();
+      try {
+        const data = await post(
+          { action: "heartbeat", grant },
+          false,
+          controller.signal,
+        );
+        if (!current()) return;
+        const roundTrip = Math.max(0, performance.now() - startedAt);
+        const serverWork = Number.isFinite(data.processingDurationMs)
+          ? Math.max(0, Math.min(roundTrip, data.processingDurationMs))
+          : 0;
+        // The server's remaining lease already excludes its processing time.
+        // Subtract only the rest of the round trip as a conservative bound on
+        // response transit, without requiring synchronized machine clocks.
+        const remaining = Number.isFinite(data.leaseValidForMs)
+          ? Math.max(
+              0,
+              Math.min(25_000, data.leaseValidForMs) - (roundTrip - serverWork),
+            )
+          : 20_000 - roundTrip;
+        if (remaining <= 0) throw new Error("Renewal arrived after its lease");
+        confirmedUntil = Date.now() + remaining;
+        failures = 0;
+        setRenewalPending(false);
+        setError((previous) =>
+          previous === "Reconnecting browser control. Input is paused."
+            ? null
+            : previous,
+        );
+        timer = setTimeout(
+          renew,
+          Math.max(250, Math.min(8_000, remaining / 3)),
+        );
+      } catch (cause) {
+        if (!current()) return;
+        const status = cause instanceof BrowserRequestError ? cause.status : 0;
+        const rejected =
+          status >= 400 && status < 500 && status !== 408 && status !== 429;
+        // A temporary transport failure is not proof that ownership expired.
+        // Pause input while retrying, but never renew concurrently or forever.
+        if (!rejected && ++failures < 3 && Date.now() < confirmedUntil) {
+          setRenewalPending(true);
+          setError("Reconnecting browser control. Input is paused.");
+          timer = setTimeout(
+            renew,
+            Math.min(1_000, confirmedUntil - Date.now()),
+          );
           return;
+        }
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError(
-          "Control expired. Reconnect or choose Exit takeover to continue.",
+          rejected
+            ? "Control expired. Reconnect or choose Exit takeover to continue."
+            : "Browser connection lost. Reconnect or choose Exit takeover to continue.",
         );
-      });
-    }, 10_000);
+        // Relinquish only this grant, keeping the Agent paused. This avoids a
+        // fresh 30-second wait when the database renewed but its relay failed.
+        if (!rejected)
+          void post({ action: "release", grant }, true).catch(() => undefined);
+      } finally {
+        clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
+    const wake = () => {
+      if (!document.hidden) void renew();
+    };
+    // Renew promptly after acquisition and after returning from a throttled tab.
+    timer = setTimeout(renew, 1_000);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
+      controller?.abort();
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [endpoint, grant, post, sessionId, activeSessionId]);
 
@@ -360,6 +466,7 @@ export function AgentBrowserPreview({
   }, [endpoint]);
 
   const frameStale =
+    (!!grant && renewalPending) ||
     !session ||
     !frame ||
     previewState !== "ready" ||
@@ -408,6 +515,7 @@ export function AgentBrowserPreview({
       }
       grantRef.current = data.grant;
       setGrant(data.grant);
+      setRenewalPending(false);
       setRelayUrl(data.relayUrl ?? null);
       relaySequence.current = 0;
       setFullScreen(true);
@@ -480,6 +588,7 @@ export function AgentBrowserPreview({
 
   const resumeAgent = async () => {
     if (!canResume || resumingRef.current) return;
+    releaseMouseRef.current?.();
     resumingRef.current = true;
     const activeGrant = grantRef.current;
     setBusy(true);
@@ -547,18 +656,36 @@ export function AgentBrowserPreview({
     }
   };
 
-  const sendInput = (input: BrowserInput) => {
+  const sendInput = (input: BrowserInput, coalesceMove = true) => {
     const activeGrant = grantRef.current;
-    if (!activeGrant || frameStale || resumingRef.current) return;
     if (
-      resizingRef.current &&
-      ["move", "down", "up", "wheel"].includes(input.kind)
+      !activeGrant ||
+      (frameStale && input.kind !== "up") ||
+      resumingRef.current
     )
       return;
-    // Moves are advisory; do not let them delay clicks or keystrokes.
-    if (input.kind === "move" && drainingInputs.current) return;
+    if (resizingRef.current && ["move", "down", "wheel"].includes(input.kind))
+      return;
+    // Hover is advisory. Held movement must survive a slow request, or a drag
+    // becomes a press/release without any displacement. Native HTML5 dragging
+    // also needs an initial move to start dragging before moving over a target.
+    // Keep the first and latest adjacent held moves; never coalesce across a
+    // press, release, wheel event or keystroke.
+    if (input.kind === "move" && !input.buttons && drainingInputs.current)
+      return;
     const buffer = bufferedInputs.current;
-    buffer.push(input);
+    const previous = buffer.at(-1);
+    const penultimate = buffer.at(-2);
+    if (
+      coalesceMove &&
+      input.kind === "move" &&
+      previous?.kind === "move" &&
+      previous.buttons === input.buttons &&
+      (!input.buttons ||
+        (penultimate?.kind === "move" && penultimate.buttons === input.buttons))
+    )
+      buffer[buffer.length - 1] = input;
+    else buffer.push(input);
     if (drainingInputs.current) return;
     drainingInputs.current = true;
     // Keep one ordered request in flight. Input arriving during its round trip
@@ -598,6 +725,7 @@ export function AgentBrowserPreview({
           return;
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError("Browser input disconnected. Reconnect before continuing.");
       })
@@ -608,6 +736,40 @@ export function AgentBrowserPreview({
         }
       });
   };
+
+  const releaseMouse = () => {
+    const mouse = mouseRef.current;
+    mouseRef.current = null;
+    if (!mouse) return;
+    // Flush the final position before release, even if the last pointermove
+    // was throttled or a request was still in flight.
+    if (mouse.moved) {
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 });
+      // Entering a new native drop target only fires dragenter. A distinct
+      // final move must deliver dragover before release, even at the same point.
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 }, false);
+    }
+    sendInput({ kind: "up", x: mouse.x, y: mouse.y });
+  };
+  useLayoutEffect(() => {
+    releaseMouseRef.current = releaseMouse;
+  });
+  useEffect(() => {
+    const release = () => releaseMouseRef.current?.();
+    const visibility = () => {
+      if (document.hidden) release();
+    };
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    if (frameStale || !human || exitOpen || resizing)
+      releaseMouseRef.current?.();
+  }, [frameStale, human, exitOpen, resizing]);
 
   // Layout follows the visible area, including keyboard occlusion and rotation.
   useEffect(() => {
@@ -985,6 +1147,13 @@ export function AgentBrowserPreview({
               }}
               onPointerDown={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
+                if (
+                  (mouseRef.current &&
+                    mouseRef.current.id !== event.pointerId) ||
+                  (touchRef.current && touchRef.current.id !== event.pointerId)
+                )
+                  return;
                 event.preventDefault();
                 if (event.pointerType === "touch") {
                   setTouchDevice(true);
@@ -1000,11 +1169,15 @@ export function AgentBrowserPreview({
                 keyboardRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
+                releaseMouse();
+                mouseRef.current = { id: event.pointerId, ...xy, moved: false };
+                lastMoveAt.current = -Infinity;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 sendInput({ kind: "down", ...xy });
               }}
               onPointerUp={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
                 const xy = point(event);
                 const touch = touchRef.current;
                 if (touch && touch.id === event.pointerId) {
@@ -1013,14 +1186,30 @@ export function AgentBrowserPreview({
                     sendInput({ kind: "up", ...xy });
                   }
                   touchRef.current = null;
-                } else if (xy) sendInput({ kind: "up", ...xy });
-                event.currentTarget.releasePointerCapture(event.pointerId);
+                } else if (mouseRef.current?.id === event.pointerId) {
+                  if (xy) {
+                    const mouse = mouseRef.current;
+                    mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                    Object.assign(mouse, xy);
+                  }
+                  releaseMouse();
+                }
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+                  event.currentTarget.releasePointerCapture(event.pointerId);
               }}
-              onPointerCancel={() => {
-                touchRef.current = null;
+              onPointerCancel={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
+              }}
+              onLostPointerCapture={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
               }}
               onPointerMove={(event) => {
                 const touch = touchRef.current;
+                if (touch && touch.id !== event.pointerId) return;
                 if (touch && touch.id === event.pointerId) {
                   const dx = touch.x - event.clientX,
                     dy = touch.y - event.clientY;
@@ -1038,15 +1227,26 @@ export function AgentBrowserPreview({
                     });
                   return;
                 }
+                const mouse = mouseRef.current;
+                if (mouse && mouse.id !== event.pointerId) return;
+                if (mouse && event.buttons === 0) {
+                  releaseMouse();
+                  return;
+                }
+                const xy = point(event);
+                if (mouse && mouse.id === event.pointerId && xy) {
+                  mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                  Object.assign(mouse, xy);
+                }
                 if (
                   !human ||
                   frameStale ||
-                  Date.now() - lastMoveAt.current < 120
+                  Date.now() - lastMoveAt.current < (mouse ? 16 : 120)
                 )
                   return;
                 lastMoveAt.current = Date.now();
-                const xy = point(event);
-                if (xy) sendInput({ kind: "move", ...xy });
+                if (xy)
+                  sendInput({ kind: "move", ...xy, buttons: mouse ? 1 : 0 });
               }}
               ref={attachWheelListener}
             />

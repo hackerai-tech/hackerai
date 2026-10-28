@@ -12,7 +12,12 @@ import {
 import { createHmac } from "node:crypto";
 
 jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: { getInfo: jest.fn(), connect: jest.fn(), listSnapshots: jest.fn() },
+  Sandbox: {
+    getInfo: jest.fn(),
+    getMetrics: jest.fn(),
+    connect: jest.fn(),
+    listSnapshots: jest.fn(),
+  },
 }));
 jest.mock("../cloud-workspace-guard", () => ({
   claimE2BDiskRecovery: jest.fn(),
@@ -31,6 +36,9 @@ const pause = jest.fn();
 const snapshot = jest.fn();
 const run = jest.fn();
 const list = jest.fn();
+const write = jest.fn();
+const read = jest.fn();
+const remove = jest.fn();
 const key = "test-api-key";
 const originalEnv = process.env;
 const auth = {
@@ -55,6 +63,8 @@ const auth = {
 };
 const info = {
   sandboxId: auth.sandboxId,
+  envdVersion: "0.5.0",
+  lifecycle: { autoResume: true, onTimeout: "pause" },
   state: "paused",
   metadata: {
     userID: auth.userId,
@@ -76,18 +86,43 @@ beforeEach(() => {
   };
   result.mockResolvedValue(null);
   state.mockResolvedValue(null);
-  getInfo.mockResolvedValue(info as never);
+  getInfo.mockImplementation(
+    async () =>
+      ({
+        ...info,
+        state:
+          connect.mock.calls.length > pause.mock.calls.length
+            ? "running"
+            : "paused",
+      }) as never,
+  );
+  jest.mocked(Sandbox.getMetrics).mockResolvedValue([]);
   claim.mockResolvedValue({ state: {} as never, finish, update } as never);
   finish.mockResolvedValue(undefined);
   update.mockResolvedValue(undefined);
   pause.mockResolvedValue(true);
   snapshot.mockResolvedValue({ snapshotId: "backup-1" });
-  run.mockResolvedValue({ exitCode: 0 });
+  run.mockImplementation(async (command) =>
+    command === "/usr/bin/envd -version" ||
+    command.includes("systemctl show envd.service")
+      ? { exitCode: 0, stdout: "0.10.2\n" }
+      : { exitCode: 0 },
+  );
   list.mockResolvedValue([{ name: "synthetic.txt", type: "file", size: 4 }]);
+  let bytes = "";
+  write.mockImplementation(async (_path, value) => {
+    bytes = value;
+  });
+  read.mockImplementation(async () => bytes);
+  remove.mockResolvedValue(undefined);
+  jest.mocked(Sandbox.listSnapshots).mockReturnValue({
+    hasNext: false,
+    nextItems: async () => [{ snapshotId: "backup-1" }],
+  } as never);
   connect.mockResolvedValue({
     sandboxId: auth.sandboxId,
     commands: { run },
-    files: { list },
+    files: { list, write, read, remove },
     pause,
     createSnapshot: snapshot,
   } as never);
@@ -138,6 +173,30 @@ describe("operator authorization", () => {
 });
 
 describe("disk-only recovery", () => {
+  it.each(["0.4.99", "0.5.0-rc.1", "unknown", undefined])(
+    "refuses recovery before reboot when snapshot support is unverified (%s)",
+    async (envdVersion) => {
+      getInfo.mockResolvedValueOnce({ ...info, envdVersion } as never);
+      await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+        stage: "capability",
+      });
+      expect(claim).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks snapshot support after acquiring the durable fence", async () => {
+    getInfo
+      .mockResolvedValueOnce(info as never)
+      .mockResolvedValueOnce({ ...info, envdVersion: "0.4.99" } as never);
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "identity",
+    });
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+
   it("never touches the provider for an idempotent completed request", async () => {
     result.mockResolvedValue({
       token: auth.idempotencyKey,
@@ -208,6 +267,15 @@ describe("disk-only recovery", () => {
       status: "verified_paused",
       backupSnapshotId: "backup-1",
       entryCount: 1,
+      diagnostics: {
+        before: { templateBuildEnvdVersion: "0.5.0", runtimeEnvdVersion: null },
+        after: {
+          templateBuildEnvdVersion: "0.5.0",
+          runtimeEnvdVersion: "0.10.2",
+          runtimeMeetsReadinessMinimum: true,
+          readinessSafeguardRollout: "unknown",
+        },
+      },
     });
     expect(connect).toHaveBeenCalledTimes(2);
     expect(connect).toHaveBeenNthCalledWith(
@@ -215,6 +283,7 @@ describe("disk-only recovery", () => {
       auth.sandboxId,
       expect.objectContaining({
         onResume: "reboot",
+        retries: 0,
         requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
       }),
     );
@@ -224,6 +293,16 @@ describe("disk-only recovery", () => {
       expect.not.objectContaining({ onResume: "reboot" }),
     );
     expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ retries: 0 }),
+    );
+    expect(getInfo).toHaveBeenCalledWith(
+      auth.sandboxId,
+      expect.objectContaining({ retries: 3, requestTimeoutMs: 30_000 }),
+    );
+    expect(Sandbox.listSnapshots).toHaveBeenCalledWith(
+      expect.objectContaining({ retries: 3, requestTimeoutMs: 30_000 }),
+    );
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
         step: "backup_created",
@@ -231,6 +310,77 @@ describe("disk-only recovery", () => {
       }),
     );
     expect(pause).toHaveBeenCalledTimes(2);
+    expect(pause).toHaveBeenCalledWith(expect.objectContaining({ retries: 0 }));
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the operator fence if the backup receipt cannot be read back", async () => {
+    jest.mocked(Sandbox.listSnapshots).mockReturnValue({
+      hasNext: false,
+      nextItems: async () => [],
+    } as never);
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "backup",
+    });
+    expect(pause).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("keeps the operator fence if probe bytes do not survive normal resume", async () => {
+    read.mockImplementationOnce(async () =>
+      createHmac("sha256", key).update(auth.idempotencyKey).digest("hex"),
+    );
+    read.mockResolvedValueOnce("lost");
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "normal_resume",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("refuses a different sandbox returned by the operator's normal reconnect", async () => {
+    const sandbox = await connect(auth.sandboxId);
+    connect.mockClear();
+    connect.mockResolvedValueOnce(sandbox).mockResolvedValueOnce({
+      ...sandbox,
+      sandboxId: "other",
+    });
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "normal_resume",
+    });
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("retains the fence when ownership changes during a pause", async () => {
+    getInfo.mockImplementation(
+      async () =>
+        ({
+          ...info,
+          state:
+            connect.mock.calls.length > pause.mock.calls.length
+              ? "running"
+              : "paused",
+          metadata: {
+            ...info.metadata,
+            userID: pause.mock.calls.length ? "other" : auth.userId,
+          },
+        }) as never,
+    );
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "pause",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it("completes verified recovery when optional resource metrics are unavailable", async () => {
+    jest.mocked(Sandbox.getMetrics).mockRejectedValue(new Error("unavailable"));
+    await expect(recoverE2BDiskOnly(auth)).resolves.toMatchObject({
+      status: "verified_paused",
+      diagnostics: { before: { metrics: null }, after: { metrics: null } },
+    });
     expect(finish).toHaveBeenCalledTimes(1);
   });
 
@@ -238,45 +388,76 @@ describe("disk-only recovery", () => {
     ["provider_409", Object.assign(new Error("conflict"), { statusCode: 409 })],
     ["timeout", new Error("timeout")],
     [
+      "cancellation",
+      Object.assign(new Error("cancelled"), { name: "AbortError" }),
+    ],
+    [
       "unsupported",
       Object.assign(new Error("unsupported"), { statusCode: 400 }),
     ],
   ])("retains the fence after %s with no retry", async (_, error) => {
+    state.mockResolvedValueOnce(null).mockResolvedValue({
+      phase: "recovery",
+      token: auth.idempotencyKey,
+    } as never);
     connect.mockRejectedValueOnce(error);
     await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
       stage: "reboot",
+      details: { fence: "retained" },
     });
     expect(connect).toHaveBeenCalledTimes(1);
     expect(finish).not.toHaveBeenCalled();
   });
 
-  it("keeps a recoverable fence if snapshot or explicit pause fails", async () => {
-    snapshot.mockRejectedValueOnce(new Error("snapshot unavailable"));
+  it("retains the fence across an automatic pause after post-reboot backup failure without claiming memory rollback", async () => {
+    state.mockResolvedValueOnce(null).mockResolvedValue({
+      phase: "recovery",
+      token: auth.idempotencyKey,
+    } as never);
+    snapshot.mockRejectedValueOnce(new Error("snapshot failed"));
     await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
       stage: "backup",
+      details: {
+        fence: "retained",
+        originalMemoryPreservation: "not_guaranteed",
+        diagnostics: { after: { onTimeout: "pause" } },
+      },
     });
+    // E2B may save rebooted state independently of our Redis fence.
+    getInfo.mockResolvedValue(info as never);
+    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
+      stage: "fenced",
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
     expect(pause).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
-    snapshot.mockResolvedValue({ snapshotId: "backup-1" });
-    pause.mockRejectedValueOnce(new Error("pause failed"));
-    await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({
-      stage: "pause",
-    });
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        step: "backup_created",
-        backupSnapshotId: "backup-1",
-      }),
-    );
-    expect(finish).not.toHaveBeenCalled();
   });
+
+  it.each(["backup", "pause"])(
+    "keeps a recoverable fence if %s fails",
+    async (stage) => {
+      if (stage === "backup")
+        snapshot.mockRejectedValueOnce(new Error("snapshot unavailable"));
+      else pause.mockRejectedValueOnce(new Error("pause failed"));
+      await expect(recoverE2BDiskOnly(auth)).rejects.toMatchObject({ stage });
+      if (stage === "backup") expect(pause).not.toHaveBeenCalled();
+      else
+        expect(update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            step: "backup_created",
+            backupSnapshotId: "backup-1",
+          }),
+        );
+      expect(finish).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps the fence when ordinary resume or metadata verification fails", async () => {
     connect
       .mockResolvedValueOnce({
         sandboxId: auth.sandboxId,
         commands: { run },
-        files: { list },
+        files: { list, write, read, remove },
         pause,
         createSnapshot: snapshot,
       } as never)
@@ -371,6 +552,39 @@ describe("customer recovery verification", () => {
     ).toHaveLength(1);
     expect(finish).toHaveBeenCalledTimes(1);
   });
+  it.each([1, 2, 3])(
+    "verifies ownership before workspace access on connection %s",
+    async (connection) => {
+      getInfo.mockImplementation(
+        async () =>
+          ({
+            ...info,
+            state:
+              connect.mock.calls.length > pause.mock.calls.length
+                ? "running"
+                : "paused",
+            metadata: {
+              ...info.metadata,
+              userID:
+                connect.mock.calls.length === connection
+                  ? "other-owner"
+                  : auth.userId,
+            },
+          }) as never,
+      );
+      await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+        stage: ["reboot", "normal_resume", "reconnect"][connection - 1],
+      });
+      // Only earlier, identity-verified transitions may have touched the workspace.
+      expect(write).toHaveBeenCalledTimes(connection === 1 ? 0 : 1);
+      expect(read).toHaveBeenCalledTimes(connection - 1);
+      expect(list).toHaveBeenCalledTimes(connection - 1);
+      expect(remove).toHaveBeenCalledTimes(connection === 3 ? 1 : 0);
+      expect(pause).toHaveBeenCalledTimes(connection - 1);
+      expect(connect).toHaveBeenCalledTimes(connection);
+      expect(finish).not.toHaveBeenCalled();
+    },
+  );
   it("keeps the fence on lost probe contents", async () => {
     read.mockResolvedValueOnce("corrupt");
     await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({

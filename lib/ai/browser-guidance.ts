@@ -1,3 +1,5 @@
+import type { SandboxInfo } from "@/types";
+
 // Shared by the parent and every worker. Runtime skills should describe the
 // installed browser's practical workflow without assuming a connected host has it.
 export const AGENT_BROWSER_GUIDANCE = `<agent_browser>
@@ -51,3 +53,22 @@ Session lifetime and recovery:
 - Checkpoints are private, memory-backed and limited to this run. Cleanup closes managed browsers and erases checkpoints at completion/cancellation; a sandbox watchdog expires them within 6 hours 5 minutes after runtime creation if the worker disappears. Never read, print, attach or copy checkpoint contents or AGENT_BROWSER_ENCRYPTION_KEY.
 - Do not use \`--session-name\`, \`--profile\`, auth-vault persistence, automatic state saving, or save checkpoints outside the managed directory for idle recovery. If the directory is unavailable, state cannot be restored, or authentication has expired, authenticate again through the user-approved flow. Do not promise recovery across Agent runs.
 </agent_browser>`;
+
+/** Add image-specific guidance only after the actual cloud workspace is known. */
+export function getSandboxBrowserGuidance(
+  info: SandboxInfo | null | undefined,
+): string {
+  if (info?.type !== "cloud" || info.provider !== "e2b") return "";
+  if (info.sandboxVersion === "v13") {
+    return `\n<agent_browser_runtime>
+The attached Cloud workspace is v13 (agent-browser 0.39.3).
+Before reopening immediately after \`close\`, wait for that session's daemon to exit (its socket and PID files disappear); close can return before shutdown finishes. Do not blindly replay an action after an unknown outcome.
+</agent_browser_runtime>\n`;
+  }
+  if (info.sandboxVersion === "v12") {
+    return `\n<agent_browser_runtime>
+The attached Cloud workspace is v12. Use its installed agent-browser version and consult its help for supported syntax. Preserve its files and browser setup; do not upgrade or replace the workspace to use newer browser features.
+</agent_browser_runtime>\n`;
+  }
+  return "";
+}

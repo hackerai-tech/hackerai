@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -15,6 +15,15 @@ import {
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,7 +59,26 @@ const getReusableApprovalDescription = (
   grant: NonNullable<ReturnType<typeof deriveAgentApprovalTargetGrant>>,
 ): string => {
   if (grant.kind === "terminal_command") {
-    return `Commands starting with ${grant.argv.join(" ")}`;
+    // JSON leaves some invisible characters literal; show their code units so
+    // they cannot disguise the selected scope. Submitted argv stays unchanged.
+    const displayedArgv = `[${grant.argv
+      .map((argument) => {
+        const escaped = JSON.stringify(argument).replace(
+          /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cc}\p{Zl}\p{Zp}]|(?!\u0020)\p{Zs}/gu,
+          (character) =>
+            character
+              .split("")
+              .map(
+                (unit) =>
+                  `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`,
+              )
+              .join(""),
+        );
+        // Isolate each argument so natural RTL text cannot reorder neighbors.
+        return `\u2068${escaped}\u2069`;
+      })
+      .join(",")}]`;
+    return `Commands starting with ${displayedArgv}, with any following arguments`;
   }
   if (grant.kind === "terminal_interaction") {
     return `${grant.action} actions in this terminal session`;
@@ -130,6 +158,17 @@ export function AgentApprovalPrompt({
   const reusableApprovalDescription = targetGrant
     ? getReusableApprovalDescription(targetGrant)
     : "";
+  const hasLongScope = reusableApprovalDescription.length > 320;
+  const [openScopeKey, setOpenScopeKey] = useState<string | null>(null);
+  const scopeReviewKey = JSON.stringify([
+    request.approvalId,
+    request.toolCallId,
+    request.target,
+    targetGrant?.targetPrefix,
+  ]);
+  const isScopeReviewOpen = openScopeKey === scopeReviewKey && canSubmit;
+  const scopeRef = useRef<HTMLPreElement>(null);
+  const optionsRef = useRef<HTMLButtonElement>(null);
   const approvalTarget = request.target?.trim() ?? "";
   const purpose = getApprovalPurpose(request);
 
@@ -192,184 +231,260 @@ export function AgentApprovalPrompt({
         : "Allow once";
 
   return (
-    <form
-      aria-busy={isSending}
-      className="order-2 flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submitApproval(false);
-      }}
-      data-testid="agent-approval-prompt"
-    >
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Hand className="size-4" aria-hidden="true" />
-        <span>{getApprovalCategory(request)}</span>
-      </div>
-
-      <div className="min-w-0 space-y-1.5">
-        <div className="text-[15px] font-medium leading-5 text-foreground sm:text-base">
-          {request.title}
+    <>
+      <form
+        aria-busy={isSending}
+        className="order-2 flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitApproval(false);
+        }}
+        data-testid="agent-approval-prompt"
+      >
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Hand className="size-4" aria-hidden="true" />
+          <span>{getApprovalCategory(request)}</span>
         </div>
-        {purpose ? (
-          <p className="text-sm leading-5 text-muted-foreground">{purpose}</p>
-        ) : null}
-      </div>
 
-      {approvalTarget ? (
-        <pre
-          aria-label="Exact action"
-          className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
-          data-testid="agent-approval-target"
-        >
-          <code translate="no">{request.target}</code>
-        </pre>
-      ) : null}
-
-      {request.autoReview?.rolloutPhase === "enforce" ? (
-        <div
-          className="rounded-lg border border-black/8 bg-black/[0.025] px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
-          data-testid="agent-auto-review-summary"
-        >
-          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-            <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
-            <span>
-              {request.autoReview.failureClass
-                ? "Couldn’t approve this automatically"
-                : "This action needs your approval"}
-            </span>
+        <div className="min-w-0 space-y-1.5">
+          <div className="text-[15px] font-medium leading-5 text-foreground sm:text-base">
+            {request.title}
           </div>
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">
-            {request.autoReview.rationale}
-          </p>
-          <div className="mt-1 text-xs capitalize text-muted-foreground/80">
-            Risk: {formatRiskCategory(request.autoReview.riskCategory)}
-          </div>
+          {purpose ? (
+            <p className="text-sm leading-5 text-muted-foreground">{purpose}</p>
+          ) : null}
         </div>
-      ) : null}
 
-      {!hasSessionCredentials ? (
-        <div
-          className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-          data-testid="agent-approval-connection-state"
-        >
-          <div
-            className="flex min-w-0 items-start gap-2 text-sm text-muted-foreground"
-            role={hasConnectionError ? "alert" : "status"}
+        {approvalTarget ? (
+          <pre
+            aria-label="Exact action"
+            className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/5 px-3 py-3 font-mono text-sm leading-6 text-foreground/80 dark:bg-white/5"
+            data-testid="agent-approval-target"
           >
-            {hasConnectionError && onRetryConnection ? (
-              <AlertTriangle
-                className="mt-0.5 size-4 shrink-0"
-                aria-hidden="true"
-              />
-            ) : (
-              <LoaderCircle
-                className="mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"
-                aria-hidden="true"
-              />
-            )}
-            <span>
-              {hasConnectionError
-                ? "Could not reconnect to the Agent approval session."
-                : "Reconnecting to the Agent approval session..."}
-            </span>
-          </div>
+            <code translate="no">{request.target}</code>
+          </pre>
+        ) : null}
 
-          <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-2">
-            {hasConnectionError ? (
+        {request.autoReview?.rolloutPhase === "enforce" ? (
+          <div
+            className="rounded-lg border border-black/8 bg-black/[0.025] px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
+            data-testid="agent-auto-review-summary"
+          >
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <ShieldCheck className="size-4 shrink-0" aria-hidden="true" />
+              <span>
+                {request.autoReview.failureClass
+                  ? "Couldn’t approve this automatically"
+                  : "This action needs your approval"}
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">
+              {request.autoReview.rationale}
+            </p>
+            <div className="mt-1 text-xs capitalize text-muted-foreground/80">
+              Risk: {formatRiskCategory(request.autoReview.riskCategory)}
+            </div>
+          </div>
+        ) : null}
+
+        {!hasSessionCredentials ? (
+          <div
+            className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+            data-testid="agent-approval-connection-state"
+          >
+            <div
+              className="flex min-w-0 items-start gap-2 text-sm text-muted-foreground"
+              role={hasConnectionError ? "alert" : "status"}
+            >
+              {hasConnectionError && onRetryConnection ? (
+                <AlertTriangle
+                  className="mt-0.5 size-4 shrink-0"
+                  aria-hidden="true"
+                />
+              ) : (
+                <LoaderCircle
+                  className="mt-0.5 size-4 shrink-0 animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              )}
+              <span>
+                {hasConnectionError
+                  ? "Could not reconnect to the Agent approval session."
+                  : "Reconnecting to the Agent approval session..."}
+              </span>
+            </div>
+
+            <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-2">
+              {hasConnectionError ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full rounded-full bg-transparent shadow-none sm:w-auto"
+                  onClick={onRetryConnection}
+                >
+                  Retry connection
+                </Button>
+              ) : null}
               <Button
                 type="button"
-                variant="outline"
-                className="w-full rounded-full bg-transparent shadow-none sm:w-auto"
-                onClick={onRetryConnection}
+                variant={hasConnectionError ? "destructive" : "outline"}
+                className="w-full rounded-full shadow-none sm:w-auto"
+                onClick={onStop}
               >
-                Retry connection
+                Stop agent
               </Button>
-            ) : null}
+            </div>
+          </div>
+        ) : (
+          <div
+            className="flex items-center justify-end gap-2"
+            data-testid="agent-approval-actions"
+          >
             <Button
               type="button"
-              variant={hasConnectionError ? "destructive" : "outline"}
-              className="w-full rounded-full shadow-none sm:w-auto"
-              onClick={onStop}
-            >
-              Stop agent
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div
-          className="flex items-center justify-end gap-2"
-          data-testid="agent-approval-actions"
-        >
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!canSubmit}
-            className="rounded-full bg-transparent shadow-none"
-            onClick={() => void denyApproval()}
-          >
-            Deny
-          </Button>
-
-          <div className="flex items-center">
-            <Button
-              type="submit"
+              variant="outline"
               disabled={!canSubmit}
-              className={
-                targetGrant
-                  ? "rounded-l-full rounded-r-none px-4"
-                  : "rounded-full px-4"
-              }
+              className="rounded-full bg-transparent shadow-none"
+              onClick={() => void denyApproval()}
             >
-              {allowLabel}
+              Deny
             </Button>
 
-            {targetGrant ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    disabled={!canSubmit}
-                    className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
-                    aria-label="More approval options"
-                  >
-                    <ChevronDown aria-hidden="true" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="top"
-                  align="end"
-                  sideOffset={6}
-                  className="min-w-56 rounded-xl p-1.5"
-                >
-                  <DropdownMenuItem
-                    className="min-h-10 rounded-lg px-3 text-sm"
-                    onSelect={() => void submitApproval(false)}
-                  >
-                    Allow once
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="min-h-10 rounded-lg px-3 text-sm"
-                    aria-label={`${reusableApprovalLabel}: ${reusableApprovalDescription}`}
-                    onSelect={() => void submitApproval(true)}
-                  >
-                    {reusableApprovalLabel}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-          </div>
-        </div>
-      )}
+            <div className="flex items-center">
+              <Button
+                type="submit"
+                disabled={!canSubmit}
+                className={
+                  targetGrant
+                    ? "rounded-l-full rounded-r-none px-4"
+                    : "rounded-full px-4"
+                }
+              >
+                {allowLabel}
+              </Button>
 
-      <span className="sr-only" role="status" aria-live="polite">
-        {isSending
-          ? "Sending approval response."
-          : isApproved
-            ? "Agent action approved."
-            : isDenied
-              ? "Agent action denied."
-              : ""}
-      </span>
-    </form>
+              {targetGrant ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      ref={optionsRef}
+                      type="button"
+                      disabled={!canSubmit}
+                      className="rounded-l-none rounded-r-full border-l border-primary/15 px-2"
+                      aria-label="More approval options"
+                    >
+                      <ChevronDown aria-hidden="true" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side="top"
+                    align="end"
+                    sideOffset={6}
+                    onCloseAutoFocus={(event) => {
+                      if (isScopeReviewOpen) event.preventDefault();
+                    }}
+                    className="min-w-[min(14rem,calc(100vw-2rem))] max-w-[min(28rem,calc(100vw-2rem))] rounded-xl p-1.5"
+                  >
+                    <DropdownMenuItem
+                      className="min-h-10 rounded-lg px-3 text-sm"
+                      onSelect={() => void submitApproval(false)}
+                    >
+                      Allow once
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      translate="no"
+                      className="min-h-10 flex-col items-start gap-1 rounded-lg px-3 text-sm"
+                      aria-label={
+                        hasLongScope
+                          ? "View full scope"
+                          : `${reusableApprovalLabel}: ${reusableApprovalDescription}`
+                      }
+                      onSelect={() => {
+                        if (hasLongScope) setOpenScopeKey(scopeReviewKey);
+                        else void submitApproval(true);
+                      }}
+                    >
+                      <span>{reusableApprovalLabel}</span>
+                      <span className="min-w-0 max-w-full whitespace-pre-wrap text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                        {hasLongScope
+                          ? targetGrant.kind === "terminal_command"
+                            ? `Command prefix with ${targetGrant.argv.length} ${targetGrant.argv.length === 1 ? "argument" : "arguments"}. Additional arguments allowed.`
+                            : "Review the complete scope before allowing reuse."
+                          : reusableApprovalDescription}
+                      </span>
+                      {hasLongScope ? (
+                        <span className="text-xs underline">
+                          View full scope
+                        </span>
+                      ) : null}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        <span className="sr-only" role="status" aria-live="polite">
+          {isSending
+            ? "Sending approval response."
+            : isApproved
+              ? "Agent action approved."
+              : isDenied
+                ? "Agent action denied."
+                : ""}
+        </span>
+      </form>
+      <Dialog
+        open={isScopeReviewOpen}
+        onOpenChange={(open) => {
+          if (!open) setOpenScopeKey(null);
+        }}
+      >
+        <DialogContent
+          className="flex max-h-[90dvh] flex-col overflow-y-auto"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            scopeRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            optionsRef.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Review approval scope</DialogTitle>
+            <DialogDescription>
+              {targetGrant?.kind === "terminal_command"
+                ? "Future commands may start with this prefix and include any following arguments. Review the full scope before allowing reuse."
+                : "Review the full scope before allowing future matching actions."}
+            </DialogDescription>
+          </DialogHeader>
+          <pre
+            ref={scopeRef}
+            tabIndex={0}
+            aria-label="Full approval scope"
+            translate="no"
+            className="min-h-0 max-h-[50dvh] shrink overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-3 font-mono text-sm [overflow-wrap:anywhere] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            {reusableApprovalDescription}
+          </pre>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => void submitApproval(true)}
+            >
+              {reusableApprovalLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

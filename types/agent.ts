@@ -26,6 +26,8 @@ export interface SandboxInfo {
   name?: string;
   /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
+  /** Image generation from the attached E2B workspace, never the current default. */
+  sandboxVersion?: string;
 }
 
 export interface SandboxManager {

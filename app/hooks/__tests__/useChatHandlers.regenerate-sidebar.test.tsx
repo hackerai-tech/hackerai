@@ -13,10 +13,13 @@ jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(async () => undefined),
 }));
 
+const mockUploadedFiles: never[] = [];
+
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     getInput: () => "",
-    uploadedFiles: [],
+    uploadedFiles: mockUploadedFiles,
+    getUploadedFiles: () => mockUploadedFiles,
     chatMode: "ask",
     clearInput: jest.fn(),
     clearUploadedFiles: jest.fn(),

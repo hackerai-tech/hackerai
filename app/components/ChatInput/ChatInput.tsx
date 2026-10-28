@@ -259,6 +259,7 @@ const ChatInputContent = ({
     chatMode,
     setChatMode,
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     isUploadingFiles,
     messageQueue,
@@ -284,7 +285,7 @@ const ChatInputContent = ({
   } = useGlobalState();
   const { user } = useAuth();
   const input = useComposerInput();
-  const { setInput } = useComposerActions();
+  const { setInput, getInput } = useComposerActions();
   const isOnline = useOnlineStatus();
   const isOffline = offlineProtection && !isOnline;
   const {
@@ -400,8 +401,16 @@ const ChatInputContent = ({
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
+  const isSubmittingRef = useRef(false);
+  const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const draftTextFileIds = useMemo(
     () =>
       restoreDraftAttachments
@@ -456,9 +465,9 @@ const ChatInputContent = ({
     [restoreDraftAttachments, uploadedFiles],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
-  });
+  }, [uploadedFiles]);
 
   useEffect(() => {
     if (!draftTextFileContents || draftTextFileContents.length === 0) {
@@ -789,31 +798,58 @@ const ChatInputContent = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
     if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
-      (status === "ready" || status === "streaming") &&
+      (status === "ready" ||
+        status === "submitted" ||
+        status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
-      isSubmittingAttachmentsRef.current =
-        clearDraftOnSubmit && uploadedFiles.length > 0;
-      const accepted = await onSubmit(e);
-      if (accepted === false) {
-        isSubmittingAttachmentsRef.current = false;
-        return;
-      }
-      if (clearDraftOnSubmit) {
-        uploadedFilesRef.current = [];
-        removeDraft(draftId);
-        if (draftId === "new" && chatId) {
-          removeDraft(chatId);
-        }
-        if (draftId !== "new") {
+      isSubmittingRef.current = true;
+      const submittedInput = getInput();
+      const submittedFiles = getUploadedFiles();
+      try {
+        isSubmittingAttachmentsRef.current =
+          clearDraftOnSubmit && uploadedFiles.length > 0;
+        const accepted = await onSubmit(e);
+        if (!isMountedRef.current) return;
+        const unchanged =
+          getInput() === submittedInput &&
+          getUploadedFiles() === submittedFiles;
+        // The chat handler can already have cleared the accepted submission.
+        const alreadyCleared =
+          getInput() === "" && getUploadedFiles().length === 0;
+        const sameDraft =
+          prevDraftIdRef.current === draftId ||
+          (draftId === "new" && prevDraftIdRef.current === chatId);
+        if (
+          accepted === false ||
+          !sameDraft ||
+          (!unchanged && !alreadyCleared)
+        ) {
           isSubmittingAttachmentsRef.current = false;
+          return;
         }
-        setTimeout(() => setInput(""), 0);
+        if (clearDraftOnSubmit) {
+          uploadedFilesRef.current = [];
+          removeDraft(draftId);
+          if (draftId === "new" && chatId) {
+            removeDraft(chatId);
+          }
+          if (draftId !== "new") {
+            isSubmittingAttachmentsRef.current = false;
+          }
+          setInput("");
+        }
+      } catch (error) {
+        isSubmittingAttachmentsRef.current = false;
+        console.error("Failed to submit message:", error);
+      } finally {
+        isSubmittingRef.current = false;
       }
     }
   };

@@ -28,13 +28,19 @@ export const dynamic = "force-dynamic";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+class BrowserAuthenticationError extends Error {}
 
 async function resolveSession(
   request: NextRequest,
   sessionId: string,
   allowEnded = false,
 ) {
-  const userId = await getUserID(request);
+  let userId: string;
+  try {
+    userId = await getUserID(request);
+  } catch {
+    throw new BrowserAuthenticationError();
+  }
   if (!serviceKey || !/^[a-f0-9]{32}$/.test(sessionId)) return null;
   const session = await getConvexClient().query(
     api.browserHandoffs.getForBackend,
@@ -62,8 +68,10 @@ export async function GET(
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
   try {
     resolved = await resolveSession(request, (await params).sessionId);
-  } catch {
-    return json({ state: "unauthorized" }, 401);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ state: "unauthorized" }, 401)
+      : unavailable(error);
   }
   if (!resolved) return json({ state: "expired" }, 404);
   try {
@@ -109,6 +117,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
+  const processingStartedAt = performance.now();
   const origin = request.headers.get("origin");
   if (!origin || origin !== new URL(request.url).origin)
     return json({ error: "Invalid origin" }, 403);
@@ -151,8 +160,10 @@ export async function POST(
       (await params).sessionId,
       body.action === "resume",
     );
-  } catch {
-    return json({ error: "Unauthorized" }, 401);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ error: "Unauthorized" }, 401)
+      : unavailable(error);
   }
   if (!resolved || !serviceKey) return json({ state: "expired" }, 404);
   const { session, userId } = resolved;
@@ -208,10 +219,28 @@ export async function POST(
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // A previous grant may have disconnected while dragging. Drain its
+      // accepted input and release the pointer before exposing a new grant.
+      await stopBrowserRelays(sandbox, session);
       const streamPort = await getPrivateStreamPort(
         sandbox,
         session,
         body.browserSessionName,
+      );
+      await sendBrowserInput(
+        sandbox,
+        session,
+        body.browserSessionName,
+        [
+          {
+            type: "input_mouse",
+            eventType: "mouseReleased",
+            x: 0,
+            y: 0,
+            button: "left",
+          },
+        ],
+        streamPort,
       );
       // Both jobs use the same paused browser. Drain both before rollback so
       // a late relay cannot outlive a failed capture and reopen revoked input.
@@ -326,6 +355,17 @@ export async function POST(
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // Also cover the HTTP fallback and a vanished relay. The resuming state
+      // excludes new input until the pointer is released and a frame is fresh.
+      await sendBrowserInput(sandbox, session, body.browserSessionName, [
+        {
+          type: "input_mouse",
+          eventType: "mouseReleased",
+          x: 0,
+          y: 0,
+          button: "left",
+        },
+      ]);
       const frame = await captureBrowserFrame(
         sandbox,
         session,
@@ -414,7 +454,16 @@ export async function POST(
         return json({ state: "recovery" }, 503);
       }
     }
-    return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
+    return valid
+      ? json({
+          state: "human",
+          leaseValidForMs: Math.max(0, lease - Date.now()),
+          processingDurationMs: Math.max(
+            0,
+            performance.now() - processingStartedAt,
+          ),
+        })
+      : json({ state: "recovery" }, 409);
   }
   if (body.action === "input" || body.action === "viewport") {
     const resizing = body.action === "viewport";

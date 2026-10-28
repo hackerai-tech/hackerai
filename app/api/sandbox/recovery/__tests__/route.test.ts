@@ -48,6 +48,7 @@ beforeEach(() => {
   jest.resetAllMocks();
   jest.mocked(getUserIDAndPro).mockResolvedValue({
     userId: "session-owner",
+    organizationId: "session-org",
     subscription: "pro",
     emailVerified: true,
   });
@@ -70,6 +71,7 @@ it("requires authentication and a cloud-enabled plan", async () => {
 it.each([
   { token, confirmed: true, userId: "victim" },
   { token, confirmed: true, sandboxId: "victim" },
+  { token, confirmed: true, organizationId: "victim-org" },
   { token, confirmed: "true" },
   { token },
 ])("rejects client-supplied identity or implicit consent", async (body) => {
@@ -88,7 +90,12 @@ it("dispatches using only server-owned consent and authenticated ownership", asy
     .mocked(confirmRecovery)
     .mockResolvedValue({ token, target: { region: "eu-central-1" } } as never);
   expect((await POST(request({ token, confirmed: true }))).status).toBe(202);
-  expect(confirmRecovery).toHaveBeenCalledWith("session-owner", token, true);
+  expect(confirmRecovery).toHaveBeenCalledWith(
+    "session-owner",
+    token,
+    true,
+    "session-org",
+  );
   expect(tasks.trigger).toHaveBeenCalledWith(
     "cloud-workspace-recovery",
     { userId: "session-owner", token, region: "eu-central-1" },

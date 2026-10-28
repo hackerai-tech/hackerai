@@ -22,27 +22,39 @@ export function CloudWorkspaceRecovery({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const exposed = useRef<string | null>(null);
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch("/api/sandbox/recovery", {
-      cache: "no-store",
-      signal,
-    });
-    if (!response.ok) throw new Error("Recovery status unavailable");
-    const next = await response.json();
-    if (!signal?.aborted) {
-      setView(next);
-      setError(false);
-    }
-  }, []);
+  const statusReadGeneration = useRef(0);
+  const refresh = useCallback(
+    async (signal?: AbortSignal, reportError = true) => {
+      const generation = ++statusReadGeneration.current;
+      const isCurrent = () =>
+        !signal?.aborted && generation === statusReadGeneration.current;
+      try {
+        const response = await fetch("/api/sandbox/recovery", {
+          cache: "no-store",
+          signal,
+        });
+        if (!response.ok) throw new Error("Recovery status unavailable");
+        const next = await response.json();
+        if (isCurrent()) {
+          setView(next);
+          setError(false);
+        }
+      } catch {
+        if (isCurrent() && reportError) setError(true);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal).catch(() => {
-      if (!controller.signal.aborted && surface === "cloud_connection_error")
-        setError(true);
-    });
+    void refresh(controller.signal, surface === "cloud_connection_error");
     return () => controller.abort();
   }, [refresh, surface]);
   useEffect(() => {
+    // Another tab can confirm an offered or deferred recovery. Keep reading
+    // server state until it settles, without submitting consent from this tab.
+    // Abort older reads while a local decision is being submitted.
+    if (busy) return;
     // The acquisition deadline can close its stream before failure persistence
     // finishes. Reconcile that event independently, with six reads and backoff.
     const checkingRecordedFailure =
@@ -50,6 +62,8 @@ export function CloudWorkspaceRecovery({
     if (
       view.status !== "recovering" &&
       view.status !== "waiting" &&
+      view.status !== "offered" &&
+      view.status !== "declined" &&
       !checkingRecordedFailure
     )
       return;
@@ -57,11 +71,7 @@ export function CloudWorkspaceRecovery({
     let hiddenChecks = 0;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      try {
-        await refresh(controller.signal);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
-      }
+      await refresh(controller.signal);
       if (
         !controller.signal.aborted &&
         (!checkingRecordedFailure || ++hiddenChecks < 6)
@@ -78,7 +88,7 @@ export function CloudWorkspaceRecovery({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view.status, refresh, surface]);
+  }, [view.status, busy, refresh, surface]);
   useEffect(() => {
     if (
       view.status === "offered" &&
@@ -93,6 +103,7 @@ export function CloudWorkspaceRecovery({
   }, [view, surface]);
   async function decide(decision: boolean | "reopen") {
     if (!view.token || busy) return;
+    statusReadGeneration.current += 1;
     setBusy(true);
     setError(false);
     try {
@@ -111,7 +122,7 @@ export function CloudWorkspaceRecovery({
       // The server may have accepted consent. Read status; never repeat POST.
       setView({ status: "recovering", step: "queued" });
       setError(true);
-      void refresh().catch(() => {});
+      void refresh();
     } finally {
       setBusy(false);
     }
@@ -227,7 +238,7 @@ export function CloudWorkspaceRecovery({
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => void refresh().catch(() => setError(true))}
+            onClick={() => void refresh()}
           >
             Check status
           </Button>

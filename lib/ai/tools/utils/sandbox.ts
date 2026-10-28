@@ -9,7 +9,12 @@ import {
   CLOUD_RESUME_DEADLINE_MS,
   type ReportCloudAcquisitionStage,
 } from "./cloud-acquisition-budget";
-import { Sandbox } from "@e2b/code-interpreter";
+import { Sandbox, Template } from "@e2b/code-interpreter";
+import {
+  CURRENT_E2B_SANDBOX_VERSION,
+  isRecoverableE2BSandboxVersion,
+  rememberE2BSandboxVersion,
+} from "./e2b-sandbox-version";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
   NotFoundError,
@@ -78,7 +83,7 @@ const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
 
 // Used to prefer a compatible workspace; version changes never authorize deletion.
-const SANDBOX_VERSION = "v12";
+const SANDBOX_VERSION = CURRENT_E2B_SANDBOX_VERSION;
 
 /**
  * Ensures a sandbox connection is established and maintained
@@ -167,7 +172,7 @@ export const ensureSandboxConnection = async (
         info.metadata?.userID !== userID ||
         info.metadata?.template !== createCluster.template ||
         info.metadata?.e2bCluster !== createCluster.cluster ||
-        info.metadata?.sandboxVersion !== SANDBOX_VERSION
+        !isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion)
       )
         throw new Error("Pinned E2B workspace identity mismatch");
       if (
@@ -209,6 +214,7 @@ export const ensureSandboxConnection = async (
       signal?.throwIfAborted();
       await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
       signal?.throwIfAborted();
+      rememberE2BSandboxVersion(sandbox, info.metadata?.sandboxVersion);
       setSandbox(sandbox);
       reportBoot("reuse_existing", 0);
       return { sandbox };
@@ -254,19 +260,19 @@ export const ensureSandboxConnection = async (
       } while (paginator.hasNext);
     }
 
-    // Rank across both clusters so a compatible running sandbox always wins.
-    // Discovery order keeps US as the tie-breaker for equally ranked entries.
+    // Prefer a running, supported workspace without forcing v12 users to
+    // switch workspaces just because a newer image is available.
     const existingSandbox =
       discoveredSandboxes.find(
         ({ info }) =>
           info.state === "running" &&
-          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+          isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion),
       ) ??
       discoveredSandboxes.find(({ info }) => info.state === "running") ??
       discoveredSandboxes.find(
         ({ info }) =>
           info.state === "paused" &&
-          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+          isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion),
       ) ??
       discoveredSandboxes[0];
 
@@ -274,7 +280,9 @@ export const ensureSandboxConnection = async (
     const existingCluster = existingSandbox?.cluster;
     const hasVersionMismatch =
       existingSandboxInfo &&
-      existingSandboxInfo.metadata?.sandboxVersion !== SANDBOX_VERSION;
+      !isRecoverableE2BSandboxVersion(
+        existingSandboxInfo.metadata?.sandboxVersion,
+      );
     // An old version can still contain files. Reconnect without destructive
     // replacement.
     if (existingSandboxInfo?.sandboxId && existingCluster) {
@@ -301,7 +309,9 @@ export const ensureSandboxConnection = async (
       if (
         existingSandboxInfo.state === "paused" &&
         existingSandboxInfo.metadata?.template === createCluster.template &&
-        existingSandboxInfo.metadata?.sandboxVersion === SANDBOX_VERSION &&
+        isRecoverableE2BSandboxVersion(
+          existingSandboxInfo.metadata?.sandboxVersion,
+        ) &&
         existingSandboxInfo.metadata?.e2bCluster === createCluster.cluster &&
         existingCluster.cluster === createCluster.cluster
       )
@@ -346,6 +356,10 @@ export const ensureSandboxConnection = async (
         signal?.throwIfAborted();
         await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
         signal?.throwIfAborted();
+        rememberE2BSandboxVersion(
+          sandbox,
+          existingSandboxInfo.metadata?.sandboxVersion,
+        );
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
@@ -376,6 +390,30 @@ export const ensureSandboxConnection = async (
     let lastError: unknown;
     phase = "create";
     options.reportStage?.("create");
+    // Select an explicitly tagged image so deploying app code before the new
+    // image cannot label an old template v13. A missing tag keeps legacy v12
+    // creation working; lookup failures are not permission to guess a version.
+    const [templateName, templateTag = "default"] =
+      createCluster.template.split(":");
+    const tags = await Template.getTags(templateName, {
+      ...createCluster.connectionOptions,
+      ...requestOptions,
+      requestTimeoutMs: 10_000,
+    });
+    const selectedBuild = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(
+      templateTag,
+    )
+      ? templateTag
+      : tags.find(({ tag }) => tag === templateTag)?.buildId;
+    if (!selectedBuild)
+      throw new Error("E2B template tag has no verified build");
+    const versionBuild = tags.find(
+      ({ tag }) => tag === SANDBOX_VERSION,
+    )?.buildId;
+    const createVersion =
+      selectedBuild === versionBuild ? SANDBOX_VERSION : "v12";
+    // Pin the resolved build, not a mutable tag that could change before create.
+    const createTemplate = `${templateName}:${selectedBuild}`;
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       signal?.throwIfAborted();
       if (attempt > 0) {
@@ -388,7 +426,7 @@ export const ensureSandboxConnection = async (
       signal?.throwIfAborted();
       try {
         const networkSettings = await readNetworkSettings(userID);
-        const sandbox = await Sandbox.create(createCluster.template, {
+        const sandbox = await Sandbox.create(createTemplate, {
           network: e2bNetwork(
             networkSettings?.policy ?? DEFAULT_NETWORK_POLICY,
           ),
@@ -401,12 +439,13 @@ export const ensureSandboxConnection = async (
             userID,
             template: createCluster.template,
             secure: "true",
-            sandboxVersion: SANDBOX_VERSION,
+            sandboxVersion: createVersion,
             e2bCluster: createCluster.cluster,
           },
         });
 
         signal?.throwIfAborted();
+        rememberE2BSandboxVersion(sandbox, createVersion);
         setSandbox(sandbox);
         reportBoot(createPath, attempt + 1);
         return { sandbox };

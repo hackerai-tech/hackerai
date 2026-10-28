@@ -1,4 +1,6 @@
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
+import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import {
   restoreProviderRecoveryContext,
@@ -438,6 +440,7 @@ export type AgentStreamState = {
   /** One actual context-budget exposure across retries in this run. */
   agentContextBudgetExposed?: boolean;
   requestSizeRecovery?: { attempted: boolean };
+  browserHandoffRecovery?: { attempted?: boolean };
   providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
@@ -767,6 +770,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
@@ -828,6 +832,7 @@ export type AgentStreamContext = {
   budgetMonitor: BudgetMonitor | null;
   sandboxManager: {
     getSandboxType(toolName: string): string | undefined;
+    getSandboxInfo?(): import("@/types").SandboxInfo | null;
     supportsInteractivePty?(): Promise<boolean>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
@@ -1177,7 +1182,14 @@ export async function createAgentStream(
       maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     });
     return namespaceLanguageModelToolCalls(
-      guardedModel,
+      ctx.mode === "agent" &&
+        ctx.canRecoverBrowserHandoff &&
+        stepIndex + 1 < configuredMaxSteps
+        ? recoverBrowserHandoffCompletion(guardedModel, {
+            state: (state.browserHandoffRecovery ??= {}),
+            canRecover: ctx.canRecoverBrowserHandoff,
+          })
+        : guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
   };
@@ -1506,7 +1518,7 @@ export async function createAgentStream(
       lastPreparedInputEstimate =
         estimateSummaryInputTokens(prepared) +
         Math.max(
-          ctx.systemPromptTokens + networkTokens,
+          ctx.systemPromptTokens + runtimePromptTokens,
           safeCountTokens(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
@@ -1582,7 +1594,7 @@ export async function createAgentStream(
       todos: ctx.getTodoManager().getAllTodos(),
       abortSignal,
       ensureSandbox: ctx.ensureSandbox,
-      systemPromptTokens: ctx.systemPromptTokens + networkTokens,
+      systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
       chatSystemPrompt: ctx.currentSystemPrompt,
       maxTokens: activeContextBudget,
       providerPromptPressure: {
@@ -1668,7 +1680,7 @@ export async function createAgentStream(
     lastPreparedInputEstimate =
       Math.max(
         safeCountTokens(JSON.stringify(retryParams.prompt)),
-        safeCountTokens(summary) + ctx.systemPromptTokens + networkTokens,
+        safeCountTokens(summary) + ctx.systemPromptTokens + runtimePromptTokens,
       ) +
       safeCountTokens(
         JSON.stringify({
@@ -1734,7 +1746,7 @@ export async function createAgentStream(
       activeTools: args.activeTools,
       availableToolCount: Object.keys(ctx.tools).length,
       contextUsage: state.ctxUsage,
-      systemTokens: ctx.systemPromptTokens + networkTokens,
+      systemTokens: ctx.systemPromptTokens + runtimePromptTokens,
       maxOutputTokens,
       hasMultimodalToolResults: streamHasImageViewResults,
     });
@@ -1791,11 +1803,16 @@ export async function createAgentStream(
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
-  let networkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
-  let networkTokens = safeCountTokens(networkSection);
+  const runtimePrompt = async () =>
+    ((await ctx.cloudNetworkPrompt?.()) ?? "") +
+    (ctx.mode === "agent"
+      ? getSandboxBrowserGuidance(ctx.sandboxManager.getSandboxInfo?.())
+      : "");
+  let runtimeSection = await runtimePrompt();
+  let runtimePromptTokens = safeCountTokens(runtimeSection);
   const historyEligible =
     !recoveredContext &&
-    !networkSection &&
+    !runtimeSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
   const historyDecision = historyEligible
@@ -1968,7 +1985,7 @@ export async function createAgentStream(
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
       (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
-        networkSection,
+        runtimeSection,
       name,
     );
   const initialProviderOptions = getStepProviderOptions(
@@ -2096,13 +2113,13 @@ export async function createAgentStream(
         historyEnabled = false;
         historyReplay.reset();
       }
-      const nextNetworkSection = (await ctx.cloudNetworkPrompt?.()) ?? "";
-      if (nextNetworkSection !== networkSection && historyEnabled) {
+      const nextRuntimeSection = await runtimePrompt();
+      if (nextRuntimeSection !== runtimeSection && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();
       }
-      networkSection = nextNetworkSection;
-      networkTokens = safeCountTokens(networkSection);
+      runtimeSection = nextRuntimeSection;
+      runtimePromptTokens = safeCountTokens(runtimeSection);
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -2134,7 +2151,7 @@ export async function createAgentStream(
         activeModelInputTokens =
           estimateSummaryInputTokens(rollingModelMessages) +
           ctx.systemPromptTokens +
-          networkTokens;
+          runtimePromptTokens;
       }
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
@@ -2214,7 +2231,7 @@ export async function createAgentStream(
             (ctx.mode === "agent" &&
               estimateSummaryInputTokens(rollingModelMessages) +
                 ctx.systemPromptTokens +
-                networkTokens >
+                runtimePromptTokens >
                 summarizationThreshold));
 
         if (
@@ -2236,9 +2253,10 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens + networkTokens,
+              systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
               ctxSystemTokens:
-                ctx.ctxSystemTokens + (ctx.contextUsageOn ? networkTokens : 0),
+                ctx.ctxSystemTokens +
+                (ctx.contextUsageOn ? runtimePromptTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
               preparedInputTokens:
@@ -2408,7 +2426,7 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens + networkTokens,
+              systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
               providerInputTokens: state.lastStepInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
@@ -2746,7 +2764,7 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt + networkSection,
+            ctx.currentSystemPrompt + runtimeSection,
             fallbackModelInfo.modelName,
           ),
         };

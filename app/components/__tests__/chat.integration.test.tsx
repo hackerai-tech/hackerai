@@ -265,7 +265,14 @@ jest.mock("../Messages", () => ({
 }));
 
 jest.mock("../ChatInput", () => ({
-  ChatInput: () => <div data-testid="chat-input">ChatInput</div>,
+  ChatInput: ({ onSubmit }: any) => (
+    <div data-testid="chat-input">
+      ChatInput
+      <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
+        Submit test message
+      </button>
+    </div>
+  ),
 }));
 
 let mockBrowserContinue: (message: {
@@ -1446,6 +1453,35 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("exposes a saved Ask task before a manual stop", async () => {
+      window.history.replaceState({}, "", "/");
+      mockDesktopState = { chatMode: "ask" };
+      global.fetch = jest
+        .fn<typeof fetch>()
+        .mockResolvedValue({ ok: true } as Response);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+        onFinish: (result: { isAbort: boolean; isError: boolean }) => void;
+      };
+      await act(async () => {
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({ chatId: "queued-message-id", messages: [] }),
+        });
+      });
+      expect(window.location.pathname).toBe("/c/queued-message-id");
+      act(() => options.onFinish({ isAbort: true, isError: false }));
+      expect(window.location.pathname).toBe("/c/queued-message-id");
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+    });
+
     it("does not turn an attachment admission error into a saved-task route on finish", () => {
       window.history.replaceState({}, "", "/");
       render(
@@ -1464,6 +1500,65 @@ describe("Chat Component Integration", () => {
       expect(window.location.pathname).toBe("/");
       expect(mockChatHandlerArgs.isExistingChat).toBe(false);
     });
+    it.each(["completed", "failed"])(
+      "waits for the summary %s event, then sends the new message while the old response is still streaming",
+      async (summaryStatus) => {
+        mockUseRealChatHandlers = true;
+        mockDesktopState = { queueBehavior: "stop-and-send" };
+        mockUseChat.mockReturnValue({
+          messages: [
+            {
+              id: "user-1",
+              role: "user",
+              parts: [{ type: "text", text: "Original task" }],
+            },
+          ],
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          status: "streaming",
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+        render(
+          <TestWrapper>
+            <ForkDraftSetter />
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        const onData = (part: unknown) => {
+          const options = mockUseChat.mock.calls.at(-1)![0] as {
+            onData: (part: unknown) => void;
+          };
+          act(() => options.onData(part));
+        };
+        onData({
+          type: "data-summarization",
+          data: { status: "started", message: "Preparing to continue…" },
+        });
+        fireEvent.click(
+          screen.getByRole("button", { name: "Submit test message" }),
+        );
+        expect(mockStop).not.toHaveBeenCalled();
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        onData({
+          type: "data-summarization",
+          data: { status: summaryStatus, message: "" },
+        });
+        await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+        expect(mockStop).toHaveBeenCalledTimes(1);
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "continue" }),
+          expect.anything(),
+        );
+        onData({
+          type: "data-summarization",
+          data: { status: summaryStatus, message: "" },
+        });
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
       render(
