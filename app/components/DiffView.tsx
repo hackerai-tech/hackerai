@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import { DiffEditor } from "@monaco-editor/react";
+import React, { useState } from "react";
+import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 
 type ViewMode = "diff" | "original" | "modified";
@@ -20,22 +20,19 @@ export const DiffView: React.FC<DiffViewProps> = ({
   wrap = true,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
-  const editorRef = useRef<any>(null);
+  const handleEditorMount: DiffOnMount = (editor) => {
+    const models = editor.getModel();
+    if (!models) return;
 
-  // Safely dispose editor on unmount to prevent "TextModel got disposed" errors
-  useEffect(() => {
-    return () => {
-      try {
-        editorRef.current?.dispose();
-      } catch {
-        // Ignore disposal errors
-      }
-      editorRef.current = null;
-    };
-  }, []);
-
-  const handleEditorMount = (editor: any) => {
-    editorRef.current = editor;
+    // The React wrapper disposes models before the diff widget, which Monaco
+    // rejects. Retain them until the widget's synchronous teardown finishes.
+    // Monaco fires this event on its inner editor, not the diff wrapper.
+    editor.getModifiedEditor().onDidDispose(() => {
+      queueMicrotask(() => {
+        if (!models.original.isDisposed()) models.original.dispose();
+        if (!models.modified.isDisposed()) models.modified.dispose();
+      });
+    });
   };
 
   const tabs: Array<{ id: ViewMode; label: string }> = [
@@ -116,6 +113,8 @@ export const DiffView: React.FC<DiffViewProps> = ({
               modified={modifiedContent}
               language={getMonacoLanguage(language)}
               theme="vs-dark"
+              keepCurrentOriginalModel
+              keepCurrentModifiedModel
               onMount={handleEditorMount}
               options={{
                 readOnly: true,

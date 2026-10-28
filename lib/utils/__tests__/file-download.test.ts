@@ -1,9 +1,13 @@
 import { downloadFile } from "../file-download";
-import { saveFileToLocal, revealFileInDir } from "@/app/hooks/useTauri";
+import {
+  saveFileToLocal,
+  revealFileInDir,
+  isTauriEnvironment,
+} from "@/app/hooks/useTauri";
 import { toast } from "sonner";
 
 jest.mock("@/app/hooks/useTauri", () => ({
-  isTauriEnvironment: () => true,
+  isTauriEnvironment: jest.fn(() => true),
   saveFileToLocal: jest.fn(),
   revealFileInDir: jest.fn(),
 }));
@@ -17,7 +21,54 @@ const report = {
   content: "```python\nprint(1 + 1)\n```\n[Evidence](https://example.test)",
 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.mocked(isTauriEnvironment).mockReturnValue(true);
+});
+
+it("keeps a browser file available for asynchronous download and eventually releases it", async () => {
+  jest.useFakeTimers();
+  jest.mocked(isTauriEnvironment).mockReturnValue(false);
+  const create = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+  const revoke = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+  const blobs = new Set<string>();
+  let browserCouldReadFile = false;
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: jest.fn(() => {
+      blobs.add("blob:report");
+      return "blob:report";
+    }),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: jest.fn((url: string) => blobs.delete(url)),
+  });
+  const click = jest
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function () {
+      const url = this.href;
+      setTimeout(() => {
+        browserCouldReadFile = blobs.has(url);
+      }, 0);
+    });
+  try {
+    await expect(downloadFile(report)).resolves.toEqual({
+      outcome: "initiated",
+    });
+    jest.advanceTimersByTime(0);
+    expect(browserCouldReadFile).toBe(true);
+    jest.runOnlyPendingTimers();
+    expect(blobs.size).toBe(0);
+  } finally {
+    click.mockRestore();
+    if (create) Object.defineProperty(URL, "createObjectURL", create);
+    else Reflect.deleteProperty(URL, "createObjectURL");
+    if (revoke) Object.defineProperty(URL, "revokeObjectURL", revoke);
+    else Reflect.deleteProperty(URL, "revokeObjectURL");
+    jest.useRealTimers();
+  }
+});
 
 it("silently cancels a native save without reporting success or failure", async () => {
   save.mockResolvedValue(null);

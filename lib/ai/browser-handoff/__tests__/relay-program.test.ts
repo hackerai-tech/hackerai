@@ -86,8 +86,12 @@ beforeEach(async () => {
   );
   for (let i = 0; i < 100; i++) {
     try {
-      url = `http://127.0.0.1:${await readFile(join(directory, "port"), "utf8")}`;
-      return;
+      // The file can be visible before the child finishes writing its port.
+      const port = Number(await readFile(join(directory, "port"), "utf8"));
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        url = `http://127.0.0.1:${port}`;
+        return;
+      }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
