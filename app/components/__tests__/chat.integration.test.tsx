@@ -1031,6 +1031,106 @@ describe("Chat Component Integration", () => {
         screen.queryByRole("button", { name: "Scroll to bottom" }),
       ).toBeNull();
     });
+
+    it("moves beside the mobile goal pill when it fits, never duplicating the button", async () => {
+      const { useIsMobile } = require("@/hooks/use-mobile");
+      const observers: ResizeObserverCallback[] = [];
+      const originalResizeObserver = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "ResizeObserver",
+      );
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: class {
+          constructor(callback: ResizeObserverCallback) {
+            observers.push(callback);
+          }
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      });
+      let pillRight = 200;
+      const rectSpy = jest
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          const right = this.matches('section[aria-label="Agent goal"]')
+            ? 288
+            : pillRight;
+          return { right, height: 0 } as DOMRect;
+        });
+      try {
+        useIsMobile.mockReturnValue(true);
+        mockIsAtBottom = false;
+        mockRouteParams = { id: "goal-chat" };
+        mockRestoredChat = { id: "goal-chat", default_model_slug: "agent" };
+        mockSavedGoal = {
+          _id: "goal",
+          state: "paused",
+          objective: "Create marker",
+          criteria: ["Marker exists"],
+          evidence: [],
+          reason: "Paused",
+          updatedAt: 2000,
+        };
+        mockUseChat.mockReturnValue({
+          ...mockUseChat(),
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              parts: [{ type: "text", text: "Answer" }],
+            },
+          ],
+        });
+        const view = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        await act(async () => {});
+        const goalRegion = screen.getByRole("region", { name: "Agent goal" });
+        let buttons = screen.getAllByRole("button", {
+          name: "Scroll to bottom",
+        });
+        expect(buttons).toHaveLength(1);
+        expect(goalRegion).toContainElement(buttons[0]);
+        fireEvent.click(buttons[0]);
+        expect(mockScrollToBottom).toHaveBeenCalledWith({ force: true });
+
+        // Not enough room beside the pill: restore the floating placement.
+        pillRight = 260;
+        act(() =>
+          observers.forEach((callback) => callback([], {} as ResizeObserver)),
+        );
+        buttons = screen.getAllByRole("button", { name: "Scroll to bottom" });
+        expect(buttons).toHaveLength(1);
+        expect(goalRegion).not.toContainElement(buttons[0]);
+
+        // Expanded todos still suppress it in either placement.
+        pillRight = 200;
+        act(() =>
+          observers.forEach((callback) => callback([], {} as ResizeObserver)),
+        );
+        mockDesktopState = { isTodoPanelExpanded: true };
+        rerender(view());
+        expect(
+          screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).toBeNull();
+      } finally {
+        rectSpy.mockRestore();
+        useIsMobile.mockReturnValue(false);
+        if (originalResizeObserver)
+          Object.defineProperty(
+            globalThis,
+            "ResizeObserver",
+            originalResizeObserver,
+          );
+        else Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
+    });
   });
 
   describe("Message Display", () => {

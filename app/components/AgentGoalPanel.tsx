@@ -1,6 +1,13 @@
 "use client";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -54,6 +61,9 @@ const stateLabels: Record<GoalState, string> = {
   achieved: "Completed",
 };
 
+// Gap (8px) + 36px accessory + 4px of its extended tap target.
+const MOBILE_ACCESSORY_SPACE = 48;
+
 export function AgentGoalPanel({
   chatId,
   detached = false,
@@ -63,6 +73,8 @@ export function AgentGoalPanel({
   latestSavedUserMessageAt,
   stopRunBeforeControl,
   disabledReason,
+  mobileAccessory,
+  onMobileAccessoryInlineChange,
   send,
 }: {
   chatId: string;
@@ -73,6 +85,10 @@ export function AgentGoalPanel({
   latestSavedUserMessageAt?: number;
   stopRunBeforeControl?: (runId: string) => Promise<boolean>;
   disabledReason?: string;
+  /** Shown beside the centered mobile pill only when it fits. */
+  mobileAccessory?: ReactNode;
+  /** True while mobileAccessory is rendered inline, so the owner hides its fallback. */
+  onMobileAccessoryInlineChange?: (inline: boolean) => void;
   send: (
     message: { text: string },
     options: { body: Record<string, unknown> },
@@ -127,6 +143,40 @@ export function AgentGoalPanel({
     setFormError("");
     // Replacement goals reuse the saved row, but receive a new start time.
   }, [chatId, goal?._id, goal?.startedAt]);
+  // Set only while a mobile pill is mounted; null when hidden or on desktop.
+  const [accessoryAnchor, setAccessoryAnchor] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [accessoryFits, setAccessoryFits] = useState(false);
+  useLayoutEffect(() => {
+    const section = accessoryAnchor?.parentElement;
+    if (!accessoryAnchor || !section) {
+      setAccessoryFits(false);
+      return;
+    }
+    // The pill is centered, so its right edge reflects both its own width and
+    // the actual slot width. The accessory is absolutely positioned and never
+    // changes either size, so this cannot loop.
+    const measure = () =>
+      setAccessoryFits(
+        section.getBoundingClientRect().right -
+          accessoryAnchor.getBoundingClientRect().right >=
+          MOBILE_ACCESSORY_SPACE,
+      );
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(section);
+    observer.observe(accessoryAnchor);
+    return () => observer.disconnect();
+  }, [accessoryAnchor]);
+  const accessoryInline =
+    mobileAccessory !== undefined && !!accessoryAnchor && accessoryFits;
+  useLayoutEffect(() => {
+    if (!accessoryInline || !onMobileAccessoryInlineChange) return;
+    onMobileAccessoryInlineChange(true);
+    return () => onMobileAccessoryInlineChange(false);
+  }, [accessoryInline, onMobileAccessoryInlineChange]);
   if (!goal) return null;
   // Only persisted user messages dismiss completion; optimistic/failed sends
   // must not hide it. The saved goal and message receipts remain intact.
@@ -451,6 +501,23 @@ export function AgentGoalPanel({
         : ["paused", "canceled", "budget_exhausted"].includes(goal.state)
           ? "text-muted-foreground"
           : "text-foreground";
+  // Anchors the accessory to the pill without affecting its centering.
+  const withMobileAccessory = (trigger: ReactNode) =>
+    !isMobile || mobileAccessory === undefined ? (
+      trigger
+    ) : (
+      <div
+        ref={setAccessoryAnchor}
+        className="relative flex min-w-0 max-w-full"
+      >
+        {trigger}
+        {accessoryInline && (
+          <div className="absolute left-full top-1/2 ml-2 -translate-y-1/2">
+            {mobileAccessory}
+          </div>
+        )}
+      </div>
+    );
   if (goal.state === "achieved") {
     return (
       <section
@@ -458,29 +525,35 @@ export function AgentGoalPanel({
         className={`relative z-10 flex min-w-0 shrink-0 items-center gap-1 py-1 text-xs text-muted-foreground ${isMobile ? "justify-center" : "mx-3"}`}
       >
         <Popover open={expanded} onOpenChange={setExpanded}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              aria-label={expanded ? "Hide goal details" : "Show goal details"}
-              className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-left hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? "max-w-full" : "flex-1"}`}
-            >
-              <CircleCheck className="size-3.5 shrink-0" aria-hidden="true" />
-              <span role="status" aria-live="polite" className="shrink-0">
-                Goal achieved
-              </span>
-              {goal.startedAt !== undefined && <GoalElapsedTime goal={goal} />}
-              {!isMobile && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="min-w-0 truncate">{goal.objective}</span>
-                </>
-              )}
-              <ChevronDown
-                className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-                aria-hidden="true"
-              />
-            </button>
-          </PopoverTrigger>
+          {withMobileAccessory(
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={
+                  expanded ? "Hide goal details" : "Show goal details"
+                }
+                className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-left hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? "max-w-full" : "flex-1"}`}
+              >
+                <CircleCheck className="size-3.5 shrink-0" aria-hidden="true" />
+                <span role="status" aria-live="polite" className="shrink-0">
+                  Goal achieved
+                </span>
+                {goal.startedAt !== undefined && (
+                  <GoalElapsedTime goal={goal} />
+                )}
+                {!isMobile && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="min-w-0 truncate">{goal.objective}</span>
+                  </>
+                )}
+                <ChevronDown
+                  className={`size-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </PopoverTrigger>,
+          )}
           <PopoverContent
             side="top"
             align={isMobile ? "center" : "start"}
@@ -507,29 +580,33 @@ export function AgentGoalPanel({
         className="relative z-10 flex min-w-0 shrink-0 justify-center py-1.5"
       >
         <Popover open={mobileOpen} onOpenChange={setMobileOpen}>
-          <PopoverTrigger asChild>
-            <button
-              ref={mobileTriggerRef}
-              type="button"
-              aria-label={
-                mobileOpen ? "Hide goal controls" : "Show goal controls"
-              }
-              className="flex min-h-8 max-w-full items-center gap-1.5 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <GoalTargetIcon
-                className={`size-3.5 shrink-0 ${mobileOpen ? "" : statusColor}`}
-                aria-hidden="true"
-              />
-              <span
-                role="status"
-                aria-live="polite"
-                className={`min-w-0 truncate font-medium ${mobileOpen ? "" : statusColor}`}
+          {withMobileAccessory(
+            <PopoverTrigger asChild>
+              <button
+                ref={mobileTriggerRef}
+                type="button"
+                aria-label={
+                  mobileOpen ? "Hide goal controls" : "Show goal controls"
+                }
+                className="flex min-h-8 max-w-full items-center gap-1.5 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {goalLabel}
-              </span>
-              {goal.startedAt !== undefined && <GoalElapsedTime goal={goal} />}
-            </button>
-          </PopoverTrigger>
+                <GoalTargetIcon
+                  className={`size-3.5 shrink-0 ${mobileOpen ? "" : statusColor}`}
+                  aria-hidden="true"
+                />
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className={`min-w-0 truncate font-medium ${mobileOpen ? "" : statusColor}`}
+                >
+                  {goalLabel}
+                </span>
+                {goal.startedAt !== undefined && (
+                  <GoalElapsedTime goal={goal} />
+                )}
+              </button>
+            </PopoverTrigger>,
+          )}
           <PopoverContent
             side="top"
             sideOffset={12}

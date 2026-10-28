@@ -725,6 +725,119 @@ describe("goal controls", () => {
     },
   );
 
+  it("hosts the mobile accessory beside the pill only while it fits", async () => {
+    const observers: ResizeObserverCallback[] = [];
+    const originalResizeObserver = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "ResizeObserver",
+    );
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: class {
+        constructor(callback: ResizeObserverCallback) {
+          observers.push(callback);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    });
+    let pillRight = 200;
+    const rectSpy = jest
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const right = this.matches('section[aria-label="Agent goal"]')
+          ? 288
+          : pillRight;
+        return { right } as DOMRect;
+      });
+    const resize = () =>
+      act(() =>
+        observers.forEach((callback) => callback([], {} as ResizeObserver)),
+      );
+    const onInline = jest.fn();
+    const panel = (latestSavedUserMessageAt?: number) => (
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={jest.fn()}
+        settings={settings}
+        latestSavedUserMessageAt={latestSavedUserMessageAt}
+        mobileAccessory={<button type="button">Accessory</button>}
+        onMobileAccessoryInlineChange={onInline}
+      />
+    );
+    try {
+      mockIsMobile = true;
+      setMockQueryResult({ ...goal, state: "paused", startedAt: 1000 });
+      const { rerender, unmount } = render(panel());
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: "Accessory" })).toBeVisible();
+      expect(onInline).toHaveBeenLastCalledWith(true);
+      // The pill stays the centered trigger; the accessory doesn't replace it.
+      expect(
+        screen.getByRole("button", { name: "Show goal controls" }),
+      ).toBeVisible();
+
+      // A longer label or timer leaves less than 48px: fall back.
+      pillRight = 250;
+      resize();
+      expect(
+        screen.queryByRole("button", { name: "Accessory" }),
+      ).not.toBeInTheDocument();
+      expect(onInline).toHaveBeenLastCalledWith(false);
+
+      pillRight = 240;
+      resize();
+      expect(screen.getByRole("button", { name: "Accessory" })).toBeVisible();
+
+      // Achieved goals keep hosting it until a newer saved user message.
+      setMockQueryResult({
+        ...goal,
+        state: "achieved",
+        achievedAt: 2000,
+        updatedAt: 2000,
+      });
+      rerender(panel(1000));
+      expect(screen.getByRole("status")).toHaveTextContent("Goal achieved");
+      expect(screen.getByRole("button", { name: "Accessory" })).toBeVisible();
+      expect(onInline).toHaveBeenLastCalledWith(true);
+      rerender(panel(3000));
+      expect(
+        screen.queryByRole("button", { name: "Accessory" }),
+      ).not.toBeInTheDocument();
+      expect(onInline).toHaveBeenLastCalledWith(false);
+
+      setMockQueryResult({ ...goal, state: "paused" });
+      rerender(panel());
+      expect(onInline).toHaveBeenLastCalledWith(true);
+      unmount();
+      expect(onInline).toHaveBeenLastCalledWith(false);
+
+      // Desktop never hosts it, whatever the measured space.
+      onInline.mockClear();
+      mockIsMobile = false;
+      render(panel());
+      await act(async () => {});
+      expect(
+        screen.queryByRole("button", { name: "Accessory" }),
+      ).not.toBeInTheDocument();
+      expect(onInline).not.toHaveBeenCalled();
+    } finally {
+      rectSpy.mockRestore();
+      if (originalResizeObserver)
+        Object.defineProperty(
+          globalThis,
+          "ResizeObserver",
+          originalResizeObserver,
+        );
+      else Reflect.deleteProperty(globalThis, "ResizeObserver");
+    }
+  });
+
   it.each([false, true])(
     "rounds the saved completion duration like the message receipt (mobile: %s)",
     async (isMobile) => {

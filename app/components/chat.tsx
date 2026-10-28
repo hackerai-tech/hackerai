@@ -2463,6 +2463,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const showBottomChatInput =
     (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  // The mobile goal pill hosts the scroll button when there is room beside it.
+  const [scrollButtonInGoal, setScrollButtonInGoal] = useState(false);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -2556,6 +2558,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         status === "ready" && !activeTriggerRunId && messageQueue.length === 0
       }
       disabledReason={computerSendDisabledReason}
+      mobileAccessory={
+        <ScrollToBottomButton
+          variant="inline"
+          onClick={handleScrollToBottom}
+          hasMessages={hasMessages}
+          isAtBottom={isAtBottom}
+        />
+      }
+      onMobileAccessoryInlineChange={setScrollButtonInGoal}
       send={async (message, options) => {
         hasManuallyStoppedRef.current = false;
         resetAutoContinueCount();
@@ -2764,11 +2775,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 >
                   {/* Anchor above the entire composer, including browser notices. */}
                   <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
-                    <ScrollToBottomButton
-                      onClick={handleScrollToBottom}
-                      hasMessages={hasMessages}
-                      isAtBottom={isAtBottom}
-                    />
+                    {!scrollButtonInGoal && (
+                      <ScrollToBottomButton
+                        onClick={handleScrollToBottom}
+                        hasMessages={hasMessages}
+                        isAtBottom={isAtBottom}
+                      />
+                    )}
                   </div>
                   <ChatInput
                     goalPanel={goalPanel}
