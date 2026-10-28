@@ -95,6 +95,33 @@ describe("subscription before task presentation", () => {
     );
   });
 
+  it("preserves takeover actions while the idle composer is gated", async () => {
+    const takeControl = jest.fn();
+    const renderGate = (running: boolean) => (
+      <RegionalSubscriptionGate
+        running={running}
+        fallbackHeader={<button onClick={takeControl}>Take control</button>}
+      >
+        <button>Send task</button>
+      </RegionalSubscriptionGate>
+    );
+    const { rerender } = render(renderGate(false));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading task access");
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(takeControl).toHaveBeenCalledTimes(1);
+    await screen.findByText("$29");
+    expect(
+      screen.queryByRole("button", { name: "Send task" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(takeControl).toHaveBeenCalledTimes(2);
+    rerender(renderGate(true));
+    expect(screen.getByRole("button", { name: "Send task" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Take control" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps plan comparison in the subscription-required flow", async () => {
     render(view());
     await screen.findByText("$29");
