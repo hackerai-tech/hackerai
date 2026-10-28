@@ -187,7 +187,15 @@ import {
   LEGACY_AGENT_API_ENDPOINT,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
-import { phLogger } from "@/lib/posthog/server";
+import {
+  phLogger,
+  getPostHogBooleanFlagDecisionForUser,
+} from "@/lib/posthog/server";
+import {
+  AGENT_RUNTIME_CHECKPOINT_FLAG,
+  createAgentRuntimeCheckpoint,
+  resolveAgentRuntimeCheckpointEnabled,
+} from "@/lib/chat/agent-runtime-checkpoint";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
   evaluateDeepSeekV4Pro0813Experiment,
@@ -2262,6 +2270,31 @@ export const agentLongTask = task({
         },
       });
       activeRuntimeBudget = runtimeBudget;
+      const runtimeCheckpoint = createAgentRuntimeCheckpoint({
+        enabled: await resolveAgentRuntimeCheckpointEnabled({
+          signal: userStopSignal.signal,
+          loadDecision: () =>
+            getPostHogBooleanFlagDecisionForUser(
+              AGENT_RUNTIME_CHECKPOINT_FLAG,
+              userId,
+              undefined,
+              { sendFeatureFlagEvents: false },
+            ),
+        }),
+        maxDurationMs: agentLongMaxDurationMs,
+        getElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
+        onExposed: (timing) =>
+          phLogger.event("agent_runtime_checkpoint_exposed", {
+            userId,
+            trigger_run_id: ctx.run.id,
+            chat_id: chatId,
+            flag_key: AGENT_RUNTIME_CHECKPOINT_FLAG,
+            threshold_fraction: 0.9,
+            ...timing,
+            $process_person_profile: false,
+          }),
+      });
+      userStopSignal.signal.throwIfAborted();
       runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
         delayMs: AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS,
         onStalled: ({ runtimeBudgetExceededAt, stalledForMs }) => {
@@ -3776,6 +3809,7 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              runtimeCheckpoint,
               canRecoverBrowserHandoff,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
