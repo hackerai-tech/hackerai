@@ -575,11 +575,17 @@ export const coverageWriteInputSchema = z.object({
   hypothesis: coverageShortText.min(1),
   evidenceFor: coverageShortText.optional().default(""),
   evidenceAgainst: coverageShortText.optional().default(""),
-  missingProof: coverageShortText.optional().default(""),
-  nextTest: coverageShortText.optional().default(""),
+  missingProof: coverageShortText
+    .min(1)
+    .describe(
+      'State the proof gap; use "none" only when the conclusion is verified.',
+    ),
+  nextTest: coverageShortText
+    .min(1)
+    .describe("Name the next discriminating test or verification check."),
 });
 export const coverageWriteTool = tool({
-  description: `Save or update one working coverage row for this chat (maximum 12 distinct surface/risk rows). Use when a meaningful test changes an investigation, especially after a failed approach or a change in hypothesis. Keep one row per surface and risk area; do not create a new row for each probe. Include the strongest evidence for and against the hypothesis, what proof is missing, and the next discriminating test. Use needs_follow_up for a plausible lead you cannot yet confirm or rule out; missingProof is required then. Only mark confirmed after independent verification and include evidenceFor. Only mark ruled_out when you can name the control or test that disproves the lead and include evidenceAgainst. A coverage row is working state, not a vulnerability report. Do not copy payloads, credentials, or large logs into this record.`,
+  description: `Save or update one working coverage row for this chat (maximum 12 distinct surface/risk rows). Use when a meaningful test changes an investigation, especially after a failed approach or a change in hypothesis. Keep one row per surface and risk area; do not create a new row for each probe. Always provide non-empty missingProof and nextTest fields. Use needs_follow_up for a plausible lead you cannot yet confirm or rule out, and name the actual proof gap. Only mark confirmed after independent verification and include evidenceFor. Only mark ruled_out when you can name the control or test that disproves the lead and include evidenceAgainst. A coverage row is working state, not a vulnerability report. Do not copy payloads, credentials, or large logs into this record.`,
   inputSchema: coverageWriteInputSchema,
 });
 export const coverageReadTool = tool({

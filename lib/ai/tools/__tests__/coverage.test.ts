@@ -106,3 +106,20 @@ it("rejects oversized evidence before any storage call", () => {
     coverageWriteInputSchema.parse({ ...input, evidenceFor: "x".repeat(321) }),
   ).toThrow();
 });
+
+it("requires an explicit proof gap and next test in the model-facing schema", () => {
+  expect(() =>
+    coverageWriteInputSchema.parse({
+      ...input,
+      missingProof: "",
+      nextTest: "",
+    }),
+  ).toThrow();
+  expect(() =>
+    coverageWriteInputSchema.parse({
+      ...input,
+      missingProof: undefined,
+      nextTest: undefined,
+    }),
+  ).toThrow();
+});
