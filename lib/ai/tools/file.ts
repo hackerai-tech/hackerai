@@ -1334,8 +1334,18 @@ export const createFile = (
 
   return tool({
     ...fileToolSchema,
+    // The shared executor also accepts dedicated and legacy write inputs.
     execute: async (
-      { action, path, brief, text, range, edits },
+      {
+        action,
+        path,
+        brief,
+        text,
+        range,
+        edits,
+      }: InferToolInput<ReturnType<typeof createFileToolSchema>> & {
+        text?: string;
+      },
       { toolCallId },
     ) => {
       try {

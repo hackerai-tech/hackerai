@@ -292,7 +292,7 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "Save code with this tool before execution via the shell tool. If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown.",
+    "If an edit reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying an edit whose result is unknown.",
     "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
     "For extensive modifications to shorter files, use file_write to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
@@ -323,12 +323,6 @@ ${instructionsDescription}`,
       action: actionSchema.describe("The action to perform"),
       path: z.string().describe("The absolute path to the target file"),
       brief: createToolBriefSchema({ modelName }),
-      text: z
-        .string()
-        .optional()
-        .describe(
-          "The content to be written or appended. Required for `write` and `append` actions.",
-        ),
       range: z
         .array(z.number().int())
         .length(2)
