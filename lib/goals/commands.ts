@@ -6,6 +6,7 @@ import {
 export type GoalCommand =
   | ({
       action: "start";
+      expectedGeneration?: number;
       objective: string;
       criteria: string[];
     } & GoalContract)
@@ -41,8 +42,18 @@ export function parseGoalCommand(text: string): GoalCommand | null {
       if (line.trim()) headline.push(line.trim());
       continue;
     }
-    const name = field[1].toLowerCase(),
-      value = field[2].trim();
+    const name = field[1].toLowerCase();
+    let value = field[2].trim();
+    // The composer serializes legacy multiline fields as JSON strings so
+    // shell commands and constraints survive a round trip without rewriting.
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try {
+        const decoded: unknown = JSON.parse(value);
+        if (typeof decoded === "string") value = decoded;
+      } catch {
+        /* Ordinary quoted text remains unchanged. */
+      }
+    }
     if (name === "criterion" || name === "criteria") criteria.push(value);
     else if (name === "verify" || name === "verification")
       contract.verificationCommand = value;
@@ -86,4 +97,38 @@ export function goalResumeMessage(
   reply = "",
 ): string {
   return `Resume goal: ${goal.objective}${reply.trim() ? `\n\n${reply.trim()}` : ""}`;
+}
+
+// Older goals may have explicit constraints. Keep them editable without a
+// separate form, while ordinary goals remain just their original request.
+export type EditableGoal = GoalContract & {
+  objective: string;
+  criteria: string[];
+  generation: number;
+};
+export type EditGoalInComposer = (
+  goal: EditableGoal,
+  prepare: () => Promise<boolean>,
+) => Promise<boolean>;
+export function goalEditText(goal: EditableGoal): string {
+  const lines = [goal.objective];
+  if (
+    goal.criteria.length !== 1 ||
+    goal.criteria[0] !== defaultGoalCriterion(goal.objective)
+  ) {
+    lines.push(
+      ...goal.criteria.map(
+        (criterion) => `criterion: ${JSON.stringify(criterion)}`,
+      ),
+    );
+  }
+  for (const [label, value] of [
+    ["verify", goal.verificationCommand],
+    ["preserve", goal.constraints],
+    ["scope", goal.boundaries],
+    ["stop when", goal.stopWhen],
+  ]) {
+    if (value) lines.push(`${label}: ${JSON.stringify(value)}`);
+  }
+  return lines.join("\n");
 }

@@ -114,6 +114,35 @@ const terminal = {
 
 describe("persistent goal lifecycle", () => {
   beforeEach(() => jest.clearAllMocks());
+  it("replaces a paused goal from its composer version and rejects stale or cleared edits", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(control, db.ctx, { ...owner, action: "pause" });
+    const original = db.goal().generation;
+    const replacement = {
+      ...startArgs,
+      expectedGeneration: original,
+      objective: "Updated request",
+      criteria: ["Updated request"],
+    };
+    await invoke(start, db.ctx, replacement);
+    expect(db.goal()).toMatchObject({
+      objective: "Updated request",
+      generation: original + 1,
+      evidence: [],
+      state: "queued",
+    });
+    await invoke(control, db.ctx, { ...owner, action: "pause" });
+    await expect(invoke(start, db.ctx, replacement)).rejects.toThrow(
+      "goal changed",
+    );
+    const current = db.goal().generation;
+    await invoke(control, db.ctx, { ...owner, action: "clear" });
+    await expect(
+      invoke(start, db.ctx, { ...replacement, expectedGeneration: current }),
+    ).rejects.toThrow("goal changed");
+    expect(db.goal().deletedAt).toBeDefined();
+  });
   it("freezes composer Stop across late settlement and excludes pauses from the completion receipt", async () => {
     const clock = jest.spyOn(Date, "now");
     try {

@@ -1,4 +1,3 @@
-import { AgentGoalEditor } from "./AgentGoalEditor";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -1449,18 +1448,11 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
-  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
-}> = ({
-  chatId,
-  messages,
-  status,
-  onBrowserContinue,
-  stopGoalRunBeforeControl,
-}) => {
+}> = ({ chatId, messages, status, onBrowserContinue }) => {
   const {
     sidebarOpen,
     sidebarContent,
@@ -1468,24 +1460,6 @@ export const ComputerSidebar: React.FC<{
     openSidebar,
     consumeBrowserTakeoverRequest,
   } = useGlobalState();
-
-  if (
-    sidebarOpen &&
-    sidebarContent &&
-    "kind" in sidebarContent &&
-    sidebarContent.kind === "goal"
-  )
-    return (
-      <AgentGoalEditor
-        chatId={sidebarContent.chatId}
-        onClose={closeSidebar}
-        stopRunBeforeControl={
-          sidebarContent.chatId === chatId
-            ? stopGoalRunBeforeControl
-            : undefined
-        }
-      />
-    );
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (

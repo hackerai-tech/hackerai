@@ -1224,6 +1224,7 @@ describe("goal reservations on oversized dispatch", () => {
             ],
             goal: {
               action: "start",
+              expectedGeneration: 7,
               objective: "Create marker",
               criteria: ["Marker exists"],
               maxRuns: 1,
@@ -1252,6 +1253,13 @@ describe("goal reservations on oversized dispatch", () => {
           messageId: "input",
           generation: 1,
           chatId: "goal-chat",
+        }),
+      );
+      expect(mockGoalMutation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          expectedGeneration: 7,
+          objective: "Create marker",
         }),
       );
       expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {

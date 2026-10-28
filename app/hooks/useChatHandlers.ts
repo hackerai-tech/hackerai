@@ -605,6 +605,7 @@ export const useChatHandlers = ({
   const handleSubmit = async (
     e: React.FormEvent,
     inputOverride?: string,
+    options?: { replaceGoalGeneration?: number },
   ): Promise<boolean> => {
     e.preventDefault();
     if (sendDisabledReasonRef.current) return false;
@@ -622,6 +623,18 @@ export const useChatHandlers = ({
     let goalSettings: Record<string, unknown> = {};
     try {
       goalCommand = parseGoalCommand(input);
+      if (
+        goalCommand?.action === "start" &&
+        options?.replaceGoalGeneration !== undefined
+      ) {
+        if (options.replaceGoalGeneration !== goalGeneration) {
+          toast.error(
+            "The goal changed. Keep your draft and reopen the current goal before sending an edit.",
+          );
+          return false;
+        }
+        goalCommand.expectedGeneration = options.replaceGoalGeneration;
+      }
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Invalid goal command",

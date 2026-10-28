@@ -3072,10 +3072,7 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.keyDown(input, { key: "Tab" });
       expect(input).toHaveValue("日本語");
       fireEvent.keyDown(input, { key: "Escape", ...compositionEvent });
-      expect(input).toHaveAttribute(
-        "placeholder",
-        "Describe your goal, define measurable outcomes for best results",
-      );
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
     },
   );
 
@@ -3107,10 +3104,7 @@ describe("ChatInput - Integration Tests", () => {
     });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(mockOnSubmit).not.toHaveBeenCalled();
-    expect(input).toHaveAttribute(
-      "placeholder",
-      "Describe your goal, define measurable outcomes for best results",
-    );
+    expect(input).toHaveAttribute("placeholder", "Describe your goal");
     fireEvent.change(input, { target: { value: "Create a marker" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
@@ -3174,10 +3168,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnSubmit).not.toHaveBeenCalled();
       expect(input).toHaveValue(objective);
       expect(screen.getByText("inline-goal.txt")).toBeVisible();
-      expect(input).toHaveAttribute(
-        "placeholder",
-        "Describe your goal, define measurable outcomes for best results",
-      );
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() =>
         expect(mockOnSubmit).toHaveBeenCalledWith(
@@ -3310,7 +3301,7 @@ describe("ChatInput - Integration Tests", () => {
       ).not.toBeInTheDocument();
       expect(screen.getByRole("textbox")).not.toHaveAttribute(
         "placeholder",
-        "Describe your goal, define measurable outcomes for best results",
+        "Describe your goal",
       );
     },
   );
@@ -3349,6 +3340,125 @@ describe("ChatInput - Integration Tests", () => {
     expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  it.each([false, true])(
+    "edits and resends a goal in the composer while preserving attachments (mobile=%s)",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      const prepare = jest.fn<() => Promise<boolean>>().mockResolvedValue(true);
+      const file = {
+        file: new File(["context"], "edit-context.txt", { type: "text/plain" }),
+        uploaded: true,
+        uploading: false,
+        fileId: "edit-file",
+      } as UploadedFileState;
+      const goal = {
+        objective: "Check the marker",
+        criteria: ["Check the marker"],
+        generation: 7,
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach context" />
+          <ChatInput
+            chatId="edit-chat"
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+            goalPanel={(_, edit) => (
+              <button onClick={() => edit(goal, prepare)}>
+                Edit saved goal
+              </button>
+            )}
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      fireEvent.click(screen.getByRole("button", { name: "Attach context" }));
+      fireEvent.click(screen.getByRole("button", { name: "Edit saved goal" }));
+      await waitFor(() => expect(input).toHaveValue("Check the marker"));
+      await waitFor(() => expect(input).toHaveFocus());
+      expect(screen.getByText("edit-context.txt")).toBeVisible();
+      fireEvent.change(input, { target: { value: "Read the updated marker" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          "/goal start Read the updated marker",
+          { replaceGoalGeneration: 7 },
+        ),
+      );
+    },
+  );
+
+  it("keeps a draft typed before or during the stop-and-save step", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    let finish!: (value: boolean) => void;
+    const prepare = jest.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(
+      <TestWrapper>
+        <ChatInput
+          chatId="edit-chat"
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+          goalPanel={(_, edit) => (
+            <button
+              onClick={() =>
+                edit(
+                  {
+                    objective: "Old goal",
+                    criteria: ["Old goal"],
+                    generation: 7,
+                  },
+                  prepare,
+                )
+              }
+            >
+              Edit saved goal
+            </button>
+          )}
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "My draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit saved goal" }));
+    expect(prepare).not.toHaveBeenCalled();
+    expect(input).toHaveValue("My draft");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit saved goal" }));
+    fireEvent.change(input, { target: { value: "Typed while saving" } });
+    await act(async () => finish(true));
+    expect(input).toHaveValue("Typed while saving");
+    expect(
+      screen.queryByRole("button", { name: "Exit goal mode" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps goal intent when a responsive layout remounts the same draft", async () => {

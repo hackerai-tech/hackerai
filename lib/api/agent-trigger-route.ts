@@ -208,6 +208,7 @@ export const shouldRequireAgentApprovalDeploymentPin = (
 type AgentGoalRequest =
   | ({
       action: "start";
+      expectedGeneration?: number;
       objective: string;
       criteria: string[];
     } & GoalContract)
@@ -858,6 +859,9 @@ export const createAgentTriggerPost =
                 serviceKey: goalServiceKey(),
                 chatId,
                 userId,
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { expectedGeneration: goalRequest.expectedGeneration }
+                  : {}),
                 objective: goalRequest.objective,
                 criteria: goalRequest.criteria,
                 verificationCommand: goalRequest.verificationCommand,

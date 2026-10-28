@@ -3,10 +3,12 @@ import {
   mergeGoalEvidence,
   resolveGoalOutcome,
   validGoalStart,
+  validGoalRequest,
   verificationGatePassed,
 } from "../contracts";
 import {
   parseGoalCommand,
+  goalEditText,
   goalResumeMessage,
   goalExecutionInstructions,
 } from "../commands";
@@ -248,4 +250,47 @@ it("retains each criterion's latest proof and refreshed evidence across long goa
   expect(new Set(merged.map((proof) => proof.criterion))).toEqual(
     new Set([0, 1, 2]),
   );
+});
+
+describe("composer goal edits", () => {
+  it("keeps a plain objective simple and round trips legacy multiline constraints", () => {
+    expect(
+      goalEditText({
+        objective: "Read the marker",
+        criteria: ["Read the marker"],
+        generation: 2,
+      }),
+    ).toBe("Read the marker");
+    const saved = {
+      objective: "Read the marker",
+      criteria: ["Read the output\nincluding the final line"],
+      verificationCommand: "printf 'first\n'\nprintf 'second\n'",
+      constraints: "Keep file A\nKeep file B",
+      boundaries: "Only the sandbox",
+      stopWhen: "Permission is needed",
+      generation: 2,
+    };
+    const { generation, ...fields } = saved;
+    expect(parseGoalCommand(`/goal start ${goalEditText(saved)}`)).toEqual({
+      action: "start",
+      ...fields,
+    });
+  });
+  it("only accepts a valid version fence for goal replacement", () => {
+    const start = {
+      action: "start",
+      objective: "Read marker",
+      criteria: ["Read marker"],
+    };
+    for (const expectedGeneration of [undefined, 0, 12])
+      expect(validGoalRequest({ ...start, expectedGeneration })).toBe(true);
+    for (const expectedGeneration of [
+      -1,
+      1.5,
+      "12",
+      null,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])
+      expect(validGoalRequest({ ...start, expectedGeneration })).toBe(false);
+  });
 });

@@ -13,10 +13,6 @@ jest.mock("@/lib/analytics/client", () => ({
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
 let mockIsMobile = false;
 jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
-const mockOpenSidebar = jest.fn();
-jest.mock("@/app/contexts/GlobalState", () => ({
-  useGlobalState: () => ({ openSidebar: mockOpenSidebar }),
-}));
 const settings = {
   sandboxPreference: "e2b",
   agentPermissionMode: "full_access",
@@ -39,7 +35,6 @@ const goal = {
 describe("goal controls", () => {
   beforeEach(() => {
     mockIsMobile = false;
-    mockOpenSidebar.mockClear();
     setMockQueryResult(undefined);
     global.fetch = jest
       .fn()
@@ -516,76 +511,73 @@ describe("goal controls", () => {
       screen.queryByRole("button", { name: /Set goal/ }),
     ).not.toBeInTheDocument();
   });
-  it("opens the existing sidebar to edit while a run is active", async () => {
-    setMockQueryResult({ ...goal, state: "running", activeRunId: "r1" });
-    render(
-      <AgentGoalPanel
-        chatId="chat"
-        exists
-        eligible
-        idle={false}
-        send={jest.fn()}
-        settings={settings}
-      />,
-    );
-    await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
-    expect(mockOpenSidebar).toHaveBeenCalledWith({
-      kind: "goal",
-      chatId: "chat",
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Clear goal" }));
-    await waitFor(() =>
+  it.each([false, true])(
+    "pauses and saves before loading the composer (mobile=%s)",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const savedGoal = {
+        ...goal,
+        generation: 4,
+        state: "running",
+        activeRunId: "run",
+        startedAt: Date.now() - 5000,
+      };
+      setMockQueryResult(savedGoal);
+      const stop = jest.fn().mockResolvedValue(false);
+      const loaded = jest.fn();
+      const onEdit = jest.fn(async (value, prepare) => {
+        if (!(await prepare())) return false;
+        loaded(value);
+        return true;
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle={false}
+          send={jest.fn()}
+          settings={settings}
+          stopRunBeforeControl={stop}
+          onEdit={onEdit}
+        />,
+      );
+      await act(async () => {});
+      if (mobile)
+        fireEvent.click(
+          screen.getByRole("button", { name: "Show goal controls" }),
+        );
+      fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+      await waitFor(() => expect(stop).toHaveBeenCalledWith("run"));
+      expect(loaded).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({ method: "POST" }),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Edit goal" })).toBeEnabled(),
+      );
+      stop.mockResolvedValue(true);
+      fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+      await waitFor(() => expect(loaded).toHaveBeenCalledWith(savedGoal));
       expect(fetch).toHaveBeenCalledWith(
         "/api/agent-goal",
         expect.objectContaining({
-          body: JSON.stringify({ chatId: "chat", action: "clear" }),
+          body: JSON.stringify({
+            chatId: "chat",
+            action: "pause",
+            generation: 4,
+          }),
         }),
-      ),
-    );
-  });
-  it("keeps mobile controls behind a pill and closes them when opening the editor", async () => {
-    mockIsMobile = true;
-    setMockQueryResult({
-      ...goal,
-      state: "running",
-      activeRunId: "run",
-      startedAt: Date.now() - 5000,
-    });
-    render(
-      <AgentGoalPanel
-        chatId="chat"
-        exists
-        eligible
-        idle={false}
-        send={jest.fn()}
-        settings={settings}
-      />,
-    );
-    await act(async () => {});
-    expect(screen.getByRole("status")).toHaveTextContent("Pursuing goal");
-    expect(
-      screen.queryByRole("button", { name: "Pause goal" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Show goal controls" }));
-    expect(
-      screen.getByRole("dialog", { name: "Goal controls" }),
-    ).toHaveTextContent("Create marker");
-    expect(screen.getByRole("button", { name: "Pause goal" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
-    expect(mockOpenSidebar).toHaveBeenCalledWith({
-      kind: "goal",
-      chatId: "chat",
-    });
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("dialog", { name: "Goal controls" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(
-      screen.getByRole("button", { name: "Show goal controls" }),
-    ).toHaveFocus();
-  });
+      );
+      if (mobile)
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("dialog", { name: "Goal controls" }),
+          ).not.toBeInTheDocument(),
+        );
+    },
+  );
 
   it("resumes a paused mobile goal from its popover and then dismisses it", async () => {
     mockIsMobile = true;

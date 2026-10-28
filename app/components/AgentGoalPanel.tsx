@@ -30,11 +30,13 @@ import {
   Pause,
   CirclePause,
   CirclePlay,
-  Maximize,
   Trash2,
   Pencil,
 } from "lucide-react";
-import { goalResumeMessage } from "@/lib/goals/commands";
+import {
+  goalResumeMessage,
+  type EditGoalInComposer,
+} from "@/lib/goals/commands";
 import {
   goalElapsedMs,
   isGoalTimerRunning,
@@ -44,7 +46,7 @@ import { type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
 
-import { useGlobalState } from "@/app/contexts/GlobalState";
+import { defaultGoalCriterion } from "@/lib/goals/contracts";
 
 const stateLabels: Record<GoalState, string> = {
   queued: "Queued",
@@ -72,6 +74,7 @@ export function AgentGoalPanel({
   idle,
   latestSavedUserMessageAt,
   stopRunBeforeControl,
+  onEdit,
   disabledReason,
   mobileAccessory,
   onMobileAccessoryInlineChange,
@@ -84,6 +87,7 @@ export function AgentGoalPanel({
   idle: boolean;
   latestSavedUserMessageAt?: number;
   stopRunBeforeControl?: (runId: string) => Promise<boolean>;
+  onEdit?: EditGoalInComposer;
   disabledReason?: string;
   /** Shown beside the centered mobile pill only when it fits. */
   mobileAccessory?: ReactNode;
@@ -101,7 +105,6 @@ export function AgentGoalPanel({
 }) {
   const goal = useQuery(api.agentGoals.get, exists ? { chatId } : "skip");
   const [enabled, setEnabled] = useState(false);
-  const { openSidebar } = useGlobalState();
   const [expanded, setExpanded] = useState(false);
   const isMobile = useIsMobile();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -210,8 +213,10 @@ export function AgentGoalPanel({
       if (!r.ok)
         throw new Error((await r.json()).message ?? "Goal control failed");
       captureAuthenticatedEvent("agent_goal_user_control", { action });
+      return true;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Goal control failed");
+      return false;
     } finally {
       setControlling(false);
     }
@@ -337,7 +342,7 @@ export function AgentGoalPanel({
           </TooltipContent>
         </Tooltip>
       )}
-      {goal.state !== "achieved" && (
+      {onEdit && (
         <Tooltip open={isMobile ? false : undefined}>
           <TooltipTrigger asChild>
             <span className="inline-flex">
@@ -345,19 +350,32 @@ export function AgentGoalPanel({
                 size={isMobile ? "icon" : "icon-sm"}
                 variant="ghost"
                 aria-label="Edit goal"
-                disabled={controlling}
-                onClick={() => {
-                  openingEditor.current = isMobile === true;
-                  setMobileOpen(false);
-                  if (isMobile) mobileTriggerRef.current?.focus();
-                  openSidebar({ kind: "goal", chatId });
+                disabled={busy}
+                onClick={async () => {
+                  if (goal.activeRunId && !stopRunBeforeControl) {
+                    toast.error(
+                      "Wait for the current run to finish before editing the goal.",
+                    );
+                    return;
+                  }
+                  const loaded = await onEdit(goal, () =>
+                    ["running", "queued", "waiting", "needs_approval"].includes(
+                      goal.state,
+                    ) || goal.activeRunId
+                      ? control("pause")
+                      : Promise.resolve(true),
+                  );
+                  if (loaded) {
+                    openingEditor.current = isMobile === true;
+                    setMobileOpen(false);
+                    setExpanded(false);
+                    captureAuthenticatedEvent("agent_goal_user_control", {
+                      action: "edit",
+                    });
+                  }
                 }}
               >
-                {isMobile ? (
-                  <Pencil className="size-4" />
-                ) : (
-                  <Maximize className="size-4" />
-                )}
+                <Pencil className="size-4" />
               </Button>
             </span>
           </TooltipTrigger>
@@ -421,21 +439,24 @@ export function AgentGoalPanel({
           Completion check: {goal.judgment.reason}
         </p>
       )}
-      <ul className="space-y-1">
-        {goal.criteria.map((criterion, i) => (
-          <li key={i}>
-            {goal.state === "achieved" ? "✓ " : `${i + 1}. `}
-            {criterion}
-            {goal.state !== "achieved" &&
-              goal.evidence.some((e) => e.criterion === i) && (
-                <span className="text-xs text-muted-foreground">
-                  {" "}
-                  · Evidence saved, awaiting verification
-                </span>
-              )}
-          </li>
-        ))}
-      </ul>
+      {(goal.criteria.length !== 1 ||
+        goal.criteria[0] !== defaultGoalCriterion(goal.objective)) && (
+        <ul className="space-y-1">
+          {goal.criteria.map((criterion, i) => (
+            <li key={i}>
+              {goal.state === "achieved" ? "✓ " : `${i + 1}. `}
+              {criterion}
+              {goal.state !== "achieved" &&
+                goal.evidence.some((e) => e.criterion === i) && (
+                  <span className="text-xs text-muted-foreground">
+                    {" "}
+                    · Evidence saved, awaiting verification
+                  </span>
+                )}
+            </li>
+          ))}
+        </ul>
+      )}
       {goal.state === "achieved" && (
         <details>
           <summary className="cursor-pointer">

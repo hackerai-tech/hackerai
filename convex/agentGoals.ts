@@ -72,6 +72,7 @@ export const start = mutation({
     chatId: v.string(),
     userId: v.string(),
     ...goalContractFields,
+    expectedGeneration: v.optional(v.number()),
     objective: v.string(),
     criteria: v.array(v.string()),
     // Accept older clients during rollout; run counts no longer limit goals.
@@ -96,6 +97,15 @@ export const start = mutation({
         ))
     )
       throw new ConvexError("Pause or stop the active run first");
+    if (
+      args.expectedGeneration !== undefined &&
+      (!previous ||
+        previous.deletedAt ||
+        previous.generation !== args.expectedGeneration)
+    )
+      throw new ConvexError(
+        "The goal changed. Reopen it before sending your edit.",
+      );
     const fields = {
       verificationCommand: args.verificationCommand?.trim(),
       constraints: args.constraints?.trim(),

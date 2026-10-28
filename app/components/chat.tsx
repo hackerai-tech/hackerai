@@ -1,4 +1,5 @@
 "use client";
+import type { EditGoalInComposer } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
@@ -2539,10 +2540,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       expectedTriggerRunId: runId,
     });
   };
-  const goalPanel = (placement: "attached" | "detached") => (
+  const goalPanel = (
+    placement: "attached" | "detached",
+    onEdit: EditGoalInComposer,
+  ) => (
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
+      onEdit={onEdit}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
       stopRunBeforeControl={stopGoalRunBeforeControl}
@@ -2848,7 +2853,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {sidebarOpen && (
                 <ComputerSidebar
-                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
                   onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}
                   messages={messages}
