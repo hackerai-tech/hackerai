@@ -32,6 +32,7 @@ import {
 } from "@trigger.dev/sdk";
 import * as triggerSdk from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
+import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
 import {
   addAgentLongTags,
   getMissingAgentLongTags,
@@ -5652,10 +5653,10 @@ export const agentLongTask = task({
         .set("status", "streaming")
         .set("model", selectedModel)
         .set("setupBeforeStreamMs", Date.now() - taskStartTime);
-      const { waitUntilComplete } = agentUiStream.pipe(uiStream);
+      const streamPipe = agentUiStream.pipe(uiStream);
       streamPiped = true;
       try {
-        await waitUntilComplete();
+        await waitForAgentUiStream(streamPipe);
       } catch (error) {
         if (!isTriggerRealtimeTransportError(error)) {
           throw error;
@@ -5838,9 +5839,7 @@ export const agentLongTask = task({
               throw error;
             },
           });
-          const { waitUntilComplete: waitForErrorStream } =
-            agentUiStream.pipe(errorStream);
-          await waitForErrorStream();
+          await waitForAgentUiStream(agentUiStream.pipe(errorStream));
           userVisibleErrorStreamFlushed = true;
         } catch (pipeErr) {
           console.error(
