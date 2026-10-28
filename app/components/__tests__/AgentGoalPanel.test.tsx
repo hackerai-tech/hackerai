@@ -187,7 +187,7 @@ describe("goal controls", () => {
         }),
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume", additionalRuns: 0 },
+            goal: { action: "resume" },
           }),
         }),
       ),
@@ -209,7 +209,7 @@ describe("goal controls", () => {
     ).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
-  it("requires explicit extra runs and restores the saved execution settings", async () => {
+  it("resumes legacy capped goals without extra runs and restores saved settings", async () => {
     setMockQueryResult(goal);
     const send = jest.fn().mockResolvedValue(undefined);
     render(
@@ -223,14 +223,8 @@ describe("goal controls", () => {
       />,
     );
     await act(async () => {});
-    expect(
-      screen.queryByRole("button", { name: "Resume goal" }),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
-    fireEvent.change(
-      screen.getByRole("spinbutton", { name: "Additional goal runs" }),
-      { target: { value: "2" } },
-    );
+    expect(screen.queryByText(/runs used/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Resume goal" })).toBeEnabled(),
     );
@@ -246,13 +240,13 @@ describe("goal controls", () => {
             sandboxPreference: "desktop",
             agentPermissionMode: "ask_approval",
             selectedModel: "standard",
-            goal: { action: "resume", additionalRuns: 2 },
+            goal: { action: "resume" },
           },
         },
       ),
     );
   });
-  it("does not carry an old goal's extra runs or reply into a replacement using the same saved row", async () => {
+  it("does not carry an old goal's reply into a replacement using the same saved row", async () => {
     setMockQueryResult({ ...goal, startedAt: 1000 });
     const send = jest.fn().mockResolvedValue(undefined);
     const props = {
@@ -265,13 +259,7 @@ describe("goal controls", () => {
     };
     const { rerender } = render(<AgentGoalPanel {...props} />);
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
-    fireEvent.change(
-      screen.getByRole("spinbutton", { name: "Additional goal runs" }),
-      {
-        target: { value: "2" },
-      },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
       target: { value: "Context for the old goal" },
     });
@@ -291,7 +279,7 @@ describe("goal controls", () => {
         { text: "Resume goal: New marker" },
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume", additionalRuns: 0 },
+            goal: { action: "resume" },
           }),
         }),
       ),
@@ -483,11 +471,11 @@ describe("goal controls", () => {
     },
   );
 
-  it.each(["-1", "0.5", "8"])(
-    "rejects an invalid additional budget of %s before sending",
-    async (value) => {
-      setMockQueryResult(goal);
-      const send = jest.fn();
+  it.each([3, 8, 100])(
+    "allows resume beyond former run limits (%s)",
+    async (runs) => {
+      setMockQueryResult({ ...goal, state: "paused", runs, maxRuns: 3 });
+      const send = jest.fn().mockResolvedValue(undefined);
       render(
         <AgentGoalPanel
           chatId="chat"
@@ -498,19 +486,14 @@ describe("goal controls", () => {
           settings={settings}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
-      fireEvent.change(
-        screen.getByRole("spinbutton", { name: "Additional goal runs" }),
-        { target: { value } },
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Resume goal" }),
+        ).toBeEnabled(),
       );
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "Choose a whole number from 1 to 7",
-      );
-      expect(
-        screen.queryByRole("button", { name: "Resume goal" }),
-      ).not.toBeInTheDocument();
-      expect(send).not.toHaveBeenCalled();
-      await act(async () => {});
+      expect(screen.queryByText(/runs used|Add runs/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
+      await waitFor(() => expect(send).toHaveBeenCalled());
     },
   );
 
@@ -632,7 +615,7 @@ describe("goal controls", () => {
         expect.anything(),
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume", additionalRuns: 0 },
+            goal: { action: "resume" },
           }),
         }),
       ),

@@ -16,7 +16,6 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ChevronDown,
@@ -34,7 +33,7 @@ import {
   isGoalTimerRunning,
   type GoalTiming,
 } from "@/lib/goals/timing";
-import { GOAL_MAX_RUNS, type GoalState } from "@/lib/goals/contracts";
+import { type GoalState } from "@/lib/goals/contracts";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
 
@@ -51,7 +50,7 @@ const stateLabels: Record<GoalState, string> = {
   failed: "Run failed",
   canceled: "Stopped",
   usage_exhausted: "Usage limit reached",
-  budget_exhausted: "Run budget reached",
+  budget_exhausted: "Paused",
   achieved: "Completed",
 };
 
@@ -95,7 +94,6 @@ export function AgentGoalPanel({
   const detailsId = useId();
   const [formError, setFormError] = useState("");
   const [reply, setReply] = useState("");
-  const [additionalRuns, setAdditionalRuns] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [controlling, setControlling] = useState(false);
   const busy = submitting || controlling;
@@ -125,7 +123,6 @@ export function AgentGoalPanel({
   useEffect(() => {
     setMobileOpen(false);
     setExpanded(false);
-    setAdditionalRuns(0);
     setReply("");
     setFormError("");
     // Replacement goals reuse the saved row, but receive a new start time.
@@ -145,17 +142,7 @@ export function AgentGoalPanel({
     goal.state !== "achieved" &&
     !goal.activeRunId &&
     !["queued", "running", "needs_approval", "waiting"].includes(goal.state);
-  const validAdditionalRuns =
-    Number.isInteger(additionalRuns) &&
-    additionalRuns >= 0 &&
-    additionalRuns <= GOAL_MAX_RUNS - (goal?.maxRuns ?? 0);
-  const canResume =
-    goal &&
-    goal.state !== "achieved" &&
-    !goal.activeRunId &&
-    !["queued", "running", "needs_approval", "waiting"].includes(goal.state) &&
-    validAdditionalRuns &&
-    (goal.runs < goal.maxRuns || additionalRuns > 0);
+  const canResume = resumable;
   async function control(action: "pause" | "clear") {
     setControlling(true);
     try {
@@ -204,7 +191,7 @@ export function AgentGoalPanel({
             agentPermissionMode: goal.permissionMode,
             selectedModel: goal.selectedModel,
             mode: "agent",
-            goal: { action: "resume", additionalRuns },
+            goal: { action: "resume" },
           },
         },
       );
@@ -212,7 +199,6 @@ export function AgentGoalPanel({
         action: "resume",
       });
       setReply("");
-      setAdditionalRuns(0);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);
@@ -273,7 +259,7 @@ export function AgentGoalPanel({
             </TooltipContent>
           </Tooltip>
         )}
-      {(canResume || (goal.state === "paused" && goal.runs < goal.maxRuns)) && (
+      {(canResume || goal.state === "paused") && (
         <Tooltip open={isMobile ? false : undefined}>
           <TooltipTrigger asChild>
             <span className="inline-flex">
@@ -301,19 +287,6 @@ export function AgentGoalPanel({
           </TooltipContent>
         </Tooltip>
       )}
-      {resumable &&
-        goal.runs >= goal.maxRuns &&
-        goal.maxRuns < GOAL_MAX_RUNS &&
-        !expanded && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="px-2 text-xs"
-            onClick={() => setExpanded(true)}
-          >
-            Add runs
-          </Button>
-        )}
       {goal.state !== "achieved" && (
         <Tooltip open={isMobile ? false : undefined}>
           <TooltipTrigger asChild>
@@ -357,36 +330,8 @@ export function AgentGoalPanel({
             : "mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
       }
     >
-      <p className="text-xs text-muted-foreground">
-        {goal.runs}/{goal.maxRuns} runs used
-      </p>
       {resumable && (
         <div className="space-y-2">
-          {goal.runs >= goal.maxRuns && goal.maxRuns < GOAL_MAX_RUNS && (
-            <label className="block">
-              Additional runs (normal plan usage)
-              <Input
-                aria-label="Additional goal runs"
-                type="number"
-                min={0}
-                max={GOAL_MAX_RUNS - goal.maxRuns}
-                step={1}
-                value={additionalRuns}
-                onChange={(e) => setAdditionalRuns(Number(e.target.value))}
-                className="w-24"
-              />
-              <span className="text-xs text-muted-foreground">
-                Add 1–{GOAL_MAX_RUNS - goal.maxRuns} runs, then choose Resume
-                goal.
-              </span>
-              {!validAdditionalRuns && (
-                <span role="alert" className="block text-destructive">
-                  Choose a whole number from 1 to {GOAL_MAX_RUNS - goal.maxRuns}
-                  .
-                </span>
-              )}
-            </label>
-          )}
           <label className="block">
             Reply or new information (optional)
             <Textarea
@@ -396,14 +341,6 @@ export function AgentGoalPanel({
               onChange={(e) => setReply(e.target.value)}
             />
           </label>
-          {goal.runs >= GOAL_MAX_RUNS && (
-            <p className="text-muted-foreground">
-              This goal used all {GOAL_MAX_RUNS} runs.{" "}
-              {active
-                ? "Stop it, then set a new goal to continue with a fresh budget."
-                : "Set a new goal to continue with a fresh budget."}
-            </p>
-          )}
           {disabledReason && (
             <p className="text-muted-foreground">{disabledReason}</p>
           )}
@@ -491,7 +428,13 @@ export function AgentGoalPanel({
       ? "Pursuing goal"
       : goal.state === "achieved"
         ? "Goal achieved"
-        : ["paused", "queued", "canceled", "blocked"].includes(goal.state)
+        : [
+              "paused",
+              "queued",
+              "canceled",
+              "blocked",
+              "budget_exhausted",
+            ].includes(goal.state)
           ? `${stateLabels[goal.state]} goal`
           : stateLabels[goal.state];
   const statusColor =
@@ -503,10 +446,9 @@ export function AgentGoalPanel({
             "blocked",
             "failed",
             "usage_exhausted",
-            "budget_exhausted",
           ].includes(goal.state)
         ? "text-amber-700 dark:text-amber-400"
-        : ["paused", "canceled"].includes(goal.state)
+        : ["paused", "canceled", "budget_exhausted"].includes(goal.state)
           ? "text-muted-foreground"
           : "text-foreground";
   if (goal.state === "achieved") {
@@ -639,7 +581,7 @@ export function AgentGoalPanel({
             aria-expanded={expanded}
             aria-controls={detailsId}
             onClick={() => setExpanded(!expanded)}
-            title={`${goal.objective} · ${goal.runs}/${goal.maxRuns} runs`}
+            title={goal.objective}
             className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <GoalTargetIcon

@@ -112,7 +112,6 @@ export async function finishGoalRun(
           run_id: runId,
           state: goal.state,
           runs_used: goal.runs,
-          max_runs: goal.maxRuns,
           verified_criteria_count: new Set(
             goal.evidence.map((e) => e.criterion),
           ).size,

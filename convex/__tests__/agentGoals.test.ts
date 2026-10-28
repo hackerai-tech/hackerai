@@ -33,7 +33,6 @@ const startArgs = {
   ...owner,
   objective: "Create marker",
   criteria: ["Marker exists"],
-  maxRuns: 3,
   sandboxPreference: "e2b",
   permissionMode: "ask_approval",
   selectedModel: "auto",
@@ -256,14 +255,13 @@ describe("persistent goal lifecycle", () => {
       state: "paused",
       objective: startArgs.objective,
       runs: 1,
-      maxRuns: 3,
     });
     await invoke(finish, db.ctx, { ...terminal, canceled: true });
     expect(db.goal().state).toBe("paused");
     expect(db.goal().activeRunId).toBeUndefined();
     db.chat().active_trigger_run_id = undefined;
     await invoke(control, db.ctx, { ...owner, action: "resume" });
-    expect(db.goal()).toMatchObject({ state: "queued", runs: 1, maxRuns: 3 });
+    expect(db.goal()).toMatchObject({ state: "queued", runs: 1 });
   });
 
   it("keeps cancellation resumable when worker cleanup wins the race, while explicit stop stays stopped", async () => {
@@ -521,32 +519,58 @@ describe("persistent goal lifecycle", () => {
       objective: "Replacement",
     });
   });
-  it("retains cumulative budget and requires an explicit extension", async () => {
+  it("continues through ten work slices, then stops on no progress", async () => {
     const db = database();
-    await invoke(start, db.ctx, { ...startArgs, maxRuns: 1 });
-    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
-    await invoke(finish, db.ctx, terminal);
-    db.chat().active_trigger_run_id = undefined;
-    expect(db.goal().state).toBe("budget_exhausted");
-    await expect(
-      invoke(control, db.ctx, { ...owner, action: "resume" }),
-    ).rejects.toThrow("Run budget exhausted");
-    await invoke(control, db.ctx, {
-      ...owner,
-      action: "resume",
-      additionalRuns: 2,
-    });
-    expect(db.goal().runs).toBe(1);
-    expect(db.goal().maxRuns).toBe(3);
-    await invoke(control, db.ctx, { ...owner, action: "pause" });
-    await expect(
-      invoke(control, db.ctx, {
+    await invoke(start, db.ctx, startArgs);
+    // Old persisted cap must not constrain newly deployed workers.
+    db.goal().maxRuns = 3;
+    for (let i = 1; i <= 12; i++) {
+      const runId = `r${i}`;
+      db.chat().active_trigger_run_id = undefined;
+      await invoke(claimRun, db.ctx, {
         ...owner,
-        action: "resume",
-        additionalRuns: 6,
-      }),
-    ).rejects.toThrow("8 runs");
+        generation: db.goal().generation,
+        runId,
+      });
+      expect(db.goal().runs).toBe(i);
+      if (i <= 10)
+        await db.message(runId, [{ ...result, toolCallId: `cmd${i}` }]);
+      await invoke(finish, db.ctx, { ...terminal, runId });
+      expect(db.goal().state).toBe(i === 12 ? "blocked" : "queued");
+    }
+    expect(db.goal().noProgressRuns).toBe(2);
   });
+  it.each(["paused", "budget_exhausted", "blocked"])(
+    "resumes %s beyond the old maximum without resetting work count",
+    async (state) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      Object.assign(db.goal(), {
+        state,
+        runs: 9,
+        maxRuns: 8,
+        noProgressRuns: 2,
+      });
+      await invoke(control, db.ctx, { ...owner, action: "resume" });
+      expect(db.goal()).toMatchObject({
+        state: "queued",
+        runs: 9,
+        noProgressRuns: 0,
+      });
+      await invoke(claimRun, db.ctx, {
+        ...owner,
+        generation: db.goal().generation,
+        runId: "r10",
+      });
+      expect(db.goal()).toMatchObject({ state: "running", runs: 10 });
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        runId: "r10",
+        usageExhausted: true,
+      });
+      expect(db.goal().state).toBe("usage_exhausted");
+    },
+  );
 });
 
 describe("editing and deleting an active goal", () => {
@@ -563,7 +587,6 @@ describe("editing and deleting an active goal", () => {
     expect(edited).toMatchObject({
       state: "paused",
       runs: 1,
-      maxRuns: 3,
       evidence: [],
       generation: 2,
     });

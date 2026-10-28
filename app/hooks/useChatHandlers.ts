@@ -656,7 +656,7 @@ export const useChatHandlers = ({
                 );
           toast.info(
             data.goal
-              ? `Goal: ${data.goal.state.replaceAll("_", " ")} (${data.goal.runs}/${data.goal.maxRuns} runs)`
+              ? `Goal: ${data.goal.state.replaceAll("_", " ")}`
               : data.state
                 ? `Goal ${data.state}`
                 : "No goal in this chat. Use /goal followed by an objective.",

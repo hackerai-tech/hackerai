@@ -1,6 +1,5 @@
 export const GOAL_FLAG = "persistent-agent-goals";
-export const GOAL_MAX_RUNS = 8;
-export const GOAL_DEFAULT_RUNS = 3;
+const GOAL_MAX_EVIDENCE = 64;
 export const GOAL_SLICE_MS = 20 * 60 * 1000;
 export const GOAL_STATES = [
   "queued",
@@ -35,8 +34,8 @@ export function mergeGoalEvidence<
       proof,
     );
   }
-  // Admission permits at most eight proofs per slice and eight total slices.
-  return [...distinct.values()].slice(-GOAL_MAX_RUNS * 8);
+  // Bound the saved document independently of how many work slices a goal takes.
+  return [...distinct.values()].slice(-GOAL_MAX_EVIDENCE);
 }
 
 export type GoalCheckpoint = {
@@ -66,7 +65,7 @@ export function defaultGoalCriterion(objective: string): string {
 
 export function validGoalStart(
   value: unknown,
-): value is { objective: string; criteria: string[]; maxRuns: number } {
+): value is { objective: string; criteria: string[] } {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return (
@@ -79,9 +78,6 @@ export function validGoalStart(
     v.criteria.every(
       (c) => typeof c === "string" && c.trim().length > 0 && c.length <= 1000,
     ) &&
-    Number.isInteger(v.maxRuns) &&
-    Number(v.maxRuns) >= 1 &&
-    Number(v.maxRuns) <= GOAL_MAX_RUNS &&
     ["verificationCommand", "constraints", "boundaries", "stopWhen"].every(
       (key) =>
         v[key] === undefined ||
@@ -149,17 +145,10 @@ export function validGoalRequest(value: unknown): boolean {
   const request = value as Record<string, unknown>;
   if (request.action === "start") return validGoalStart(request);
   if (request.action !== "resume") return false;
-  return (
-    request.additionalRuns === undefined ||
-    (Number.isInteger(request.additionalRuns) &&
-      Number(request.additionalRuns) >= 0 &&
-      Number(request.additionalRuns) <= GOAL_MAX_RUNS)
-  );
+  return true;
 }
 
 export function resolveGoalOutcome(args: {
-  runs: number;
-  maxRuns: number;
   noProgressRuns: number;
   checkpoint?: GoalCheckpoint;
   allCriteriaVerified: boolean;
@@ -195,7 +184,6 @@ export function resolveGoalOutcome(args: {
     args.judgment?.verdict === "done"
   )
     return "achieved";
-  if (args.runs >= args.maxRuns) return "budget_exhausted";
   if (args.noProgressRuns >= 2) return "blocked";
   if (args.checkpoint?.outcome === "wait" && args.checkpoint.waitSeconds)
     return "waiting";

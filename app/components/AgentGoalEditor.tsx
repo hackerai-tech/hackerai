@@ -137,10 +137,7 @@ function GoalForm({
   }
   return (
     <form onSubmit={save} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
-        <span className="text-xs text-muted-foreground">
-          {goal.runs}/{goal.maxRuns} runs used
-        </span>
+      <div className="flex items-center justify-end gap-2 border-b px-4 py-2">
         <Button
           type="submit"
           size="sm"
@@ -157,8 +154,7 @@ function GoalForm({
       </div>
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         <p className="text-sm text-muted-foreground">
-          Saving pauses current work. Resume from the goal bar with the
-          remaining run budget.
+          Saving pauses current work. Resume from the goal bar when ready.
         </p>
         {stale && (
           <p role="alert" className="text-sm text-destructive">

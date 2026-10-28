@@ -74,7 +74,8 @@ export const start = mutation({
     ...goalContractFields,
     objective: v.string(),
     criteria: v.array(v.string()),
-    maxRuns: v.number(),
+    // Accept older clients during rollout; run counts no longer limit goals.
+    maxRuns: v.optional(v.number()),
     sandboxPreference: v.string(),
     permissionMode: v.string(),
     selectedModel: v.string(),
@@ -82,8 +83,7 @@ export const start = mutation({
   returns: goalDoc,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    if (!validGoalStart(args))
-      throw new ConvexError("Invalid goal or run budget");
+    if (!validGoalStart(args)) throw new ConvexError("Invalid goal");
     const chat = await owned(ctx, args.chatId, args.userId);
     const previous = await byChat(ctx, args.chatId);
     if (
@@ -108,7 +108,6 @@ export const start = mutation({
       userId: args.userId,
       objective: args.objective.trim(),
       criteria: args.criteria.map((c) => c.trim()),
-      maxRuns: args.maxRuns,
       runs: 0,
       generation: (previous?.generation ?? 0) + 1,
       state: "queued" as const,
@@ -194,21 +193,9 @@ export const control = mutation({
         throw new ConvexError(
           "Wait for the current run to settle before resuming",
         );
-      const additionalRuns = args.additionalRuns ?? 0;
-      if (
-        !Number.isInteger(additionalRuns) ||
-        additionalRuns < 0 ||
-        goal.maxRuns + additionalRuns > 8
-      )
-        throw new ConvexError("Total goal budget must stay within 8 runs");
-      if (goal.runs >= goal.maxRuns + additionalRuns)
-        throw new ConvexError(
-          "Run budget exhausted. Explicitly add runs after reviewing progress.",
-        );
       await ctx.db.patch(goal._id, {
         ...goalTimingForState(goal, "queued", Date.now()),
         state: "queued",
-        maxRuns: goal.maxRuns + additionalRuns,
         waitUntil: undefined,
         generation: goal.generation + 1,
         checkpoint: undefined,
@@ -263,7 +250,7 @@ export const update = mutation({
       throw new ConvexError("This goal is no longer editable");
     if (goal.generation !== args.generation)
       throw new ConvexError("Goal changed. Reopen the editor before saving.");
-    if (!validGoalStart({ ...args, maxRuns: goal.maxRuns }))
+    if (!validGoalStart(args))
       throw new ConvexError("Invalid goal objective or completion criteria");
     await ctx.db.patch(goal._id, {
       objective: args.objective.trim(),
@@ -417,7 +404,6 @@ export const claimRun = mutation({
       (goal.waitUntil !== undefined && goal.waitUntil > Date.now()) ||
       goal.activeRunId ||
       chat.active_stream_id ||
-      goal.runs >= goal.maxRuns ||
       (chat.active_trigger_run_id && chat.active_trigger_run_id !== args.runId)
     )
       return null;
@@ -572,8 +558,6 @@ export const finish = mutation({
         ? "canceled"
         : resolveGoalOutcome({
             ...args,
-            runs: goal.runs,
-            maxRuns: goal.maxRuns,
             noProgressRuns,
             checkpoint: goal.checkpoint,
             allCriteriaVerified:
@@ -617,19 +601,17 @@ export const finish = mutation({
               ? "Waiting before the next work slice"
               : state === "achieved"
                 ? "Completion verified against saved evidence"
-                : state === "budget_exhausted"
-                  ? "Approved run budget exhausted; goal remains unfinished"
-                  : state === "blocked"
-                    ? (args.judgment?.reason ??
-                      goal.checkpoint?.progress ??
-                      "Two runs produced no verified progress")
-                    : state === "usage_exhausted"
-                      ? "Usage or run spend limit reached; explicit user action required"
-                      : state === "failed"
-                        ? "Run failed; review saved work before resuming"
-                        : (args.judgment?.reason ??
-                          goal.checkpoint?.progress ??
-                          goal.reason),
+                : state === "blocked"
+                  ? (args.judgment?.reason ??
+                    goal.checkpoint?.progress ??
+                    "Two runs produced no verified progress")
+                  : state === "usage_exhausted"
+                    ? "Usage or run spend limit reached; explicit user action required"
+                    : state === "failed"
+                      ? "Run failed; review saved work before resuming"
+                      : (args.judgment?.reason ??
+                        goal.checkpoint?.progress ??
+                        goal.reason),
       updatedAt: Date.now(),
     });
     if (

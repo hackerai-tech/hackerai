@@ -44,9 +44,7 @@ describe("goal completion and limits", () => {
     expect(resolveGoalOutcome({ ...base, judgment: undefined })).toBe("queued");
     for (const finishReason of ["step-limit", "length", "elapsed-timeout"])
       expect(resolveGoalOutcome({ ...base, finishReason })).toBe("queued");
-    expect(resolveGoalOutcome({ ...base, runs: 3, judgment: undefined })).toBe(
-      "budget_exhausted",
-    );
+    expect(resolveGoalOutcome({ ...base, judgment: undefined })).toBe("queued");
     expect(resolveGoalOutcome({ ...base, canceled: true })).toBe("paused");
     expect(resolveGoalOutcome({ ...base, usageExhausted: true })).toBe(
       "usage_exhausted",
@@ -139,14 +137,13 @@ describe("goal commands and contract validation", () => {
     expect(parseGoalCommand("/goal")).toEqual({ action: "status" });
     expect(parseGoalCommand("/goal pause")).toEqual({ action: "pause" });
     expect(parseGoalCommand("/goal clear")).toEqual({ action: "clear" });
-    expect(parseGoalCommand("/goal resume +2 The job finished")).toEqual({
+    expect(parseGoalCommand("/goal resume The job finished")).toEqual({
       action: "resume",
-      additionalRuns: 2,
       input: "The job finished",
     });
     expect(
       parseGoalCommand(
-        "/goal Fix the fixture\ncriterion: Tests pass\nverify: pnpm test\npreserve: Public API\nscope: Fixture only\nstop when: Credentials are missing\nruns: 2",
+        "/goal Fix the fixture\ncriterion: Tests pass\nverify: pnpm test\npreserve: Public API\nscope: Fixture only\nstop when: Credentials are missing",
       ),
     ).toEqual({
       action: "start",
@@ -156,27 +153,24 @@ describe("goal commands and contract validation", () => {
       constraints: "Public API",
       boundaries: "Fixture only",
       stopWhen: "Credentials are missing",
-      maxRuns: 2,
     });
     expect(
       parseGoalCommand(
-        "/goal start Fix\n  criterion: Tests pass\n  runs: 1\n  scope: Fixture only",
+        "/goal start Fix\n  criterion: Tests pass\n  scope: Fixture only",
       ),
     ).toEqual({
       action: "start",
       objective: "Fix",
       criteria: ["Tests pass"],
-      maxRuns: 1,
       boundaries: "Fixture only",
     });
     expect(() => parseGoalCommand("/goal resume +9")).toThrow();
     expect(parseGoalCommand("a normal prompt")).toBeNull();
   });
-  it("bounds the budget and contract at admission", () => {
-    const input = { objective: "Fix", criteria: ["Tests pass"], maxRuns: 3 };
+  it("validates the contract without a required run budget", () => {
+    const input = { objective: "Fix", criteria: ["Tests pass"] };
     expect(validGoalStart(input)).toBe(true);
-    expect(validGoalStart({ ...input, maxRuns: 9 })).toBe(false);
-    expect(validGoalStart({ ...input, maxRuns: 1.5 })).toBe(false);
+    expect(validGoalStart({ ...input, maxRuns: 9 })).toBe(true);
     expect(
       validGoalStart({ ...input, verificationCommand: "x".repeat(2001) }),
     ).toBe(false);

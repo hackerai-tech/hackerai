@@ -2034,7 +2034,7 @@ export const agentLongTask = task({
           parts: [
             {
               type: "text",
-              text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+              text: `Automatic goal continuation: begin work slice ${activeGoal.runs}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
             },
           ],
         };
@@ -3287,7 +3287,6 @@ export const agentLongTask = task({
                     lastCompletionCheck: activeGoal.judgment,
                     verifiedCriteria: activeGoal.evidence,
                     run: activeGoal.runs,
-                    approvedRuns: activeGoal.maxRuns,
                   }) +
                   "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. Include executed-tool evidence for partial progress as well as final completion, so later runs retain earlier stages. Cite each distinct tool result needed to verify the criterion (up to eight proofs per checkpoint). If a verificationCommand is set, run that exact command as a separate terminal invocation without prepending or appending anything, including exit-code echoes; the terminal result records its exit code. An achieved checkpoint requests independent verification; describe completion as pending verification until the goal status confirms it. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
                 : "");

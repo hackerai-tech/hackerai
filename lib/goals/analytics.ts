@@ -57,7 +57,6 @@ export async function captureGoalLifecycle(
       deleted: goal ? !!goal.deletedAt : undefined,
       wait_until: goal?.waitUntil,
       runs_used: goal?.runs,
-      max_runs: goal?.maxRuns,
       criteria_count: goal?.criteria.length,
       verified_criteria_count: goal
         ? new Set(goal.evidence.map((e) => e.criterion)).size

@@ -58,7 +58,8 @@ export const goalFields = {
   selectedModel: v.string(),
   generation: v.number(),
   runs: v.number(),
-  maxRuns: v.number(),
+  // Legacy stored goals may retain this field; it no longer limits execution.
+  maxRuns: v.optional(v.number()),
   noProgressRuns: v.number(),
   progress: v.string(),
   reason: v.string(),

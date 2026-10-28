@@ -210,9 +210,8 @@ type AgentGoalRequest =
       action: "start";
       objective: string;
       criteria: string[];
-      maxRuns: number;
     } & GoalContract)
-  | { action: "resume"; additionalRuns?: number };
+  | { action: "resume" };
 type AgentTriggerRequestBody = {
   goal?: AgentGoalRequest;
   messages: UIMessage[];
@@ -865,7 +864,6 @@ export const createAgentTriggerPost =
                 constraints: goalRequest.constraints,
                 boundaries: goalRequest.boundaries,
                 stopWhen: goalRequest.stopWhen,
-                maxRuns: goalRequest.maxRuns,
                 sandboxPreference: sandboxPreference ?? "e2b",
                 permissionMode: agentPermissionMode,
                 selectedModel: selectedModelOverride ?? "auto",
@@ -875,7 +873,6 @@ export const createAgentTriggerPost =
                 chatId,
                 userId,
                 action: "resume",
-                additionalRuns: goalRequest.additionalRuns,
               });
         reservedGoal = { chatId, userId, generation: savedGoal.generation };
         await captureGoalLifecycle(
