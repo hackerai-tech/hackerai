@@ -54,6 +54,117 @@ describe("AgentLongMemoryTelemetry", () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it("separates V8 physical heap and malloc bytes only on emitted checkpoints", () => {
+    const readV8Memory = jest.fn(() => ({
+      total_physical_size: 160 * MIB,
+      malloced_memory: 3 * MIB,
+      peak_malloced_memory: 9 * MIB,
+    }));
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_v8",
+      chatId: "chat_v8",
+      userId: "user_v8",
+      emit,
+      now: () => 1_000,
+      readHeapLimit: () => 416 * MIB,
+      readV8Memory,
+      readMemory: () => ({
+        rss: 300 * MIB,
+        heapTotal: 180 * MIB,
+        heapUsed: 100 * MIB,
+        external: 10 * MIB,
+        arrayBuffers: 0,
+      }),
+    });
+
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      v8_heap_physical_bytes: 160 * MIB,
+      v8_malloced_bytes: 3 * MIB,
+      v8_malloced_peak_bytes: 9 * MIB,
+    });
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    expect(readV8Memory).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    readV8Memory.mockReturnValue({
+      total_physical_size: 0,
+      malloced_memory: 0,
+      peak_malloced_memory: 9 * MIB,
+    });
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      true,
+    );
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({
+      v8_heap_physical_bytes: 0,
+      v8_malloced_bytes: 0,
+      v8_malloced_peak_bytes: 9 * MIB,
+    });
+  });
+
+  it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    "omits invalid V8 readings (%s) independently without losing the checkpoint",
+    (invalid) => {
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_invalid_v8",
+        chatId: "chat_invalid_v8",
+        userId: "user_invalid_v8",
+        emit,
+        readHeapLimit: () => 416 * MIB,
+        readV8Memory: () => ({
+          total_physical_size: invalid,
+          malloced_memory: 0,
+          peak_malloced_memory: 9 * MIB,
+        }),
+      });
+
+      expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+        true,
+      );
+      expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+        "v8_heap_physical_bytes",
+      );
+      expect(emit.mock.calls[0]?.[0]).toMatchObject({
+        event: "agent_long_memory_checkpoint",
+        heap_limit_bytes: 416 * MIB,
+        v8_malloced_bytes: 0,
+        v8_malloced_peak_bytes: 9 * MIB,
+      });
+    },
+  );
+
+  it("keeps existing checkpoint fields if the optional V8 read throws", () => {
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_unavailable_v8",
+      chatId: "chat_unavailable_v8",
+      userId: "user_unavailable_v8",
+      emit,
+      readHeapLimit: () => 416 * MIB,
+      readV8Memory: () => {
+        throw new Error("private V8 diagnostic failure");
+      },
+    });
+
+    expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
+      true,
+    );
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      event: "agent_long_memory_checkpoint",
+      heap_limit_bytes: 416 * MIB,
+    });
+    for (const key of [
+      "v8_heap_physical_bytes",
+      "v8_malloced_bytes",
+      "v8_malloced_peak_bytes",
+    ]) {
+      expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(key);
+    }
+    expect(JSON.stringify(emit.mock.calls)).not.toContain("private V8");
+  });
+
   it("emits an initial privacy-safe provider checkpoint", () => {
     jest.spyOn(process, "constrainedMemory").mockReturnValue(1024 * MIB);
     jest.spyOn(process, "resourceUsage").mockReturnValue({
@@ -75,6 +186,12 @@ describe("AgentLongMemoryTelemetry", () => {
         arrayBuffers: 4 * MIB,
       }),
       readHeapLimit: () => 416 * MIB,
+      readV8Memory: () => ({
+        total_physical_size: 240 * MIB,
+        malloced_memory: 2 * MIB,
+        peak_malloced_memory: 4 * MIB,
+        unrelated_private_field: "never copy the complete statistics object",
+      }),
     });
 
     expect(
@@ -107,6 +224,9 @@ describe("AgentLongMemoryTelemetry", () => {
       heap_used_percent: 48.1,
       external_bytes: 12 * MIB,
       array_buffer_bytes: 4 * MIB,
+      v8_heap_physical_bytes: 240 * MIB,
+      v8_malloced_bytes: 2 * MIB,
+      v8_malloced_peak_bytes: 4 * MIB,
       provider_request: providerRequest,
       retention,
     });
