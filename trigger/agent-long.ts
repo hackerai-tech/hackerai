@@ -289,6 +289,7 @@ import {
   detectAssistantContentLoopFromParts,
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
+  isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
@@ -4485,9 +4486,10 @@ export const agentLongTask = task({
                       // A different provider cannot repair an unchanged call
                       // that a tool explicitly rejected before execution.
                       const confirmedFailureLoop =
-                        state.stoppedDueToDoomLoop &&
-                        state.toolLoopObserver.getCurrentCycle()
-                          ?.confirmedNonExecution === true;
+                        isConfirmedToolFailureLoopStop(
+                          state.stoppedDueToDoomLoop,
+                          state.toolLoopObserver.getCurrentCycle(),
+                        );
                       const shouldRetryWithFallback =
                         shouldRetryAgentLongWithFallback(
                           lastAssistantMessageParts,

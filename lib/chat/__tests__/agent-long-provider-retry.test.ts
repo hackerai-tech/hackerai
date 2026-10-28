@@ -4,6 +4,7 @@ import {
   decideProviderRecovery,
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
+  isConfirmedToolFailureLoopStop,
   isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
   getNextProviderDisconnectRetryModel,
@@ -579,6 +580,32 @@ describe("shouldRetryAgentLongWithFallback", () => {
           confirmedToolFailureLoop: true,
         },
       ),
+    ).toBe(false);
+  });
+
+  it("only skips fallback for a single unchanged rejected call", () => {
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 4,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+      }),
+    ).toBe(true);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 2,
+        confirmedNonExecution: true,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+      }),
     ).toBe(false);
   });
 

@@ -2,6 +2,7 @@ import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import type { ToolResultCycle } from "@/lib/chat/tool-loop-observer";
 import type { SubscriptionTier } from "@/types";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import {
@@ -30,6 +31,16 @@ type RetryDecisionOptions = {
   stoppedDueToAssistantContentLoop?: boolean;
   detectAssistantContentLoop?: boolean;
 };
+
+/** Only the early stop for one repeatedly rejected call skips provider fallback. */
+export const isConfirmedToolFailureLoopStop = (
+  stoppedDueToDoomLoop: boolean,
+  cycle: ToolResultCycle | undefined,
+): boolean =>
+  stoppedDueToDoomLoop &&
+  cycle?.confirmedNonExecution === true &&
+  cycle.cycleLength === 1 &&
+  cycle.repeatCount >= 4;
 
 export type AssistantContentLoopDetection = {
   detected: boolean;

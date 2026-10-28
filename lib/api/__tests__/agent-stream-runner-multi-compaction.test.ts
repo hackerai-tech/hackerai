@@ -4102,6 +4102,56 @@ describe("createAgentStream repeated compaction", () => {
     ).toBe(true);
   });
 
+  it("keeps generic guidance for alternating rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    for (let i = 0; i < 6; i++) {
+      await stream.onStepFinish({
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: `/private-${i % 2}` },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      });
+    }
+    const prepared = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "A tool/result cycle has repeated without new output",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      "The same tool call was rejected",
+    );
+  });
+
   it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {
     const state = initAgentStreamState(
       [uiMessage("initial", "Inspect the fixture")],

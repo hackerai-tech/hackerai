@@ -1251,7 +1251,8 @@ export async function createAgentStream(
     "Read the tool error and its required arguments. Do not submit the identical call again. " +
     "Correct the input or choose a different useful step; if the prerequisite is unavailable, explain what is blocked and what remains unverified.";
   const pendingToolCycleNudge = () =>
-    state.pendingToolCycleRecovery?.confirmedNonExecution
+    state.pendingToolCycleRecovery?.confirmedNonExecution &&
+    state.pendingToolCycleRecovery.cycleLength === 1
       ? confirmedFailureCycleNudge
       : toolCycleNudge;
   let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
