@@ -53,6 +53,39 @@ class BrowserRequestError extends Error {
   }
 }
 
+// Abort the transport and settle the UI even if a suspended fetch (or its
+// response body) never reacts to abort. Late completions cannot win this race.
+async function withBrowserDeadline<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = 35_000,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    abort = () => {
+      reject(signal?.reason ?? new Error("Browser request cancelled"));
+      controller.abort();
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    timer = setTimeout(() => {
+      reject(
+        new Error("Browser request timed out. Reconnect or return to chat."),
+      );
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    if (controller.signal.aborted) return await deadline;
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (abort) signal?.removeEventListener("abort", abort);
+  }
+}
+
 export function AgentBrowserPreview({
   chatId,
   agentId,
@@ -132,6 +165,10 @@ export function AgentBrowserPreview({
   const [note, setNote] = useState("");
   const [hasTakenControl, setHasTakenControl] = useState(false);
   const exitRequestId = useRef<string | null>(null);
+  const continuing = useRef<{
+    requestId: string;
+    started: Promise<void>;
+  } | null>(null);
   const [exitRetryAvailable, setExitRetryAvailable] = useState(false);
   const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -216,7 +253,11 @@ export function AgentBrowserPreview({
     setFrameSeenAt(0);
     setPreviewState("loading");
     setExitOpen(false);
+    let savedRequestId: string | null = null;
     try {
+      savedRequestId = noteStorageKey
+        ? sessionStorage.getItem(`${noteStorageKey}:request`)
+        : null;
       const saved = noteStorageKey
         ? sessionStorage.getItem(noteStorageKey)
         : null;
@@ -224,9 +265,10 @@ export function AgentBrowserPreview({
     } catch {
       setNote("");
     }
-    exitRequestId.current = null;
-    setExitRetryAvailable(false);
-    setHasTakenControl(false);
+    exitRequestId.current = savedRequestId;
+    continuing.current = null;
+    setExitRetryAvailable(!!savedRequestId);
+    setHasTakenControl(!!savedRequestId);
     setBusy(false);
     setTakingControl(false);
     setError(null);
@@ -242,6 +284,7 @@ export function AgentBrowserPreview({
     setResizing(false);
     keyboardActiveRef.current = false;
     composingRef.current = false;
+    inputQueue.current = Promise.resolve();
     bufferedInputs.current = [];
     drainingInputs.current = false;
     mouseRef.current = null;
@@ -256,24 +299,26 @@ export function AgentBrowserPreview({
       signal?: AbortSignal,
     ) => {
       if (!endpoint) throw new Error("Browser session expired");
-      const response = await fetch(endpoint, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        cache: "no-store",
-        keepalive,
-        signal,
-      });
-      const data = await response.json().catch(() => null);
-      if (!data || typeof data !== "object" || Array.isArray(data))
-        throw new BrowserRequestError("Browser unavailable", response.status);
-      if (!response.ok)
-        throw new BrowserRequestError(
-          data.state ?? data.error ?? "Browser unavailable",
-          response.status,
-        );
-      return data;
+      return withBrowserDeadline(async (requestSignal) => {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          cache: "no-store",
+          keepalive,
+          signal: requestSignal,
+        });
+        const data = await response.json().catch(() => null);
+        if (!data || typeof data !== "object" || Array.isArray(data))
+          throw new BrowserRequestError("Browser unavailable", response.status);
+        if (!response.ok)
+          throw new BrowserRequestError(
+            data.state ?? data.error ?? "Browser unavailable",
+            response.status,
+          );
+        return data;
+      }, signal);
     },
     [endpoint],
   );
@@ -564,10 +609,6 @@ export function AgentBrowserPreview({
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
       setExitOpen(false);
-      if (!hasTakenControl) {
-        exitRequestId.current = null;
-        setExitRetryAvailable(false);
-      }
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -645,11 +686,18 @@ export function AgentBrowserPreview({
       )
         return;
       setExitRetryAvailable(true);
+      const requestId = (exitRequestId.current ??= crypto.randomUUID());
+      try {
+        if (noteStorageKey)
+          sessionStorage.setItem(`${noteStorageKey}:request`, requestId);
+      } catch {
+        // Retain the in-memory retry key when storage is unavailable.
+      }
       const data = await post({
         action: "resume",
         grant: activeGrant,
         browserSessionName: frame?.browserSessionName,
-        requestId: (exitRequestId.current ??= crypto.randomUUID()),
+        requestId,
         note,
       });
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -660,7 +708,18 @@ export function AgentBrowserPreview({
           throw new Error(
             "Your note is saved. Reopen this chat to continue the Agent.",
           );
-        await onContinue(data.continuation);
+        // A UI deadline does not cancel admission. Retry the same promise so
+        // a slow or late success cannot submit a second Agent turn.
+        if (continuing.current?.requestId !== requestId) {
+          const started = onContinue(data.continuation);
+          continuing.current = { requestId, started };
+          void started.catch(() => {
+            if (continuing.current?.started === started)
+              continuing.current = null;
+          });
+        }
+        const started = continuing.current.started;
+        await withBrowserDeadline(() => started, undefined, 30_000);
       }
       // Starting a run can register a new browser before admission resolves.
       // A completion from the old session must not close or clear its takeover.
@@ -669,11 +728,15 @@ export function AgentBrowserPreview({
       setExitOpen(false);
       setNote("");
       try {
-        if (noteStorageKey) sessionStorage.removeItem(noteStorageKey);
+        if (noteStorageKey) {
+          sessionStorage.removeItem(noteStorageKey);
+          sessionStorage.removeItem(`${noteStorageKey}:request`);
+        }
       } catch {
         // Storage may be unavailable; the submitted context is already saved.
       }
       exitRequestId.current = null;
+      continuing.current = null;
       setExitRetryAvailable(false);
       setError(null);
       setHasTakenControl(false);
@@ -843,6 +906,13 @@ export function AgentBrowserPreview({
   const viewportWidth = visibleViewport?.width;
   const viewportHeight = visibleViewport?.height;
   useEffect(() => {
+    if (exitOpen) {
+      // The note keyboard only changes the local dialog. Keep the remote page
+      // at the last visible size until the user returns to the browser.
+      resizingRef.current = false;
+      setResizing(false);
+      return;
+    }
     if (!fullScreen || !grant || !viewportWidth || !viewportHeight) return;
     const width = Math.max(240, Math.min(2560, viewportWidth));
     const height = Math.max(240, Math.min(2560, viewportHeight));
@@ -870,7 +940,9 @@ export function AgentBrowserPreview({
             setFrameSeenAt(Date.now());
             setPreviewState("ready");
           } catch {
-            if (cancelled || grantRef.current !== grant) return;
+            // Even after the note opens, a failed in-flight resize leaves this
+            // grant unsafe for input or resume. A replacement grant is isolated.
+            if (grantRef.current !== grant) return;
             grantRef.current = null;
             setGrant(null);
             setPreviewState("recovery");
@@ -891,6 +963,7 @@ export function AgentBrowserPreview({
     };
   }, [
     fullScreen,
+    exitOpen,
     grant,
     visibleViewport?.width,
     visibleViewport?.height,
@@ -1616,8 +1689,9 @@ export function AgentBrowserPreview({
             )}
             {session && !canResume && !busy && (
               <p role="status" className="text-sm text-muted-foreground">
-                Reconnect the browser preview to continue. You can return to
-                chat while the Agent stays paused. Your note is saved.
+                {exitRetryAvailable
+                  ? "Your note is saved. Check the chat before trying to continue again."
+                  : "Reconnect the browser preview to continue. You can return to chat while the Agent stays paused. Your note is saved."}
               </p>
             )}
             {error && (
@@ -1627,7 +1701,7 @@ export function AgentBrowserPreview({
             )}
           </div>
           <div className="flex shrink-0 flex-col justify-end gap-2 border-t px-4 py-3 sm:flex-row sm:px-6">
-            {fullScreen && !canResume && (
+            {fullScreen && (!canResume || exitRetryAvailable) && (
               <button
                 type="button"
                 disabled={busy}
