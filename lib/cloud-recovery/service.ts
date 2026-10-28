@@ -425,6 +425,10 @@ export async function executeCustomerRecovery(
     });
     // No provider error messages, snapshots, workspace ids or authorization in task output.
     throw new RecoveryUnavailable("Recovery requires support reconciliation");
+  } finally {
+    // The short-lived worker may exit with fewer events than the batch threshold.
+    // Analytics delivery must never change the durable recovery outcome.
+    await phLogger.flush().catch(() => {});
   }
   return { status: "verified" };
 }
