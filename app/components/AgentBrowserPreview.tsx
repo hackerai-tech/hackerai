@@ -109,6 +109,7 @@ export function AgentBrowserPreview({
   const resizingRef = useRef(false);
   const [resizing, setResizing] = useState(false);
   const [touchDevice, setTouchDevice] = useState(false);
+  const [touchMode, setTouchMode] = useState<"scroll" | "drag">("scroll");
   const [visibleViewport, setVisibleViewport] = useState<{
     width: number;
     height: number;
@@ -239,6 +240,7 @@ export function AgentBrowserPreview({
     drainingInputs.current = false;
     mouseRef.current = null;
     touchRef.current = null;
+    setTouchMode("scroll");
   }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
@@ -1155,8 +1157,9 @@ export function AgentBrowserPreview({
                 )
                   return;
                 event.preventDefault();
-                if (event.pointerType === "touch") {
-                  setTouchDevice(true);
+                const isTouch = event.pointerType === "touch";
+                if (isTouch) setTouchDevice(true);
+                if (isTouch && touchMode === "scroll") {
                   touchRef.current = {
                     id: event.pointerId,
                     x: event.clientX,
@@ -1166,7 +1169,10 @@ export function AgentBrowserPreview({
                   event.currentTarget.setPointerCapture(event.pointerId);
                   return;
                 }
-                keyboardRef.current?.focus({ preventScroll: true });
+                // A touch drag must not open the keyboard and resize the page
+                // underneath the gesture. Mobile typing has its own control.
+                if (!isTouch)
+                  keyboardRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
                 releaseMouse();
@@ -1229,7 +1235,11 @@ export function AgentBrowserPreview({
                 }
                 const mouse = mouseRef.current;
                 if (mouse && mouse.id !== event.pointerId) return;
-                if (mouse && event.buttons === 0) {
+                if (
+                  mouse &&
+                  event.pointerType !== "touch" &&
+                  event.buttons === 0
+                ) {
                   releaseMouse();
                   return;
                 }
@@ -1291,9 +1301,38 @@ export function AgentBrowserPreview({
       >
         <div
           className={
-            fullScreen ? "flex items-center justify-center gap-2" : "contents"
+            fullScreen
+              ? "flex flex-wrap items-center justify-center gap-2"
+              : "contents"
           }
         >
+          {fullScreen &&
+            human &&
+            (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
+              <div
+                role="group"
+                aria-label="Touch gesture mode"
+                className="pointer-events-auto -order-1 flex basis-full justify-center"
+              >
+                <div className="flex rounded-full border border-border bg-background p-1 shadow-lg">
+                  {(["scroll", "drag"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={touchMode === mode}
+                      onClick={() => {
+                        releaseMouse();
+                        touchRef.current = null;
+                        setTouchMode(mode);
+                      }}
+                      className={`min-h-11 rounded-full px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${touchMode === mode ? "bg-foreground text-background" : "text-foreground hover:bg-muted"}`}
+                    >
+                      {mode === "scroll" ? "Scroll" : "Drag"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           {fullScreen &&
             human &&
             (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (

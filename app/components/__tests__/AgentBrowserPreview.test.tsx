@@ -586,6 +586,7 @@ function pointer(
   x: number,
   buttons: number,
   button = 0,
+  pointerType = "mouse",
 ) {
   const event = new MouseEvent(type, {
     bubbles: true,
@@ -597,7 +598,7 @@ function pointer(
   });
   Object.defineProperties(event, {
     pointerId: { value: 7 },
-    pointerType: { value: "mouse" },
+    pointerType: { value: pointerType },
   });
   fireEvent(image, event);
 }
@@ -615,6 +616,90 @@ async function dragImage() {
   image.releasePointerCapture = jest.fn();
   return image;
 }
+
+async function touchDragImage() {
+  const image = await dragImage();
+  // A first touch also exposes the controls on hybrid pointer devices.
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 1, 0, "touch");
+    pointer(image, "pointercancel", 200, 0, 0, "touch");
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Drag", exact: true }));
+  });
+  return image;
+}
+
+it.each([0, 1])(
+  "drags with touch buttons=%s while preserving swipe scrolling when switched back",
+  async (buttons) => {
+    const image = await touchDragImage();
+    expect(
+      screen.getByRole("button", { name: "Drag", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+      pointer(image, "pointermove", 300, buttons, 0, "touch");
+      pointer(image, "pointerup", 400, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "move", x: 400, y: 200, buttons: 1 },
+      { kind: "move", x: 600, y: 200, buttons: 1 },
+      { kind: "move", x: 600, y: 200, buttons: 1 },
+      { kind: "up", x: 600, y: 200 },
+    ]);
+    actions.length = 0;
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Scroll", exact: true }),
+      );
+    });
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+    });
+    await act(async () => {
+      pointer(image, "pointermove", 300, 1, 0, "touch");
+      pointer(image, "pointerup", 300, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([{ kind: "wheel", x: 400, y: 200, deltaX: -100, deltaY: 0 }]);
+  },
+);
+
+it.each(["pointercancel", "lostpointercapture", "blur", "mode change"])(
+  "releases a touch drag exactly once after %s",
+  async (reason) => {
+    const image = await touchDragImage();
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+    });
+    await act(async () => {
+      if (reason === "blur") fireEvent(window, new Event("blur"));
+      else if (reason === "mode change")
+        fireEvent.click(
+          screen.getByRole("button", { name: "Scroll", exact: true }),
+        );
+      else pointer(image, reason, 200, 0, 0, "touch");
+      pointer(image, "pointerup", 200, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "up", x: 200, y: 200 },
+    ]);
+  },
+);
 
 it("preserves drag initiation and the final movement before release during slow input", async () => {
   let finish!: (value: Response) => void;
