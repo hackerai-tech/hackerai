@@ -306,8 +306,11 @@ async def run_one(slug: str, entry: dict, args: argparse.Namespace, docker_env: 
     output = run_dir / "output"
     output.mkdir(parents=True)
     container = "hackerai-realvuln-" + uuid.uuid4().hex[:12]
+    # Colima bind mounts use the host owner's permissions; container root may
+    # be unable to write the private output directory on macOS.
     checked([
         "docker", "run", "--detach", "--rm", "--init", "--name", container,
+        "--user", f"{os.getuid()}:{os.getgid()}",
         "--label", "hackerai.benchmark=realvuln", "--network", "none",
         "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
