@@ -59,7 +59,7 @@ beforeEach(() => {
   mockOpenSidebar.mockClear();
 });
 
-it("keeps compact access available across opens, chats, reloads and legacy dismissals", () => {
+it("keeps normal browsing quiet across chats, reloads and legacy dismissals", () => {
   localStorage.setItem("browser-reminder:discovered:v1", "true");
   localStorage.setItem(
     "browser-reminder:v1:chat",
@@ -68,36 +68,34 @@ it("keeps compact access available across opens, chats, reloads and legacy dismi
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
   );
-  expect(screen.queryByRole("status")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Open Agent browser" }));
-  expect(mockOpenSidebar).toHaveBeenCalledWith(
-    expect.objectContaining({ toolCallId: "current-browser" }),
-  );
-  expect(mockOpenSidebar.mock.calls[0][0]).not.toHaveProperty(
-    "browserTakeoverRequest",
-  );
-  mockSidebarOpen = true;
-  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(screen.queryByRole("button")).toBeNull();
-  mockSidebarOpen = false;
+  for (const state of ["agent", "claiming", "human", "resuming"]) {
+    mockSession = { state, sessionId: "session", updatedAt: 3 };
+    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  }
   view.rerender(<BrowserHandoffEntry chatId="other" messages={messages} />);
-  expect(
-    screen.getByRole("button", { name: "Open Agent browser" }),
-  ).toBeEnabled();
+  expect(screen.queryByRole("button")).toBeNull();
   view.unmount();
   render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
-  expect(
-    screen.getByRole("button", { name: "Open Agent browser" }),
-  ).toBeEnabled();
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(mockOpenSidebar).not.toHaveBeenCalled();
 });
 
 it("requests takeover of the exact waiting session only after the user clicks", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
-  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
   expect(screen.getByRole("status")).toHaveTextContent(
     "Agent needs your input",
   );
   expect(mockOpenSidebar).not.toHaveBeenCalled();
+  mockSidebarOpen = true;
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  expect(screen.queryByRole("button")).toBeNull();
+  mockSidebarOpen = false;
+  view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
   fireEvent.click(screen.getByRole("button", { name: "Take control" }));
   expect(mockOpenSidebar).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -110,7 +108,7 @@ it("requests takeover of the exact waiting session only after the user clicks", 
   );
 });
 
-it("dismisses attention into compact access, preserves dismissal on reload, and surfaces a new request", () => {
+it("hides dismissed attention across reloads and surfaces a new request", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
@@ -120,9 +118,7 @@ it("dismisses attention into compact access, preserves dismissal on reload, and 
   );
   expect(mockOpenSidebar).not.toHaveBeenCalled();
   expect(screen.queryByRole("status")).toBeNull();
-  expect(
-    screen.getByRole("button", { name: "Open Agent browser" }),
-  ).toBeEnabled();
+  expect(screen.queryByRole("button")).toBeNull();
   view.unmount();
   const reloaded = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
@@ -141,7 +137,7 @@ it("dismisses attention into compact access, preserves dismissal on reload, and 
   );
 });
 
-it("surfaces recovery after a dismissed wait and keeps takeover transitions compact", () => {
+it("surfaces recovery after a dismissed wait and keeps takeover transitions quiet", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
@@ -153,9 +149,7 @@ it("surfaces recovery after a dismissed wait and keeps takeover transitions comp
     mockSession = { state, sessionId: "session", updatedAt: 3 };
     view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
     expect(screen.queryByRole("status")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Open Agent browser" }),
-    ).toBeEnabled();
+    expect(screen.queryByRole("button")).toBeNull();
   }
   mockSession = { state: "recovery", sessionId: "session", updatedAt: 4 };
   view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
@@ -164,7 +158,7 @@ it("surfaces recovery after a dismissed wait and keeps takeover transitions comp
   );
 });
 
-it("shows neither access nor prompts without an active browser session or browser tool", () => {
+it("shows no prompt without an active browser session or browser tool", () => {
   mockSession = null;
   const view = render(
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
@@ -175,7 +169,7 @@ it("shows neither access nor prompts without an active browser session or browse
   expect(screen.queryByRole("button")).toBeNull();
 });
 
-it("allows dismissal and compact access when browser storage is blocked", () => {
+it("allows takeover and dismissal when browser storage is blocked", () => {
   mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
   const get = jest
     .spyOn(Storage.prototype, "getItem")
@@ -189,12 +183,19 @@ it("allows dismissal and compact access when browser storage is blocked", () => 
     });
   try {
     render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(mockOpenSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browserTakeoverRequest: expect.objectContaining({
+          sessionId: "session",
+        }),
+      }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
     );
     expect(screen.queryByRole("status")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Open Agent browser" }));
-    expect(mockOpenSidebar).toHaveBeenCalled();
+    expect(screen.queryByRole("button")).toBeNull();
   } finally {
     get.mockRestore();
     set.mockRestore();
@@ -216,7 +217,5 @@ it("recovers from malformed preferences and syncs attention dismissal from anoth
     ),
   );
   expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
-  expect(
-    screen.getByRole("button", { name: "Open Agent browser" }),
-  ).toBeEnabled();
+  expect(screen.queryByRole("button")).toBeNull();
 });

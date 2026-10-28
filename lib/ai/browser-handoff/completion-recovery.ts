@@ -110,12 +110,13 @@ function promisedImmediateHandoff(text: string): boolean {
   return [
     /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/gi,
     /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/gi,
+    /(?:^|[.!?]\s+|\n)\s*(?:i(?: am|'m) (?:now )?)?pausing(?: now)? for (?:your takeover|you to (?:take control|take over))\b/gi,
   ].some((pattern) => {
     for (const match of prose.matchAll(pattern)) {
       const continuation = prose.slice(match.index + match[0].length);
       // Accept bounded immediate qualifiers, but not an unfinished setup promise.
       if (
-        /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:not\s+)?(?:until|after|once|when)\b))/i.test(
+        /^(?:\s+(?:right )?now)?(?:\s+in (?:the )?(?:browser )?sidebar)?\s*(?:[.!]|$|[,—–:](?!\s*(?:but\s+)?(?:(?:not\s+)?(?:until|after|once|when)|not\s+yet|first)\b))/i.test(
           continuation,
         )
       )
