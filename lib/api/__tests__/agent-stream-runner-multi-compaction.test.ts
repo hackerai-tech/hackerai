@@ -5,6 +5,7 @@ import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
 import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
 import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
+import { createAgentRuntimeCheckpoint } from "@/lib/chat/agent-runtime-checkpoint";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -880,6 +881,117 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
     mockSummaryGenerateText.mockReset();
   });
+
+  it("delivers one runtime checkpoint after a settled tool result across stream retries", async () => {
+    let elapsed = 899;
+    const onExposed = jest.fn();
+    const checkpoint = createAgentRuntimeCheckpoint({
+      enabled: true,
+      maxDurationMs: 1000,
+      getElapsedTimeMs: () => elapsed,
+      onExposed,
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      runtimeCheckpoint: checkpoint,
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    const step = { steps: [], stepNumber: 0, messages: stream.messages };
+    expect((await stream.prepareStep(step)).system).not.toContain(
+      "<agent_runtime_checkpoint>",
+    );
+    // A tool can cross the threshold while it runs. Only the following model
+    // preparation inspects the clock; the tool call/result pair remains intact.
+    elapsed = 910;
+    const settled = [
+      ...stream.messages,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            input: {},
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            output: { type: "text", value: "verified" },
+          },
+        ],
+      },
+    ];
+    const prepared = await stream.prepareStep({ ...step, messages: settled });
+    expect(prepared.system).toContain("<agent_runtime_checkpoint>");
+    expect(prepared.messages.slice(-2)).toEqual(settled.slice(-2));
+    expect(state.finalMessages).toEqual([uiMessage("initial", "Inspect")]);
+    expect(onExposed).not.toHaveBeenCalled();
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onExposed).toHaveBeenCalledTimes(1);
+    expect(
+      (await stream.prepareStep({ ...step, messages: settled, stepNumber: 1 }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    const retried = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(
+      (await retried.prepareStep({ ...step, messages: retried.messages }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    expect(onExposed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ask", "aborted"])(
+    "does not prepare a runtime notice for %s",
+    async (scenario) => {
+      const takeNotice = jest.fn(() => "runtime notice");
+      const recordExposure = jest.fn();
+      const abortController = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const context = createTestStreamContext({
+        mode: scenario === "ask" ? "ask" : "agent",
+        abortController,
+        runtimeCheckpoint: { takeNotice, recordExposure },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        context as any,
+        state,
+      )) as any;
+      if (scenario === "aborted") abortController.abort();
+      await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+      expect(takeNotice).not.toHaveBeenCalled();
+      expect(recordExposure).not.toHaveBeenCalled();
+    },
+  );
 
   it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
     let version: string | undefined;
@@ -4022,6 +4134,182 @@ describe("createAgentStream repeated compaction", () => {
     expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
     expect(await replacement.stopWhen.at(-1)({ steps: [step] })).toBe(false);
     expect(state.pendingToolCycleRecovery).toBeUndefined();
+  });
+
+  it("redirects confirmed non-executed file calls before the hard stop", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: "/private" },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "The same tool call was rejected without executing an operation",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain("/private");
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        {
+          toolCallId: "call-3",
+          toolName: "file",
+          input: { action: "write", path: "/private" },
+        },
+      ],
+      toolResults: [
+        {
+          toolCallId: "call-3",
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        },
+      ],
+    };
+    steps.push(step);
+    await stream.onStepFinish(step);
+    expect(await stream.stopWhen.at(-2)({ steps })).toBe(true);
+    expect(state.stoppedDueToDoomLoop).toBe(true);
+    expect(
+      state.toolLoopObserver.getCurrentCycle()?.confirmedNonExecution,
+    ).toBe(true);
+  });
+
+  it("keeps generic guidance for alternating rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    for (let i = 0; i < 6; i++) {
+      await stream.onStepFinish({
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: `/private-${i % 2}` },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      });
+    }
+    const prepared = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "A tool/result cycle has repeated without new output",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      "The same tool call was rejected",
+    );
+  });
+
+  it("keeps the ordinary stop for repeated batches of rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 5; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: ["/one", "/two"].map((path, index) => ({
+          toolCallId: `call-${i}-${index}`,
+          toolName: "file",
+          input: { action: "write", path },
+        })),
+        toolResults: [0, 1].map((index) => ({
+          toolCallId: `call-${i}-${index}`,
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        })),
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-2)({ steps })).toBe(false);
+    }
+    expect(state.toolLoopObserver.getCurrentCycle()).toEqual({
+      toolNames: ["file"],
+      repeatCount: 5,
+      cycleLength: 1,
+      confirmedNonExecution: true,
+      toolCallCount: 2,
+    });
+    expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
   });
 
   it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {

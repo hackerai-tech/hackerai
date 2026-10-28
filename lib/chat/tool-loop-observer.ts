@@ -16,11 +16,20 @@ export type ToolResultCycle = {
   toolNames: string[];
   repeatCount: number;
   cycleLength: number;
+  /** Every result in the cycle explicitly confirms no operation was executed. */
+  confirmedNonExecution?: true;
+  /** Present for confirmed non-execution cycles. */
+  toolCallCount?: number;
 };
 
 type ToolCall = { toolCallId: string; toolName: string; input: unknown };
 type ToolResult = { toolCallId: string; output: unknown };
-type Step = { fingerprint: string; toolNames: string[] };
+type Step = {
+  fingerprint: string;
+  toolNames: string[];
+  confirmedNonExecution: boolean;
+  toolCallCount: number;
+};
 const MAX_PERIOD = 4;
 const REPORT_LAPS = [3, 5] as const;
 const POLLING_TOOLS = new Set(["interact_terminal_session", "wait_for_agents"]);
@@ -153,12 +162,20 @@ export class ToolLoopObserver {
     // and accidentally join otherwise unrelated calls into a repeating cycle.
     if (calls.every((call) => POLLING_TOOLS.has(call.toolName))) return clear();
     const signatures: string[] = [];
+    let confirmedNonExecution = true;
     for (const call of calls) {
       if (!allowedTools.has(call.toolName)) return clear();
       const result = results.find(
         (entry) => entry.toolCallId === call.toolCallId,
       );
       if (!result) return clear();
+      const output = result.output;
+      confirmedNonExecution &&=
+        (call.toolName === "file" || call.toolName === "file_write") &&
+        output !== null &&
+        typeof output === "object" &&
+        Object.getPrototypeOf(output) === Object.prototype &&
+        (output as Record<string, unknown>).executionOutcome === "not_executed";
       const input =
         call.input &&
         typeof call.input === "object" &&
@@ -180,6 +197,8 @@ export class ToolLoopObserver {
     this.history.push({
       fingerprint: signatures.sort().join(":"),
       toolNames: [...new Set(calls.map((call) => call.toolName))],
+      confirmedNonExecution,
+      toolCallCount: calls.length,
     });
     this.history = this.history.slice(-MAX_PERIOD * REPORT_LAPS[1]);
     for (let period = 1; period <= MAX_PERIOD; period++) {
@@ -197,14 +216,17 @@ export class ToolLoopObserver {
       )
         laps++;
       if (laps >= REPORT_LAPS[0]) {
+        const cycleSteps = this.history.slice(-period);
         this.currentCycle = {
-          toolNames: [
-            ...new Set(
-              this.history.slice(-period).flatMap((step) => step.toolNames),
-            ),
-          ],
+          toolNames: [...new Set(cycleSteps.flatMap((step) => step.toolNames))],
           repeatCount: laps,
           cycleLength: period,
+          ...(cycleSteps.every((step) => step.confirmedNonExecution)
+            ? {
+                confirmedNonExecution: true as const,
+                toolCallCount: cycleSteps[0].toolCallCount,
+              }
+            : {}),
         };
         // Rotating ABABAB into BABABA is still the same lap. Expose current
         // state to the hard stop, but only emit a nudge when a threshold is

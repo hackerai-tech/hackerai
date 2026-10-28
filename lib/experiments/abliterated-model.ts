@@ -1,3 +1,7 @@
+import {
+  INFERENCE_CYBER_FLAG,
+  isInferenceConfigured,
+} from "@/lib/ai/inference";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { phLogger } from "@/lib/posthog/server";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
@@ -38,7 +42,8 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
-    | typeof ABLITERATED_PRO_THREE_STEPS_KEY;
+    | typeof ABLITERATED_PRO_THREE_STEPS_KEY
+    | typeof INFERENCE_CYBER_FLAG;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -47,6 +52,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   moderationChecked?: boolean;
   independentHistoryCount?: number;
   generationStepLimit?: AbliterationGenerationStepLimit;
+  inferenceCyberEnabled?: boolean;
 };
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
@@ -93,6 +99,7 @@ export async function evaluateAbliteratedModel({
   messages,
   limitRescue = false,
   diagnosticContext,
+  inferenceEnvironment,
 }: {
   posthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
@@ -107,6 +114,7 @@ export async function evaluateAbliteratedModel({
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
+  inferenceEnvironment?: "preview" | "production";
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
   const proThreeStepsEligible =
@@ -115,16 +123,20 @@ export async function evaluateAbliteratedModel({
     moderationChecked &&
     allowsAbliterationContinuation &&
     newUserTurn;
-  const reportDecision = (reason: string, variant?: string) => {
+  const reportDecision = (
+    reason: string,
+    variant?: string,
+    experimentKey = proThreeStepsEligible
+      ? ABLITERATED_PRO_THREE_STEPS_KEY
+      : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ) => {
     if (!diagnosticContext?.logAll) return;
     try {
       phLogger.info("Abliteration assignment decision", {
         userId,
         chatId: diagnosticContext.chatId,
         requestId: diagnosticContext.requestId,
-        experiment_key: proThreeStepsEligible
-          ? ABLITERATED_PRO_THREE_STEPS_KEY
-          : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        experiment_key: experimentKey,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -158,6 +170,48 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
+  // Only trusted deployed callers supply environment identity. The rollout is
+  // independent of the historical Pro experiment; disabling it restores that
+  // experiment and the existing moderated Abliteration route.
+  let inferenceCyberEnabled = false;
+  if (inferenceEnvironment && isInferenceConfigured() && posthog) {
+    try {
+      inferenceCyberEnabled =
+        (await getPostHogFlagWithoutExposure(
+          posthog,
+          INFERENCE_CYBER_FLAG,
+          userId,
+          { subscription, subscription_tier: subscription },
+        )) === true;
+    } catch {
+      /* Keep Abliteration on unavailable assignment. */
+    }
+  }
+
+  if (inferenceCyberEnabled) {
+    const baselineModel = proThreeStepsEligible
+      ? resolvePaidProAutoModel({
+          userId,
+          subscription,
+          selectedModel,
+          selectedModelOverride,
+          limitRescue,
+        })
+      : selectedModel;
+    reportDecision("inference_cyber_rollout", "test", INFERENCE_CYBER_FLAG);
+    return {
+      key: INFERENCE_CYBER_FLAG,
+      variant: "test",
+      modelKey: ABLITERATION_MODEL_KEY,
+      baselineModel,
+      generationStepLimit: 3,
+      inferenceCyberEnabled: true,
+      selectionSource: proThreeStepsEligible ? "paid_first_step" : "moderation",
+      moderationEligible,
+      moderationChecked,
+    };
+  }
+
   if (proThreeStepsEligible && posthog) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
@@ -185,6 +239,7 @@ export async function evaluateAbliteratedModel({
           modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
           baselineModel,
           generationStepLimit: 3,
+          inferenceCyberEnabled: variant === "test" && inferenceCyberEnabled,
           // Historical source label for unmoderated paid routing; the step
           // budget is carried separately by generationStepLimit.
           selectionSource: "paid_first_step",
@@ -211,6 +266,7 @@ export async function evaluateAbliteratedModel({
     modelKey: ABLITERATION_MODEL_KEY,
     baselineModel: selectedModel,
     generationStepLimit: 3,
+    inferenceCyberEnabled,
     selectionSource: "moderation",
     moderationEligible,
     moderationChecked,

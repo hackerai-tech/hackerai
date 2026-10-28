@@ -1,6 +1,6 @@
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
+import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -440,8 +440,7 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const agentModelContextEnabled = await isAgentModelContextEnabled(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,
@@ -605,6 +604,11 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        inferenceEnvironment:
+          process.env.VERCEL_ENV === "production" ||
+          process.env.VERCEL_ENV === "preview"
+            ? process.env.VERCEL_ENV
+            : undefined,
         posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
@@ -1736,6 +1740,8 @@ export const createChatHandler = () => {
               ...(activeAbliteratedExperiment &&
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
+                    inferenceCyberEnabled:
+                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,
@@ -2089,11 +2095,12 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         state.streamFinishReason,
                       );
-                    const emptyResponseContinuation =
-                      terminalEmptyResponse &&
-                      !hasUncertainProviderToolOutcome(
+                    const uncertainToolOutcome =
+                      hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
-                      )
+                      );
+                    const emptyResponseContinuation =
+                      terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
                     const imageRecovery =
@@ -2123,6 +2130,7 @@ export const createChatHandler = () => {
                       new Error("Direct vision route failed");
 
                     if (
+                      !uncertainToolOutcome &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||

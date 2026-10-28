@@ -36,12 +36,54 @@ type BrowserFrame = {
 };
 
 type BrowserInput =
-  | { kind: "move" | "down" | "up"; x: number; y: number }
+  | { kind: "down" | "up"; x: number; y: number }
+  | { kind: "move"; x: number; y: number; buttons?: 0 | 1 }
   | { kind: "wheel"; x: number; y: number; deltaX: number; deltaY: number }
   | { kind: "key"; key: string; code: string; modifiers: number }
   | { kind: "text"; text: string };
 
 const FRAME_STALE_MS = 10_000;
+
+class BrowserRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+// Abort the transport and settle the UI even if a suspended fetch (or its
+// response body) never reacts to abort. Late completions cannot win this race.
+async function withBrowserDeadline<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = 35_000,
+  timeoutMessage = "Browser request timed out. Please try again.",
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    abort = () => {
+      reject(signal?.reason ?? new Error("Browser request cancelled"));
+      controller.abort();
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    if (controller.signal.aborted) return await deadline;
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+    if (abort) signal?.removeEventListener("abort", abort);
+  }
+}
 
 export function AgentBrowserPreview({
   chatId,
@@ -54,6 +96,7 @@ export function AgentBrowserPreview({
   onJumpToLive,
   onContinue,
   onVisibilityChange,
+  onReturnToChat,
 }: {
   chatId: string;
   agentId: string;
@@ -62,6 +105,7 @@ export function AgentBrowserPreview({
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
+  onReturnToChat?: () => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
   onContinue?: (message: { id: string; text: string }) => Promise<void>;
@@ -71,6 +115,10 @@ export function AgentBrowserPreview({
   const [frameSeenAt, setFrameSeenAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
+  const previewHealthRef = useRef({ previewState, frameSeenAt });
+  useLayoutEffect(() => {
+    previewHealthRef.current = { previewState, frameSeenAt };
+  }, [previewState, frameSeenAt]);
   const [fullScreen, setFullScreen] = useState(false);
   const inputRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -99,6 +147,7 @@ export function AgentBrowserPreview({
   const resizingRef = useRef(false);
   const [resizing, setResizing] = useState(false);
   const [touchDevice, setTouchDevice] = useState(false);
+  const [touchMode, setTouchMode] = useState<"scroll" | "drag">("scroll");
   const [visibleViewport, setVisibleViewport] = useState<{
     width: number;
     height: number;
@@ -110,10 +159,15 @@ export function AgentBrowserPreview({
   const relaySequence = useRef(0);
   const [relayReconnect, setRelayReconnect] = useState(0);
   const [grant, setGrant] = useState<string | null>(null);
+  const [renewalPending, setRenewalPending] = useState(false);
   const [exitOpen, setExitOpen] = useState(false);
   const [note, setNote] = useState("");
   const [hasTakenControl, setHasTakenControl] = useState(false);
   const exitRequestId = useRef<string | null>(null);
+  const continuing = useRef<{
+    requestId: string;
+    started: Promise<void>;
+  } | null>(null);
   const [exitRetryAvailable, setExitRetryAvailable] = useState(false);
   const lastSession = useRef<{ scope: string; id: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -128,6 +182,13 @@ export function AgentBrowserPreview({
   const bufferedInputs = useRef<BrowserInput[]>([]);
   const drainingInputs = useRef(false);
   const lastMoveAt = useRef(0);
+  const mouseRef = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    moved: boolean;
+  } | null>(null);
+  const releaseMouseRef = useRef<(() => void) | null>(null);
   const wheelHandlerRef = useRef<
     ((event: WheelEvent, element: HTMLImageElement) => void) | null
   >(null);
@@ -191,7 +252,11 @@ export function AgentBrowserPreview({
     setFrameSeenAt(0);
     setPreviewState("loading");
     setExitOpen(false);
+    let savedRequestId: string | null = null;
     try {
+      savedRequestId = noteStorageKey
+        ? sessionStorage.getItem(`${noteStorageKey}:request`)
+        : null;
       const saved = noteStorageKey
         ? sessionStorage.getItem(noteStorageKey)
         : null;
@@ -199,14 +264,16 @@ export function AgentBrowserPreview({
     } catch {
       setNote("");
     }
-    exitRequestId.current = null;
-    setExitRetryAvailable(false);
-    setHasTakenControl(false);
+    exitRequestId.current = savedRequestId;
+    continuing.current = null;
+    setExitRetryAvailable(!!savedRequestId);
+    setHasTakenControl(!!savedRequestId);
     setBusy(false);
     setTakingControl(false);
     setError(null);
     setPasteError(null);
     setGrant(null);
+    setRenewalPending(false);
     setRelayUrl(null);
     relaySequence.current = 0;
     grantRef.current = null;
@@ -216,27 +283,41 @@ export function AgentBrowserPreview({
     setResizing(false);
     keyboardActiveRef.current = false;
     composingRef.current = false;
+    inputQueue.current = Promise.resolve();
     bufferedInputs.current = [];
     drainingInputs.current = false;
+    mouseRef.current = null;
+    touchRef.current = null;
+    setTouchMode("scroll");
   }, [sessionId, noteStorageKey]);
 
   const post = useCallback(
-    async (body: Record<string, unknown>, keepalive = false) => {
+    async (
+      body: Record<string, unknown>,
+      keepalive = false,
+      signal?: AbortSignal,
+    ) => {
       if (!endpoint) throw new Error("Browser session expired");
-      const response = await fetch(endpoint, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        cache: "no-store",
-        keepalive,
-      });
-      const data = await response.json().catch(() => null);
-      if (!data || typeof data !== "object" || Array.isArray(data))
-        throw new Error("Browser unavailable");
-      if (!response.ok)
-        throw new Error(data.state ?? data.error ?? "Browser unavailable");
-      return data;
+      return withBrowserDeadline(async (requestSignal) => {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          cache: "no-store",
+          keepalive,
+          signal: requestSignal,
+        });
+        const data = await response.json().catch(() => null);
+        if (!data || typeof data !== "object" || Array.isArray(data))
+          throw new BrowserRequestError("Browser unavailable", response.status);
+        if (!response.ok)
+          throw new BrowserRequestError(
+            data.state ?? data.error ?? "Browser unavailable",
+            response.status,
+          );
+        return data;
+      }, signal);
     },
     [endpoint],
   );
@@ -246,11 +327,15 @@ export function AgentBrowserPreview({
       return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
     const poll = async () => {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
         const response = await fetch(endpoint, {
           cache: "no-store",
           credentials: "same-origin",
+          signal: controller.signal,
         });
         const data = await response.json();
         if (stopped) return;
@@ -264,6 +349,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped) setPreviewState("disconnected");
       } finally {
+        clearTimeout(timeout);
         if (!stopped) timer = setTimeout(poll, grantRef.current ? 200 : 1600);
       }
     };
@@ -271,8 +357,36 @@ export function AgentBrowserPreview({
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      controller?.abort();
     };
-  }, [showPreview, endpoint, activeSessionId, grant, relayUrl]);
+  }, [showPreview, endpoint, activeSessionId, grant, relayUrl, relayReconnect]);
+
+  useEffect(() => {
+    if (!showPreview) return;
+    let lastRestartAt = -Infinity;
+    const wake = () => {
+      if (document.hidden) return;
+      const wokeAt = Date.now();
+      setNow(wokeAt);
+      const health = previewHealthRef.current;
+      if (
+        (health.previewState === "ready" &&
+          wokeAt - health.frameSeenAt <= FRAME_STALE_MS) ||
+        wokeAt - lastRestartAt < 250
+      )
+        return;
+      lastRestartAt = wokeAt;
+      // Mobile browsers can suspend a pending fetch while backgrounded. Start
+      // a new preview transport rather than waiting for that request to settle.
+      setRelayReconnect((value) => value + 1);
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [showPreview]);
 
   useEffect(() => {
     if (!relayUrl || !grant || !activeSessionId) return;
@@ -317,27 +431,104 @@ export function AgentBrowserPreview({
   useEffect(() => {
     if (!endpoint || !grant || !activeSessionId) return;
     let stopped = false;
-    const timer = setInterval(() => {
-      void post({ action: "heartbeat", grant }).catch(() => {
-        if (
-          stopped ||
-          resumingRef.current ||
-          !mountedRef.current ||
-          sessionIdRef.current !== sessionId ||
-          grantRef.current !== grant
-        )
+    let timer: ReturnType<typeof setTimeout>;
+    let controller: AbortController | undefined;
+    let inFlight = false;
+    let failures = 0;
+    let confirmedUntil = Date.now() + 20_000;
+    const current = () =>
+      !stopped &&
+      !resumingRef.current &&
+      mountedRef.current &&
+      sessionIdRef.current === sessionId &&
+      grantRef.current === grant;
+    const renew = async () => {
+      if (!current() || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 8_000);
+      const startedAt = performance.now();
+      try {
+        const data = await post(
+          { action: "heartbeat", grant },
+          false,
+          controller.signal,
+        );
+        if (!current()) return;
+        const roundTrip = Math.max(0, performance.now() - startedAt);
+        const serverWork = Number.isFinite(data.processingDurationMs)
+          ? Math.max(0, Math.min(roundTrip, data.processingDurationMs))
+          : 0;
+        // The server's remaining lease already excludes its processing time.
+        // Subtract only the rest of the round trip as a conservative bound on
+        // response transit, without requiring synchronized machine clocks.
+        const remaining = Number.isFinite(data.leaseValidForMs)
+          ? Math.max(
+              0,
+              Math.min(25_000, data.leaseValidForMs) - (roundTrip - serverWork),
+            )
+          : 20_000 - roundTrip;
+        if (remaining <= 0) throw new Error("Renewal arrived after its lease");
+        confirmedUntil = Date.now() + remaining;
+        failures = 0;
+        setRenewalPending(false);
+        setError((previous) =>
+          previous === "Reconnecting browser control. Input is paused."
+            ? null
+            : previous,
+        );
+        timer = setTimeout(
+          renew,
+          Math.max(250, Math.min(8_000, remaining / 3)),
+        );
+      } catch (cause) {
+        if (!current()) return;
+        const status = cause instanceof BrowserRequestError ? cause.status : 0;
+        const rejected =
+          status >= 400 && status < 500 && status !== 408 && status !== 429;
+        // A temporary transport failure is not proof that ownership expired.
+        // Pause input while retrying, but never renew concurrently or forever.
+        if (!rejected && ++failures < 3 && Date.now() < confirmedUntil) {
+          setRenewalPending(true);
+          setError("Reconnecting browser control. Input is paused.");
+          timer = setTimeout(
+            renew,
+            Math.min(1_000, confirmedUntil - Date.now()),
+          );
           return;
+        }
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError(
-          "Control expired. Reconnect or choose Exit takeover to continue.",
+          rejected
+            ? "Control expired. Reconnect or choose Exit takeover to continue."
+            : "Browser connection lost. Reconnect or choose Exit takeover to continue.",
         );
-      });
-    }, 10_000);
+        // Relinquish only this grant, keeping the Agent paused. This avoids a
+        // fresh 30-second wait when the database renewed but its relay failed.
+        if (!rejected)
+          void post({ action: "release", grant }, true).catch(() => undefined);
+      } finally {
+        clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
+    const wake = () => {
+      if (!document.hidden) void renew();
+    };
+    // Renew promptly after acquisition and after returning from a throttled tab.
+    timer = setTimeout(renew, 1_000);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
+      controller?.abort();
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [endpoint, grant, post, sessionId, activeSessionId]);
 
@@ -360,6 +551,7 @@ export function AgentBrowserPreview({
   }, [endpoint]);
 
   const frameStale =
+    (!!grant && renewalPending) ||
     !session ||
     !frame ||
     previewState !== "ready" ||
@@ -376,6 +568,7 @@ export function AgentBrowserPreview({
   const canTake =
     !frameStale &&
     !human &&
+    !exitRetryAvailable &&
     (effectiveState === "agent" ||
       effectiveState === "waiting" ||
       effectiveState === "recovery");
@@ -406,8 +599,15 @@ export function AgentBrowserPreview({
         );
         return;
       }
+      // A reconnect can replace a grant before its old request settles. Give
+      // the new grant its own queue and buffer; old finally blocks compare the
+      // buffer identity before cleaning up, so they cannot drop new input.
+      inputQueue.current = Promise.resolve();
+      bufferedInputs.current = [];
+      drainingInputs.current = false;
       grantRef.current = data.grant;
       setGrant(data.grant);
+      setRenewalPending(false);
       setRelayUrl(data.relayUrl ?? null);
       relaySequence.current = 0;
       setFullScreen(true);
@@ -415,10 +615,6 @@ export function AgentBrowserPreview({
       setFrameSeenAt(Date.now());
       setPreviewState("ready");
       setExitOpen(false);
-      if (!hasTakenControl) {
-        exitRequestId.current = null;
-        setExitRetryAvailable(false);
-      }
       setHasTakenControl(true);
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -480,6 +676,7 @@ export function AgentBrowserPreview({
 
   const resumeAgent = async () => {
     if (!canResume || resumingRef.current) return;
+    releaseMouseRef.current?.();
     resumingRef.current = true;
     const activeGrant = grantRef.current;
     setBusy(true);
@@ -487,7 +684,12 @@ export function AgentBrowserPreview({
     try {
       // Finish accepted keystrokes before revoking control. Once resume starts,
       // new input is ignored so the queue cannot grow while it drains.
-      await inputQueue.current;
+      await withBrowserDeadline(
+        () => inputQueue.current,
+        undefined,
+        10_000,
+        "Browser input timed out. Some clicks or text may not have been sent. Reconnect and check the page before continuing.",
+      );
       if (
         !mountedRef.current ||
         sessionIdRef.current !== sessionId ||
@@ -495,11 +697,18 @@ export function AgentBrowserPreview({
       )
         return;
       setExitRetryAvailable(true);
+      const requestId = (exitRequestId.current ??= crypto.randomUUID());
+      try {
+        if (noteStorageKey)
+          sessionStorage.setItem(`${noteStorageKey}:request`, requestId);
+      } catch {
+        // Retain the in-memory retry key when storage is unavailable.
+      }
       const data = await post({
         action: "resume",
         grant: activeGrant,
         browserSessionName: frame?.browserSessionName,
-        requestId: (exitRequestId.current ??= crypto.randomUUID()),
+        requestId,
         note,
       });
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -510,7 +719,18 @@ export function AgentBrowserPreview({
           throw new Error(
             "Your note is saved. Reopen this chat to continue the Agent.",
           );
-        await onContinue(data.continuation);
+        // A UI deadline does not cancel admission. Retry the same promise so
+        // a slow or late success cannot submit a second Agent turn.
+        if (continuing.current?.requestId !== requestId) {
+          const started = onContinue(data.continuation);
+          continuing.current = { requestId, started };
+          void started.catch(() => {
+            if (continuing.current?.started === started)
+              continuing.current = null;
+          });
+        }
+        const started = continuing.current.started;
+        await withBrowserDeadline(() => started, undefined, 30_000);
       }
       // Starting a run can register a new browser before admission resolves.
       // A completion from the old session must not close or clear its takeover.
@@ -519,11 +739,15 @@ export function AgentBrowserPreview({
       setExitOpen(false);
       setNote("");
       try {
-        if (noteStorageKey) sessionStorage.removeItem(noteStorageKey);
+        if (noteStorageKey) {
+          sessionStorage.removeItem(noteStorageKey);
+          sessionStorage.removeItem(`${noteStorageKey}:request`);
+        }
       } catch {
         // Storage may be unavailable; the submitted context is already saved.
       }
       exitRequestId.current = null;
+      continuing.current = null;
       setExitRetryAvailable(false);
       setError(null);
       setHasTakenControl(false);
@@ -547,18 +771,36 @@ export function AgentBrowserPreview({
     }
   };
 
-  const sendInput = (input: BrowserInput) => {
+  const sendInput = (input: BrowserInput, coalesceMove = true) => {
     const activeGrant = grantRef.current;
-    if (!activeGrant || frameStale || resumingRef.current) return;
     if (
-      resizingRef.current &&
-      ["move", "down", "up", "wheel"].includes(input.kind)
+      !activeGrant ||
+      (frameStale && input.kind !== "up") ||
+      resumingRef.current
     )
       return;
-    // Moves are advisory; do not let them delay clicks or keystrokes.
-    if (input.kind === "move" && drainingInputs.current) return;
+    if (resizingRef.current && ["move", "down", "wheel"].includes(input.kind))
+      return;
+    // Hover is advisory. Held movement must survive a slow request, or a drag
+    // becomes a press/release without any displacement. Native HTML5 dragging
+    // also needs an initial move to start dragging before moving over a target.
+    // Keep the first and latest adjacent held moves; never coalesce across a
+    // press, release, wheel event or keystroke.
+    if (input.kind === "move" && !input.buttons && drainingInputs.current)
+      return;
     const buffer = bufferedInputs.current;
-    buffer.push(input);
+    const previous = buffer.at(-1);
+    const penultimate = buffer.at(-2);
+    if (
+      coalesceMove &&
+      input.kind === "move" &&
+      previous?.kind === "move" &&
+      previous.buttons === input.buttons &&
+      (!input.buttons ||
+        (penultimate?.kind === "move" && penultimate.buttons === input.buttons))
+    )
+      buffer[buffer.length - 1] = input;
+    else buffer.push(input);
     if (drainingInputs.current) return;
     drainingInputs.current = true;
     // Keep one ordered request in flight. Input arriving during its round trip
@@ -598,6 +840,7 @@ export function AgentBrowserPreview({
           return;
         grantRef.current = null;
         setGrant(null);
+        setRenewalPending(false);
         setPreviewState("recovery");
         setError("Browser input disconnected. Reconnect before continuing.");
       })
@@ -608,6 +851,40 @@ export function AgentBrowserPreview({
         }
       });
   };
+
+  const releaseMouse = () => {
+    const mouse = mouseRef.current;
+    mouseRef.current = null;
+    if (!mouse) return;
+    // Flush the final position before release, even if the last pointermove
+    // was throttled or a request was still in flight.
+    if (mouse.moved) {
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 });
+      // Entering a new native drop target only fires dragenter. A distinct
+      // final move must deliver dragover before release, even at the same point.
+      sendInput({ kind: "move", x: mouse.x, y: mouse.y, buttons: 1 }, false);
+    }
+    sendInput({ kind: "up", x: mouse.x, y: mouse.y });
+  };
+  useLayoutEffect(() => {
+    releaseMouseRef.current = releaseMouse;
+  });
+  useEffect(() => {
+    const release = () => releaseMouseRef.current?.();
+    const visibility = () => {
+      if (document.hidden) release();
+    };
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    if (frameStale || !human || exitOpen || resizing)
+      releaseMouseRef.current?.();
+  }, [frameStale, human, exitOpen, resizing]);
 
   // Layout follows the visible area, including keyboard occlusion and rotation.
   useEffect(() => {
@@ -640,6 +917,13 @@ export function AgentBrowserPreview({
   const viewportWidth = visibleViewport?.width;
   const viewportHeight = visibleViewport?.height;
   useEffect(() => {
+    if (exitOpen) {
+      // The note keyboard only changes the local dialog. Keep the remote page
+      // at the last visible size until the user returns to the browser.
+      resizingRef.current = false;
+      setResizing(false);
+      return;
+    }
     if (!fullScreen || !grant || !viewportWidth || !viewportHeight) return;
     const width = Math.max(240, Math.min(2560, viewportWidth));
     const height = Math.max(240, Math.min(2560, viewportHeight));
@@ -667,7 +951,9 @@ export function AgentBrowserPreview({
             setFrameSeenAt(Date.now());
             setPreviewState("ready");
           } catch {
-            if (cancelled || grantRef.current !== grant) return;
+            // Even after the note opens, a failed in-flight resize leaves this
+            // grant unsafe for input or resume. A replacement grant is isolated.
+            if (grantRef.current !== grant) return;
             grantRef.current = null;
             setGrant(null);
             setPreviewState("recovery");
@@ -688,6 +974,7 @@ export function AgentBrowserPreview({
     };
   }, [
     fullScreen,
+    exitOpen,
     grant,
     visibleViewport?.width,
     visibleViewport?.height,
@@ -860,6 +1147,12 @@ export function AgentBrowserPreview({
                   ? "Waiting for you"
                   : "Live preview";
 
+  const showTouchControls =
+    fullScreen &&
+    human &&
+    (touchDevice || (visibleViewport?.width ?? 1024) < 1024);
+  const narrowTouchToolbar = (visibleViewport?.width ?? 1024) < 360;
+
   const browserContent = (
     <section
       className={
@@ -985,9 +1278,17 @@ export function AgentBrowserPreview({
               }}
               onPointerDown={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
+                if (
+                  (mouseRef.current &&
+                    mouseRef.current.id !== event.pointerId) ||
+                  (touchRef.current && touchRef.current.id !== event.pointerId)
+                )
+                  return;
                 event.preventDefault();
-                if (event.pointerType === "touch") {
-                  setTouchDevice(true);
+                const isTouch = event.pointerType === "touch";
+                if (isTouch) setTouchDevice(true);
+                if (isTouch && touchMode === "scroll") {
                   touchRef.current = {
                     id: event.pointerId,
                     x: event.clientX,
@@ -997,14 +1298,21 @@ export function AgentBrowserPreview({
                   event.currentTarget.setPointerCapture(event.pointerId);
                   return;
                 }
-                keyboardRef.current?.focus({ preventScroll: true });
+                // A touch drag must not open the keyboard and resize the page
+                // underneath the gesture. Mobile typing has its own control.
+                if (!isTouch)
+                  keyboardRef.current?.focus({ preventScroll: true });
                 const xy = point(event);
                 if (!xy) return;
+                releaseMouse();
+                mouseRef.current = { id: event.pointerId, ...xy, moved: false };
+                lastMoveAt.current = -Infinity;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 sendInput({ kind: "down", ...xy });
               }}
               onPointerUp={(event) => {
                 if (!human || frameStale || resizingRef.current) return;
+                if (event.button !== 0) return;
                 const xy = point(event);
                 const touch = touchRef.current;
                 if (touch && touch.id === event.pointerId) {
@@ -1013,14 +1321,30 @@ export function AgentBrowserPreview({
                     sendInput({ kind: "up", ...xy });
                   }
                   touchRef.current = null;
-                } else if (xy) sendInput({ kind: "up", ...xy });
-                event.currentTarget.releasePointerCapture(event.pointerId);
+                } else if (mouseRef.current?.id === event.pointerId) {
+                  if (xy) {
+                    const mouse = mouseRef.current;
+                    mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                    Object.assign(mouse, xy);
+                  }
+                  releaseMouse();
+                }
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+                  event.currentTarget.releasePointerCapture(event.pointerId);
               }}
-              onPointerCancel={() => {
-                touchRef.current = null;
+              onPointerCancel={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
+              }}
+              onLostPointerCapture={(event) => {
+                if (touchRef.current?.id === event.pointerId)
+                  touchRef.current = null;
+                if (mouseRef.current?.id === event.pointerId) releaseMouse();
               }}
               onPointerMove={(event) => {
                 const touch = touchRef.current;
+                if (touch && touch.id !== event.pointerId) return;
                 if (touch && touch.id === event.pointerId) {
                   const dx = touch.x - event.clientX,
                     dy = touch.y - event.clientY;
@@ -1038,15 +1362,30 @@ export function AgentBrowserPreview({
                     });
                   return;
                 }
+                const mouse = mouseRef.current;
+                if (mouse && mouse.id !== event.pointerId) return;
+                if (
+                  mouse &&
+                  event.pointerType !== "touch" &&
+                  event.buttons === 0
+                ) {
+                  releaseMouse();
+                  return;
+                }
+                const xy = point(event);
+                if (mouse && mouse.id === event.pointerId && xy) {
+                  mouse.moved ||= mouse.x !== xy.x || mouse.y !== xy.y;
+                  Object.assign(mouse, xy);
+                }
                 if (
                   !human ||
                   frameStale ||
-                  Date.now() - lastMoveAt.current < 120
+                  Date.now() - lastMoveAt.current < (mouse ? 16 : 120)
                 )
                   return;
                 lastMoveAt.current = Date.now();
-                const xy = point(event);
-                if (xy) sendInput({ kind: "move", ...xy });
+                if (xy)
+                  sendInput({ kind: "move", ...xy, buttons: mouse ? 1 : 0 });
               }}
               ref={attachWheelListener}
             />
@@ -1091,23 +1430,13 @@ export function AgentBrowserPreview({
       >
         <div
           className={
-            fullScreen ? "flex items-center justify-center gap-2" : "contents"
+            showTouchControls
+              ? `pointer-events-auto flex w-[358px] max-w-full flex-wrap items-center justify-center gap-2 border border-white/10 bg-neutral-950/95 p-2 shadow-lg ${narrowTouchToolbar ? "rounded-3xl" : "rounded-full"}`
+              : fullScreen
+                ? "flex items-center justify-center gap-2"
+                : "contents"
           }
         >
-          {fullScreen &&
-            human &&
-            (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
-              <button
-                type="button"
-                aria-label="Show browser keyboard"
-                onClick={() =>
-                  keyboardRef.current?.focus({ preventScroll: true })
-                }
-                className="pointer-events-auto order-2 inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Keyboard size={16} aria-hidden /> Keyboard
-              </button>
-            )}
           {takingControl ||
           human ||
           effectiveState === "recovery" ||
@@ -1120,7 +1449,7 @@ export function AgentBrowserPreview({
                 setError(null);
               }}
               disabled={busy}
-              className={`${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
+              className={`${showTouchControls ? `min-h-12 min-w-0 flex-1 bg-white px-3 py-2 text-sm font-semibold text-neutral-950 focus-visible:ring-white/80 ${narrowTouchToolbar ? "basis-full" : "basis-[120px] whitespace-nowrap"}` : `${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} bg-foreground px-5 py-2.5 text-sm font-medium text-background focus-visible:ring-ring`} rounded-full hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50`}
             >
               Exit takeover
             </button>
@@ -1141,6 +1470,44 @@ export function AgentBrowserPreview({
                       : "Take control to click and type. The Agent’s browser actions pause until you resume."}
             </span>
           ) : null}
+          {showTouchControls && (
+            <>
+              <div
+                role="group"
+                aria-label="Touch gesture mode"
+                className="flex h-11 w-[132px] max-w-full shrink-0 rounded-full bg-white/10"
+              >
+                {(["scroll", "drag"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={touchMode === mode}
+                    onClick={() => {
+                      releaseMouse();
+                      touchRef.current = null;
+                      setTouchMode(mode);
+                    }}
+                    className={`relative h-11 min-w-0 flex-1 rounded-full text-sm font-medium before:absolute before:inset-[3px] before:rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 ${touchMode === mode ? "text-neutral-950 before:bg-neutral-200" : "text-white hover:bg-white/10"}`}
+                  >
+                    <span className="relative">
+                      {mode === "scroll" ? "Scroll" : "Drag"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                aria-label="Show browser keyboard"
+                title="Show keyboard"
+                onClick={() =>
+                  keyboardRef.current?.focus({ preventScroll: true })
+                }
+                className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-white/5 text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+              >
+                <Keyboard size={20} aria-hidden />
+              </button>
+            </>
+          )}
         </div>
         {session && !liveSelection && onJumpToLive && (
           <button
@@ -1154,9 +1521,11 @@ export function AgentBrowserPreview({
         {fullScreen && session && !human && hasTakenControl && (
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-center text-sm shadow-lg">
             <p role="status" className="text-muted-foreground">
-              {effectiveState === "human" || effectiveState === "claiming"
-                ? "Waiting for the previous control session to release…"
-                : "Browser control disconnected. Reconnect to click and type."}
+              {exitRetryAvailable
+                ? "Finish the pending exit or return to chat before taking control again."
+                : effectiveState === "human" || effectiveState === "claiming"
+                  ? "Waiting for the previous control session to release…"
+                  : "Browser control disconnected. Reconnect to click and type."}
             </p>
             <button
               type="button"
@@ -1219,7 +1588,10 @@ export function AgentBrowserPreview({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            openButtonRef.current?.focus({ preventScroll: true });
+            const target = openButtonRef.current?.disabled
+              ? resumeButtonRef.current
+              : openButtonRef.current;
+            target?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
             // Escape leaves remote keyboard control, rather than silently
@@ -1268,7 +1640,9 @@ export function AgentBrowserPreview({
                   ? keyboardRef.current
                   : inputRef.current
                 : resumeButtonRef.current
-              : openButtonRef.current;
+              : openButtonRef.current?.disabled
+                ? resumeButtonRef.current
+                : openButtonRef.current;
             target?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
@@ -1326,13 +1700,49 @@ export function AgentBrowserPreview({
                 your saved context.
               </p>
             )}
+            {session && !canResume && !busy && (
+              <p role="status" className="text-sm text-muted-foreground">
+                {exitRetryAvailable
+                  ? "Your note is saved. Check the chat before trying to continue again."
+                  : "Reconnect the browser preview to continue. You can return to chat while the Agent stays paused. Your note is saved."}
+              </p>
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}
               </p>
             )}
           </div>
-          <div className="flex shrink-0 justify-end border-t px-4 py-3 sm:px-6">
+          <div className="flex shrink-0 flex-col justify-end gap-2 border-t px-4 py-3 sm:flex-row sm:px-6">
+            {fullScreen && (!canResume || exitRetryAvailable) && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  // The server resets the pointer on the next take/resume.
+                  mouseRef.current = null;
+                  touchRef.current = null;
+                  const activeGrant = grantRef.current;
+                  grantRef.current = null;
+                  setGrant(null);
+                  setRenewalPending(false);
+                  setExitOpen(false);
+                  setFullScreen(false);
+                  // Leaving the UI must work offline. Revoke this tab's input
+                  // when reachable; lease expiry covers a failed release.
+                  // Only Send and continue may resume the Agent.
+                  if (activeGrant)
+                    void post(
+                      { action: "release", grant: activeGrant },
+                      true,
+                    ).catch(() => undefined);
+                  onReturnToChat?.();
+                }}
+                className="rounded-xl border border-border px-5 py-3 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Return to chat
+              </button>
+            )}
             <button
               type="button"
               disabled={!canResume || busy}

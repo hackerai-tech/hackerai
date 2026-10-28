@@ -31,6 +31,9 @@ export interface ChatInputTextareaProps {
   minRows?: number;
   placeholder?: string;
   autoFocus?: boolean;
+  onFocus?: () => void;
+  onPointerDown?: () => void;
+  onBlur?: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
 }
 
 export function ChatInputTextarea({
@@ -41,9 +44,12 @@ export function ChatInputTextarea({
   minRows = 1,
   placeholder,
   autoFocus = true,
+  onFocus,
+  onPointerDown,
+  onBlur,
 }: ChatInputTextareaProps) {
   const input = useComposerInput();
-  const { setInput } = useComposerActions();
+  const { setInput, getInput } = useComposerActions();
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
@@ -53,6 +59,14 @@ export function ChatInputTextarea({
   useEffect(() => {
     inputRef.current = input;
   });
+
+  useEffect(() => {
+    // Mobile composition starts with an explicit tap, without opening its
+    // keyboard or Agent controls as soon as a chat mounts.
+    if (autoFocus && !window.matchMedia("(max-width: 767px)").matches) {
+      textareaRef.current?.focus();
+    }
+  }, [autoFocus]);
 
   // Load draft when draftId changes (chat switch or mount)
   useLayoutEffect(() => {
@@ -72,19 +86,20 @@ export function ChatInputTextarea({
     setInput(content || "");
   }, [draftId, setInput]);
 
-  // Auto-save draft as user types with 500ms debounce
+  // Save each committed edit so navigation or pagehide cannot cancel the
+  // latest draft. Accepted submissions still clear it through setInput("").
   useEffect(() => {
-    const handle = window.setTimeout(() => {
-      if (input.trim()) {
-        upsertDraft(draftId, input);
-      } else if (hasDraftAttachmentsById(draftId)) {
-        upsertDraft(draftId, "");
-      } else {
-        removeDraft(draftId);
-      }
-    }, 500);
-    return () => window.clearTimeout(handle);
-  }, [input, draftId]);
+    // Restoring a draft updates the provider in a layout effect. Ignore the
+    // preceding render's value instead of overwriting that restored draft.
+    if (input !== getInput()) return;
+    if (input.trim()) {
+      upsertDraft(draftId, input);
+    } else if (hasDraftAttachmentsById(draftId)) {
+      upsertDraft(draftId, "");
+    } else {
+      removeDraft(draftId);
+    }
+  }, [input, draftId, getInput]);
 
   // Handle paste events for file uploads and token validation
   useEffect(() => {
@@ -178,11 +193,18 @@ export function ChatInputTextarea({
         }
         className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
         minRows={minRows}
-        autoFocus={autoFocus}
+        onFocus={onFocus}
+        onPointerDown={onPointerDown}
+        onBlur={onBlur}
         disabled={disabled}
         data-testid="chat-input"
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (
+            e.key === "Enter" &&
+            !e.shiftKey &&
+            !e.nativeEvent.isComposing &&
+            e.nativeEvent.keyCode !== 229
+          ) {
             e.preventDefault();
             onEnterSubmit(e);
           }

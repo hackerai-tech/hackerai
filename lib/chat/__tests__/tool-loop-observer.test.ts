@@ -2,6 +2,7 @@ import { ToolLoopObserver } from "../tool-loop-observer";
 
 const tools = new Set([
   "file",
+  "file_write",
   "run_terminal_cmd",
   "open_url",
   "interact_terminal_session",
@@ -30,6 +31,39 @@ describe("ToolLoopObserver", () => {
     expect(JSON.stringify(observer)).not.toContain("/private");
     expect(JSON.stringify(observer)).not.toContain("unchanged");
   });
+
+  it.each(["file", "file_write"])(
+    "identifies confirmed validation failure for %s without treating unknown errors as safe",
+    (toolName) => {
+      const observer = new ToolLoopObserver();
+      const rejected = {
+        error: "text is required for write action",
+        executionOutcome: "not_executed",
+      };
+      for (let i = 0; i < 3; i++)
+        observe(
+          observer,
+          { action: "write", path: "/private" },
+          rejected,
+          toolName,
+        );
+      expect(observer.getCurrentCycle()).toEqual({
+        toolNames: [toolName],
+        repeatCount: 3,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 1,
+      });
+      observe(
+        observer,
+        { action: "write", path: "/private" },
+        { error: "transport error" },
+        toolName,
+      );
+      expect(observer.getCurrentCycle()).toBeUndefined();
+      expect(JSON.stringify(observer)).not.toContain("/private");
+    },
+  );
 
   it.each([2, 3, 4])("detects repeating %i-step cycles", (period) => {
     const observer = new ToolLoopObserver();

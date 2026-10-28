@@ -349,6 +349,7 @@ describe("current Pro/Max experiment feedback", () => {
       },
     },
     { assignment: { ...assignment, selectionSource: "history" as const } },
+    { assignment: { ...assignment, key: "inference_cyber_v1" as const } },
   ])(
     "excludes nonparticipants and historical cohorts without evaluating delivery",
     async (overrides) => {

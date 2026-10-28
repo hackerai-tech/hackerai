@@ -172,7 +172,7 @@ export const SharedMessagePartHandler = ({
   }
 
   // New unified file tool
-  if (part.type === "tool-file") {
+  if (part.type === "tool-file" || part.type === "tool-file_write") {
     return renderFileTool(part, idx, openSidebar);
   }
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
-import { Monitor, MousePointerClick, X } from "lucide-react";
+import { MousePointerClick, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -11,7 +11,7 @@ import {
 } from "@/lib/utils/sidebar-utils";
 import { isSidebarTerminal } from "@/types/chat";
 
-/** Browser access stays compact until the session needs human input. */
+/** Show composer attention only when the browser needs human input. */
 export function BrowserHandoffEntry({
   chatId,
   messages,
@@ -82,28 +82,14 @@ export function BrowserHandoffEntry({
         JSON.stringify({ dismissedAttention: attentionKey }),
       );
     } catch {
-      // Keep the compact Browser action available even when storage is blocked.
+      // Dismissal still works for this mount when storage is blocked.
     }
   };
 
-  if (!needsAttention) {
-    return (
-      <div className="mx-auto mb-1.5 flex w-full max-w-[800px] justify-end px-4">
-        <button
-          type="button"
-          aria-label="Open Agent browser"
-          onClick={() => openSidebar(browserTool)}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border bg-background px-3 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8"
-        >
-          <Monitor size={14} aria-hidden />
-          Browser
-        </button>
-      </div>
-    );
-  }
+  if (!needsAttention) return null;
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[800px] px-4">
+    <div className="mb-2 w-full">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background p-3 shadow-sm sm:flex-nowrap sm:gap-3">
         <MousePointerClick
           size={18}

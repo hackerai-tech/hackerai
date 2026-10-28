@@ -1581,7 +1581,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
@@ -1610,7 +1610,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       handledRateLimitIdx,
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
@@ -1676,7 +1676,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
       "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
@@ -1693,7 +1693,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1702,7 +1702,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
     );
     expect(agentStreamRunnerSrc).toMatch(
-      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+      /const requestedModelSlug =[\s\S]{0,400}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
     );
 
     for (const source of [taskSrc, chatHandlerSrc]) {
@@ -1750,7 +1750,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
     );
     expect(taskSrc).toMatch(
-      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /hasCandidate:\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
@@ -1781,6 +1790,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
     expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
+  });
+
+  test("Ask also blocks automatic recovery after an uncertain tool result", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /if \(\s*!uncertainToolOutcome &&\s*\(shouldRecoverAbliterationStreamError/,
+    );
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {
@@ -2201,7 +2219,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
