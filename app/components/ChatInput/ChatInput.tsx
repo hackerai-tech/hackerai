@@ -871,9 +871,9 @@ const ChatInputContent = ({
         data-testid="chat-input-container"
       >
         {/* Panels keep their content height and scroll as a stack instead of
-            shrinking beneath the next panel. Reserve the textarea/actions. */}
+            shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
-          className={`flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {isOffline && (
             <div

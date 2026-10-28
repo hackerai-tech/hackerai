@@ -194,7 +194,7 @@ export function AgentApprovalPrompt({
   return (
     <form
       aria-busy={isSending}
-      className="order-2 flex min-w-0 flex-col gap-4 rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
+      className="order-2 flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto rounded-[22px] border border-black/8 bg-input-chat px-4 py-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border sm:order-1 sm:px-5 sm:py-5"
       onSubmit={(event) => {
         event.preventDefault();
         void submitApproval(false);
