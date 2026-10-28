@@ -59,6 +59,7 @@ async function withBrowserDeadline<T>(
   run: (signal: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
   timeoutMs = 35_000,
+  timeoutMessage = "Browser request timed out. Please try again.",
 ): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -71,7 +72,7 @@ async function withBrowserDeadline<T>(
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     timer = setTimeout(() => {
-      reject(new Error("Browser request timed out. Please try again."));
+      reject(new Error(timeoutMessage));
       controller.abort();
     }, timeoutMs);
   });
@@ -597,6 +598,12 @@ export function AgentBrowserPreview({
         );
         return;
       }
+      // A reconnect can replace a grant before its old request settles. Give
+      // the new grant its own queue and buffer; old finally blocks compare the
+      // buffer identity before cleaning up, so they cannot drop new input.
+      inputQueue.current = Promise.resolve();
+      bufferedInputs.current = [];
+      drainingInputs.current = false;
       grantRef.current = data.grant;
       setGrant(data.grant);
       setRenewalPending(false);
@@ -676,7 +683,12 @@ export function AgentBrowserPreview({
     try {
       // Finish accepted keystrokes before revoking control. Once resume starts,
       // new input is ignored so the queue cannot grow while it drains.
-      await withBrowserDeadline(() => inputQueue.current, undefined, 10_000);
+      await withBrowserDeadline(
+        () => inputQueue.current,
+        undefined,
+        10_000,
+        "Browser input timed out. Some clicks or text may not have been sent. Reconnect and check the page before continuing.",
+      );
       if (
         !mountedRef.current ||
         sessionIdRef.current !== sessionId ||

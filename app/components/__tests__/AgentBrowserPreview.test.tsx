@@ -2353,3 +2353,73 @@ it("does not resume after an already-sent resize fails while the exit note is op
   expect(actions.some((body) => body.action === "resume")).toBe(false);
   expect(screen.getByRole("button", { name: "Return to chat" })).toBeEnabled();
 });
+
+it("isolates a reconnected grant from an old timed-out input and its cleanup", async () => {
+  let takeCount = 0;
+  let finishOld!: (value: Response) => void;
+  let finishNew!: (value: Response) => void;
+  let newInputs = 0;
+  handleAction = (body) => {
+    if (body.action === "take")
+      return Promise.resolve(
+        response({ grant: ++takeCount === 1 ? "grant-a" : "grant-b", frame }),
+      );
+    if (body.action === "input" && body.grant === "grant-a")
+      return new Promise((resolve) => {
+        finishOld = resolve;
+      });
+    if (
+      body.action === "input" &&
+      body.grant === "grant-b" &&
+      ++newInputs === 1
+    )
+      return new Promise((resolve) => {
+        finishNew = resolve;
+      });
+    return Promise.resolve(response({ frame }));
+  };
+  await mount();
+  await takeControl();
+  const key = async (value: string) =>
+    act(async () => {
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key: value,
+      });
+    });
+  await key("a");
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(10_001);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(/may not have been sent/);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect control" }));
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  await key("b");
+  expect(
+    actions.some((a) => a.action === "input" && a.grant === "grant-b"),
+  ).toBe(true);
+  await key("c");
+  await act(async () => {
+    finishOld(response({ ok: true }));
+  });
+  await key("d");
+  await act(async () => {
+    finishNew(response({ ok: true }));
+  });
+  const inputs = actions.filter(
+    (a) => a.action === "input" && a.grant === "grant-b",
+  );
+  expect(inputs).toHaveLength(2);
+  expect(inputs[1].inputs).toEqual([
+    expect.objectContaining({ kind: "text", text: "c" }),
+    expect.objectContaining({ kind: "text", text: "d" }),
+  ]);
+});
