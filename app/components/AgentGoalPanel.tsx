@@ -532,7 +532,7 @@ export function AgentGoalPanel({
                 aria-label={
                   expanded ? "Hide goal details" : "Show goal details"
                 }
-                className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-left hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? "max-w-full" : "flex-1"}`}
+                className={`flex min-h-8 min-w-0 items-center gap-1.5 px-2 text-left hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${isMobile ? "max-w-full rounded-full border bg-background/95 shadow-sm backdrop-blur-md" : "flex-1 rounded-lg"}`}
               >
                 <CircleCheck className="size-3.5 shrink-0" aria-hidden="true" />
                 <span role="status" aria-live="polite" className="shrink-0">
