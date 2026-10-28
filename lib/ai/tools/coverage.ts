@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { ConvexError } from "convex/values";
 import { writeAgentCoverage } from "@/lib/db/actions";
-import type { CoverageEntry } from "@/lib/ai/coverage-ledger";
+import { coverageKey, type CoverageEntry } from "@/lib/ai/coverage-ledger";
 import { coverageReadTool, coverageWriteTool } from "./schemas";
 
 export const createCoverageWrite = (args: {
@@ -23,11 +23,7 @@ export const createCoverageWrite = (args: {
         args.onSaved(saved);
         return {
           success: true,
-          entry: saved.find(
-            (row) =>
-              row.surface.toLowerCase() === entry.surface.toLowerCase() &&
-              row.riskArea.toLowerCase() === entry.riskArea.toLowerCase(),
-          ),
+          entry: saved.find((row) => coverageKey(row) === coverageKey(entry)),
           total: saved.length,
         };
       } catch (error) {

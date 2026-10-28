@@ -18,8 +18,11 @@ const input = {
   nextTest: "Compare access",
 };
 
-const execute = async (tool: ReturnType<typeof createCoverageWrite>) =>
-  (tool.execute as NonNullable<typeof tool.execute>)(input, {
+const execute = async (
+  tool: ReturnType<typeof createCoverageWrite>,
+  entry = input,
+) =>
+  (tool.execute as NonNullable<typeof tool.execute>)(entry, {
     toolCallId: "call-1",
     messages: [],
     abortSignal: undefined,
@@ -47,6 +50,21 @@ it("saves an unresolved row before exposing it as current coverage", async () =>
     runId: "run-1",
     entry: input,
   });
+});
+
+it("returns the saved row when storage normalizes surface whitespace", async () => {
+  const saved: CoverageEntry[] = [{ ...input, updatedAt: 2 }];
+  mockedWrite.mockResolvedValueOnce(saved);
+  const result = await execute(
+    createCoverageWrite({
+      userId: "user-1",
+      chatId: "chat-1",
+      runId: "run-1",
+      onSaved: jest.fn(),
+    }),
+    { ...input, surface: "  API route  " },
+  );
+  expect(result).toMatchObject({ success: true, entry: saved[0] });
 });
 
 it("does not claim an unsaved row when persistence fails", async () => {
