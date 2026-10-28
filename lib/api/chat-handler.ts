@@ -604,6 +604,7 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        previewEnvironment: process.env.VERCEL_ENV === "preview",
         posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
@@ -1735,6 +1736,8 @@ export const createChatHandler = () => {
               ...(activeAbliteratedExperiment &&
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
+                    inferenceCyberEnabled:
+                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,

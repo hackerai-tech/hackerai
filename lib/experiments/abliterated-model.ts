@@ -1,3 +1,7 @@
+import {
+  INFERENCE_CYBER_PREVIEW_FLAG,
+  isInferenceConfigured,
+} from "@/lib/ai/inference";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { phLogger } from "@/lib/posthog/server";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
@@ -47,6 +51,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   moderationChecked?: boolean;
   independentHistoryCount?: number;
   generationStepLimit?: AbliterationGenerationStepLimit;
+  inferenceCyberEnabled?: boolean;
 };
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
@@ -93,6 +98,7 @@ export async function evaluateAbliteratedModel({
   messages,
   limitRescue = false,
   diagnosticContext,
+  previewEnvironment = false,
 }: {
   posthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
@@ -107,6 +113,7 @@ export async function evaluateAbliteratedModel({
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
+  previewEnvironment?: boolean;
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
   const proThreeStepsEligible =
@@ -158,6 +165,23 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
+  // Only trusted runtime callers supply Preview identity. Missing flags, keys
+  // and evaluation errors retain the existing provider route.
+  let inferenceCyberEnabled = false;
+  if (previewEnvironment && isInferenceConfigured() && posthog) {
+    try {
+      inferenceCyberEnabled =
+        (await getPostHogFlagWithoutExposure(
+          posthog,
+          INFERENCE_CYBER_PREVIEW_FLAG,
+          userId,
+          { subscription, subscription_tier: subscription },
+        )) === true;
+    } catch {
+      /* Keep Abliteration on unavailable assignment. */
+    }
+  }
+
   if (proThreeStepsEligible && posthog) {
     try {
       const variant = await getPostHogFlagWithoutExposure(
@@ -185,6 +209,7 @@ export async function evaluateAbliteratedModel({
           modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
           baselineModel,
           generationStepLimit: 3,
+          inferenceCyberEnabled: variant === "test" && inferenceCyberEnabled,
           // Historical source label for unmoderated paid routing; the step
           // budget is carried separately by generationStepLimit.
           selectionSource: "paid_first_step",
@@ -211,6 +236,7 @@ export async function evaluateAbliteratedModel({
     modelKey: ABLITERATION_MODEL_KEY,
     baselineModel: selectedModel,
     generationStepLimit: 3,
+    inferenceCyberEnabled,
     selectionSource: "moderation",
     moderationEligible,
     moderationChecked,
