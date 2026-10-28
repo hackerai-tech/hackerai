@@ -16,13 +16,11 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   goalControl?: React.ReactNode;
-  compactAgentControls?: boolean;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
   goalControl,
-  compactAgentControls = false,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -40,6 +38,12 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const showChatModeSelector = Boolean(
+    user &&
+    chatModeAccessResolved &&
+    !paidAgentOnlyActive &&
+    !freeDesktopAgentOnlyActive,
+  );
   const showFreeAskComputerActivation = Boolean(
     chatModeAccessResolved &&
     user &&
@@ -49,9 +53,9 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex min-w-0 items-center gap-2 px-3">
+    <div className="flex min-w-0 shrink-0 items-center gap-1 px-3 min-[360px]:gap-2">
       <div
-        className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2 md:flex-wrap"
         data-testid="chat-input-toolbar-controls"
       >
         <div className="shrink-0">
@@ -60,27 +64,28 @@ export function ChatInputToolbar({
             disabled={!isOnline}
           />
         </div>
-        {user &&
-        chatModeAccessResolved &&
-        !paidAgentOnlyActive &&
-        !freeDesktopAgentOnlyActive ? (
-          <ChatModeSelector />
+        {user && isAgentMode(chatMode) ? (
+          <div
+            className="shrink-0 md:hidden"
+            data-testid="chat-input-mobile-permission"
+          >
+            <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
+          </div>
+        ) : null}
+        {showChatModeSelector ? (
+          <ChatModeSelector className="shrink-0" />
         ) : null}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
         {user && isAgentMode(chatMode) ? (
           <>
             <div
-              className={
-                compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
-              }
+              className="hidden min-w-20 max-w-max flex-1 md:block"
               data-testid="chat-input-desktop-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
             <div
-              className={
-                compactAgentControls ? "hidden" : "hidden min-w-0 md:block"
-              }
+              className="hidden min-w-16 max-w-max flex-1 md:block"
               data-testid="chat-input-desktop-sandbox"
             >
               <SandboxSelector
@@ -94,7 +99,7 @@ export function ChatInputToolbar({
         {goalControl}
       </div>
       <div
-        className="flex shrink-0 items-center gap-2.5"
+        className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"
         data-testid="chat-input-primary-actions"
       >
         {user ? (

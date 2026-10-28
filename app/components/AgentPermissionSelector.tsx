@@ -28,7 +28,8 @@ import {
 } from "@/components/ui/sheet";
 
 type AgentPermissionSelectorProps = {
-  size?: "xs" | "sm" | "md";
+  size?: "sm" | "md";
+  iconOnly?: boolean;
   analyticsSurface: "chat_input" | "agents_tab";
 };
 
@@ -66,6 +67,7 @@ const baseOptions: PermissionOption[] = [
 
 export function AgentPermissionSelector({
   size = "sm",
+  iconOnly = false,
   analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
@@ -102,40 +104,46 @@ export function AgentPermissionSelector({
     options.find((option) => option.id === agentPermissionMode) ?? options[0];
   const Icon = selectedOption.icon;
 
-  const buttonClassName =
-    size === "xs"
-      ? "h-8 max-w-full px-1 has-[>svg]:px-1 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : size === "md"
-        ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-        : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+  const buttonClassName = iconOnly
+    ? `h-8 w-8 min-w-0 shrink-0 rounded-md p-0 hover:bg-muted/30 focus-visible:ring-1 ${agentPermissionMode === "full_access" ? "text-orange-600 dark:text-orange-400" : ""}`
+    : size === "md"
+      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
-  const iconClassName =
-    size === "xs"
-      ? "size-3 shrink-0"
-      : size === "md"
-        ? "h-4 w-4 shrink-0"
-        : "h-5 w-5 shrink-0";
+  const iconClassName = iconOnly
+    ? "size-5 shrink-0"
+    : size === "md"
+      ? "h-4 w-4 shrink-0"
+      : "h-5 w-5 shrink-0";
 
   const trigger = (
     <Button
       variant="ghost"
-      size={size === "md" ? "default" : "sm"}
+      size={iconOnly ? "icon-sm" : size === "md" ? "default" : "sm"}
       className={buttonClassName}
+      aria-label={
+        iconOnly ? `Agent permissions: ${selectedOption.label}` : undefined
+      }
+      title={
+        iconOnly ? `Agent permissions: ${selectedOption.label}` : undefined
+      }
     >
       <Icon className={iconClassName} aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">
-        {selectedOption.shortLabel}
-      </span>
-      <ChevronDown
-        aria-hidden="true"
-        className={
-          size === "xs"
-            ? "size-3 shrink-0"
-            : size === "md"
-              ? "h-4 w-4 ml-1 shrink-0"
-              : "h-4 w-4 ml-0.5 shrink-0"
-        }
-      />
+      {!iconOnly && (
+        <>
+          <span className="min-w-0 flex-1 truncate">
+            {selectedOption.shortLabel}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className={
+              size === "md"
+                ? "h-4 w-4 ml-1 shrink-0"
+                : "h-4 w-4 ml-0.5 shrink-0"
+            }
+          />
+        </>
+      )}
     </Button>
   );
   const optionList = (
@@ -216,6 +224,7 @@ export function AgentPermissionSelector({
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
+          data-chat-input-agent-menu
           side="bottom"
           className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
         >
@@ -235,6 +244,7 @@ export function AgentPermissionSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
+        data-chat-input-agent-menu
         className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
         align="start"
       >

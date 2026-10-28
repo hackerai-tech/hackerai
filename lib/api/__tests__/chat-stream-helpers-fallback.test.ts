@@ -24,6 +24,7 @@ import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
 it("bounds expanded Pro input for its real transparent fallback chain", () => {
   const fallbackModelIds = getFallbackSlugs(DEEPSEEK_1017_MODEL_KEY, "agent", {
@@ -96,7 +97,7 @@ describe("transport recovery provider exclusions", () => {
       buildProviderOptions(true, "user", "model-abliterated", "agent", {
         ignoredProviderSlugs: ["together"],
       }),
-    ).toEqual({});
+    ).toEqual({ abliteration: { reasoningEffort: "high" } });
   });
 });
 
@@ -131,6 +132,96 @@ const HIGH_REASONING_ROUTES = [
   "fallback-agent-model",
   "fallback-ask-model",
 ] as const;
+
+describe("Abliteration reasoning by selected tier", () => {
+  const selections = [
+    ["hackerai-max", "max"],
+    ["hackerai-pro", "high"],
+    ["hackerai-standard", "high"],
+    [undefined, "high"],
+  ] as const;
+
+  it.each(selections)(
+    "uses %s selection effort %s in Ask and Agent for all provider aliases",
+    (selection, effort) => {
+      for (const mode of ["ask", "agent"] as const) {
+        for (const model of [
+          "model-abliterated",
+          "model-abliterated-large-v2",
+          "abliterated-model",
+          "abliterated-model-large-v2",
+          "abliterated-model-large-flash",
+        ]) {
+          expect(
+            buildProviderOptions(true, "private-user", model, mode, {
+              selectedModelOverride: selection,
+              // OpenRouter overrides and routing must not leak to this provider.
+              reasoningOverride: { enabled: true, effort: "xhigh" },
+              hasPdfAttachments: true,
+              cacheSessionId: "private-session",
+              ignoredProviderSlugs: ["together"],
+            }),
+          ).toEqual({ abliteration: { reasoningEffort: effort } });
+        }
+      }
+    },
+  );
+
+  it.each(selections)(
+    "serializes %s selection as reasoning_effort=%s through the installed SDK",
+    async (selection, effort) => {
+      const {
+        Response,
+      } = require("next/dist/compiled/@edge-runtime/primitives/fetch");
+      const fetchMock = jest.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "synthetic-response",
+            model: "abliterated-model-large-flash",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "5" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: {
+              prompt_tokens: 10,
+              completion_tokens: 1,
+              total_tokens: 11,
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const provider = createOpenAICompatible({
+        name: "abliteration",
+        baseURL: "https://abliteration.example.test/v1",
+        apiKey: "synthetic-test-key",
+        fetch: fetchMock,
+      });
+      await provider("abliterated-model-large-flash").doGenerate({
+        prompt: [{ role: "user", content: [{ type: "text", text: "2+3" }] }],
+        providerOptions: buildProviderOptions(
+          true,
+          "private-user",
+          "model-abliterated",
+          "agent",
+          {
+            selectedModelOverride: selection,
+          },
+        ),
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body).toEqual({
+        model: "abliterated-model-large-flash",
+        messages: [{ role: "user", content: "2+3" }],
+        reasoning_effort: effort,
+      });
+    },
+  );
+});
 
 describe("buildProviderOptions fallback chain", () => {
   it.each([
@@ -238,7 +329,7 @@ describe("buildProviderOptions fallback chain", () => {
       buildProviderOptions(true, "private-user", "model-abliterated", "agent", {
         hasPdfAttachments: true,
       }),
-    ).toEqual({});
+    ).toEqual({ abliteration: { reasoningEffort: "high" } });
     expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
       "model-deepseek-v4-flash-vision",
     );
@@ -258,7 +349,7 @@ describe("buildProviderOptions fallback chain", () => {
         "model-abliterated-large-v2",
         "agent",
       ),
-    ).toEqual({});
+    ).toEqual({ abliteration: { reasoningEffort: "high" } });
     expect(getRetryFallbackModel("model-abliterated-large-v2", "agent")).toBe(
       "model-deepseek-v4-pro-0813",
     );
@@ -1652,4 +1743,24 @@ describe("explicit paid Flash tier reasoning", () => {
       }).openrouter.reasoning,
     ).toEqual({ enabled: true, effort: "high" });
   });
+});
+
+it("keeps Inference reasoning options isolated from OpenRouter and prices its served identity", () => {
+  const options = buildProviderOptions(
+    true,
+    "synthetic-user",
+    "model-abliterated",
+    "ask",
+    {
+      requestedModelSlug: "deepseek-v4.1-flash-1017-cyber",
+      selectedModelOverride: "hackerai-max",
+    },
+  );
+  expect(options).toEqual({ inference: { reasoningEffort: "max" } });
+  expect(
+    resolveServedModelForCostAccounting({
+      modelName: "model-abliterated",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
+    }),
+  ).toBe("deepseek-v4.1-flash-1017-cyber");
 });

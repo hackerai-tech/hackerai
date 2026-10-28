@@ -157,6 +157,30 @@ function makeNativeDesktopSandbox(connectionId = "desktop-a") {
 }
 
 describe("file tool large text safety", () => {
+  test.each([
+    { action: "write", expected: "text is required for write action" },
+    { action: "append", expected: "text is required for append action" },
+    { action: "edit", expected: "edits array is required for edit action" },
+  ])(
+    "rejects malformed $action before approval or sandbox access",
+    async ({ action, expected }) => {
+      const sandbox = makeSandbox(jest.fn());
+      const requestToolApproval = jest.fn();
+      const context = makeContext(sandbox, { requestToolApproval });
+      const tool = createFile(context);
+
+      await expect(
+        runTool(tool, { action, path: "/project/file.txt", brief: "edit" }),
+      ).resolves.toEqual({
+        error: expected,
+        executionOutcome: "not_executed",
+      });
+      expect(requestToolApproval).not.toHaveBeenCalled();
+      expect(context.sandboxManager.getSandbox).not.toHaveBeenCalled();
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    },
+  );
+
   test("does not write on a replacement Desktop connection after approval", async () => {
     const { sandbox } = makeNativeDesktopSandbox("desktop-b");
     const requestToolApproval = jest.fn(async () => ({

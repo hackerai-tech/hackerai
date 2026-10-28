@@ -1,12 +1,22 @@
 import { ConvexHttpClient } from "convex/browser";
+import { getFunctionName } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { signServiceArgs, type ServiceScope } from "./service-proof";
 import { redactSensitiveErrorMessage } from "../utils/error-redaction";
+
+const safeFunctionName = (name: unknown, secrets: string[]) =>
+  typeof name === "string" &&
+  name.length <= 128 &&
+  /^[a-zA-Z0-9_/.-]+:[a-zA-Z0-9_$]+$/.test(name) &&
+  !secrets.some((secret) => name.includes(secret))
+    ? name
+    : undefined;
 
 /** Wrap SDK RPCs with scoped service proofs, error redaction and bounded diagnostics. */
 export function createServiceFetch(
   deployment: string,
   transport: typeof fetch = globalThis.fetch,
+  clientInstanceId?: string,
 ): typeof fetch {
   return async (input, init) => {
     const url = new URL(String(input));
@@ -46,12 +56,12 @@ export function createServiceFetch(
       );
       body.args = [convexToJson(signed as Value)];
     }
-    const functionName =
-      typeof body.path === "string" &&
-      body.path.length <= 128 &&
-      /^[a-zA-Z0-9_/.-]+:[a-zA-Z0-9_$]+$/.test(body.path) &&
-      (!secret || !body.path.includes(secret))
-        ? body.path
+    const functionName = safeFunctionName(body.path, secret ? [secret] : []);
+    const clientId =
+      clientInstanceId &&
+      /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(clientInstanceId) &&
+      (!secret || !clientInstanceId.includes(secret))
+        ? clientInstanceId
         : undefined;
     const startedAt = Date.now();
     let stage: "request" | "response_body" = "request";
@@ -63,7 +73,7 @@ export function createServiceFetch(
     ) => {
       if (reported) return;
       reported = true;
-      // At most one diagnostic attempt per RPC. Never include arguments,
+      // At most one failure diagnostic attempt per RPC. Never include arguments,
       // headers, URLs, response bodies or arbitrary error messages/codes.
       // Reporting must not replace the original transport result or error.
       try {
@@ -74,6 +84,7 @@ export function createServiceFetch(
         console.warn(
           JSON.stringify({
             event: "convex_service_rpc_failed",
+            ...(clientId ? { client_instance_id: clientId } : {}),
             rpc_kind: type,
             ...(functionName ? { function_name: functionName } : {}),
             stage,
@@ -101,6 +112,26 @@ export function createServiceFetch(
     };
     let response: Response;
     let text: string;
+    // A platform timeout can kill the request before transport rejects. Record
+    // which await is still pending once, without aborting or retrying the RPC.
+    const pendingWarning = setTimeout(() => {
+      try {
+        console.warn(
+          JSON.stringify({
+            event: "convex_service_rpc_pending",
+            ...(clientId ? { client_instance_id: clientId } : {}),
+            rpc_kind: type,
+            ...(functionName ? { function_name: functionName } : {}),
+            stage,
+            ...(statusCode !== undefined ? { status_code: statusCode } : {}),
+            transport_elapsed_ms: Math.max(0, Date.now() - startedAt),
+          }),
+        );
+      } catch {
+        // A diagnostic must not interrupt the pending RPC.
+      }
+    }, 10_000);
+    pendingWarning.unref?.();
     try {
       response = await transport(input, {
         ...init,
@@ -113,6 +144,8 @@ export function createServiceFetch(
     } catch (error) {
       reportFailure("transport_error", error);
       throw error;
+    } finally {
+      clearTimeout(pendingWarning);
     }
     // Scrub errors and SDK log lines before the SDK can print or rethrow them.
     // Successful result values are preserved byte-for-byte.
@@ -161,6 +194,80 @@ export function createServiceConvexClient(
   url: string,
   options?: { signal?: AbortSignal },
 ): ConvexHttpClient {
+  let clientInstanceId: string | undefined;
+  try {
+    clientInstanceId = globalThis.crypto?.randomUUID();
+  } catch {
+    // Correlation is optional; it must not prevent creating the client.
+  }
+  let pendingMutations = 0;
+  let mutationSequence = 0;
+  let oldestPending:
+    { id: number; startedAt: number; functionName?: string } | undefined;
+  let warningTimes: number[] = [];
+  const observeMutation = (reference: unknown, secrets: string[]) => {
+    const startedAt = Date.now();
+    const callId = ++mutationSequence;
+    const pendingAtStart = pendingMutations++;
+    const clientId =
+      clientInstanceId &&
+      !secrets.some((secret) => clientInstanceId.includes(secret))
+        ? clientInstanceId
+        : undefined;
+    let functionName: string | undefined;
+    try {
+      functionName = safeFunctionName(
+        getFunctionName(reference as Parameters<typeof getFunctionName>[0]),
+        secrets,
+      );
+    } catch {
+      // Preserve the SDK's own validation result for unsupported references.
+    }
+    if (pendingAtStart === 0) {
+      oldestPending = { id: callId, startedAt, functionName };
+    }
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      warningTimes = warningTimes.filter((time) => now - time < 60_000);
+      if (warningTimes.length >= 2) return;
+      warningTimes.push(now);
+      try {
+        console.warn(
+          JSON.stringify({
+            event: "convex_service_mutation_wait_pending",
+            ...(clientId ? { client_instance_id: clientId } : {}),
+            sdk_call_id: callId,
+            ...(functionName ? { function_name: functionName } : {}),
+            sdk_elapsed_ms: Math.max(0, now - startedAt),
+            pending_mutations_at_start: pendingAtStart,
+            pending_mutations_now: pendingMutations,
+            ...(oldestPending
+              ? {
+                  oldest_pending_call_id: oldestPending.id,
+                  oldest_pending_function_name: safeFunctionName(
+                    oldestPending.functionName,
+                    secrets,
+                  ),
+                  oldest_pending_elapsed_ms: Math.max(
+                    0,
+                    now - oldestPending.startedAt,
+                  ),
+                }
+              : {}),
+          }),
+        );
+      } catch {
+        // Sample at most twice per client per minute, even if logging fails.
+      }
+    }, 10_000);
+    timer.unref?.();
+    return () => {
+      clearTimeout(timer);
+      pendingMutations--;
+      // Do not guess the oldest remaining call after the tracked one settles.
+      if (oldestPending?.id === callId) oldestPending = undefined;
+    };
+  };
   const signal = options?.signal;
   const transport: typeof fetch = signal
     ? (input, init) => {
@@ -174,7 +281,7 @@ export function createServiceConvexClient(
       }
     : globalThis.fetch;
   const client = new ConvexHttpClient(url, {
-    fetch: createServiceFetch(url, transport),
+    fetch: createServiceFetch(url, transport, clientInstanceId),
   });
   // SDK serialization happens before fetch and can echo the original arguments.
   return new Proxy(client, {
@@ -198,6 +305,10 @@ export function createServiceConvexClient(
           const key = (value as Record<string, unknown>).serviceKey;
           return typeof key === "string" && key ? [key] : [];
         });
+        const finishObservation =
+          property === "mutation"
+            ? observeMutation(parameters[0], secrets)
+            : undefined;
         try {
           return await method.apply(target, parameters);
         } catch (error) {
@@ -207,6 +318,8 @@ export function createServiceConvexClient(
           const clean = redactSensitiveErrorMessage(message);
           if (error instanceof Error && clean === error.message) throw error;
           throw new Error(clean);
+        } finally {
+          finishObservation?.();
         }
       };
     },

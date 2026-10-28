@@ -1336,6 +1336,21 @@ export const createFile = (context: ToolContext) => {
       { toolCallId },
     ) => {
       try {
+        // These calls cannot perform a file operation. Reject them before
+        // requesting approval or acquiring a sandbox, and mark the outcome so
+        // the Agent can distinguish it from an uncertain transport failure.
+        if ((action === "write" || action === "append") && text === undefined) {
+          return {
+            error: `text is required for ${action} action`,
+            executionOutcome: "not_executed" as const,
+          };
+        }
+        if (action === "edit" && (!edits || edits.length === 0)) {
+          return {
+            error: "edits array is required for edit action",
+            executionOutcome: "not_executed" as const,
+          };
+        }
         let approvedSandboxIdentity: AgentApprovalSandboxIdentity | undefined;
         if (action === "write" || action === "append" || action === "edit") {
           const serializedEdits = edits ? JSON.stringify(edits) : undefined;
@@ -1548,11 +1563,8 @@ export const createFile = (context: ToolContext) => {
           }
 
           case "write": {
-            if (text === undefined) {
-              return { error: "text is required for write action" };
-            }
-
-            await sandbox.files.write(path, text, {
+            const content = text!; // Checked before approval and sandbox access.
+            await sandbox.files.write(path, content, {
               user: "user" as const,
             });
 
@@ -1560,10 +1572,7 @@ export const createFile = (context: ToolContext) => {
           }
 
           case "append": {
-            if (text === undefined) {
-              return { error: "text is required for append action" };
-            }
-
+            const content = text!; // Checked before approval and sandbox access.
             const existingState = await getSandboxFileState(sandbox, path);
             if (existingState.kind === "unknown") {
               return {
@@ -1579,7 +1588,7 @@ export const createFile = (context: ToolContext) => {
               existingState.kind === "file" &&
               existingState.sizeBytes > MAX_TEXT_FILE_READ_BYTES
             ) {
-              await appendSandboxTextFile(sandbox, path, text);
+              await appendSandboxTextFile(sandbox, path, content);
               return {
                 content: `File appended: ${path}\nExisting file is ${formatBytes(existingState.sizeBytes)}, so the full diff preview was skipped to avoid loading the entire file into memory.`,
               };
@@ -1597,8 +1606,8 @@ export const createFile = (context: ToolContext) => {
 
             // Append directly without adding extra newline - agent controls exact content
             const appendText = existingContent
-              ? convertToLineEnding(text, detectLineEnding(existingContent))
-              : text;
+              ? convertToLineEnding(content, detectLineEnding(existingContent))
+              : content;
             const newContent = existingContent + appendText;
 
             await sandbox.files.write(path, newContent, {
@@ -1621,10 +1630,7 @@ export const createFile = (context: ToolContext) => {
           }
 
           case "edit": {
-            if (!edits || edits.length === 0) {
-              return { error: "edits array is required for edit action" };
-            }
-
+            const requiredEdits = edits!; // Checked before approval and sandbox access.
             const existingState = await getSandboxFileState(sandbox, path);
             if (existingState.kind === "unknown") {
               return {
@@ -1658,7 +1664,7 @@ export const createFile = (context: ToolContext) => {
 
             // Validate all find strings exist before applying any edits (atomic behavior)
             const lineEnding = detectLineEnding(originalContent);
-            const normalizedEdits = edits.map((edit) => ({
+            const normalizedEdits = requiredEdits.map((edit) => ({
               ...edit,
               find: convertToLineEnding(edit.find, lineEnding),
               replace: convertToLineEnding(edit.replace, lineEnding),
@@ -1666,7 +1672,10 @@ export const createFile = (context: ToolContext) => {
             const missingFinds: { index: number; find: string }[] = [];
             for (let i = 0; i < normalizedEdits.length; i++) {
               if (!originalContent.includes(normalizedEdits[i].find)) {
-                missingFinds.push({ index: i + 1, find: edits[i].find });
+                missingFinds.push({
+                  index: i + 1,
+                  find: requiredEdits[i].find,
+                });
               }
             }
 
@@ -1717,7 +1726,7 @@ export const createFile = (context: ToolContext) => {
             // toModelOutput will control what the model sees
             return {
               content: truncateOutput({
-                content: `Multi-edit completed: ${edits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
+                content: `Multi-edit completed: ${requiredEdits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
                 mode: "read-file",
               }),
               originalContent: truncateOutput({

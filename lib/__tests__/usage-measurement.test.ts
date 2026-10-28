@@ -53,7 +53,7 @@ it("retains observed retry costs without adding them back to customer billing", 
     cost: 1,
     model: "model",
   });
-  tracker.resetModelLeg();
+  tracker.prepareModelRetry();
   tracker.recordModelCall();
   tracker.accumulateStep(
     { inputTokens: 200, outputTokens: 20, raw: { cost: 3 } },

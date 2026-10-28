@@ -1,3 +1,4 @@
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { persistenceCommandError } from "./persistence-failure";
 import {
   createReceiverDiagnostics,
@@ -434,12 +435,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
 
-Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Do not install host tools without the user's request.
+Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Other than the browser setup described below, do not install host tools without the user's request.
 
-Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
-    return null;
+    return `You are connected to a computer in DANGEROUS MODE. Commands run directly on the host without Docker isolation. OS information is unavailable; inspect the host before choosing shell-specific commands.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   }
 
   /**
@@ -484,6 +487,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
+      let requestPublicationStarted = false;
+      let uncertainReadiness = false;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
       let trafficMetricRecorded = false;
@@ -543,7 +548,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       timeoutId = setTimeout(() => {
         fail(
           new LocalFileRequestError(
-            "timeout",
+            uncertainReadiness ? "readiness_timeout" : "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -679,11 +684,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 request as unknown as Record<string, unknown>,
                 () => !settled,
                 subscription!,
+                () => {
+                  requestPublicationStarted = true;
+                },
               );
             } else {
               await subscription.publish(request);
             }
           } catch (error) {
+            if (
+              isolated &&
+              requestPublicationStarted &&
+              !settled &&
+              (error instanceof RelayOperationReadinessTimeout ||
+                isCentrifugoPublishTimeout(error))
+            ) {
+              // Publication may have reached the client. Retain the original
+              // reply channel and deadline; never replay a write or append.
+              uncertainReadiness =
+                error instanceof RelayOperationReadinessTimeout;
+              return;
+            }
             fail(
               new LocalFileRequestError(
                 error instanceof RelayOperationReadinessTimeout
@@ -1488,7 +1509,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 if (
                   !settled &&
                   isolated &&
-                  this.connectionInfo.isDesktop &&
                   commandPublicationStarted &&
                   (err instanceof RelayOperationReadinessTimeout ||
                     isCentrifugoPublishTimeout(err))
@@ -1715,6 +1735,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
       displayName: "",
     });
+    if (probe.exitCode !== 0) {
+      throw persistenceCommandError("Failed to detect local shell", probe);
+    }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
@@ -2336,7 +2359,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escapedPath = escapePath(path);
-      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      // Legacy Windows relays may launch Bash through cmd.exe, whose command
+      // line limit applies even though the inner shell accepts POSIX syntax.
+      const commandBudget = this.isWindows()
+        ? CentrifugoSandbox.MAX_CMD_CHUNK_SIZE
+        : CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
       const overhead = Buffer.byteLength(
         `printf '%s' "" | base64 -d >> ${escapedPath}`,
         "utf8",

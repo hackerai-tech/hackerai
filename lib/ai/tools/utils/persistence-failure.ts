@@ -9,6 +9,8 @@ export type PersistenceFailureCategory =
   | "filesystem"
   | "unknown"
   | "unsupported_client"
+  | "shell_syntax"
+  | "missing_utility"
   | "read_only_filesystem"
   | "no_space"
   | "unsafe_artifact";
@@ -55,6 +57,18 @@ export const classifyPersistenceFailure = (
   ).toLowerCase();
   if (/requires an updated hackerai local client/.test(message))
     return "unsupported_client";
+  if (
+    /syntax error|unexpected token|syntax of the command is incorrect/.test(
+      message,
+    )
+  )
+    return "shell_syntax";
+  if (
+    /command not found|is not recognized as an internal or external command/.test(
+      message,
+    )
+  )
+    return "missing_utility";
   if (/read-only file system|erofs/.test(message))
     return "read_only_filesystem";
   if (/no space left|enospc|edquot/.test(message)) return "no_space";

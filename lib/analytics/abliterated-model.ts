@@ -1,3 +1,4 @@
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import type { AbliterationRoutingMarker } from "@/lib/experiments/abliteration-history";
 import {
   wrapLanguageModel,
@@ -50,6 +51,7 @@ export class AbliteratedModelTelemetry {
     provider_truncated_count: 0,
     provider_empty_count: 0,
     provider_abliteration_attempt_count: 0,
+    provider_inference_attempt_count: 0,
     provider_baseline_attempt_count: 0,
     provider_continuation_completed_count: 0,
     provider_usage_reported_count: 0,
@@ -71,6 +73,7 @@ export class AbliteratedModelTelemetry {
     vision_route_attempt_count: 0,
     abliterated_provider_error_count: 0,
     baseline_provider_error_count: 0,
+    inference_provider_error_count: 0,
     provider_error_recovery_attempt_count: 0,
     provider_error_recovery_served: false,
     provider_error_fallback_served: false,
@@ -225,7 +228,13 @@ export class AbliteratedModelTelemetry {
           )
             this.routing.planned_baseline_attempt_count++;
           if (routing.visionRoute) this.routing.vision_route_attempt_count++;
-          if (isAbliterationModel(model.modelId))
+          if (isInferenceCyberModel(model.modelId)) {
+            this.totals.provider_inference_attempt_count++;
+            this.capture("inference_cyber_requested", {
+              requested_model: model.modelId,
+              generation_step: stepIndex + 1,
+            });
+          } else if (isAbliterationModel(model.modelId))
             this.totals.provider_abliteration_attempt_count++;
           else this.totals.provider_baseline_attempt_count++;
           const start = Date.now();
@@ -284,7 +293,9 @@ export class AbliteratedModelTelemetry {
             }
             if (textCharacters > 0 || toolCalls > 0) recordServedRouting();
             if (outcome === "error") {
-              if (isAbliterationModel(model.modelId))
+              if (isInferenceCyberModel(model.modelId))
+                this.routing.inference_provider_error_count++;
+              else if (isAbliterationModel(model.modelId))
                 this.routing.abliterated_provider_error_count++;
               else this.routing.baseline_provider_error_count++;
             }
@@ -311,8 +322,10 @@ export class AbliteratedModelTelemetry {
             }
             if (
               outcome === "completed" &&
-              isAbliterationModel(responseModel) &&
-              isAbliterationModel(model.modelId)
+              (isAbliterationModel(responseModel) ||
+                isInferenceCyberModel(responseModel)) &&
+              (isAbliterationModel(model.modelId) ||
+                isInferenceCyberModel(model.modelId))
             )
               this.successfulAbliterationGeneration = true;
             // Keep first-step comparisons and every exceptional outcome. Normal

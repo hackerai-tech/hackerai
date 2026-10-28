@@ -365,10 +365,15 @@ export const FileUploadPreview = ({
                   >
                     <div
                       className={
-                        isImageFile(filePreview.file)
-                          ? hasMultipleFiles
-                            ? "h-14.5 w-14.5"
-                            : "h-36 w-36"
+                        isImageFile(filePreview.file) &&
+                        (filePreview.preview ||
+                          filePreview.loading ||
+                          filePreview.error)
+                          ? filePreview.error
+                            ? "size-[100px]"
+                            : hasMultipleFiles
+                              ? "h-14.5 w-14.5"
+                              : "size-[min(9rem,25dvh)]"
                           : ""
                       }
                     >

@@ -53,6 +53,19 @@ describe("operation channels", () => {
     jest.useRealTimers();
   });
 
+  it("retries only a lost readiness acknowledgement and starts the file operation once", async () => {
+    const sub = new Subscription();
+    sub.publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+    client.newSubscription.mockReturnValueOnce(sub);
+    const handle = jest.fn();
+    const start = request("ready", "file_append");
+    await router.dispatch(start, handle);
+    await router.dispatch(start, handle);
+    expect(sub.publish).toHaveBeenCalledTimes(2);
+    expect(sub.publish.mock.calls[0]).toEqual(sub.publish.mock.calls[1]);
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers a lost file reply without replaying the mutation and waits for receiver acknowledgement", async () => {
     const append = jest.fn();
     const start = {
