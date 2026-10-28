@@ -277,6 +277,105 @@ describe("ChatInput - Integration Tests", () => {
     setNavigatorOnline(true);
   });
 
+  describe("Keyboard and draft edge cases", () => {
+    it.each([{ isComposing: true }, { keyCode: 229 }])(
+      "does not submit Enter while an IME candidate is being confirmed: %j",
+      async (compositionEvent) => {
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="ime-chat"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, { target: { value: "日本語の下書き" } });
+        fireEvent.keyDown(input, { key: "Enter", ...compositionEvent });
+        await act(async () => {});
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(input).toHaveValue("日本語の下書き");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
+    it.each(["unmount", "pagehide"])(
+      "keeps the latest draft when %s happens before the autosave delay",
+      async (boundary) => {
+        const { unmount } = render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="fast-draft"
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        fireEvent.change(input, {
+          target: { value: "Last characters before leaving" },
+        });
+        if (boundary === "unmount") unmount();
+        else fireEvent(window, new Event("pagehide"));
+        expect(getDraftContentById("fast-draft")).toBe(
+          "Last characters before leaving",
+        );
+      },
+    );
+
+    it("keeps an unsaved queued edit mounted when a free user's Agent becomes ready", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { subscription: "free", isCheckingProPlan: false };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      const view = (status: "streaming" | "ready") => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <TaskPanelsSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status={status}
+            hasMessages
+            chatId="queued-edit"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(view("streaming"));
+      const options = await screen.findByRole("button", {
+        name: "More options for queued message: Private queued message",
+      });
+      fireEvent.keyDown(options, { key: "Enter" });
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: "Edit message" }),
+      );
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+        { target: { value: "Unsaved revised message" } },
+      );
+      rerender(view("ready"));
+      await act(async () => {});
+      expect(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+      ).toHaveValue("Unsaved revised message");
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Save", exact: true }),
+      );
+      expect(
+        await screen.findByTestId("regional-subscription-offer"),
+      ).toBeVisible();
+    });
+  });
+
   describe("Sandbox disconnect warnings", () => {
     afterEach(() => jest.restoreAllMocks());
     const ui = () => (

@@ -86,18 +86,16 @@ export function ChatInputTextarea({
     setInput(content || "");
   }, [draftId, setInput]);
 
-  // Auto-save draft as user types with 500ms debounce
+  // Save each committed edit so navigation or pagehide cannot cancel the
+  // latest draft. Accepted submissions still clear it through setInput("").
   useEffect(() => {
-    const handle = window.setTimeout(() => {
-      if (input.trim()) {
-        upsertDraft(draftId, input);
-      } else if (hasDraftAttachmentsById(draftId)) {
-        upsertDraft(draftId, "");
-      } else {
-        removeDraft(draftId);
-      }
-    }, 500);
-    return () => window.clearTimeout(handle);
+    if (input.trim()) {
+      upsertDraft(draftId, input);
+    } else if (hasDraftAttachmentsById(draftId)) {
+      upsertDraft(draftId, "");
+    } else {
+      removeDraft(draftId);
+    }
   }, [input, draftId]);
 
   // Handle paste events for file uploads and token validation
@@ -198,7 +196,12 @@ export function ChatInputTextarea({
         disabled={disabled}
         data-testid="chat-input"
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (
+            e.key === "Enter" &&
+            !e.shiftKey &&
+            !e.nativeEvent.isComposing &&
+            e.nativeEvent.keyCode !== 229
+          ) {
             e.preventDefault();
             onEnterSubmit(e);
           }

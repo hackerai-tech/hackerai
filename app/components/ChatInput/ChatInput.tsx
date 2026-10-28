@@ -222,6 +222,7 @@ const uploadedFileToDraftAttachment = (
 
 export const ChatInput = (props: ChatInputProps) => {
   const { activeToolApprovalRequest } = useAgentApproval();
+  const { editingQueuedMessageId } = useGlobalState();
   return (
     <RegionalSubscriptionGate
       fallbackHeader={
@@ -235,7 +236,8 @@ export const ChatInput = (props: ChatInputProps) => {
         props.status === "submitted" ||
         props.status === "streaming" ||
         !!activeToolApprovalRequest ||
-        !!props.storedApprovalRequest
+        !!props.storedApprovalRequest ||
+        !!editingQueuedMessageId
       }
     >
       <ChatInputContent {...props} />
