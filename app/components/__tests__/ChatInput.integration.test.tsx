@@ -1095,6 +1095,61 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
+    it.each(["surface", "writing-area"])(
+      "focuses the mobile editor on the first %s tap and accepts a draft",
+      async (targetName) => {
+        mockIsMobile = true;
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        const target =
+          targetName === "surface"
+            ? screen.getByTestId("chat-input-surface")
+            : input.parentElement!;
+        expect(input).not.toHaveFocus();
+        fireEvent.click(target);
+        expect(input).toHaveFocus();
+        fireEvent.change(input, { target: { value: "First tap draft" } });
+        expect(input).toHaveValue("First tap draft");
+      },
+    );
+
+    it("does not focus the editor on a scroll gesture or an upload button click", async () => {
+      mockIsMobile = true;
+      jest
+        .mocked(useAuth)
+        .mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status="ready"
+            hasMessages
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByTestId("chat-input");
+      const surface = screen.getByTestId("chat-input-surface");
+      fireEvent.pointerDown(surface, { pointerType: "touch" });
+      fireEvent.pointerCancel(surface, { pointerType: "touch" });
+      expect(input).not.toHaveFocus();
+      fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+      expect(input).not.toHaveFocus();
+    });
+
     it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
       mockIsMobile = true;
       jest.mocked(useAuth).mockReturnValue({
@@ -1182,7 +1237,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).toHaveAttribute("aria-hidden", "true");
       expect(context).toHaveAttribute("inert");
 
-      fireEvent.pointerDown(input);
+      fireEvent.pointerDown(input, { pointerType: "touch" });
+      expect(context).toHaveAttribute("inert");
+      fireEvent.focus(input);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 

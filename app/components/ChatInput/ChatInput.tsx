@@ -1062,9 +1062,23 @@ const ChatInputContent = ({
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onFocusCapture={() => setComposerFocused(true)}
-            onPointerDownCapture={() => {
-              setComposerFocused(true);
-              holdComposerFocusForPointer();
+            onPointerDownCapture={holdComposerFocusForPointer}
+            onClick={(event) => {
+              // Reveal controls only after focus, not during touch start. Focus
+              // padding taps inside the click gesture so mobile opens the keyboard.
+              const target = event.target;
+              if (
+                !(target instanceof Element) ||
+                !event.currentTarget.contains(target) ||
+                target.closest(
+                  "button, a, input, textarea, select, label, [contenteditable], [role='button'], [role='menuitem'], [role='option'], [role='combobox']",
+                )
+              )
+                return;
+              const textarea = event.currentTarget.querySelector("textarea");
+              if (textarea && textarea !== document.activeElement) {
+                textarea.focus({ preventScroll: true });
+              }
             }}
           >
             <ChatInputTextarea
