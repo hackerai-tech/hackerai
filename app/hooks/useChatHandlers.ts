@@ -53,6 +53,7 @@ import {
 interface UseChatHandlersProps {
   goalState?: string;
   goalGeneration?: number;
+  persistedTriggerRunId?: string;
   sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
@@ -131,6 +132,7 @@ export const useChatHandlers = ({
   sendDisabledReason,
   goalState,
   goalGeneration,
+  persistedTriggerRunId,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
@@ -555,18 +557,26 @@ export const useChatHandlers = ({
       throw new Error("The goal changed. Reload before changing it.");
     const stoppedRun = Boolean(saved.goal.activeRunId);
     if (stoppedRun) {
+      if (
+        activeTriggerRunRef &&
+        persistedTriggerRunId === saved.goal.activeRunId
+      )
+        activeTriggerRunRef.current = persistedTriggerRunId;
       if (activeTriggerRunRef?.current !== saved.goal.activeRunId)
         throw new Error(
           "The goal run changed. Reload before changing the goal.",
         );
       // Use the same normalization, persistence, and cancellation path as Stop.
-      // Capture its generation synchronously so a later explicit Stop still wins.
-      const stopping = handleStop({ requireSavedResponse: true });
-      controlGeneration = stopGenerationRef.current;
+      // A later explicit Stop or navigation must still defeat this control.
+      const stopping = handleStop({
+        requireSavedResponse: true,
+        expectedTriggerRunId: saved.goal.activeRunId,
+      });
       if (!(await stopping))
         throw new Error(
           "Could not stop and save the current run. Your draft is saved.",
         );
+      controlGeneration = stopGenerationRef.current;
     }
     if (
       currentChatIdRef.current !== chatId ||
@@ -966,8 +976,30 @@ export const useChatHandlers = ({
     return true;
   };
 
-  const handleStop = async (options?: { requireSavedResponse: boolean }) => {
+  const handleStop = async (options?: {
+    requireSavedResponse?: boolean;
+    expectedTriggerRunId?: string;
+  }) => {
+    if (options?.expectedTriggerRunId) {
+      const beforeStart = stopGenerationRef.current;
+      const pendingStart = getPendingAgentLongRunStart(chatId);
+      if (pendingStart) {
+        try {
+          const started = await pendingStart;
+          if (started?.runId !== options.expectedTriggerRunId) return false;
+        } catch {
+          return false;
+        }
+      }
+      if (
+        currentChatIdRef.current !== chatId ||
+        stopGenerationRef.current !== beforeStart ||
+        activeTriggerRunRef?.current !== options.expectedTriggerRunId
+      )
+        return false;
+    }
     stopGenerationRef.current += 1;
+    const stoppedGeneration = stopGenerationRef.current;
     setSummarySteer(null);
 
     const requestGeneration = getAgentRunRequestGeneration?.();
@@ -1014,7 +1046,10 @@ export const useChatHandlers = ({
 
     return (
       triggerCancelResult.status === "fulfilled" &&
-      streamStopResult.status === "fulfilled"
+      streamStopResult.status === "fulfilled" &&
+      (!options?.expectedTriggerRunId ||
+        (stopGenerationRef.current === stoppedGeneration &&
+          currentChatIdRef.current === chatId))
     );
   };
 

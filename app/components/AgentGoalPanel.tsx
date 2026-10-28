@@ -467,7 +467,7 @@ export function AgentGoalPanel({
             {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
             {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
             {goal.evidence.map((e) => (
-              <p key={e.criterion}>
+              <p key={`${e.criterion}:${e.runId}:${e.toolCallId}`}>
                 Criterion {e.criterion + 1}: {e.explanation} ·{" "}
                 <a
                   className="underline"

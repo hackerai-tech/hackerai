@@ -2315,6 +2315,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isSummarizing: summarizationStatus?.status === "started",
     goalState: persistedGoal?.state,
     goalGeneration: persistedGoal?.generation,
+    persistedTriggerRunId: activeTriggerRunId,
     isSendingNowRef,
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
@@ -2528,9 +2529,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   ].includes(persistedGoal?.state ?? "");
   const stopGoalRunBeforeControl = async (runId: string) => {
     // Never let a delayed goal control stop a replacement or unrelated run.
+    if (activeTriggerRunId === runId) cancellationTriggerRunRef.current = runId;
     if (cancellationTriggerRunRef.current !== runId)
       throw new Error("The goal run changed. Reload before changing the goal.");
-    return handleStop({ requireSavedResponse: true });
+    return handleStop({
+      requireSavedResponse: true,
+      expectedTriggerRunId: runId,
+    });
   };
   const goalPanel = (placement: "attached" | "detached") => (
     <AgentGoalPanel

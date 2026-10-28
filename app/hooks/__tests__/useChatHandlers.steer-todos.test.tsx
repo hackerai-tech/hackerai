@@ -363,6 +363,108 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockClearInput).not.toHaveBeenCalled();
   });
 
+  it("targets the persisted continuation when the local stream still identifies its predecessor", async () => {
+    mockInput = "/goal pause";
+    jest.mocked(global.fetch).mockImplementation(
+      async (url) =>
+        ({
+          ok: true,
+          json: async () =>
+            String(url).startsWith("/api/agent-goal?")
+              ? { goal: { generation: 4, activeRunId: "successor-run" } }
+              : { state: "paused", outcome: "canceled" },
+        }) as Response,
+    );
+    const activeRunRef = { current: "predecessor-run" };
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "running",
+        goalGeneration: 4,
+        persistedTriggerRunId: "successor-run",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: activeRunRef,
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agent/cancel",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "successor-run",
+        }),
+      }),
+    );
+    expect(mockSaveAssistantMessage).toHaveBeenCalled();
+  });
+
+  it("does not stop or normalize a different run whose start is still pending", async () => {
+    let finishStart!: (response: Response) => void;
+    const controller = new AbortController();
+    jest.mocked(fetch).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+    const stream = fetchAgentLongStream({
+      method: "POST",
+      body: JSON.stringify({ chatId: "chat-1" }),
+      signal: controller.signal,
+    }).catch((error: Error) => error);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "goal-run" },
+      }),
+    );
+    let stopped!: Promise<boolean>;
+    act(() => {
+      stopped = result.current.handleStop({
+        requireSavedResponse: true,
+        expectedTriggerRunId: "goal-run",
+      });
+    });
+    expect(mockStop).not.toHaveBeenCalled();
+    await act(async () => {
+      finishStart({
+        ok: true,
+        json: async () => ({
+          runId: "new-unrelated-run",
+          publicAccessToken: "synthetic",
+        }),
+      } as Response);
+      controller.abort();
+      expect(await stopped).toBe(false);
+    });
+    expect(await stream).toMatchObject({ name: "AbortError" });
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockSaveAssistantMessage).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   const renderSummarySteer = (isSummarizing = true) => {
     const isSendingNowRef = { current: false };
     const hasManuallyStoppedRef = { current: false };
