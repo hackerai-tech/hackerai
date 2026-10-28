@@ -49,7 +49,7 @@ export function ChatInputTextarea({
   onBlur,
 }: ChatInputTextareaProps) {
   const input = useComposerInput();
-  const { setInput } = useComposerActions();
+  const { setInput, getInput } = useComposerActions();
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
@@ -89,6 +89,9 @@ export function ChatInputTextarea({
   // Save each committed edit so navigation or pagehide cannot cancel the
   // latest draft. Accepted submissions still clear it through setInput("").
   useEffect(() => {
+    // Restoring a draft updates the provider in a layout effect. Ignore the
+    // preceding render's value instead of overwriting that restored draft.
+    if (input !== getInput()) return;
     if (input.trim()) {
       upsertDraft(draftId, input);
     } else if (hasDraftAttachmentsById(draftId)) {
@@ -96,7 +99,7 @@ export function ChatInputTextarea({
     } else {
       removeDraft(draftId);
     }
-  }, [input, draftId]);
+  }, [input, draftId, getInput]);
 
   // Handle paste events for file uploads and token validation
   useEffect(() => {

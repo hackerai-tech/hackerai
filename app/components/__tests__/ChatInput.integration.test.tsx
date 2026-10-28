@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, StrictMode, useEffect, useState } from "react";
 import {
   CHAT_MODE_STORAGE_KEY,
   CONVERSATION_DRAFTS_STORAGE_KEY,
@@ -278,6 +278,36 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Keyboard and draft edge cases", () => {
+    it("restores a saved draft through StrictMode mount effects", async () => {
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "saved-draft",
+              content: "Previously saved draft",
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      render(
+        <StrictMode>
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="saved-draft"
+            />
+          </TestWrapper>
+        </StrictMode>,
+      );
+      expect(await screen.findByTestId("chat-input")).toHaveValue(
+        "Previously saved draft",
+      );
+      expect(getDraftContentById("saved-draft")).toBe("Previously saved draft");
+    });
+
     it.each([{ isComposing: true }, { keyCode: 229 }])(
       "does not submit Enter while an IME candidate is being confirmed: %j",
       async (compositionEvent) => {
