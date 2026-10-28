@@ -104,4 +104,32 @@ describe("Agent realtime stream completion", () => {
       }),
     ).rejects.toBe(error);
   });
+
+  it("waits for pending remote delivery before propagating a local stream error", async () => {
+    const error = new Error("local stream failed before remote completion");
+    let confirmDelivery!: () => void;
+    const confirmation = new Promise<void>((resolve) => {
+      confirmDelivery = resolve;
+    });
+    let outcome: unknown;
+    const completion = waitForAgentUiStream({
+      stream: new ReadableStream({
+        start: (controller) => controller.error(error),
+      }),
+      waitUntilComplete: () => confirmation,
+    }).then(
+      () => {
+        outcome = "unexpected success";
+      },
+      (failure) => {
+        outcome = failure;
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(outcome).toBeUndefined();
+    confirmDelivery();
+    await completion;
+    expect(outcome).toBe(error);
+  });
 });
