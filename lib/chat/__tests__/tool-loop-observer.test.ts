@@ -44,6 +44,7 @@ describe("ToolLoopObserver", () => {
       repeatCount: 3,
       cycleLength: 1,
       confirmedNonExecution: true,
+      toolCallCount: 1,
     });
     observe(
       observer,

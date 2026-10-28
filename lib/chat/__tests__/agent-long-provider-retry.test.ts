@@ -590,6 +590,7 @@ describe("shouldRetryAgentLongWithFallback", () => {
         repeatCount: 4,
         cycleLength: 1,
         confirmedNonExecution: true,
+        toolCallCount: 1,
       }),
     ).toBe(true);
     expect(
@@ -598,6 +599,7 @@ describe("shouldRetryAgentLongWithFallback", () => {
         repeatCount: 5,
         cycleLength: 2,
         confirmedNonExecution: true,
+        toolCallCount: 1,
       }),
     ).toBe(false);
     expect(
@@ -605,6 +607,15 @@ describe("shouldRetryAgentLongWithFallback", () => {
         toolNames: ["file"],
         repeatCount: 5,
         cycleLength: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 2,
       }),
     ).toBe(false);
   });

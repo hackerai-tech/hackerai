@@ -472,6 +472,7 @@ export type AgentStreamState = {
     repeatCount: number;
     cycleLength: number;
     confirmedNonExecution?: true;
+    toolCallCount?: number;
   };
   toolCycleRecoveryCount: number;
   /** True only when the final provider attempt stopped at the step condition. */
@@ -1252,7 +1253,8 @@ export async function createAgentStream(
     "Correct the input or choose a different useful step; if the prerequisite is unavailable, explain what is blocked and what remains unverified.";
   const pendingToolCycleNudge = () =>
     state.pendingToolCycleRecovery?.confirmedNonExecution &&
-    state.pendingToolCycleRecovery.cycleLength === 1
+    state.pendingToolCycleRecovery.cycleLength === 1 &&
+    state.pendingToolCycleRecovery.toolCallCount === 1
       ? confirmedFailureCycleNudge
       : toolCycleNudge;
   let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
@@ -2867,6 +2869,7 @@ export async function createAgentStream(
           !isAgentMode(ctx.mode) ||
           !cycle?.confirmedNonExecution ||
           cycle.cycleLength !== 1 ||
+          cycle.toolCallCount !== 1 ||
           cycle.repeatCount < 4
         )
           return false;

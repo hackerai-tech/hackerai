@@ -40,6 +40,7 @@ export const isConfirmedToolFailureLoopStop = (
   stoppedDueToDoomLoop &&
   cycle?.confirmedNonExecution === true &&
   cycle.cycleLength === 1 &&
+  cycle.toolCallCount === 1 &&
   cycle.repeatCount >= 4;
 
 export type AssistantContentLoopDetection = {
