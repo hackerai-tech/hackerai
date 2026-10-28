@@ -23,6 +23,7 @@ import { useTauri } from "@/app/hooks/useTauri";
 import { detectPlatform } from "@/app/download/DownloadSection";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useInitialConnectionPending } from "@/app/hooks/useInitialConnectionPending";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 import type { SetSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import {
@@ -60,6 +61,13 @@ export function SandboxSelector({
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
+  const isMobile = useIsMobile();
+  useEffect(() => {
+    // The composer swaps selector triggers at this breakpoint. Close the old
+    // trigger's portals before they can remain anchored to a hidden element.
+    setOpen(false);
+    setConnectHovered(false);
+  }, [isMobile]);
   const { isTauri } = useTauri();
   const {
     subscription,
@@ -358,7 +366,7 @@ export function SandboxSelector({
       </PopoverTrigger>
       <PopoverContent
         data-chat-input-agent-menu
-        className="w-[240px] p-1"
+        className="w-[240px] p-1 data-[state=closed]:hidden"
         align={menuAlign}
       >
         <div className="space-y-0.5">

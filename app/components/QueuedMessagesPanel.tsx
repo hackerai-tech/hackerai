@@ -132,6 +132,8 @@ const QueuedMessageRow = ({
   };
 
   const handleEditKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
+      return;
     if (event.key === "Escape") {
       cancelEditing();
     } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
