@@ -264,23 +264,22 @@ export const createFileToolSchema = ({
   modelName?: string;
 }) => {
   const actionSchema = (
-    supportsView ? z.enum(["read", "view", "edit"]) : z.enum(["read", "edit"])
+    supportsView ? z.enum(["read", "view"]) : z.enum(["read"])
   ) as z.ZodType<FileToolAction>;
   const supportedActionsDescription = [
     supportsView
       ? "- view: View raster image files through multimodal understanding."
       : null,
     "- read: Read file content as text (Markdown, code, logs).",
-    "- edit: Make targeted edits to a text file. Include a nonempty `edits` array.",
   ]
     .filter(Boolean)
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
     approvalGated
-      ? "Edit actions are approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first."
+      ? "File mutations are approval-gated. Call file_edit or file_write and let the platform request approval instead of asking in chat first."
       : null,
-    "Use file_write to write or append file content. For file copying, moving, and deletion, use the shell tool.",
+    "Use file_edit for targeted changes and file_write to write or append content. For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
           "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
@@ -292,9 +291,6 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "If an edit reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying an edit whose result is unknown.",
-    "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
-    "For extensive modifications to shorter files, use file_write to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
     "Text content returned by this tool may prefix each line using the right-aligned, six-character LINE_NUMBER|LINE_CONTENT format. Treat LINE_NUMBER| as metadata, not as part of the file content.",
     "If the range parameter is not specified, the entire file will be read by default.",
@@ -310,7 +306,7 @@ export const createFileToolSchema = ({
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
-Use this tool to read and edit text files and view raster images. Use file_write to write or append file content.
+Use this tool to read text files and view raster images. Use file_edit for targeted edits and file_write to write or append content.
 
 ### Supported Actions
 
@@ -330,15 +326,31 @@ ${instructionsDescription}`,
         .describe(
           "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
         ),
-      edits: z
-        .array(fileEditSchema)
-        .optional()
-        .describe(
-          "A list of edits to be sequentially applied to the file. Required for `edit` action.",
-        ),
     }),
   });
 };
+
+// Keep edits required in a plain object: provider routes do not all enforce
+// action-dependent required fields in union schemas.
+export const createFileEditToolSchema = ({
+  approvalGated = false,
+  modelName,
+}: {
+  approvalGated?: boolean;
+  modelName?: string;
+} = {}) =>
+  tool({
+    description: `Make targeted changes to an existing text file. Supply a nonempty edits array; each edit finds exact text and replaces it. All edits must succeed or none are applied. Use file to read before editing, and file_write for full rewrites.
+${approvalGated ? "Edits are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}If an edit reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying an edit whose result is unknown.`,
+    inputSchema: z.object({
+      path: z.string().describe("The absolute path to the existing text file"),
+      edits: z
+        .array(fileEditSchema)
+        .min(1)
+        .describe("Nonempty list of sequential exact-text replacements"),
+      brief: createToolBriefSchema({ modelName }),
+    }),
+  });
 
 // Keep writes in a plain object schema: text must be required for every action
 // exposed by this tool, including on providers that do not honor action unions.
@@ -354,7 +366,7 @@ export const createFileWriteToolSchema = ({
 - write: Overwrite the full file. Supply the complete content in text.
 - append: Append the supplied text to the file.
 Both actions create the file if it does not exist. An explicit empty text string is allowed; never omit text or invent content to fill it.
-${approvalGated ? "Writes and appends are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}Do not write partial or truncated content. Include necessary trailing newlines. Use appropriate file extensions, including .md for Markdown. Use file for reading, image viewing, and targeted edits; use shell for copying, moving, or deleting files.
+${approvalGated ? "Writes and appends are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}Do not write partial or truncated content. Include necessary trailing newlines. Use appropriate file extensions, including .md for Markdown. Use file for reading or image viewing, file_edit for targeted edits, and shell for copying, moving, or deleting files.
 If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown. Do not read files that were just successfully written, as their content remains in context.`,
     inputSchema: z.object({
       action: z.enum(["write", "append"]).describe("The action to perform"),
@@ -1189,6 +1201,7 @@ export const createAgentToolSchemaSet = ({
     interact_terminal_session: interactTerminalSessionTool,
     get_terminal_files: getTerminalFilesTool,
     file: createFileToolSchema({ supportsView: true }),
+    file_edit: createFileEditToolSchema(),
     file_write: createFileWriteToolSchema(),
     todo_write: todoWriteTool,
     create_vulnerability_report: createVulnerabilityReportTool,

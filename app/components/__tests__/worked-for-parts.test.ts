@@ -448,6 +448,7 @@ describe("projectAgentWorkTimelineItems", () => {
       ["tool-file_write", { input: { action: "write" } }, "edit"],
       ["tool-file_write", { input: { action: "append" } }, "edit"],
       ["tool-file_write", { input: {} }, "edit"],
+      ["tool-file_edit", { input: {} }, "edit"],
       ["tool-write_file", {}, "edit"],
       ["tool-search_replace", {}, "edit"],
       ["tool-multi_edit", {}, "edit"],

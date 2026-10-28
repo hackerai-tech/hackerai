@@ -299,6 +299,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <FileToolsHandler message={message} part={part} status={status} />;
 
     case "tool-file":
+    case "tool-file_edit":
     case "tool-file_write":
       return <FileHandler message={message} part={part} status={status} />;
 

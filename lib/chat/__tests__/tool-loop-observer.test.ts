@@ -2,6 +2,7 @@ import { ToolLoopObserver } from "../tool-loop-observer";
 
 const tools = new Set([
   "file",
+  "file_edit",
   "file_write",
   "run_terminal_cmd",
   "open_url",
@@ -32,7 +33,7 @@ describe("ToolLoopObserver", () => {
     expect(JSON.stringify(observer)).not.toContain("unchanged");
   });
 
-  it.each(["file", "file_write"])(
+  it.each(["file", "file_edit", "file_write"])(
     "identifies confirmed validation failure for %s without treating unknown errors as safe",
     (toolName) => {
       const observer = new ToolLoopObserver();

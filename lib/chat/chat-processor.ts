@@ -149,6 +149,7 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-file",
+  "tool-file_edit",
   "tool-file_write",
   "tool-read_file",
   "tool-write_file",
@@ -485,8 +486,11 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
     const cleanedParts = message.parts.map((part: any) => {
       // Process tool-file parts with read, edit, or append action and object output
       if (
-        (part.type === "tool-file" || part.type === "tool-file_write") &&
-        (part.input?.action === "read" ||
+        (part.type === "tool-file" ||
+          part.type === "tool-file_edit" ||
+          part.type === "tool-file_write") &&
+        (part.type === "tool-file_edit" ||
+          part.input?.action === "read" ||
           part.input?.action === "edit" ||
           part.input?.action === "append") &&
         typeof part.output === "object" &&

@@ -39,7 +39,11 @@ export interface Message {
 // (e.g. file write/append showing content as the LLM generates it). All other
 // tool types are held back until input-available — see the gate inside the
 // per-part forEach below.
-const STREAMS_DURING_INPUT = new Set<string>(["tool-file", "tool-file_write"]);
+const STREAMS_DURING_INPUT = new Set<string>([
+  "tool-file",
+  "tool-file_edit",
+  "tool-file_write",
+]);
 
 const getWebSearchQuery = (input: unknown): string => {
   if (!input || typeof input !== "object") return "";
@@ -402,12 +406,16 @@ export function extractSidebarContentFromMessage(
     // File tool streaming - extract during input-streaming/input-available
     // so sidebar auto-follow works for file operations (like terminals)
     if (
-      (part.type === "tool-file" || part.type === "tool-file_write") &&
+      (part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write") &&
       (part.state === "input-streaming" || part.state === "input-available")
     ) {
       const fileInput = part.input;
       if (fileInput?.path) {
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         if (fileAction === "write" || fileAction === "append") {
           contentList.push({
             path: fileInput.path,
@@ -489,6 +497,7 @@ export function extractSidebarContentFromMessage(
         part.type === "tool-search_replace" ||
         part.type === "tool-multi_edit" ||
         part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
         part.type === "tool-file_write") &&
       part.state === "output-available"
     ) {
@@ -505,9 +514,15 @@ export function extractSidebarContentFromMessage(
       let originalContent: string | undefined;
       let modifiedContent: string | undefined;
 
-      if (part.type === "tool-file" || part.type === "tool-file_write") {
+      if (
+        part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write"
+      ) {
         // New unified file tool
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         const actionMap: Record<string, SidebarFile["action"]> = {
           view: "viewing",
           read: "reading",
@@ -515,7 +530,7 @@ export function extractSidebarContentFromMessage(
           append: "appending",
           edit: "editing",
         };
-        action = actionMap[fileAction] || "reading";
+        action = (fileAction ? actionMap[fileAction] : undefined) || "reading";
 
         if (fileAction === "view") {
           const output = part.output;

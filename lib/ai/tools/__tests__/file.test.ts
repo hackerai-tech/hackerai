@@ -11,7 +11,7 @@ jest.mock("@/lib/logger", () => ({
   logger: { error: jest.fn() },
 }));
 
-import { createFile, createFileWrite } from "../file";
+import { createFile, createFileEdit, createFileWrite } from "../file";
 import {
   getSandboxUploadedFileUrl,
   uploadSandboxFileToConvex,
@@ -189,6 +189,49 @@ describe("dedicated file_write executor", () => {
     expect(result).toEqual({ error: "connection lost after dispatch" });
     expect(sandbox.files.write).toHaveBeenCalledTimes(1);
     expect(commandRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("dedicated file_edit executor", () => {
+  test("applies a targeted edit through the existing native file relay", async () => {
+    const { sandbox, commandRun } = makeNativeDesktopSandbox();
+    const result = (await runTool(createFileEdit(makeContext(sandbox)), {
+      path: "C:\\repo\\app.ts",
+      brief: "Update the first line",
+      edits: [{ find: "line one", replace: "updated line" }],
+    })) as { content: string };
+
+    expect(result.content).toContain("Multi-edit completed");
+    expect(sandbox.files.write).toHaveBeenCalledWith(
+      "C:\\repo\\app.ts",
+      "updated line\nline two\n",
+      { user: "user" },
+    );
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("requests file-edit approval before touching the sandbox", async () => {
+    const sandbox = makeSandbox(jest.fn());
+    const requestToolApproval = jest.fn(async () => ({
+      approved: false as const,
+      reason: "Edit denied",
+    }));
+    const context = makeContext(sandbox, { requestToolApproval });
+    const result = await runTool(createFileEdit(context), {
+      path: "/project/file.txt",
+      brief: "Change a line",
+      edits: [{ find: "before", replace: "after" }],
+    });
+
+    expect(result).toEqual({ error: "Edit denied", approvalDenied: true });
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: "file_edit",
+        operation: "file_edit",
+        target: "/project/file.txt",
+      }),
+    );
+    expect(context.sandboxManager.getSandbox).not.toHaveBeenCalled();
   });
 });
 

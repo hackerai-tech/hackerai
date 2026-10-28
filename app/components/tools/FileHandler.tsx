@@ -83,7 +83,8 @@ export const FileHandler = memo(function FileHandler({
   status,
 }: FileHandlerProps) {
   const input = part.input as FileInput | undefined;
-  const action = input?.action;
+  const action =
+    input?.action ?? (part.type === "tool-file_edit" ? "edit" : undefined);
   const outputErrorText =
     typeof part.errorText === "string" ? part.errorText : undefined;
   const isIncompleteState =
