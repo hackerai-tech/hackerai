@@ -366,7 +366,7 @@ export function SandboxSelector({
       </PopoverTrigger>
       <PopoverContent
         data-chat-input-agent-menu
-        className="w-[240px] p-1"
+        className="w-[240px] p-1 data-[state=closed]:hidden"
         align={menuAlign}
       >
         <div className="space-y-0.5">
