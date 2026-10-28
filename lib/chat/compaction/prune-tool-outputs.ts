@@ -161,7 +161,8 @@ const buildPlaceholderFromParts = (
       return `[Terminal: ran '${shortCmd}', exit code ${result.exited?.exitCode ?? result.exitCode ?? exitCode}${references.length ? `; ${references.join("; ")}` : ""}]`;
     }
 
-    case "file": {
+    case "file":
+    case "file_write": {
       const action = input?.action ?? "unknown";
       const path = input?.path ?? input?.file_path ?? "unknown";
       if (action === "read") {
@@ -483,7 +484,7 @@ const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
     return part;
   }
 
-  if (part.type === "tool-file") {
+  if (part.type === "tool-file" || part.type === "tool-file_write") {
     const { originalContent, modifiedContent, ...restOutput } =
       output as Record<string, unknown>;
 
