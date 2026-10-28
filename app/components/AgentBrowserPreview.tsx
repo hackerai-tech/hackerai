@@ -64,6 +64,7 @@ export function AgentBrowserPreview({
   onJumpToLive,
   onContinue,
   onVisibilityChange,
+  onReturnToChat,
 }: {
   chatId: string;
   agentId: string;
@@ -72,6 +73,7 @@ export function AgentBrowserPreview({
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
+  onReturnToChat?: () => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
   onContinue?: (message: { id: string; text: string }) => Promise<void>;
@@ -1647,6 +1649,7 @@ export function AgentBrowserPreview({
                       { action: "release", grant: activeGrant },
                       true,
                     ).catch(() => undefined);
+                  onReturnToChat?.();
                 }}
                 className="rounded-xl border border-border px-5 py-3 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               >
