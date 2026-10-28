@@ -307,7 +307,7 @@ async def run_one(slug: str, entry: dict, args: argparse.Namespace, docker_env: 
     output.mkdir(parents=True)
     container = "hackerai-realvuln-" + uuid.uuid4().hex[:12]
     checked([
-        "docker", "run", "--detach", "--rm", "--name", container,
+        "docker", "run", "--detach", "--rm", "--init", "--name", container,
         "--label", "hackerai.benchmark=realvuln", "--network", "none",
         "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",

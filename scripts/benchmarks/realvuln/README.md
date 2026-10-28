@@ -7,6 +7,8 @@ commands and file operations run in an offline Docker container containing
 only the target's pinned source. The RealVuln ground truth and OpenRouter key
 remain on the host. Account-backed reporting, browser and Desktop transports
 are unavailable in this adapter; this is not a production deployment test.
+The container uses Docker's init process to reap detached command workers;
+without it, completed commands accumulate as zombies and exhaust the PID limit.
 
 The upstream [RealVuln](https://github.com/kolega-ai/Real-Vuln-Benchmark)
 dataset, matcher and scorer are pinned to commit

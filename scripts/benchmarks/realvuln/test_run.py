@@ -87,7 +87,7 @@ class BridgeReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(run, "ARTIFACTS", base), \
                  patch.object(run, "prepare_target"), \
-                 patch.object(run, "checked"), \
+                 patch.object(run, "checked") as docker_run, \
                  patch.object(run, "agent_run", agent_run), \
                  patch.object(run.subprocess, "run"), \
                  patch.object(run, "score_with_upstream") as scorer:
@@ -99,6 +99,7 @@ class BridgeReliabilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["transportFailureCount"], 1)
             self.assertNotIn("score", row)
             scorer.assert_not_called()
+            self.assertIn("--init", docker_run.call_args.args[0])
 
 
 if __name__ == "__main__":
