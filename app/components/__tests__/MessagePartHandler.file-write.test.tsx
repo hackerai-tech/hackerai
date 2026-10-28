@@ -54,3 +54,27 @@ it.each(["tool-file", "tool-file_write"])(
     );
   },
 );
+
+it("renders a dedicated edit without an action field", () => {
+  const part = {
+    type: "tool-file_edit",
+    toolCallId: "edit-notes",
+    state: "output-available",
+    input: {
+      path: "/project/notes.txt",
+      edits: [{ find: "old", replace: "new" }],
+    },
+    output: { content: "Edit completed" },
+  };
+  const message = { id: "message", role: "assistant", parts: [part] } as any;
+  render(
+    <MessagePartHandler
+      message={message}
+      part={part as any}
+      partIndex={0}
+      status="ready"
+    />,
+  );
+  expect(screen.getByText("Edited")).toBeInTheDocument();
+  expect(screen.getByText("/project/notes.txt")).toBeInTheDocument();
+});

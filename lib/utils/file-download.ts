@@ -30,6 +30,25 @@ export type DownloadFileResult = {
   reason?: "unsupported_native";
 };
 
+/** Keep the object URL alive while the browser starts its asynchronous save. */
+export function startBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  try {
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  } finally {
+    link.remove();
+  }
+  // Revoking in the click's call stack can invalidate a pending download.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 export async function downloadFile({
   filename,
   content,
@@ -91,16 +110,9 @@ export async function downloadFile({
   }
 
   // Blob download fallback
-  let url: string | undefined;
   try {
     const blob = new Blob([content], { type: mimeType });
-    url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    startBlobDownload(blob, filename);
     toast.success("File downloaded successfully");
     return { outcome: "initiated" };
   } catch (error) {
@@ -112,10 +124,5 @@ export async function downloadFile({
         error instanceof Error ? error.message : "Unknown error occurred",
     });
     return { outcome: "failed" };
-  } finally {
-    // Always revoke the blob URL to prevent memory leaks
-    if (url) {
-      URL.revokeObjectURL(url);
-    }
   }
 }

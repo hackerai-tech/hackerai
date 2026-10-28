@@ -20,6 +20,7 @@ jest.mock("../get-terminal-files", () => ({
 }));
 jest.mock("../file", () => ({
   createFile: jest.fn(() => ({})),
+  createFileEdit: jest.fn(() => ({})),
   createFileWrite: jest.fn(() => ({})),
 }));
 jest.mock("../web-search", () => ({ createWebSearch: jest.fn(() => ({})) }));

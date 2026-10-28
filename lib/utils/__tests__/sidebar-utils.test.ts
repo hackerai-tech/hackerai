@@ -631,3 +631,39 @@ describe.each(["tool-file", "tool-file_write"])(
     );
   },
 );
+
+it("shows a dedicated edit in the sidebar without an action argument", () => {
+  const call = {
+    type: "tool-file_edit",
+    toolCallId: "edit-content",
+    input: {
+      path: "/project/notes.txt",
+      edits: [{ find: "old", replace: "new" }],
+    },
+  };
+  const [pending] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [{ ...call, state: "input-available" }],
+  });
+  expect(pending).toMatchObject({
+    path: "/project/notes.txt",
+    action: "editing",
+    isExecuting: true,
+  });
+  const [saved] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [
+      {
+        ...call,
+        state: "output-available",
+        output: { originalContent: "old", modifiedContent: "new" },
+      },
+    ],
+  });
+  expect(saved).toMatchObject({
+    path: "/project/notes.txt",
+    content: "new",
+    action: "editing",
+    isExecuting: false,
+  });
+});

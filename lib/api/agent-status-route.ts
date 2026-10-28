@@ -18,6 +18,7 @@ type AgentStatusRequestBody = {
 type TriggerRunStatus = {
   metadata?: unknown;
   status?: string;
+  tags?: string[];
 };
 
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
@@ -163,6 +164,55 @@ export const createAgentStatusPost =
       stage = "retrieve_trigger_run";
       const run = (await runs.retrieve(runId)) as TriggerRunStatus;
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
+        const metadataRecord =
+          run.metadata != null &&
+          typeof run.metadata === "object" &&
+          !Array.isArray(run.metadata)
+            ? (run.metadata as Record<string, unknown>)
+            : undefined;
+        const missingOwnerMetadata =
+          run.metadata == null ||
+          (metadataRecord !== undefined &&
+            (metadataRecord.chatId === undefined ||
+              metadataRecord.chatId === chatId) &&
+            (metadataRecord.userId === undefined ||
+              metadataRecord.userId === userId));
+        // Session metadata is not copied onto its first run. The worker fills
+        // ownership metadata shortly after starting. Keep an owned, associated
+        // approval run polling without disclosing its actual status or changing
+        // state until that independent ownership check becomes available.
+        if (
+          chat.active_agent_approval_session_id &&
+          missingOwnerMetadata &&
+          run.tags?.includes(`user_${userId}`) &&
+          run.tags.includes(`chat_${chatId}`)
+        ) {
+          if (run.status && TERMINAL_RUN_STATUSES.has(run.status)) {
+            // Startup can fail before the worker writes ownership metadata.
+            // The associated run and server tags permit cleanup, but missing
+            // metadata cannot safely drive a crash-recovery replay.
+            stage = "clear_uninitialized_terminal_trigger_run";
+            const outcome = await clearTerminalAgentRun({
+              chatId,
+              userId,
+              runId,
+            });
+            return NextResponse.json({
+              status: outcome === "stale" ? "DETACHED" : run.status,
+              terminal: true,
+            });
+          }
+          if (
+            ["PENDING_VERSION", "QUEUED", "DEQUEUED", "EXECUTING"].includes(
+              run.status ?? "",
+            )
+          ) {
+            return NextResponse.json(
+              { status: "INITIALIZING", terminal: false },
+              { status: 202 },
+            );
+          }
+        }
         return new NextResponse("Forbidden", { status: 403 });
       }
 

@@ -282,6 +282,33 @@ describe("pruneToolOutputs", () => {
     expect(filePart.output).toBe("[File: edit /src/app.ts]");
   });
 
+  it("prunes a dedicated file_edit result without an action field", () => {
+    const messages: UIMessage[] = [
+      makeAssistantMessage([
+        makeToolPart(
+          "file_edit",
+          { content: "x".repeat(5000) },
+          { path: "/src/app.ts" },
+        ),
+      ]),
+      makeAssistantMessage(
+        [
+          makeToolPart(
+            "run_terminal_cmd",
+            { stdout: "recent", exitCode: 0 },
+            { command: "echo" },
+          ),
+        ],
+        "msg-new",
+      ),
+    ];
+
+    const result = pruneToolOutputs(messages, 5, NO_MIN);
+    expect((result.messages[0].parts[0] as any).output).toBe(
+      "[File: edit /src/app.ts]",
+    );
+  });
+
   it("generates correct placeholder for match tool", () => {
     const matches = Array.from({ length: 50 }, (_, i) => ({
       file: `/src/file${i % 8}.ts`,
@@ -842,6 +869,30 @@ describe("compactMessageForStorage", () => {
     expect(result.strippedUiOnlyFields).toBe(true);
     expect(part.output).toEqual({ content: "latest content" });
     expect(result.afterSizeBytes).toBeLessThan(result.beforeSizeBytes);
+  });
+
+  it("strips dedicated edit diff fields before storage", () => {
+    const message = makeAssistantMessage([
+      makeToolPart(
+        "file_edit",
+        {
+          content: "latest content",
+          originalContent: "x".repeat(5000),
+          modifiedContent: "y".repeat(5000),
+        },
+        { path: "/tmp/a.txt" },
+      ),
+    ]);
+
+    const result = compactMessageForStorage(message, {
+      softLimitBytes: 1000,
+      toolOutputTokenBudget: 10_000,
+    });
+
+    expect(result.strippedUiOnlyFields).toBe(true);
+    expect((result.message.parts[0] as any).output).toEqual({
+      content: "latest content",
+    });
   });
 
   it("prunes old tool outputs when stripped parts are still too large", () => {

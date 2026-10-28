@@ -25,7 +25,12 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
-import { createFileToolSchema, createFileWriteToolSchema } from "./schemas";
+import {
+  createFileEditToolSchema,
+  createFileToolSchema,
+  createFileWriteToolSchema,
+  type FileToolAction,
+} from "./schemas";
 
 const MAX_VIEW_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TEXT_FILE_READ_BYTES = 1024 * 1024;
@@ -1282,7 +1287,7 @@ async function uploadViewPreviewFiles(args: {
 
 export const createFile = (
   context: ToolContext,
-  toolName: "file" | "file_write" = "file",
+  toolName: "file" | "file_write" | "file_edit" = "file",
 ) => {
   const { sandboxManager, modelName, getCurrentModelName } = context;
   const getAuxiliaryVision = () =>
@@ -1343,8 +1348,15 @@ export const createFile = (
         text,
         range,
         edits,
-      }: InferToolInput<ReturnType<typeof createFileToolSchema>> & {
+      }: Omit<
+        InferToolInput<ReturnType<typeof createFileToolSchema>>,
+        "action"
+      > & {
+        action: FileToolAction;
         text?: string;
+        edits?: InferToolInput<
+          ReturnType<typeof createFileEditToolSchema>
+        >["edits"];
       },
       { toolCallId },
     ) => {
@@ -1987,5 +1999,32 @@ export const createFileWrite = (context: ToolContext) => {
     }),
     execute: (input, options) => file.execute!(input, options),
     toModelOutput: file.toModelOutput,
+  });
+};
+
+// Share the guarded edit executor while exposing a schema that requires edits.
+export const createFileEdit = (context: ToolContext) => {
+  const file = createFile(context, "file_edit");
+  return tool<
+    InferToolInput<ReturnType<typeof createFileEditToolSchema>>,
+    InferToolOutput<typeof file>
+  >({
+    ...createFileEditToolSchema({
+      approvalGated: !!context.requestToolApproval,
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }),
+    execute: (input, options) =>
+      file.execute!({ ...input, action: "edit" }, options),
+    toModelOutput: ({ output }) => {
+      if (typeof output === "object" && output !== null) {
+        if ("error" in output) {
+          return { type: "text" as const, value: `Error: ${output.error}` };
+        }
+        if ("content" in output) {
+          return { type: "text" as const, value: output.content };
+        }
+      }
+      return { type: "text" as const, value: JSON.stringify(output) };
+    },
   });
 };

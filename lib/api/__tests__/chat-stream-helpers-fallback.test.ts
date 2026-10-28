@@ -1745,18 +1745,36 @@ describe("explicit paid Flash tier reasoning", () => {
   });
 });
 
-it("keeps Inference reasoning options isolated from OpenRouter and prices its served identity", () => {
-  const options = buildProviderOptions(
-    true,
-    "synthetic-user",
-    "model-abliterated",
-    "ask",
-    {
-      requestedModelSlug: "deepseek-v4.1-flash-1017-cyber",
-      selectedModelOverride: "hackerai-max",
-    },
-  );
-  expect(options).toEqual({ inference: { reasoningEffort: "max" } });
+it.each([
+  ["hackerai-max", "max"],
+  ["hackerai-pro", "max"],
+  ["hackerai-standard", "high"],
+  ["auto", "high"],
+  [undefined, "high"],
+] as const)(
+  "uses Inference effort %s=%s in Ask and Agent without leaking OpenRouter options",
+  (selection, effort) => {
+    for (const mode of ["ask", "agent"] as const) {
+      const options = buildProviderOptions(
+        true,
+        "synthetic-user",
+        "model-abliterated",
+        mode,
+        {
+          requestedModelSlug: "deepseek-v4.1-flash-1017-cyber",
+          selectedModelOverride: selection,
+          reasoningOverride: { enabled: true, effort: "low" },
+          hasPdfAttachments: true,
+          cacheSessionId: "private-session",
+          ignoredProviderSlugs: ["together"],
+        },
+      );
+      expect(options).toEqual({ inference: { reasoningEffort: effort } });
+    }
+  },
+);
+
+it("prices the Inference Cyber served identity", () => {
   expect(
     resolveServedModelForCostAccounting({
       modelName: "model-abliterated",

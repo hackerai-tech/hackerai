@@ -172,7 +172,11 @@ export const SharedMessagePartHandler = ({
   }
 
   // New unified file tool
-  if (part.type === "tool-file" || part.type === "tool-file_write") {
+  if (
+    part.type === "tool-file" ||
+    part.type === "tool-file_edit" ||
+    part.type === "tool-file_write"
+  ) {
     return renderFileTool(part, idx, openSidebar);
   }
 
@@ -559,7 +563,8 @@ function renderFileTool(
     error?: string;
   };
   const filePath = fileInput?.path || "";
-  const fileAction = fileInput?.action || "read";
+  const fileAction =
+    fileInput?.action || (part.type === "tool-file_edit" ? "edit" : "read");
   const brief = fileInput?.brief?.trim() || "";
 
   const getFileRange = () => {

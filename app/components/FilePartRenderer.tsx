@@ -18,6 +18,7 @@ import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import { isTauriEnvironment, openDownloadsFolder } from "../hooks/useTauri";
+import { startBlobDownload } from "@/lib/utils/file-download";
 
 const FilePartRendererComponent = ({
   part,
@@ -141,17 +142,9 @@ const FilePartRendererComponent = ({
     try {
       setDownloadingFile(true);
       const response = await fetch(url);
+      if (!response.ok) throw new Error("File download request failed");
       const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      URL.revokeObjectURL(blobUrl);
+      startBlobDownload(blob, fileName);
 
       if (isTauriEnvironment()) {
         toast.success(`Downloaded ${fileName}`, {
