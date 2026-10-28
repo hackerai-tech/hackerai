@@ -1581,7 +1581,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
@@ -1610,7 +1610,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       handledRateLimitIdx,
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
@@ -1676,7 +1676,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
       "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
@@ -2219,7 +2219,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
