@@ -80,11 +80,14 @@ interface ChatInputProps {
   offlineProtection?: boolean;
   sendDisabledReason?: string;
   isResolvingInitialState?: boolean;
+  topNotice?: React.ReactNode;
 }
 
 const COMPOSER_TAP_CLICK_FALLBACK_MS = 500;
 
-const ChatInputLoadingState = () => (
+const ChatInputLoadingState = ({
+  topNotice,
+}: Pick<ChatInputProps, "topNotice">) => (
   <div
     aria-label="Loading task input"
     aria-live="polite"
@@ -93,6 +96,9 @@ const ChatInputLoadingState = () => (
     role="status"
   >
     <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto">
+        {topNotice}
+      </div>
       <div
         className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
         data-testid="chat-input-loading-surface"
@@ -251,6 +257,7 @@ const ChatInputContent = ({
   offlineProtection = true,
   sendDisabledReason,
   isResolvingInitialState = false,
+  topNotice,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -908,7 +915,7 @@ const ChatInputContent = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState />;
+    return <ChatInputLoadingState topNotice={topNotice} />;
   }
 
   return (
@@ -925,6 +932,7 @@ const ChatInputContent = ({
         <div
           className={`flex min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
+          {topNotice}
           {isOffline && (
             <div
               role="status"

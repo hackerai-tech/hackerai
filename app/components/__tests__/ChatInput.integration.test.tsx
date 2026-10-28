@@ -1592,6 +1592,7 @@ describe("ChatInput - Integration Tests", () => {
             chatId="approval-chat"
             hasMessages
             isResolvingInitialState
+            topNotice={<button>Take control</button>}
           />
         </TestWrapper>,
       );
@@ -1599,6 +1600,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         await screen.findByTestId("chat-input-loading-state"),
       ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Take control" }),
+      ).toBeVisible();
       expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
         "h-[98px]",
       );
