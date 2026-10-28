@@ -79,30 +79,33 @@ describe("agent status route", () => {
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
 
-  it("keeps an owned approval run polling while its worker publishes ownership metadata", async () => {
-    const { createAgentStatusPost } = await import("../agent-status-route");
-    mockGetChatById.mockResolvedValue({
-      id: "chat-1",
-      user_id: "user-1",
-      active_trigger_run_id: "run-1",
-      active_agent_approval_session_id: "approval-1",
-    } as never);
-    mockRunsRetrieve.mockResolvedValue({
-      status: "EXECUTING",
-      metadata: {},
-      tags: ["user_user-1", "chat_chat-1"],
-    } as never);
-    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
-      requestFor("chat-1", "run-1"),
-    );
-    expect(response.status).toBe(202);
-    await expect(response.json()).resolves.toEqual({
-      status: "INITIALIZING",
-      terminal: false,
-    });
-    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
-    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
-  });
+  it.each([{}, { chatId: "chat-1" }, { userId: "user-1" }])(
+    "keeps an owned approval run polling with incomplete ownership metadata: %j",
+    async (metadata) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      mockRunsRetrieve.mockResolvedValue({
+        status: "EXECUTING",
+        metadata,
+        tags: ["user_user-1", "chat_chat-1"],
+      } as never);
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual({
+        status: "INITIALIZING",
+        terminal: false,
+      });
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     {
@@ -110,6 +113,11 @@ describe("agent status route", () => {
       status: "EXECUTING",
       tags: ["user_user-1", "chat_chat-1"],
     },
+    ...[{ chatId: "other" }, { userId: "other" }].map((metadata) => ({
+      metadata,
+      status: "EXECUTING",
+      tags: ["user_user-1", "chat_chat-1"],
+    })),
     { metadata: {}, status: "EXECUTING", tags: ["user_other", "chat_chat-1"] },
     { metadata: {}, status: "COMPLETED", tags: ["user_other", "chat_chat-1"] },
   ])(

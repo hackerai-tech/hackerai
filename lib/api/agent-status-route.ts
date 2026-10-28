@@ -164,12 +164,19 @@ export const createAgentStatusPost =
       stage = "retrieve_trigger_run";
       const run = (await runs.retrieve(runId)) as TriggerRunStatus;
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
+        const metadataRecord =
+          run.metadata != null &&
+          typeof run.metadata === "object" &&
+          !Array.isArray(run.metadata)
+            ? (run.metadata as Record<string, unknown>)
+            : undefined;
         const missingOwnerMetadata =
           run.metadata == null ||
-          (typeof run.metadata === "object" &&
-            !Array.isArray(run.metadata) &&
-            !("chatId" in run.metadata) &&
-            !("userId" in run.metadata));
+          (metadataRecord !== undefined &&
+            (metadataRecord.chatId === undefined ||
+              metadataRecord.chatId === chatId) &&
+            (metadataRecord.userId === undefined ||
+              metadataRecord.userId === userId));
         // Session metadata is not copied onto its first run. The worker fills
         // ownership metadata shortly after starting. Keep an owned, associated
         // approval run polling without disclosing its actual status or changing
