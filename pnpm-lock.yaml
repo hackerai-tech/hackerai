@@ -79,6 +79,7 @@ overrides:
   zod@>=4.0.0 <4.6.6: 4.6.7
   '@radix-ui/themes>radix-ui': 1.6.7
   '@upstash/core-analytics>@upstash/redis': 1.39.0
+  posthog-js>@posthog/core: 1.59.1
 
 patchedDependencies:
   '@workos-inc/authkit-nextjs@4.3.2':
@@ -2732,6 +2733,9 @@ packages:
 
   '@posthog/core@1.29.13':
     resolution: {integrity: sha512-7Me5zaeAue/wmA364Go8ChYbsVAfNAHbtDxXopWu3D6hq9PVScUcauRgjD1njgvP8NzN91SrIllE+pri3XvJVw==}
+
+  '@posthog/core@1.59.1':
+    resolution: {integrity: sha512-P39YgzQVDh6oz6wAzQXEnoHgTYpM7gifonmVKq1scAJco79h31XmmNVurRq9tTmmyIrr1uX8FHT0riCsyfV9AQ==}
 
   '@posthog/core@1.60.1':
     resolution: {integrity: sha512-UpswaG2957O6Ywfx1aCeI8BbXcfoKduKwq1ytBml80AQuAmgK672OmhDcldA7wg4vGP49LpDTgxcNbLvZwQOqw==}
@@ -10609,6 +10613,10 @@ snapshots:
     dependencies:
       '@posthog/types': 1.376.4
 
+  '@posthog/core@1.59.1':
+    dependencies:
+      '@posthog/types': 1.416.1
+
   '@posthog/core@1.60.1':
     dependencies:
       '@posthog/types': 1.416.1
@@ -16304,7 +16312,7 @@ snapshots:
   posthog-js@1.438.12(@types/react@19.3.0)(react@19.3.1):
     dependencies:
       '@posthog/browser-common': 0.9.11
-      '@posthog/core': 1.60.1
+      '@posthog/core': 1.59.1
       '@posthog/types': 1.416.1
       core-js: 3.49.0
       dompurify: 3.4.17

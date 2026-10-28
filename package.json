@@ -280,7 +280,8 @@
       "qs@>=6.7.0 <6.16.1": "6.16.1",
       "zod@>=4.0.0 <4.6.6": "4.6.7",
       "@radix-ui/themes>radix-ui": "$radix-ui",
-      "@upstash/core-analytics>@upstash/redis": "1.39.0"
+      "@upstash/core-analytics>@upstash/redis": "1.39.0",
+      "posthog-js>@posthog/core": "1.59.1"
     },
     "patchedDependencies": {
       "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",
