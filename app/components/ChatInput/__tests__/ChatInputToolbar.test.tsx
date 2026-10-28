@@ -217,7 +217,7 @@ describe("ChatInputToolbar", () => {
     );
     expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
       "hidden",
-      "min-w-0",
+      "min-w-16",
       "md:block",
     );
   });
@@ -231,6 +231,7 @@ describe("ChatInputToolbar", () => {
       "min-w-0",
       "flex-1",
       "overflow-hidden",
+      "md:flex-wrap",
     );
     expect(screen.getByTestId("chat-input-primary-actions")).toHaveClass(
       "shrink-0",

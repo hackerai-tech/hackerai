@@ -53,7 +53,7 @@ export function ChatInputToolbar({
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-1 px-3 min-[360px]:gap-2">
       <div
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2 md:flex-wrap"
         data-testid="chat-input-toolbar-controls"
       >
         <div className="shrink-0">
@@ -77,13 +77,13 @@ export function ChatInputToolbar({
         {user && isAgentMode(chatMode) ? (
           <>
             <div
-              className="hidden min-w-0 md:block"
+              className="hidden min-w-20 max-w-max flex-1 md:block"
               data-testid="chat-input-desktop-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
             <div
-              className="hidden min-w-0 md:block"
+              className="hidden min-w-16 max-w-max flex-1 md:block"
               data-testid="chat-input-desktop-sandbox"
             >
               <SandboxSelector
