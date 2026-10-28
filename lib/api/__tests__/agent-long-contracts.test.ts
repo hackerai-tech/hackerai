@@ -1693,7 +1693,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1702,7 +1702,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
     );
     expect(agentStreamRunnerSrc).toMatch(
-      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+      /const requestedModelSlug =[\s\S]{0,400}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
     );
 
     for (const source of [taskSrc, chatHandlerSrc]) {

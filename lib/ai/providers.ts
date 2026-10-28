@@ -1,4 +1,9 @@
 import {
+  inference,
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_CYBER_MODEL_ID,
+} from "./inference";
+import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
   DEEPSEEK_1017_CANONICAL_SLUG,
@@ -1359,7 +1364,9 @@ const buildProviderMap = (
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
-const baseProviders: ReturnType<typeof buildProviderMap> = {
+const baseProviders: ReturnType<typeof buildProviderMap> &
+  Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {
+  [INFERENCE_CYBER_MODEL_KEY]: inference(INFERENCE_CYBER_MODEL_ID),
   ...buildProviderMap(openrouter),
   [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
   [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
@@ -1393,6 +1400,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
+  [INFERENCE_CYBER_MODEL_KEY]: "Inference DeepSeek V4.1 Flash 1017 Cyber",
   [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
   [ABLITERATION_LARGE_V2_MODEL_KEY]:
     "Abliteration abliterated-model-large-flash",

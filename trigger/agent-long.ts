@@ -2116,6 +2116,7 @@ export const agentLongTask = task({
       }
 
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        previewEnvironment: ctx.environment.type === "PREVIEW",
         posthog,
         userId,
         selectedModel,
@@ -3813,6 +3814,8 @@ export const agentLongTask = task({
               ...(activeAbliteratedExperiment &&
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
+                    inferenceCyberEnabled:
+                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,

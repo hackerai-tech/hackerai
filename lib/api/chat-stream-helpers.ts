@@ -1,3 +1,4 @@
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
@@ -1061,6 +1062,14 @@ export function buildProviderOptions(
 ) {
   // Direct provider: never send OpenRouter routing, plugins, or user IDs.
   // Large Flash maps xhigh to high, so Max must request the literal max mode.
+  if (isInferenceCyberModel(options.requestedModelSlug)) {
+    return {
+      inference: {
+        reasoningEffort:
+          options.selectedModelOverride === "hackerai-max" ? "max" : "high",
+      },
+    } as Record<"inference", { reasoningEffort: "max" | "high" }>;
+  }
   if (isAbliterationModel(modelName)) {
     return {
       abliteration: {

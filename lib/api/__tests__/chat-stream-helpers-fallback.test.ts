@@ -1744,3 +1744,23 @@ describe("explicit paid Flash tier reasoning", () => {
     ).toEqual({ enabled: true, effort: "high" });
   });
 });
+
+it("keeps Inference reasoning options isolated from OpenRouter and prices its served identity", () => {
+  const options = buildProviderOptions(
+    true,
+    "synthetic-user",
+    "model-abliterated",
+    "ask",
+    {
+      requestedModelSlug: "deepseek-v4.1-flash-1017-cyber",
+      selectedModelOverride: "hackerai-max",
+    },
+  );
+  expect(options).toEqual({ inference: { reasoningEffort: "max" } });
+  expect(
+    resolveServedModelForCostAccounting({
+      modelName: "model-abliterated",
+      responseModel: "deepseek-v4.1-flash-1017-cyber",
+    }),
+  ).toBe("deepseek-v4.1-flash-1017-cyber");
+});

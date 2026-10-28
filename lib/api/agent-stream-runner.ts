@@ -1,3 +1,9 @@
+import {
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_MAX_IMAGES_PER_REQUEST,
+  isInferenceCyberModel,
+} from "@/lib/ai/inference";
+import { withInferenceFallback } from "@/lib/ai/inference-fallback";
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
@@ -783,6 +789,7 @@ export type AgentStreamContext = {
   abliteratedStepRouting?: {
     baselineModel: string;
     generationStepLimit?: AbliterationGenerationStepLimit;
+    inferenceCyberEnabled?: boolean;
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
@@ -1105,24 +1112,65 @@ export async function createAgentStream(
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
-    const historyModel = ctx.chatLogger
-      ? withProviderModelHistory(languageModel, {
-          configured: activeStepModelName,
-          generationStep: stepIndex + 1,
-          onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
-        })
-      : languageModel;
-    const telemetryModel =
-      ctx.abliteratedTelemetry?.wrap(
-        historyModel,
-        stepIndex,
-        activeStepRouting,
-      ) ?? historyModel;
-    const recoveryModel = recoverAbliterationMedia(
-      ctx.providerStreamTimeout
-        ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
-        : telemetryModel,
-    );
+    const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
+      const historyModel = ctx.chatLogger
+        ? withProviderModelHistory(attemptModel, {
+            configured: activeStepModelName,
+            generationStep: stepIndex + 1,
+            onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
+          })
+        : attemptModel;
+      const telemetryModel =
+        ctx.abliteratedTelemetry?.wrap(
+          historyModel,
+          stepIndex,
+          activeStepRouting,
+        ) ?? historyModel;
+      return recoverAbliterationMedia(
+        ctx.providerStreamTimeout
+          ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
+          : telemetryModel,
+      );
+    };
+    let recoveryModel = wrapAttempt(languageModel);
+    if (
+      typeof languageModel !== "string" &&
+      languageModel.specificationVersion === "v3" &&
+      isInferenceCyberModel(languageModel.modelId)
+    ) {
+      const fallback = wrapAttempt(
+        ctx.trackedProvider.languageModel(ABLITERATION_MODEL_KEY),
+      );
+      if (
+        typeof recoveryModel !== "string" &&
+        recoveryModel.specificationVersion === "v3" &&
+        typeof fallback !== "string" &&
+        fallback.specificationVersion === "v3"
+      ) {
+        recoveryModel = withInferenceFallback(recoveryModel, fallback, {
+          abortSignal,
+          prepareFallbackPrompt: (prompt) =>
+            preprocessAbliterationImages(prompt),
+          onDiscardedUsage: (usage) => {
+            const inputTokens = usage.inputTokens.total ?? 0;
+            const outputTokens = usage.outputTokens.total ?? 0;
+            ctx.usageTracker.accumulateStep(
+              {
+                inputTokens,
+                outputTokens,
+                totalTokens: inputTokens + outputTokens,
+                inputTokenDetails: {
+                  cacheReadTokens: usage.inputTokens.cacheRead,
+                  cacheWriteTokens: usage.inputTokens.cacheWrite,
+                },
+                raw: usage.raw,
+              },
+              INFERENCE_CYBER_MODEL_KEY,
+            );
+          },
+        });
+      }
+    }
     const sizeRecoveryModel =
       ctx.mode === "agent"
         ? withProviderRequestSizeRecovery(recoveryModel, {
@@ -1390,7 +1438,12 @@ export async function createAgentStream(
       }),
     };
     ctx.onModelStepSelected?.(effectiveModelName);
-    const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
+    const useInference =
+      ctx.abliteratedStepRouting?.inferenceCyberEnabled === true &&
+      isAbliterationModel(effectiveModelName);
+    const languageModel = ctx.trackedProvider.languageModel(
+      useInference ? INFERENCE_CYBER_MODEL_KEY : effectiveModelName,
+    );
     lastRequestedSlug = languageModel.modelId;
     if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
       activeContextBudget = getAgentContextBudget({
@@ -1415,7 +1468,10 @@ export async function createAgentStream(
     effectiveModelName = getEffectiveModelName(),
   ) => {
     const requestedModelSlug =
-      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+      ctx.abliteratedStepRouting?.inferenceCyberEnabled &&
+      isAbliterationModel(effectiveModelName)
+        ? ctx.trackedProvider.languageModel(INFERENCE_CYBER_MODEL_KEY).modelId
+        : ctx.trackedProvider.languageModel(effectiveModelName).modelId;
     const cacheSessionId = createOpenRouterCacheSessionId({
       chatId: ctx.chatId,
       mode: ctx.mode,
@@ -1487,7 +1543,13 @@ export async function createAgentStream(
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      ? await preprocessAbliterationImages(toolCallRepair.messages, {
+          // The logical route keeps its historical Abliteration alias; use
+          // the actual selected provider's native budget before conversion.
+          maxNativeImages: ctx.abliteratedStepRouting?.inferenceCyberEnabled
+            ? INFERENCE_MAX_IMAGES_PER_REQUEST
+            : undefined,
+        })
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
@@ -2963,7 +3025,8 @@ export async function createAgentStream(
       if (
         ctx.abliteratedStepRouting &&
         isAbliterationModel(activeStepModelName) &&
-        isAbliterationModel(response.modelId) &&
+        (isAbliterationModel(response.modelId) ||
+          isInferenceCyberModel(response.modelId)) &&
         ["stop", "tool-calls", "length"].includes(finishReason) &&
         (Boolean(text?.trim()) ||
           toolCalls?.some(
