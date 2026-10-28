@@ -1011,7 +1011,7 @@ const ChatInputContent = ({
               its selector, so focus changes never move the composer. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 mb-1 flex min-w-0 shrink-0 items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"} ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
+              className={`relative z-0 mb-1 flex min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 ${compactAgentControls ? "" : "md:hidden"} ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
               data-compact={compactAgentControls ? "true" : "false"}
               data-testid="chat-input-agent-context"
               aria-hidden={mobileSandboxHidden || undefined}
@@ -1086,7 +1086,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onFocusCapture={() => setComposerFocused(true)}
