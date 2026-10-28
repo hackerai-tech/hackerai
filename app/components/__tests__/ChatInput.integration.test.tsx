@@ -397,6 +397,15 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByTestId("regional-subscription-offer"),
       ).not.toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "A new request while editing" },
+      });
+      fireEvent.keyDown(screen.getByTestId("chat-input"), { key: "Enter" });
+      await act(async () => {});
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
       fireEvent.click(
         screen.getByRole("button", { name: "Save", exact: true }),
       );

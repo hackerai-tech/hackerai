@@ -277,6 +277,7 @@ const ChatInputContent = ({
     isUploadingFiles,
     messageQueue,
     updateQueuedMessage,
+    editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
     queueBehavior,
@@ -822,6 +823,9 @@ const ChatInputContent = ({
   } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
     sendDisabledReason ??
+    (status === "ready" && editingQueuedMessageId
+      ? "Finish editing the queued message before sending a new request"
+      : undefined) ??
     (user
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
