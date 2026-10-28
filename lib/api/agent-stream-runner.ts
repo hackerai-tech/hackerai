@@ -778,6 +778,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  runtimeCheckpoint?: import("@/lib/chat/agent-runtime-checkpoint").AgentRuntimeCheckpoint;
   canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
@@ -2107,6 +2108,7 @@ export async function createAgentStream(
     });
 
   const projectHandoffNotes = createBrowserHandoffNoteProjector();
+  let preparedRuntimeCheckpoint = false;
   return streamText({
     // Step results outlive prompt compaction. Do not retain another serialized
     // copy of every provider request; response messages still drive persistence.
@@ -2123,6 +2125,10 @@ export async function createAgentStream(
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      if (preparedRuntimeCheckpoint && !abortSignal.aborted) {
+        ctx.runtimeCheckpoint?.recordExposure();
+        preparedRuntimeCheckpoint = false;
+      }
       if (!abortSignal.aborted && preparedToolCycleRecovery) {
         const recovery = preparedToolCycleRecovery;
         preparedToolCycleRecovery = undefined;
@@ -2192,7 +2198,16 @@ export async function createAgentStream(
         historyEnabled = false;
         historyReplay.reset();
       }
-      const nextRuntimeSection = await runtimePrompt();
+      // prepareStep runs after settled tool results, never interrupting a tool.
+      // Its system override applies to this request only, so the one-shot notice
+      // is neither replayed on every step nor stored in compacted chat history.
+      const runtime = await runtimePrompt();
+      const checkpointNotice =
+        ctx.mode === "agent" && !abortSignal.aborted
+          ? ctx.runtimeCheckpoint?.takeNotice()
+          : undefined;
+      preparedRuntimeCheckpoint = !!checkpointNotice;
+      const nextRuntimeSection = runtime + (checkpointNotice ?? "");
       if (nextRuntimeSection !== runtimeSection && historyEnabled) {
         historyEnabled = false;
         historyReplay.reset();

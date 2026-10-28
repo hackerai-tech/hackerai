@@ -5,6 +5,7 @@ import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
 import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
 import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
+import { createAgentRuntimeCheckpoint } from "@/lib/chat/agent-runtime-checkpoint";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -880,6 +881,117 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
     mockSummaryGenerateText.mockReset();
   });
+
+  it("delivers one runtime checkpoint after a settled tool result across stream retries", async () => {
+    let elapsed = 899;
+    const onExposed = jest.fn();
+    const checkpoint = createAgentRuntimeCheckpoint({
+      enabled: true,
+      maxDurationMs: 1000,
+      getElapsedTimeMs: () => elapsed,
+      onExposed,
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      runtimeCheckpoint: checkpoint,
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    const step = { steps: [], stepNumber: 0, messages: stream.messages };
+    expect((await stream.prepareStep(step)).system).not.toContain(
+      "<agent_runtime_checkpoint>",
+    );
+    // A tool can cross the threshold while it runs. Only the following model
+    // preparation inspects the clock; the tool call/result pair remains intact.
+    elapsed = 910;
+    const settled = [
+      ...stream.messages,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            input: {},
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            output: { type: "text", value: "verified" },
+          },
+        ],
+      },
+    ];
+    const prepared = await stream.prepareStep({ ...step, messages: settled });
+    expect(prepared.system).toContain("<agent_runtime_checkpoint>");
+    expect(prepared.messages.slice(-2)).toEqual(settled.slice(-2));
+    expect(state.finalMessages).toEqual([uiMessage("initial", "Inspect")]);
+    expect(onExposed).not.toHaveBeenCalled();
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onExposed).toHaveBeenCalledTimes(1);
+    expect(
+      (await stream.prepareStep({ ...step, messages: settled, stepNumber: 1 }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    const retried = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(
+      (await retried.prepareStep({ ...step, messages: retried.messages }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    expect(onExposed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ask", "aborted"])(
+    "does not prepare a runtime notice for %s",
+    async (scenario) => {
+      const takeNotice = jest.fn(() => "runtime notice");
+      const recordExposure = jest.fn();
+      const abortController = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const context = createTestStreamContext({
+        mode: scenario === "ask" ? "ask" : "agent",
+        abortController,
+        runtimeCheckpoint: { takeNotice, recordExposure },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        context as any,
+        state,
+      )) as any;
+      if (scenario === "aborted") abortController.abort();
+      await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+      expect(takeNotice).not.toHaveBeenCalled();
+      expect(recordExposure).not.toHaveBeenCalled();
+    },
+  );
 
   it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
     let version: string | undefined;
