@@ -437,6 +437,8 @@ describe("terminal execution records", () => {
     await Promise.all([first, second]);
     expect(settledBeforeRelease).toBe(false);
     expect(listingsBeforeRelease).toBe(1);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(6);
+    expect(data.size).toBe(65); // Only the locked record remains above retention.
   });
 
   it("does not overlap a slow retention pass across stores and releases the guard after failure", async () => {

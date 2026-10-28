@@ -31,6 +31,7 @@ const pruningDirectories = new Set<string>();
 let activeRetentionOperations = 0;
 const retentionWaiters: Array<() => void> = [];
 
+/** Share four retention I/O slots across all stores in this worker process. */
 async function withRetentionIo<T>(operation: () => Promise<T>): Promise<T> {
   if (activeRetentionOperations >= RETENTION_IO_CONCURRENCY) {
     await new Promise<void>((resolve) => retentionWaiters.push(resolve));
@@ -46,25 +47,27 @@ async function withRetentionIo<T>(operation: () => Promise<T>): Promise<T> {
     else activeRetentionOperations--;
   }
 }
-// Batch before queueing so one scan cannot enqueue every relay read at once.
+/** Bound queued work and finish independent batches even if one file fails. */
 async function mapRetentionIo<T, R>(
   items: T[],
   operation: (item: T) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = [];
+  let failure: { reason: unknown } | undefined;
   for (let start = 0; start < items.length; start += RETENTION_IO_CONCURRENCY) {
     const batch = await Promise.allSettled(
       items
         .slice(start, start + RETENTION_IO_CONCURRENCY)
         .map((item) => withRetentionIo(() => operation(item))),
     );
-    // A failed operation must not release the directory guard while siblings
-    // still own remote file/relay work.
     for (const result of batch) {
-      if (result.status === "rejected") throw result.reason;
-      results.push(result.value);
+      if (result.status === "rejected") failure ??= { reason: result.reason };
+      else results.push(result.value);
     }
   }
+  // Keep the directory guarded until every batch settles, and preserve the
+  // failed maintenance outcome without starving later independent removals.
+  if (failure) throw failure.reason;
   return results;
 }
 
