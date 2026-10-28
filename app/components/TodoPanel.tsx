@@ -77,7 +77,7 @@ export const TodoPanel = ({ status, placement = "chat" }: TodoPanelProps) => {
   const panelClassName =
     placement === "sidebar"
       ? "rounded-[16px] shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] border border-black/8 dark:border-border bg-input-chat overflow-hidden"
-      : "mx-4 rounded-[22px_22px_0px_0px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0 bg-input-chat";
+      : "mx-0 rounded-[22px_22px_0px_0px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0 bg-input-chat md:mx-4";
 
   const listMaxHeightClass =
     placement === "sidebar"

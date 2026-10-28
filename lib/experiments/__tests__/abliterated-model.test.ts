@@ -470,3 +470,71 @@ describe("paid moderation-gated three-step Abliteration", () => {
     });
   });
 });
+
+describe("Inference Preview assignment", () => {
+  const originalInferenceKey = process.env.INFERENCE_API_KEY;
+  const originalAbliterationKey = process.env.ABLITERATION_API_KEY;
+  afterEach(() => {
+    if (originalInferenceKey === undefined)
+      delete process.env.INFERENCE_API_KEY;
+    else process.env.INFERENCE_API_KEY = originalInferenceKey;
+    if (originalAbliterationKey === undefined)
+      delete process.env.ABLITERATION_API_KEY;
+    else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
+  });
+  const evaluate = (
+    previewEnvironment: boolean,
+    subscription: SubscriptionTier = "pro",
+    fileType?: string,
+  ) =>
+    evaluateAbliteratedModel({
+      posthog: { getFeatureFlagResult: jest.fn() } as never,
+      userId: "test-user",
+      selectedModel: "model-glm-5.3",
+      subscription,
+      mode: "ask",
+      previewEnvironment,
+      moderationEligible: true,
+      messages: [
+        {
+          id: "u",
+          role: "user",
+          parts: fileType
+            ? [
+                {
+                  type: "file",
+                  mediaType: fileType,
+                  url: "https://example.test/file",
+                },
+              ]
+            : [{ type: "text", text: "synthetic" }],
+        },
+      ],
+    });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.INFERENCE_API_KEY = "test-only";
+    process.env.ABLITERATION_API_KEY = "test-only";
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
+  });
+  it("enables only eligible trusted Preview runtime requests", async () => {
+    expect((await evaluate(true))?.inferenceCyberEnabled).toBe(true);
+    expect((await evaluate(false))?.inferenceCyberEnabled).toBe(false);
+    expect(await evaluate(true, "free")).toBeUndefined();
+    expect(await evaluate(true, "pro", "application/pdf")).toBeUndefined();
+    expect(
+      (await evaluate(true, "pro", "image/png"))?.inferenceCyberEnabled,
+    ).toBe(true);
+  });
+  it("retains Abliteration when key or flag is missing, false, or unavailable", async () => {
+    delete process.env.INFERENCE_API_KEY;
+    expect((await evaluate(true))?.inferenceCyberEnabled).toBe(false);
+    process.env.INFERENCE_API_KEY = "test-only";
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
+    expect((await evaluate(true))?.inferenceCyberEnabled).toBe(false);
+    jest
+      .mocked(getPostHogFlagWithoutExposure)
+      .mockRejectedValue(new Error("unavailable"));
+    expect((await evaluate(true))?.inferenceCyberEnabled).toBe(false);
+  });
+});

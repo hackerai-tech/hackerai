@@ -1490,6 +1490,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         status: "failed",
                         processStarted,
                         exitCode: null,
+                        executionOutcome: "unknown",
                         output,
                         error: `Local command outcome is unknown: ${resolveToolErrorMessage(error)}. Do not rerun this command automatically; it may already have executed.`,
                       },
@@ -1507,11 +1508,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           }));
         } // end of executeCommand
       } catch (error) {
+        const executionOutcome =
+          error &&
+          typeof error === "object" &&
+          "executionOutcome" in error &&
+          error.executionOutcome === "unknown"
+            ? "unknown"
+            : undefined;
         return {
           result: {
             exitCode: error instanceof CommandExitError ? error.exitCode : 1,
             output: "",
             error: resolveToolErrorMessage(error),
+            ...(executionOutcome && { executionOutcome }),
           },
         };
       }

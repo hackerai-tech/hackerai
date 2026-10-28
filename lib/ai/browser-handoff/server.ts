@@ -7,9 +7,11 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { browserBridgeCommand } from "./bridge-program";
+import { browserDaemonCommand } from "./daemon-program";
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
 
@@ -89,14 +91,11 @@ export async function getPrivateStreamPort(
   browserSessionName: string,
 ) {
   const result = await sandbox.commands.run(
-    "agent-browser --json stream status",
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "stream_status",
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
@@ -182,9 +181,8 @@ export async function renewBrowserRelay(
 ) {
   const directory = relayDirectory(session, grant);
   // Atomic replacement avoids a transient empty lease read in the relay.
-  const program = `const fs=require('node:fs');const d=process.argv[1];if(fs.existsSync(d)){if(fs.existsSync(d+'/revoked')||fs.existsSync(d+'/closed'))process.exit(1);fs.writeFileSync(d+'/lease.next',process.argv[2],{mode:384});fs.renameSync(d+'/lease.next',d+'/lease');}`;
   const result = await sandbox.commands.run(
-    `node -e ${quote(program)} ${quote(directory)} ${lease}`,
+    `node -e ${quote(RELAY_RENEW_PROGRAM)} ${quote(directory)} ${lease}`,
     {
       ...buildSandboxCommandOptions(sandbox),
       timeoutMs: 5000,
@@ -271,14 +269,14 @@ export async function captureBrowserFrame(
     capturedAt = Date.now();
     try {
       const screenshot = await sandbox.commands.run(
-        `agent-browser --json --screenshot-format jpeg --screenshot-quality 65 screenshot '${path}'`,
+        browserDaemonCommand(session.directory, browserSessionName, {
+          action: "screenshot",
+          path,
+          format: "jpeg",
+          quality: 65,
+        }),
         {
           ...buildSandboxCommandOptions(sandbox),
-          envs: {
-            AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-            AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-            AGENT_BROWSER_SESSION: browserSessionName,
-          },
           timeoutMs: 8_000,
         },
       );
@@ -336,20 +334,28 @@ export async function resizeBrowserViewport(
   )
     throw new Error("Invalid browser viewport");
   const result = await sandbox.commands.run(
-    `agent-browser set viewport ${width} ${height} 1`,
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "viewport",
+      width,
+      height,
+      deviceScaleFactor: 1,
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
   if (result.exitCode !== 0)
     throw new BrowserPreviewUnavailable("disconnected");
-  return captureBrowserFrame(sandbox, session, browserSessionName, true);
+  const frame = await captureBrowserFrame(
+    sandbox,
+    session,
+    browserSessionName,
+    true,
+  );
+  // The fresh screenshot uses the new viewport, but the stream can replay
+  // metadata from before the resize. Keep input coordinates in the new space.
+  return { ...frame, width, height };
 }
 
 export async function sendBrowserInput(
@@ -357,8 +363,11 @@ export async function sendBrowserInput(
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const handle = await sandbox.commands.run(
     browserBridgeCommand(port, "input"),
     {

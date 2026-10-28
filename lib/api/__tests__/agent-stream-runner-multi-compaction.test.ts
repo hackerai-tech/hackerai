@@ -881,6 +881,93 @@ describe("createAgentStream repeated compaction", () => {
     mockSummaryGenerateText.mockReset();
   });
 
+  it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
+    let version: string | undefined;
+    const manager = {
+      getSandboxType: () => "cloud",
+      getSandboxInfo: () => ({
+        type: "cloud",
+        provider: "e2b",
+        sandboxVersion: version,
+      }),
+      supportsInteractivePty: async () => true,
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      sandboxManager: manager,
+      cloudNetworkPrompt: async () => "\nNetwork policy stays present.\n",
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(stream.system).not.toContain("<agent_browser_runtime>");
+    const prepare = () =>
+      stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+    version = "v12";
+    const legacy = await prepare();
+    expect(legacy.system).toContain("workspace is v12");
+    expect(legacy.system).not.toContain("agent-browser 0.39.3");
+    version = "v13";
+    const upgraded = await prepare();
+    expect(upgraded.system).toContain("agent-browser 0.39.3");
+    expect(upgraded.system).toContain("socket and PID files disappear");
+    expect(upgraded.system).not.toContain("workspace is v12");
+    expect(upgraded.system).toContain("Network policy stays present");
+    version = undefined;
+    expect((await prepare()).system).not.toContain("<agent_browser_runtime>");
+  });
+
+  it.each([
+    ["ask", "cloud", "e2b", "v13"],
+    ["agent", "desktop", undefined, "v13"],
+    ["agent", "remote-connection", undefined, "v13"],
+    ["agent", "cloud", "daytona", "v13"],
+    ["agent", "cloud", "e2b", "v14"],
+  ])(
+    "does not assume E2B browser capabilities for %s / %s / %s / %s",
+    async (mode, type, provider, sandboxVersion) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          sandboxManager: {
+            getSandboxType: () => type,
+            getSandboxInfo: () => ({ type, provider, sandboxVersion }),
+            supportsInteractivePty: async () => true,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      expect(stream.system).not.toContain("<agent_browser_runtime>");
+      expect(
+        (
+          await stream.prepareStep({
+            steps: [],
+            stepNumber: 0,
+            messages: stream.messages,
+          })
+        ).system,
+      ).not.toContain("<agent_browser_runtime>");
+    },
+  );
+
   it("compacts free Ask history with the context meter disabled", async () => {
     const { generateSummaryText, buildSummaryMessage } = jest.requireActual(
       "@/lib/chat/summarization/helpers",
@@ -3935,6 +4022,182 @@ describe("createAgentStream repeated compaction", () => {
     expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
     expect(await replacement.stopWhen.at(-1)({ steps: [step] })).toBe(false);
     expect(state.pendingToolCycleRecovery).toBeUndefined();
+  });
+
+  it("redirects confirmed non-executed file calls before the hard stop", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: "/private" },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "The same tool call was rejected without executing an operation",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain("/private");
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        {
+          toolCallId: "call-3",
+          toolName: "file",
+          input: { action: "write", path: "/private" },
+        },
+      ],
+      toolResults: [
+        {
+          toolCallId: "call-3",
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        },
+      ],
+    };
+    steps.push(step);
+    await stream.onStepFinish(step);
+    expect(await stream.stopWhen.at(-2)({ steps })).toBe(true);
+    expect(state.stoppedDueToDoomLoop).toBe(true);
+    expect(
+      state.toolLoopObserver.getCurrentCycle()?.confirmedNonExecution,
+    ).toBe(true);
+  });
+
+  it("keeps generic guidance for alternating rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    for (let i = 0; i < 6; i++) {
+      await stream.onStepFinish({
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: `/private-${i % 2}` },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      });
+    }
+    const prepared = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "A tool/result cycle has repeated without new output",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      "The same tool call was rejected",
+    );
+  });
+
+  it("keeps the ordinary stop for repeated batches of rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 5; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: ["/one", "/two"].map((path, index) => ({
+          toolCallId: `call-${i}-${index}`,
+          toolName: "file",
+          input: { action: "write", path },
+        })),
+        toolResults: [0, 1].map((index) => ({
+          toolCallId: `call-${i}-${index}`,
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        })),
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-2)({ steps })).toBe(false);
+    }
+    expect(state.toolLoopObserver.getCurrentCycle()).toEqual({
+      toolNames: ["file"],
+      repeatCount: 5,
+      cycleLength: 1,
+      confirmedNonExecution: true,
+      toolCallCount: 2,
+    });
+    expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
   });
 
   it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {

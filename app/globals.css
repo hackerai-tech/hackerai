@@ -203,6 +203,14 @@
   background: color-mix(in srgb, var(--fill-input-chat) 82%, transparent);
 }
 
+/* The panel backing extends under the input's rounded corners on phones.
+   Keep the foreground opaque so that overlap cannot show through the glass. */
+@media (width < 48rem) {
+  .chat-input-glass-surface[data-panels-joined="true"] {
+    background: var(--fill-input-chat);
+  }
+}
+
 .computer-reconnection-warning {
   background: var(--background);
   background: color-mix(in srgb, var(--background) 90%, #f59e0b);

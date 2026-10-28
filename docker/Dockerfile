@@ -329,7 +329,7 @@ ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
 # plus a five-minute buffer, then reclaim abandoned Chromium processes.
 ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=900000
 
-RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
+RUN npm install -g --cache /tmp/npm-cache agent-browser@0.39.3 && \
     rm -rf /tmp/npm-cache && \
     mkdir -p /home/user/agent-browser-screenshots && \
     chown -R user:user /home/user/agent-browser-screenshots && \

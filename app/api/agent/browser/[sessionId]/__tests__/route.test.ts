@@ -7,6 +7,7 @@ const mockStartRelay = jest.fn(async () => {
 const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
+const mockRenewRelay = jest.fn(async (..._args: unknown[]) => undefined);
 const mockCapture = jest.fn(async () => {
   if (mockFailure === "capture" || mockFailure === "unpause")
     throw new Error("Capture failed");
@@ -15,7 +16,10 @@ const mockCapture = jest.fn(async () => {
 const mockResize = jest.fn(async (..._args: unknown[]) => ({
   image: "resized",
 }));
-const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
+const mockSendInput = jest.fn(async (..._args: unknown[]) => {
+  if (mockFailure === "pointer-release")
+    throw new Error("Pointer release failed");
+});
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
 let mockRunActive = true;
@@ -56,15 +60,24 @@ jest.mock("next/server", () => ({
 jest.mock("@/convex/_generated/api", () => ({
   api: { browserHandoffs: new Proxy({}, { get: (_target, name) => name }) },
 }));
-jest.mock("@/lib/auth/get-user-id", () => ({ getUserID: async () => "owner" }));
+jest.mock("@/lib/auth/get-user-id", () => ({
+  getUserID: async () => {
+    if (mockFailure === "auth") throw new Error("Not signed in");
+    return "owner";
+  },
+}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
-    query: async () => ({
-      sessionId: mockSessionId,
-      state: mockState,
-      runActive: mockRunActive,
-      controlledSessionName: "default",
-    }),
+    query: async () => {
+      if (mockFailure === "lookup")
+        throw new Error("Backend lookup unavailable");
+      return {
+        sessionId: mockSessionId,
+        state: mockState,
+        runActive: mockRunActive,
+        controlledSessionName: "default",
+      };
+    },
     mutation: mockMutation,
   }),
 }));
@@ -80,7 +93,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
-  renewBrowserRelay: async () => undefined,
+  renewBrowserRelay: (...args: unknown[]) => mockRenewRelay(...args),
   stopBrowserRelays: () => mockStopRelay(),
   connectBrowserSandbox: async () => ({}),
   getActiveBrowserSessionName: async () =>
@@ -131,6 +144,49 @@ const take = () =>
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
 
+const heartbeat = () =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+      }),
+      body: jsonBody({ action: "heartbeat", grant: "g".repeat(32) }),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it("reports only the remaining confirmed relay lease after renewal", async () => {
+  const result = await heartbeat();
+  expect(result.status).toBe(200);
+  const data = await result.json();
+  expect(data.state).toBe("human");
+  expect(data.leaseValidForMs).toBeGreaterThan(0);
+  expect(data.leaseValidForMs).toBeLessThanOrEqual(25_000);
+  expect(Number.isFinite(data.processingDurationMs)).toBe(true);
+  expect(data.processingDurationMs).toBeGreaterThanOrEqual(0);
+  expect(mockRenewRelay).toHaveBeenCalledTimes(1);
+});
+
+it("does not renew a rejected grant", async () => {
+  mockMutation.mockResolvedValueOnce(false);
+  const result = await heartbeat();
+  expect(result.status).toBe(409);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["auth", 401],
+  ["lookup", 503],
+])("distinguishes %s failure from lease expiry", async (failure, status) => {
+  mockFailure = String(failure);
+  const result = await heartbeat();
+  expect(result.status).toBe(status);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
 it.each(["identity", "capture", "claim"])(
   "keeps recovery paused after a %s failure",
   async (failure) => {
@@ -161,6 +217,21 @@ it("admits takeover from the dedicated waiting state", async () => {
     "beginTakeoverForBackend",
     "finishTakeoverForBackend",
   ]);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStartRelay.mock.invocationCallOrder[0],
+  );
+  expect(mockSendInput.mock.calls[0][3]).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 0,
+      y: 0,
+      button: "left",
+    },
+  ]);
+  expect(mockSendInput.mock.invocationCallOrder[0]).toBeLessThan(
+    mockCapture.mock.invocationCallOrder[0],
+  );
 });
 
 it("keeps recovery when rollback cannot reopen the gate", async () => {
@@ -222,6 +293,37 @@ const exitTakeover = (note: unknown = "") =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+it("releases a disconnected fallback pointer before the resume snapshot", async () => {
+  mockFailure = "none";
+  expect((await exitTakeover()).status).toBe(200);
+  expect(mockSendInput.mock.calls[0][3]).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 0,
+      y: 0,
+      button: "left",
+    },
+  ]);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockSendInput.mock.invocationCallOrder[0],
+  );
+  expect(mockSendInput.mock.invocationCallOrder[0]).toBeLessThan(
+    mockCapture.mock.invocationCallOrder[0],
+  );
+});
+
+it("keeps the Agent paused if pointer release fails during resume", async () => {
+  mockFailure = "pointer-release";
+  expect((await exitTakeover()).status).toBe(503);
+  expect(mockPaused).toBe(true);
+  expect(mockCapture).not.toHaveBeenCalled();
+  expect(mockPause).not.toHaveBeenCalled();
+  expect(
+    mockMutation.mock.calls.some(([name]) => name === "saveExitNoteForBackend"),
+  ).toBe(false);
+});
 
 it("saves even a blank note before unpausing and preserves the gate on save failure", async () => {
   mockFailure = "none";
@@ -350,11 +452,16 @@ it("drains late relay startup before rollback after capture fails", async () => 
   const pending = take();
   for (let i = 0; i < 20; i++) await Promise.resolve();
   expect(mockStartRelay).toHaveBeenCalled();
-  expect(mockStopRelay).not.toHaveBeenCalled();
+  // Old grants were drained before this startup; rollback of the new relay
+  // must still wait for its outstanding startup to settle.
+  expect(mockStopRelay).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStartRelay.mock.invocationCallOrder[0],
+  );
   expect(mockPaused).toBe(true);
   finish("https://relay.example");
   expect((await pending).status).toBe(503);
-  expect(mockStopRelay).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay).toHaveBeenCalledTimes(2);
   expect(mockPaused).toBe(false);
 });
 

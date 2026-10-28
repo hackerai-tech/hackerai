@@ -50,6 +50,7 @@ const retention: ProviderRequestRetentionDiagnostics = {
 describe("AgentLongMemoryTelemetry", () => {
   beforeEach(() => {
     jest.spyOn(process, "constrainedMemory").mockReturnValue(0);
+    jest.spyOn(process, "availableMemory").mockReturnValue(-1);
   });
   afterEach(() => jest.restoreAllMocks());
 
@@ -112,6 +113,61 @@ describe("AgentLongMemoryTelemetry", () => {
     expect(JSON.stringify(emit.mock.calls)).not.toContain("prompt");
     expect(JSON.stringify(emit.mock.calls)).not.toContain("target");
   });
+
+  it.each([0, 256 * MIB])(
+    "records available process memory of %i bytes, including exhausted headroom",
+    (bytes) => {
+      const readAvailable = jest
+        .spyOn(process, "availableMemory")
+        .mockReturnValue(bytes);
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_headroom",
+        chatId: "chat_headroom",
+        userId: "user_headroom",
+        emit,
+        now: () => 1_000,
+        readMemory: () => ({
+          rss: 220 * MIB,
+          heapTotal: 180 * MIB,
+          heapUsed: 100 * MIB,
+          external: 10 * MIB,
+          arrayBuffers: 0,
+        }),
+      });
+      expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+      expect(emit.mock.calls[0]?.[0]).toMatchObject({
+        process_available_memory_bytes: bytes,
+      });
+      expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+      expect(readAvailable).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "throws"])(
+    "keeps the checkpoint when available memory is invalid or unavailable: %s",
+    (value) => {
+      jest.spyOn(process, "availableMemory").mockImplementation(() => {
+        if (value === "throws") throw new Error("private diagnostic failure");
+        return value as number;
+      });
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_unavailable",
+        chatId: "chat_unavailable",
+        userId: "user_unavailable",
+        emit,
+      });
+      expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+      expect(emit.mock.calls[0]?.[0]).not.toHaveProperty(
+        "process_available_memory_bytes",
+      );
+      expect(JSON.stringify(emit.mock.calls)).not.toContain(
+        "private diagnostic failure",
+      );
+    },
+  );
 
   it("keeps the OS process peak distinct from sampled run highs without adding checkpoints", () => {
     const readMemoryConstraint = jest
@@ -269,6 +325,87 @@ describe("AgentLongMemoryTelemetry", () => {
       checkpoint_reason: "heap_growth",
       heap_used_bytes: 132 * MIB,
       heap_used_high_water_bytes: 132 * MIB,
+    });
+  });
+
+  it.each([
+    ["rss", "rss_growth"],
+    ["external", "external_growth"],
+  ] as const)(
+    "reports %s growth while the JavaScript heap stays flat",
+    (field, reason) => {
+      jest.useFakeTimers();
+      try {
+        const memory = {
+          rss: 220 * MIB,
+          heapTotal: 180 * MIB,
+          heapUsed: 100 * MIB,
+          external: 10 * MIB,
+          arrayBuffers: 0,
+        };
+        const emit = jest.fn();
+        const telemetry = new AgentLongMemoryTelemetry({
+          runId: "run_growth",
+          chatId: "chat_growth",
+          userId: "user_growth",
+          emit,
+          readMemory: () => memory,
+        });
+        telemetry.checkpoint({ phase: "provider_request" });
+        telemetry.startPeriodicCheckpoints();
+        try {
+          memory[field] += 31 * MIB;
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(1);
+          memory[field] += MIB;
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(2);
+          expect(emit.mock.calls[1]?.[0]).toMatchObject({
+            checkpoint_reason: reason,
+            heap_used_bytes: 100 * MIB,
+            rss_bytes: memory.rss,
+            external_bytes: memory.external,
+            sample_gap_ms: 10_000,
+            sample_gap_high_water_ms: 10_000,
+          });
+          jest.advanceTimersByTime(10_000);
+          expect(emit).toHaveBeenCalledTimes(2);
+        } finally {
+          telemetry.dispose();
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("retains a sampling gap even when that sample does not emit", () => {
+    let now = 0;
+    let rss = 200 * MIB;
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_gap",
+      chatId: "chat_gap",
+      userId: "user_gap",
+      emit,
+      now: () => now,
+      readMemory: () => ({
+        rss,
+        heapTotal: 180 * MIB,
+        heapUsed: 100 * MIB,
+        external: 0,
+        arrayBuffers: 0,
+      }),
+    });
+    telemetry.checkpoint({ phase: "provider_request" });
+    now = 60_000;
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    now += 10_000;
+    rss += 32 * MIB;
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit.mock.calls[1]?.[0]).toMatchObject({
+      sample_gap_ms: 10_000,
+      sample_gap_high_water_ms: 60_000,
     });
   });
 

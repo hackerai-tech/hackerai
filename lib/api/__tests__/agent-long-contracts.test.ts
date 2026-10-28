@@ -16,6 +16,43 @@
 
 import fs from "fs";
 import path from "path";
+import ts from "typescript";
+
+/** Find awaited settlements so billing-before-continuation guards survive diagnostics. */
+function awaitedUsageDeductions(text: string) {
+  const source = ts.createSourceFile(
+    "caller.ts",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const calls: { position: number; arguments: string[] }[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === "deductAccumulatedUsage"
+    ) {
+      let parent = node.parent;
+      if (ts.isArrowFunction(parent) && parent.body === node) {
+        const observer = parent.parent;
+        if (
+          ts.isCallExpression(observer) &&
+          observer.expression.getText(source) === "observeFinish" &&
+          observer.arguments[1] === parent
+        )
+          parent = observer.parent;
+      }
+      if (ts.isAwaitExpression(parent))
+        calls.push({
+          position: parent.getStart(source),
+          arguments: node.arguments.map((arg) => arg.getText(source)),
+        });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
 
 const transportSrc = fs.readFileSync(
   path.resolve(__dirname, "../../chat/agent-long-transport.ts"),
@@ -1514,10 +1551,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "sendFileMetadataToStream(accumulatedFiles)",
         autoContinueIdx,
       );
-      const deductionIdx = source.lastIndexOf(
-        "await deductAccumulatedUsage",
-        autoContinueIdx,
-      );
+      const deductionIdx =
+        awaitedUsageDeductions(source)
+          .filter((call) => call.position < autoContinueIdx)
+          .at(-1)?.position ?? -1;
 
       expect(autoContinueIdx).toBeGreaterThan(-1);
       expect(persistenceIdx).toBeGreaterThan(-1);
@@ -1656,7 +1693,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1665,7 +1702,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
     );
     expect(agentStreamRunnerSrc).toMatch(
-      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+      /const requestedModelSlug =[\s\S]{0,400}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
     );
 
     for (const source of [taskSrc, chatHandlerSrc]) {
@@ -1713,7 +1750,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
     );
     expect(taskSrc).toMatch(
-      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /hasCandidate:\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
@@ -1744,6 +1790,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
     expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
+  });
+
+  test("Ask also blocks automatic recovery after an uncertain tool result", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /if \(\s*!uncertainToolOutcome &&\s*\(shouldRecoverAbliterationStreamError/,
+    );
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {
@@ -1881,8 +1936,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
-    expect(chatHandlerSrc).toMatch(
-      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    const source = ts.createSourceFile(
+      "handler.ts",
+      chatHandlerSrc,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let usageMessageParameter: ts.ParameterDeclaration | undefined;
+    const findUsageHelper = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(source) === "deductAccumulatedUsage" &&
+        node.initializer &&
+        ts.isArrowFunction(node.initializer)
+      )
+        usageMessageParameter = node.initializer.parameters[0];
+      ts.forEachChild(node, findUsageHelper);
+    };
+    findUsageHelper(source);
+    expect(usageMessageParameter?.name.getText(source)).toBe(
+      "assistantMessageIdForUsage",
+    );
+    expect(usageMessageParameter?.initializer?.getText(source)).toBe(
+      "assistantMessageId",
     );
     expect(
       chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
@@ -1891,10 +1967,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const retryMessageIdIdx = chatHandlerSrc.indexOf(
       "const retryMessageId = generateId()",
     );
-    const retryUsageIdx = chatHandlerSrc.indexOf(
-      "await deductAccumulatedUsage(retryMessageId)",
-      retryMessageIdIdx,
-    );
+    const retryUsageIdx =
+      awaitedUsageDeductions(chatHandlerSrc).find(
+        (call) =>
+          call.position > retryMessageIdIdx &&
+          call.arguments[0] === "retryMessageId",
+      )?.position ?? -1;
 
     expect(retryMessageIdIdx).toBeGreaterThan(-1);
     expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);

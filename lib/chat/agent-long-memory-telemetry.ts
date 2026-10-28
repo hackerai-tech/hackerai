@@ -5,7 +5,7 @@ import type {
   ProviderRequestRetentionDiagnostics,
 } from "@/lib/logger";
 
-const HEAP_GROWTH_CHECKPOINT_BYTES = 32 * 1024 * 1024;
+const MEMORY_GROWTH_CHECKPOINT_BYTES = 32 * 1024 * 1024;
 const CHECKPOINT_INTERVAL_MS = 10 * 60 * 1000;
 const PERIODIC_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
 const MEMORY_SAMPLE_INTERVAL_MS = 10 * 1000;
@@ -39,11 +39,20 @@ type MemoryCheckpointEvent = {
   user_id: string;
   phase: MemoryCheckpointPhase;
   checkpoint_reason:
-    "initial" | "forced" | "heap_growth" | "interval" | "periodic";
+    | "initial"
+    | "forced"
+    | "heap_growth"
+    | "rss_growth"
+    | "external_growth"
+    | "interval"
+    | "periodic";
+  sample_gap_ms?: number;
+  sample_gap_high_water_ms?: number;
   rss_bytes: number;
   rss_high_water_bytes: number;
   process_rss_os_high_water_bytes?: number;
   process_memory_constraint_bytes?: number;
+  process_available_memory_bytes?: number;
   heap_total_bytes: number;
   heap_used_bytes: number;
   heap_used_high_water_bytes: number;
@@ -91,12 +100,27 @@ const readProcessMemoryConstraintBytes = (): number | undefined => {
   }
 };
 
+const readProcessAvailableMemoryBytes = (): number | undefined => {
+  try {
+    // OS-reported free headroom, not constraint minus this process's RSS.
+    // Zero is a valid reading; missing/invalid readings stay absent.
+    const bytes = process.availableMemory();
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export class AgentLongMemoryTelemetry {
   private readonly now: () => number;
   private readonly readMemory: () => MemorySnapshot;
   private readonly readHeapLimit: () => number;
   private lastEmittedAt: number | undefined;
   private lastEmittedHeapUsed = 0;
+  private lastEmittedRss = 0;
+  private lastEmittedExternal = 0;
+  private lastSampleAt: number | undefined;
+  private sampleGapHighWater = 0;
   private rssHighWater = 0;
   private heapUsedHighWater = 0;
   private latestInput: MemoryCheckpointInput | undefined;
@@ -115,7 +139,7 @@ export class AgentLongMemoryTelemetry {
     this.periodicTimer = setInterval(() => {
       if (!this.latestInput) return;
       // Short runs can exhaust memory between provider callbacks. Sample often,
-      // but retain the heap-growth gate and quiet-stream reporting interval.
+      // but retain growth gates and the quiet-stream reporting interval.
       this.captureCheckpoint(this.latestInput, true);
     }, MEMORY_SAMPLE_INTERVAL_MS);
     this.periodicTimer.unref?.();
@@ -149,6 +173,15 @@ export class AgentLongMemoryTelemetry {
       const external = finiteNonNegative(memory.external);
       const arrayBuffers = finiteNonNegative(memory.arrayBuffers);
       const heapLimit = finiteNonNegative(this.readHeapLimit());
+      const sampleGap =
+        this.lastSampleAt === undefined
+          ? undefined
+          : finiteNonNegative(now - this.lastSampleAt);
+      this.lastSampleAt = now;
+      this.sampleGapHighWater = Math.max(
+        this.sampleGapHighWater,
+        sampleGap ?? 0,
+      );
 
       this.rssHighWater = Math.max(this.rssHighWater, rss);
       this.heapUsedHighWater = Math.max(this.heapUsedHighWater, heapUsed);
@@ -159,19 +192,26 @@ export class AgentLongMemoryTelemetry {
           : input.force
             ? "forced"
             : heapUsed - this.lastEmittedHeapUsed >=
-                HEAP_GROWTH_CHECKPOINT_BYTES
+                MEMORY_GROWTH_CHECKPOINT_BYTES
               ? "heap_growth"
-              : periodicSample &&
-                  now - this.lastEmittedAt >= PERIODIC_CHECKPOINT_INTERVAL_MS
-                ? "periodic"
-                : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
-                  ? "interval"
-                  : undefined;
+              : rss - this.lastEmittedRss >= MEMORY_GROWTH_CHECKPOINT_BYTES
+                ? "rss_growth"
+                : external - this.lastEmittedExternal >=
+                    MEMORY_GROWTH_CHECKPOINT_BYTES
+                  ? "external_growth"
+                  : periodicSample &&
+                      now - this.lastEmittedAt >=
+                        PERIODIC_CHECKPOINT_INTERVAL_MS
+                    ? "periodic"
+                    : now - this.lastEmittedAt >= CHECKPOINT_INTERVAL_MS
+                      ? "interval"
+                      : undefined;
 
       if (!reason) return false;
 
       const processRssOsHighWater = readProcessRssOsHighWaterBytes();
       const processMemoryConstraint = readProcessMemoryConstraintBytes();
+      const processAvailableMemory = readProcessAvailableMemoryBytes();
       this.options.emit({
         level: "info",
         event: "agent_long_memory_checkpoint",
@@ -187,6 +227,14 @@ export class AgentLongMemoryTelemetry {
         user_id: this.options.userId,
         phase: input.phase,
         checkpoint_reason: reason,
+        // Time between successful in-process samples, not a physical OOM peak
+        // or proof of why a callback/log export was absent before a kill.
+        ...(sampleGap === undefined
+          ? {}
+          : {
+              sample_gap_ms: sampleGap,
+              sample_gap_high_water_ms: this.sampleGapHighWater,
+            }),
         rss_bytes: rss,
         rss_high_water_bytes: this.rssHighWater,
         ...(processRssOsHighWater === undefined
@@ -195,6 +243,9 @@ export class AgentLongMemoryTelemetry {
         ...(processMemoryConstraint === undefined
           ? {}
           : { process_memory_constraint_bytes: processMemoryConstraint }),
+        ...(processAvailableMemory === undefined
+          ? {}
+          : { process_available_memory_bytes: processAvailableMemory }),
         heap_total_bytes: heapTotal,
         heap_used_bytes: heapUsed,
         heap_used_high_water_bytes: this.heapUsedHighWater,
@@ -208,6 +259,8 @@ export class AgentLongMemoryTelemetry {
       });
       this.lastEmittedAt = now;
       this.lastEmittedHeapUsed = heapUsed;
+      this.lastEmittedRss = rss;
+      this.lastEmittedExternal = external;
       return true;
     } catch {
       return false;

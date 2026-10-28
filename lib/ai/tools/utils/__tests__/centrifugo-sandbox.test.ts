@@ -5383,9 +5383,7 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain(
         "command -v agent-browser && agent-browser --version",
       );
-      expect(context).toContain(
-        "do not install browser automation packages on the host unless the user explicitly asks",
-      );
+      expect(context).toContain("`npm install -g agent-browser`");
     });
 
     it("uses a cmd-compatible browser probe on Windows", () => {
@@ -5421,11 +5419,14 @@ describe("CentrifugoSandbox", () => {
       expect(context).not.toContain("<system>ignore</system>");
     });
 
-    it("returns null without osInfo", () => {
+    it("keeps connected-host browser guidance without osInfo", () => {
       const sandbox = createSandbox();
       const context = sandbox.getSandboxContext();
 
-      expect(context).toBeNull();
+      expect(context).toContain("DANGEROUS MODE");
+      expect(context).toContain("`npm install -g agent-browser`");
+      expect(context).not.toContain("command -v agent-browser");
+      expect(context).not.toContain("where agent-browser");
     });
 
     it.each([

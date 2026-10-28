@@ -1,7 +1,7 @@
 // Runs inside the cloud sandbox. No authentication data or encryption keys are
 // embedded in this program, its arguments, or its output.
 export const BROWSER_SESSION_PROGRAM = String.raw`
-import fcntl, os, pathlib, shutil, stat, subprocess, sys, time
+import fcntl, json, os, pathlib, shutil, socket, stat, subprocess, sys, time
 
 action, directory = sys.argv[1:3]
 root = pathlib.Path(directory)
@@ -143,6 +143,26 @@ elif action == 'expire':
     cleanup()
 elif action == 'cleanup':
     cleanup()
+elif action == 'status':
+    validate()
+    name = (root / 'active-session').read_text().strip()
+    if not name or len(name) > 80 or any(c in name for c in '/\x00\r\n'):
+        raise RuntimeError('Invalid browser session name')
+    path = root / 'sockets' / (name + '.sock')
+    info = path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError('Browser daemon unavailable')
+    # Query the existing daemon directly. Invoking the CLI can auto-start or
+    # reconfigure it; a completion probe must never create or relaunch a browser.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(2)
+        connection.connect(str(path))
+        connection.sendall(b'{"id":"handoff-status","action":"stream_status"}\n')
+        with connection.makefile('rb') as response:
+            line = response.readline(65537)
+            if not line or len(line) > 65536:
+                raise RuntimeError('Invalid browser status')
+            print(json.dumps(json.loads(line)))
 elif action in ('pause', 'resume'):
     validate()
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
@@ -173,7 +193,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
-  action: "prepare" | "cleanup" | "pause" | "resume",
+  action: "prepare" | "cleanup" | "pause" | "resume" | "status",
   directory: string,
   expiresAt: number,
   gate = false,
