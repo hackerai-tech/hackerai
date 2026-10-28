@@ -327,6 +327,11 @@ const ChatInputContent = ({
   const agentControlsPointerDownRef = useRef(false);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
+  const hasJoinedComposerPanels =
+    !!user &&
+    !showAgentApprovalPrompt &&
+    (todoPanelVisible || messageQueue.length > 0);
+  const hasFilePreviews = !!uploadedFiles?.length;
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -872,7 +877,9 @@ const ChatInputContent = ({
       >
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the textarea/actions. */}
-        <div className="flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0">
+        <div
+          className={`flex max-h-[calc(100dvh-11rem)] min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+        >
           {isOffline && (
             <div
               role="status"
@@ -937,11 +944,11 @@ const ChatInputContent = ({
             />
           )}
 
-          {/* New chats always show the sandbox selector above the input.
-            Keep it above the joined progress/queue/attachment panels too. */}
+          {/* Compact desktop composers keep the selector above the panels.
+            Phones use the inline toolbar selector to save vertical space. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 grid min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+              className={`relative z-0 hidden min-w-0 shrink-0 transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none md:grid ${agentControlsVisible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
               data-testid="chat-input-agent-context-reveal"
               aria-hidden={!agentControlsVisible}
               inert={!agentControlsVisible}
@@ -976,7 +983,9 @@ const ChatInputContent = ({
           )}
 
           {user && (
-            <div className="flex flex-col [&>*+*]:rounded-t-none">
+            <div
+              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+            >
               <TodoPanel status={status} />
 
               {messageQueue.length > 0 && (
@@ -1028,6 +1037,7 @@ const ChatInputContent = ({
           <div
             className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
+            data-panels-joined={hasJoinedComposerPanels || undefined}
           >
             <ChatInputTextarea
               draftId={draftId}

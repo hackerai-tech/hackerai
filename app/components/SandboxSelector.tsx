@@ -35,9 +35,10 @@ interface SandboxSelectorProps {
   value: string;
   onChange?: SetSandboxPreference;
   disabled?: boolean;
-  size?: "sm" | "toolbar" | "md";
+  size?: "sm" | "toolbar" | "mobile" | "md";
   triggerLabel?: string;
   compact?: boolean;
+  iconOnly?: boolean;
   menuAlign?: "start" | "center" | "end";
 }
 
@@ -56,6 +57,7 @@ export function SandboxSelector({
   size = "sm",
   triggerLabel,
   compact = false,
+  iconOnly = false,
   menuAlign = "start",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
@@ -325,7 +327,9 @@ export function SandboxSelector({
       ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
       : size === "toolbar"
         ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-64"
-        : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+        : size === "mobile"
+          ? "h-8 max-w-full px-2 gap-1 text-xs font-medium rounded-full border border-border bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+          : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
 
@@ -345,13 +349,17 @@ export function SandboxSelector({
             aria-hidden="true"
             className={`${iconClassName}${showReconnecting ? " animate-spin motion-reduce:animate-none" : ""}`}
           />
-          <span className="min-w-0 flex-1 truncate text-left">
+          <span
+            className={`min-w-0 flex-1 truncate text-left ${iconOnly ? "hidden" : size === "mobile" ? "max-[359px]:hidden" : ""}`}
+          >
             {triggerLabel ??
               (compact ? compactLabel : selectedOption.shortLabel)}
           </span>
           <ChevronDown
             className={
-              size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+              size === "md"
+                ? "h-4 w-4 ml-1 shrink-0"
+                : `h-3 w-3 ml-1 shrink-0 ${iconOnly ? "hidden" : size === "mobile" ? "max-[359px]:hidden" : ""}`
             }
           />
         </Button>

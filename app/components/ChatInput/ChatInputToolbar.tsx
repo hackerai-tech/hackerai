@@ -38,6 +38,12 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const showChatModeSelector = Boolean(
+    user &&
+    chatModeAccessResolved &&
+    !paidAgentOnlyActive &&
+    !freeDesktopAgentOnlyActive,
+  );
   const showFreeAskComputerActivation = Boolean(
     chatModeAccessResolved &&
     user &&
@@ -47,9 +53,9 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2 px-3">
+    <div className="flex min-w-0 shrink-0 items-center gap-1 px-3 min-[360px]:gap-2">
       <div
-        className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2"
         data-testid="chat-input-toolbar-controls"
       >
         <div className="shrink-0">
@@ -66,15 +72,24 @@ export function ChatInputToolbar({
             <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
           </div>
         ) : null}
-        {user &&
-        chatModeAccessResolved &&
-        !paidAgentOnlyActive &&
-        !freeDesktopAgentOnlyActive ? (
-          <ChatModeSelector />
+        {showChatModeSelector ? (
+          <ChatModeSelector className="shrink-0" />
         ) : null}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
         {user && isAgentMode(chatMode) ? (
           <>
+            <div
+              className="min-w-8 md:hidden"
+              data-testid="chat-input-inline-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+                compact
+                size="mobile"
+                iconOnly={showChatModeSelector}
+              />
+            </div>
             <div
               className={
                 compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
@@ -99,7 +114,7 @@ export function ChatInputToolbar({
         ) : null}
       </div>
       <div
-        className="flex shrink-0 items-center gap-2.5"
+        className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"
         data-testid="chat-input-primary-actions"
       >
         {user ? (

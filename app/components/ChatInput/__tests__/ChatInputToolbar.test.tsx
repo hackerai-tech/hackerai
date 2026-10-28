@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { SubscriptionTier } from "@/types";
@@ -203,16 +203,13 @@ describe("ChatInputToolbar", () => {
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getAllByTestId("agent-permission-selector")).toHaveLength(2);
-    expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
-    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
-      "data-size",
-      "toolbar",
-    );
-    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
-      "data-value",
-      "e2b",
-    );
-    fireEvent.click(screen.getByTestId("sandbox-selector"));
+    const desktopSandbox = within(
+      screen.getByTestId("chat-input-desktop-sandbox"),
+    ).getByTestId("sandbox-selector");
+    expect(desktopSandbox).toBeInTheDocument();
+    expect(desktopSandbox).toHaveAttribute("data-size", "toolbar");
+    expect(desktopSandbox).toHaveAttribute("data-value", "e2b");
+    fireEvent.click(desktopSandbox);
     expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
     expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
       "hidden",
@@ -246,7 +243,7 @@ describe("ChatInputToolbar", () => {
     );
   });
 
-  it("keeps the permission icon in the toolbar and moves the sandbox above in compact layout", () => {
+  it("keeps the phone sandbox selector usable when desktop controls move above a compact composer", () => {
     mockAuthUser({ id: "user_123" });
 
     render(
@@ -269,6 +266,13 @@ describe("ChatInputToolbar", () => {
     expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
       "md:block",
     );
+
+    const inlineSandbox = within(
+      screen.getByTestId("chat-input-inline-sandbox"),
+    ).getByTestId("sandbox-selector");
+    expect(inlineSandbox).toHaveAttribute("data-value", "e2b");
+    fireEvent.click(inlineSandbox);
+    expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
   });
 
   it("removes only the mode selector for paid Agent-only mode", () => {
