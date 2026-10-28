@@ -379,6 +379,9 @@ const toolSummaryCategory = (
       return "request";
     case "tool-todo_write":
       return "tasks";
+    case "tool-coverage_write":
+    case "tool-coverage_read":
+      return "notes";
     case "tool-create_note":
     case "tool-list_notes":
     case "tool-update_note":

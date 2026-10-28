@@ -37,6 +37,7 @@ import type {
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
+import type { CoverageEntry } from "@/lib/ai/coverage-ledger";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import {
   projectMessagesToTokenBudget,
@@ -1324,6 +1325,18 @@ export async function handleInitialChatAndUserMessage({
       isHidden,
     });
   }
+}
+
+export async function writeAgentCoverage(args: {
+  userId: string;
+  chatId: string;
+  runId: string;
+  entry: Omit<CoverageEntry, "updatedAt">;
+}): Promise<CoverageEntry[]> {
+  return getConvexClient().mutation(api.chats.writeAgentCoverage, {
+    serviceKey,
+    ...args,
+  });
 }
 
 export async function updateChat({

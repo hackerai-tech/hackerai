@@ -37,6 +37,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   "tool-web": "Web",
   "tool-get_terminal_files": "File sharing",
   "tool-todo_write": "To-do list",
+  "tool-coverage_write": "Investigation coverage",
+  "tool-coverage_read": "Investigation coverage",
   "tool-create_note": "Notes",
   "tool-list_notes": "Notes",
   "tool-update_note": "Notes",

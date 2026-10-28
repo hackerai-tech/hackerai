@@ -881,6 +881,42 @@ describe("createAgentStream repeated compaction", () => {
     mockSummaryGenerateText.mockReset();
   });
 
+  it("restores changed investigation coverage on the next Agent request", async () => {
+    const entries: import("@/lib/ai/coverage-ledger").CoverageEntry[] = [];
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getCoverageEntries: () => entries,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.system).not.toContain("<current_investigation_coverage>");
+    entries.push({
+      surface: "API route",
+      riskArea: "authorization",
+      outcome: "needs_follow_up",
+      hypothesis: "A check may be missing",
+      evidenceFor: "One route differed",
+      evidenceAgainst: "Another route was protected",
+      missingProof: "Need an authorized comparison",
+      nextTest: "Compare access checks",
+      updatedAt: 1,
+    });
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: stream.messages,
+    });
+    expect(next.system).toContain("<current_investigation_coverage>");
+    expect(next.system).toContain("Need an authorized comparison");
+  });
+
   it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
     let version: string | undefined;
     const manager = {

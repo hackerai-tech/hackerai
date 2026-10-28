@@ -5,6 +5,12 @@ import { query, mutation, internalMutation } from "./lib/serviceFunctions";
 import type { MutationCtx } from "./lib/serviceFunctions";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError, type Value } from "convex/values";
+import { coverageEntryValidator } from "./lib/coverage";
+import {
+  coverageKey,
+  MAX_COVERAGE_ENTRIES,
+  upsertCoverageEntry,
+} from "../lib/ai/coverage-ledger";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
@@ -547,6 +553,7 @@ export const getChatByIdFromClient = query({
           }),
         ),
       ),
+      agent_coverage: v.optional(v.array(coverageEntryValidator)),
       branched_from_chat_id: v.optional(v.string()),
       branched_from_title: v.optional(v.string()),
       latest_summary_id: v.optional(v.id("chat_summaries")),
@@ -624,6 +631,103 @@ export const getChatByIdFromClient = query({
   },
 });
 
+/** Save one chat-scoped investigation row while the owning Agent run is active. */
+export const writeAgentCoverage = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    runId: v.string(),
+    entry: v.object({
+      surface: v.string(),
+      riskArea: v.string(),
+      outcome: v.union(
+        v.literal("investigating"),
+        v.literal("needs_follow_up"),
+        v.literal("ruled_out"),
+        v.literal("confirmed"),
+      ),
+      hypothesis: v.string(),
+      evidenceFor: v.string(),
+      evidenceAgainst: v.string(),
+      missingProof: v.string(),
+      nextTest: v.string(),
+    }),
+  },
+  returns: v.array(coverageEntryValidator),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (
+      !chat ||
+      chat.user_id !== args.userId ||
+      chat.active_trigger_run_id !== args.runId ||
+      chat.canceled_at !== undefined ||
+      chat.deletion_started_at !== undefined
+    ) {
+      throw new ConvexError({
+        code: "COVERAGE_RUN_INACTIVE",
+        message: "The owning Agent run is no longer active.",
+      });
+    }
+    const entry = Object.fromEntries(
+      Object.entries(args.entry).map(([key, value]) => [
+        key,
+        typeof value === "string" ? value.trim() : value,
+      ]),
+    ) as typeof args.entry;
+    if (!entry.surface || !entry.riskArea || !entry.hypothesis) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: "Surface, risk area, and hypothesis are required.",
+      });
+    }
+    for (const [key, value] of Object.entries(entry)) {
+      if (typeof value === "string" && value.length > 320) {
+        throw new ConvexError({
+          code: "VALIDATION_ERROR",
+          message: `${key} must be at most 320 characters.`,
+        });
+      }
+    }
+    if (entry.outcome === "needs_follow_up" && !entry.missingProof) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: "An unresolved lead must name the missing proof.",
+      });
+    }
+    if (entry.outcome === "confirmed" && !entry.evidenceFor) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: "A confirmed lead must include supporting evidence.",
+      });
+    }
+    if (entry.outcome === "ruled_out" && !entry.evidenceAgainst) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: "A ruled-out lead must include disconfirming evidence.",
+      });
+    }
+    const current = chat.agent_coverage ?? [];
+    if (
+      !current.some((row) => coverageKey(row) === coverageKey(entry)) &&
+      current.length >= MAX_COVERAGE_ENTRIES
+    ) {
+      throw new ConvexError({
+        code: "COVERAGE_FULL",
+        message: "Coverage is full. Update an existing row instead.",
+      });
+    }
+    const saved = { ...entry, updatedAt: Date.now() };
+    const next = upsertCoverageEntry(current, saved);
+    await ctx.db.patch(chat._id, { agent_coverage: next });
+    return next;
+  },
+});
+
 /**
  * Backend: Get a chat by its ID using service key (no ctx.auth).
  * Used by server-side actions that already enforce ownership separately.
@@ -661,6 +765,7 @@ export const getChatById = query({
           }),
         ),
       ),
+      agent_coverage: v.optional(v.array(coverageEntryValidator)),
       branched_from_chat_id: v.optional(v.string()),
       branched_from_title: v.optional(v.string()),
       latest_summary_id: v.optional(v.id("chat_summaries")),

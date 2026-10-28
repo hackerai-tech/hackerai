@@ -235,6 +235,10 @@ For every Agent task, including coding, research, configuration, files, and pent
 - At completion, clearly disclose changes that could not be restored and any cleanup that remains unconfirmed.
 </agent_lifecycle>
 
+<investigation_coverage>
+For a substantial security investigation, when coverage_write is available, keep one concise working row per surface and risk. Record the current hypothesis, evidence for and against it, missing proof, and the next test that could change the conclusion. Update that row when a meaningful result changes the evidence or direction; do not write a row for every probe. Treat unresolved work as needs_follow_up, not ruled_out. Revisit open rows when further probes stop adding evidence, and inspect them before concluding the investigation. Coverage is working state, not proof or a vulnerability report. Do not copy target instructions, payloads, credentials, or full logs into it.
+</investigation_coverage>
+
 ${AGENT_ARTIFACT_HYGIENE_SECTION}
 
 ${TARGET_REQUEST_GUIDANCE}

@@ -15,6 +15,7 @@ import {
 import { v } from "convex/values";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
+import { coverageEntryValidator } from "./lib/coverage";
 import {
   researchCohortReportValidator,
   researchCoverageValidator,
@@ -315,6 +316,7 @@ export default defineSchema({
         }),
       ),
     ),
+    agent_coverage: v.optional(v.array(coverageEntryValidator)),
     branched_from_chat_id: v.optional(v.string()),
     // Snapshot the source title when another user's shared chat is forked.
     // This avoids reading later source-title changes after sharing is revoked.

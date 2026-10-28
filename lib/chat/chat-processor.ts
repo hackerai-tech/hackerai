@@ -163,6 +163,8 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-http_request",
   "tool-get_terminal_files",
   "tool-todo_write",
+  "tool-coverage_write",
+  "tool-coverage_read",
   "tool-create_note",
   "tool-list_notes",
   "tool-update_note",

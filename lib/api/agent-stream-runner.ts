@@ -1,3 +1,4 @@
+import { buildCoverageContext } from "@/lib/ai/coverage-ledger";
 import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
@@ -838,6 +839,7 @@ export type AgentStreamContext = {
     supportsInteractivePty?(): Promise<boolean>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
+  getCoverageEntries?: () => import("@/lib/ai/coverage-ledger").CoverageEntry[];
   ensureSandbox: import("@/lib/chat/summarization").EnsureSandbox;
   chatLogger: ChatLogger | undefined;
   usageRefundTracker: UsageRefundTracker;
@@ -2002,7 +2004,8 @@ export async function createAgentStream(
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
       (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
-        runtimeSection,
+        runtimeSection +
+        buildCoverageContext(ctx.getCoverageEntries?.() ?? []),
       name,
     );
   const initialProviderOptions = getStepProviderOptions(
@@ -2781,7 +2784,9 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt + runtimeSection,
+            ctx.currentSystemPrompt +
+              runtimeSection +
+              buildCoverageContext(ctx.getCoverageEntries?.() ?? []),
             fallbackModelInfo.modelName,
           ),
         };

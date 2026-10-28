@@ -2842,6 +2842,7 @@ export const agentLongTask = task({
               tools,
               ensureSandbox,
               getTodoManager,
+              getCoverageEntries,
               getFileAccumulator,
               sandboxManager,
               getSandboxSessionCost,
@@ -2885,6 +2886,7 @@ export const agentLongTask = task({
               ctx.run.id,
               auxiliaryVision,
               {
+                initialCoverage: chat?.agent_coverage ?? [],
                 cloudSandboxProvider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
@@ -3856,6 +3858,7 @@ export const agentLongTask = task({
               budgetMonitor,
               sandboxManager,
               getTodoManager,
+              getCoverageEntries,
               ensureSandbox,
               chatLogger,
               usageRefundTracker,

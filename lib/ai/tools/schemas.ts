@@ -562,6 +562,32 @@ export const createWebSearchToolSchema = ({
 
 export const webSearchTool = createWebSearchToolSchema();
 
+const coverageShortText = z.string().trim().max(320);
+export const coverageWriteInputSchema = z.object({
+  surface: coverageShortText.min(1),
+  riskArea: coverageShortText.min(1),
+  outcome: z.enum([
+    "investigating",
+    "needs_follow_up",
+    "ruled_out",
+    "confirmed",
+  ]),
+  hypothesis: coverageShortText.min(1),
+  evidenceFor: coverageShortText.optional().default(""),
+  evidenceAgainst: coverageShortText.optional().default(""),
+  missingProof: coverageShortText.optional().default(""),
+  nextTest: coverageShortText.optional().default(""),
+});
+export const coverageWriteTool = tool({
+  description: `Save or update one working coverage row for this chat. Use when a meaningful test changes an investigation, especially after a failed approach or a change in hypothesis. Keep one row per surface and risk area; do not create a new row for each probe. Include the strongest evidence for and against the hypothesis, what proof is missing, and the next discriminating test. Use needs_follow_up for a plausible lead you cannot yet confirm or rule out. Only mark confirmed after independent verification and only mark ruled_out when you can name the control or test that disproves the lead. A coverage row is working state, not a vulnerability report. Do not copy payloads, credentials, or large logs into this record.`,
+  inputSchema: coverageWriteInputSchema,
+});
+export const coverageReadTool = tool({
+  description:
+    "Read the full saved coverage for this chat, including unresolved leads and negative evidence omitted from the short context block. This does not verify a finding.",
+  inputSchema: z.object({}),
+});
+
 export type WebSearchToolInput = z.infer<typeof webSearchToolInputSchema>;
 
 export const createOpenUrlToolInputSchema = ({
@@ -1179,6 +1205,8 @@ export const createAgentToolSchemaSet = ({
     get_terminal_files: getTerminalFilesTool,
     file: createFileToolSchema({ supportsView: true }),
     todo_write: todoWriteTool,
+    coverage_write: coverageWriteTool,
+    coverage_read: coverageReadTool,
     create_vulnerability_report: createVulnerabilityReportTool,
     list_reports: listReportsTool,
     get_report: getReportTool,

@@ -14,6 +14,8 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
+import { createCoverageRead, createCoverageWrite } from "./coverage";
+import type { CoverageEntry } from "@/lib/ai/coverage-ledger";
 import {
   createCreateNote,
   createListNotes,
@@ -85,6 +87,7 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  initialCoverage?: CoverageEntry[];
 };
 
 export type SandboxSessionUsage = {
@@ -123,6 +126,8 @@ export const createTools = (
   auxiliaryVision?: ToolContext["auxiliaryVision"],
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
+  let coverageEntries = runtimePolicy.initialCoverage ?? [];
+  const getCoverageEntries = () => coverageEntries;
   let sandbox: AnySandbox | null = null;
   let sandboxCostSegmentStartedAt: number | null = null;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
@@ -321,6 +326,19 @@ export const createTools = (
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
       todo_write: createTodoWrite(context),
+      ...(isAgentMode(mode) &&
+        triggerRunId &&
+        runtimePolicy.chargeSandboxRuntime !== false && {
+          coverage_write: createCoverageWrite({
+            userId: userID,
+            chatId,
+            runId: triggerRunId,
+            onSaved: (entries) => {
+              coverageEntries = entries;
+            },
+          }),
+          coverage_read: createCoverageRead(getCoverageEntries),
+        }),
       create_vulnerability_report: createCreateVulnerabilityReport(
         context,
         () => sandbox,
@@ -489,6 +507,7 @@ export const createTools = (
     getSandbox,
     ensureSandbox,
     getTodoManager,
+    getCoverageEntries,
     getFileAccumulator,
     sandboxManager,
     getSandboxSessionCost,
