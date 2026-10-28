@@ -24,9 +24,11 @@ function deferred<T>() {
 }
 
 let warn: ReturnType<typeof jest.spyOn>;
+let info: ReturnType<typeof jest.spyOn>;
 beforeEach(() => {
   jest.useFakeTimers();
   warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  info = jest.spyOn(console, "info").mockImplementation(() => {});
 });
 afterEach(() => {
   jest.useRealTimers();
@@ -64,6 +66,67 @@ it("identifies a held finishing wait without resolving or retrying it", async ()
   expect(jest.getTimerCount()).toBe(0);
 });
 
+it.each(["fulfilled", "rejected"] as const)(
+  "records a slow wait's %s outcome without changing it",
+  async (outcome) => {
+    const work = deferred<object>();
+    const original = { privateResultOrError: "must not be logged" };
+    const operation = jest.fn(() => work.promise);
+    const pending = createChatFinishObserver(context)("update_chat", operation);
+    const result =
+      outcome === "fulfilled"
+        ? expect(pending).resolves.toBe(original)
+        : expect(pending).rejects.toBe(original);
+    await jest.advanceTimersByTimeAsync(12_500);
+    expect(info).not.toHaveBeenCalled();
+    if (outcome === "fulfilled") work.resolve(original);
+    else work.reject(original);
+    await result;
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(info.mock.calls[0][0] as string)).toEqual({
+      event: "chat_finish_wait_settled",
+      level: "info",
+      service: "chat-handler",
+      route: "/api/chat",
+      timestamp: expect.any(String),
+      stage: "update_chat",
+      phase: "primary",
+      mode: "ask",
+      outcome,
+      stage_elapsed_ms: 12_500,
+      first_warning_index: 1,
+      last_warning_index: 1,
+      request_id: context.requestId,
+      user_id: context.userId,
+      chat_id: context.chatId,
+    });
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
+it("pairs overlapping waits with their warnings within the request budget", async () => {
+  const observeFinish = createChatFinishObserver(context);
+  const work = [deferred<void>(), deferred<void>(), deferred<void>()];
+  const pending = work.map((item) =>
+    observeFinish("save_message", () => item.promise, "provider_retry"),
+  );
+  await jest.advanceTimersByTimeAsync(65_000);
+  expect(warn).toHaveBeenCalledTimes(2);
+  for (const index of [1, 2, 0]) {
+    work[index].resolve();
+    await pending[index];
+  }
+  expect(info.mock.calls.map(([line]) => JSON.parse(line as string))).toEqual([
+    expect.objectContaining({ first_warning_index: 2, last_warning_index: 2 }),
+    expect.objectContaining({ first_warning_index: 1, last_warning_index: 1 }),
+  ]);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
 it("shares two warning attempts across stages, messages, and retry callbacks", async () => {
   const observeFinish = createChatFinishObserver(context);
   for (const phase of [
@@ -82,6 +145,11 @@ it("shares two warning attempts across stages, messages, and retry callbacks", a
   expect(
     warn.mock.calls.map(([line]) => JSON.parse(line as string).warning_index),
   ).toEqual([1, 2]);
+  expect(info).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(info.mock.calls[0][0] as string)).toMatchObject({
+    first_warning_index: 1,
+    last_warning_index: 2,
+  });
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -98,6 +166,7 @@ it("clears pending diagnostics on rejection and preserves the original error", a
   await rejection;
   await jest.advanceTimersByTimeAsync(120_000);
   expect(warn).not.toHaveBeenCalled();
+  expect(info).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -112,23 +181,37 @@ it("preserves SDK usage thenables without requiring Promise cleanup methods", as
   await expect(result).resolves.toBe(value);
   expect(jest.getTimerCount()).toBe(0);
   expect(warn).not.toHaveBeenCalled();
+  expect(info).not.toHaveBeenCalled();
 });
 
-it("does not let logging failures change the operation or reset its budget", async () => {
-  warn.mockImplementation(() => {
-    throw new Error("logger unavailable");
-  });
-  const work = deferred<number>();
-  const result = createChatFinishObserver(context)(
-    "update_chat",
-    () => work.promise,
-  );
-  await jest.advanceTimersByTimeAsync(200_000);
-  expect(warn).toHaveBeenCalledTimes(2);
-  work.resolve(42);
-  await expect(result).resolves.toBe(42);
-  expect(jest.getTimerCount()).toBe(0);
-});
+it.each(["fulfilled", "rejected"] as const)(
+  "preserves %s outcomes when both diagnostic loggers throw",
+  async (outcome) => {
+    warn.mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    info.mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    const work = deferred<object>();
+    const original = {};
+    const result = createChatFinishObserver(context)(
+      "update_chat",
+      () => work.promise,
+    );
+    const assertion =
+      outcome === "fulfilled"
+        ? expect(result).resolves.toBe(original)
+        : expect(result).rejects.toBe(original);
+    await jest.advanceTimersByTimeAsync(200_000);
+    expect(warn).toHaveBeenCalledTimes(2);
+    if (outcome === "fulfilled") work.resolve(original);
+    else work.reject(original);
+    await assertion;
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
 
 it("exports only closed stages and validated opaque context", async () => {
   const privateValue = "private-target-and-credential";
@@ -154,6 +237,11 @@ it("exports only closed stages and validated opaque context", async () => {
   expect(JSON.parse(line)).not.toHaveProperty("user_id");
   work.resolve();
   await result;
+  expect(info.mock.calls[0][0]).not.toContain(privateValue);
+  expect(JSON.parse(info.mock.calls[0][0] as string)).toMatchObject({
+    stage: "unknown",
+    outcome: "fulfilled",
+  });
 });
 
 it("attributes the first title wait separately from settlement in every finishing caller", async () => {
