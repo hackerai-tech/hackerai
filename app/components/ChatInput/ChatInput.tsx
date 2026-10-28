@@ -328,7 +328,12 @@ const ChatInputContent = ({
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const sandboxPointerDownRef = useRef(false);
+  const composerPointerDownRef = useRef(false);
+  const composerPointerReleaseTimerRef = useRef<number | undefined>(undefined);
+  const holdComposerFocusForPointer = () => {
+    window.clearTimeout(composerPointerReleaseTimerRef.current);
+    composerPointerDownRef.current = true;
+  };
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
   const hasJoinedComposerPanels =
@@ -336,6 +341,23 @@ const ChatInputContent = ({
     !showAgentApprovalPrompt &&
     (todoPanelVisible || messageQueue.length > 0);
   const hasFilePreviews = !!uploadedFiles?.length;
+
+  useEffect(() => {
+    const releasePointer = () => {
+      window.clearTimeout(composerPointerReleaseTimerRef.current);
+      // Keep the guard through the release event's blur/click sequence.
+      composerPointerReleaseTimerRef.current = window.setTimeout(() => {
+        composerPointerDownRef.current = false;
+      }, 0);
+    };
+    document.addEventListener("pointerup", releasePointer);
+    document.addEventListener("pointercancel", releasePointer);
+    return () => {
+      document.removeEventListener("pointerup", releasePointer);
+      document.removeEventListener("pointercancel", releasePointer);
+      window.clearTimeout(composerPointerReleaseTimerRef.current);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -375,6 +397,7 @@ const ChatInputContent = ({
         target.closest("[data-chat-input-agent-menu]")
       )
         return;
+      composerPointerDownRef.current = false;
       setComposerFocused(false);
     };
     document.addEventListener("pointerdown", dismissOutsideComposer);
@@ -984,12 +1007,7 @@ const ChatInputContent = ({
               data-testid="chat-input-agent-context"
               aria-hidden={mobileSandboxHidden || undefined}
               inert={mobileSandboxHidden || undefined}
-              onPointerDownCapture={() => {
-                sandboxPointerDownRef.current = true;
-                window.setTimeout(() => {
-                  sandboxPointerDownRef.current = false;
-                }, 0);
-              }}
+              onPointerDownCapture={holdComposerFocusForPointer}
             >
               <div
                 className="min-w-0 max-w-full"
@@ -1063,7 +1081,10 @@ const ChatInputContent = ({
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onFocusCapture={() => setComposerFocused(true)}
-            onPointerDownCapture={() => setComposerFocused(true)}
+            onPointerDownCapture={() => {
+              setComposerFocused(true);
+              holdComposerFocusForPointer();
+            }}
           >
             <ChatInputTextarea
               draftId={draftId}
@@ -1073,7 +1094,7 @@ const ChatInputContent = ({
               placeholder={placeholder}
               autoFocus={autoFocus}
               onBlur={(event) => {
-                if (sandboxPointerDownRef.current) return;
+                if (composerPointerDownRef.current) return;
                 const next = event.relatedTarget;
                 if (
                   next instanceof Node &&

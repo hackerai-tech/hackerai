@@ -1199,6 +1199,68 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).not.toHaveAttribute("inert");
     });
 
+    it.each([
+      ["sandbox", "pointerup"],
+      ["permissions", "pointercancel"],
+    ])(
+      "keeps %s usable through delayed touch blur until %s",
+      async (target, release) => {
+        mockIsMobile = true;
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? [
+                {
+                  connectionId: "local-sandbox",
+                  name: "Local sandbox",
+                  isDesktop: false,
+                },
+              ]
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const context = await screen.findByTestId("chat-input-agent-context");
+        const input = screen.getByTestId("chat-input");
+        const trigger =
+          target === "sandbox"
+            ? screen
+                .getByTestId("chat-input-mobile-sandbox")
+                .querySelector("button")!
+            : screen.getByRole("button", { name: /^Agent permissions:/ });
+        jest.useFakeTimers();
+        try {
+          fireEvent.focus(input);
+          fireEvent.pointerDown(trigger, { pointerType: "touch" });
+          act(() => jest.advanceTimersByTime(100));
+          fireEvent.blur(input, { relatedTarget: null });
+          expect(context).not.toHaveAttribute("aria-hidden", "true");
+          expect(context).not.toHaveAttribute("inert");
+
+          fireEvent(document, new Event(release, { bubbles: true }));
+          act(() => jest.runOnlyPendingTimers());
+          fireEvent.blur(input, { relatedTarget: null });
+          expect(context).toHaveAttribute("aria-hidden", "true");
+          expect(context).toHaveAttribute("inert");
+        } finally {
+          jest.useRealTimers();
+        }
+      },
+    );
+
     it("keeps Agent controls above the input when the composer becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
