@@ -10,13 +10,24 @@ import {
 
 describe("Intercom Messenger identity", () => {
   const originalSecret = process.env.INTERCOM_MESSENGER_SECRET;
+  const originalVercelEnv = process.env.VERCEL_ENV;
 
   afterEach(() => {
+    if (originalVercelEnv === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = originalVercelEnv;
     if (originalSecret === undefined) {
       delete process.env.INTERCOM_MESSENGER_SECRET;
     } else {
       process.env.INTERCOM_MESSENGER_SECRET = originalSecret;
     }
+  });
+
+  it("does not create a production Messenger identity for Preview QA users", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.INTERCOM_MESSENGER_SECRET = "test-preview-secret";
+    await expect(
+      createIntercomMessengerIdentity({ id: "preview-user" }),
+    ).resolves.toBeNull();
   });
 
   it("returns null without exposing an unsigned identity when the secret is absent", async () => {

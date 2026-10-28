@@ -79,6 +79,59 @@ describe("agent status route", () => {
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
 
+  it("keeps an owned approval run polling while its worker publishes ownership metadata", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "EXECUTING",
+      metadata: {},
+      tags: ["user_user-1", "chat_chat-1"],
+    } as never);
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({
+      status: "INITIALIZING",
+      terminal: false,
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      metadata: { userId: "other", chatId: "chat-1" },
+      status: "EXECUTING",
+      tags: ["user_user-1", "chat_chat-1"],
+    },
+    { metadata: {}, status: "EXECUTING", tags: ["user_other", "chat_chat-1"] },
+    { metadata: {}, status: "COMPLETED", tags: ["user_user-1", "chat_chat-1"] },
+  ])(
+    "does not use initialization polling for mismatched ownership or terminal runs: %j",
+    async (run) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      mockRunsRetrieve.mockResolvedValue(run as never);
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      expect(response.status).toBe(403);
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("reports a crashed run as terminal when its replay cannot fit, without detaching saved recovery state", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");
     mockGetChatById.mockResolvedValue({

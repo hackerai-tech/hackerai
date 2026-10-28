@@ -18,6 +18,7 @@ type AgentStatusRequestBody = {
 type TriggerRunStatus = {
   metadata?: unknown;
   status?: string;
+  tags?: string[];
 };
 
 const MISSING_RUN_STATUSES = new Set([400, 404, 410, 422]);
@@ -163,6 +164,30 @@ export const createAgentStatusPost =
       stage = "retrieve_trigger_run";
       const run = (await runs.retrieve(runId)) as TriggerRunStatus;
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
+        const missingOwnerMetadata =
+          run.metadata == null ||
+          (typeof run.metadata === "object" &&
+            !Array.isArray(run.metadata) &&
+            !("chatId" in run.metadata) &&
+            !("userId" in run.metadata));
+        // Session metadata is not copied onto its first run. The worker fills
+        // ownership metadata shortly after starting. Keep an owned, associated
+        // approval run polling without disclosing its actual status or changing
+        // state until that independent ownership check becomes available.
+        if (
+          chat.active_agent_approval_session_id &&
+          missingOwnerMetadata &&
+          run.tags?.includes(`user_${userId}`) &&
+          run.tags.includes(`chat_${chatId}`) &&
+          ["PENDING_VERSION", "QUEUED", "DEQUEUED", "EXECUTING"].includes(
+            run.status ?? "",
+          )
+        ) {
+          return NextResponse.json(
+            { status: "INITIALIZING", terminal: false },
+            { status: 202 },
+          );
+        }
         return new NextResponse("Forbidden", { status: 403 });
       }
 
