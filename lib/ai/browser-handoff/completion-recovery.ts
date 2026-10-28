@@ -110,6 +110,7 @@ function promisedImmediateHandoff(text: string): boolean {
   return [
     /(?:^|[.!?]\s+|\n)\s*i(?:'ll| will| am|'m) (?:now )?(?:paus(?:e|ing)(?: now)? and )?wait(?:ing)? (?:here )?for you to (?:take control|take over)\b/gi,
     /(?:^|[.!?]\s+|\n)\s*(?:the )?browser is (?:now )?ready for you to (?:take control|take over)\b/gi,
+    /(?:^|[.!?]\s+|\n)\s*(?:i(?: am|'m) (?:now )?)?pausing(?: now)? for (?:your takeover|you to (?:take control|take over))\b/gi,
   ].some((pattern) => {
     for (const match of prose.matchAll(pattern)) {
       const continuation = prose.slice(match.index + match[0].length);

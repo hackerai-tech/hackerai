@@ -50,6 +50,8 @@ const model = (doStream: jest.Mock): LanguageModel => ({
 const request = "Open the browser and wait for me to take control.";
 const promise =
   "Handing control over now. Take control in the browser sidebar.";
+const pausingPromise =
+  "The page is open and loaded, with the form fields interactable (Text input is @e3). I'm now pausing for your takeover — please click Take control, type a harmless marker into the Text input field, choose Exit takeover, then click Send and continue. I will not submit the form.";
 
 const params = (text = request, overrides = {}) => ({
   prompt: [{ role: "user", content: [{ type: "text", text }] }],
@@ -77,51 +79,61 @@ async function parts(
   return { output, canRecover, state };
 }
 
-it("executes the real wait before Auto can finish, then continues with its result", async () => {
-  let release!: () => void;
-  let entered!: () => void;
-  const waiting = new Promise<void>((resolve) => (entered = resolve));
-  const execute = jest.fn(async () => {
-    entered();
-    await new Promise<void>((resolve) => (release = resolve));
-    return { status: "resumed", message: "Take a fresh snapshot first." };
-  });
-  const calls = jest
-    .fn()
-    .mockResolvedValueOnce(response(promise))
-    .mockResolvedValueOnce(
-      response("I inspected the current page after resume."),
-    );
-  const result = streamText({
-    model: recoverBrowserHandoffCompletion(model(calls), {
-      state: {},
-      canRecover: async () => true,
-    }),
-    prompt: request,
-    tools: { browser_handoff: tool({ inputSchema: z.object({}), execute }) },
-    stopWhen: stepCountIs(3),
-  });
-  let completed = false;
-  const consumed = result.consumeStream().then(() => (completed = true));
-  // Race an observable tool entry against premature completion; no timer needed.
-  await Promise.race([waiting, consumed]);
-  expect(execute).toHaveBeenCalledTimes(1);
-  expect(completed).toBe(false);
-  expect(calls).toHaveBeenCalledTimes(1);
-  release();
-  await consumed;
-  expect(calls).toHaveBeenCalledTimes(2);
-  expect(calls.mock.calls[1][0].prompt).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        role: "tool",
-        content: expect.arrayContaining([
-          expect.objectContaining({ toolName: "browser_handoff" }),
-        ]),
+it.each([
+  { request, declaration: promise },
+  {
+    request:
+      "QA explicit takeover check: reopen the web form with agent-browser, take a snapshot, and call browser_handoff so I can enter a harmless marker in Text input. After I send and continue, first take a fresh interactive snapshot in that same browser session, report the exact Text input value, and finish. Do not submit the form.",
+    declaration: pausingPromise,
+  },
+])(
+  "executes the real wait before completion for $declaration",
+  async ({ request, declaration }) => {
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => (entered = resolve));
+    const execute = jest.fn(async () => {
+      entered();
+      await new Promise<void>((resolve) => (release = resolve));
+      return { status: "resumed", message: "Take a fresh snapshot first." };
+    });
+    const calls = jest
+      .fn()
+      .mockResolvedValueOnce(response(declaration))
+      .mockResolvedValueOnce(
+        response("I inspected the current page after resume."),
+      );
+    const result = streamText({
+      model: recoverBrowserHandoffCompletion(model(calls), {
+        state: {},
+        canRecover: async () => true,
       }),
-    ]),
-  );
-});
+      prompt: request,
+      tools: { browser_handoff: tool({ inputSchema: z.object({}), execute }) },
+      stopWhen: stepCountIs(3),
+    });
+    let completed = false;
+    const consumed = result.consumeStream().then(() => (completed = true));
+    // Race an observable tool entry against premature completion; no timer needed.
+    await Promise.race([waiting, consumed]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(completed).toBe(false);
+    expect(calls).toHaveBeenCalledTimes(1);
+    release();
+    await consumed;
+    expect(calls).toHaveBeenCalledTimes(2);
+    expect(calls.mock.calls[1][0].prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "tool",
+          content: expect.arrayContaining([
+            expect.objectContaining({ toolName: "browser_handoff" }),
+          ]),
+        }),
+      ]),
+    );
+  },
+);
 
 it.each([
   "HANDING CONTROL OVER NOW! TAKE CONTROL IN THE SIDEBAR.",
@@ -137,6 +149,8 @@ it.each([
   "I'll wait for you to take control in the browser sidebar.",
   "I'll wait for you to take control, then I'll continue after you resume.",
   "The browser is ready for you to take control right now.",
+  "Pausing now for your takeover — type your marker, then Send and continue.",
+  "I'm pausing for you to take control.",
 ])(
   "recovers an immediate declaration with case and punctuation: %s",
   async (text) => {
@@ -257,6 +271,13 @@ it.each([
   "```text\nHanding control over now.\n```",
   "```text\nHanding control over now.",
   'The phrase "Handing control over now" describes the button.',
+  "I'm not pausing for your takeover.",
+  "After setup, I'm pausing for your takeover.",
+  "I'm now pausing for your takeover after setup.",
+  "Pausing now for your takeover, but not until setup finishes.",
+  "> I'm now pausing for your takeover.",
+  "```text\nI'm now pausing for your takeover.\n```",
+  'The phrase "I\'m now pausing for your takeover" describes a handoff.',
 ])(
   "leaves informational, future, negated and quoted text alone: %s",
   async (text) => {
