@@ -3,7 +3,9 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -55,6 +57,20 @@ class FindingConversionTests(unittest.TestCase):
             output.truncate(run.MAX_OUTPUT_BYTES + 1)
         with self.assertRaises(ValueError):
             run.read_bounded_findings(path)
+
+    def test_fifo_findings_are_rejected_without_waiting_for_a_writer(self):
+        path = self.target / "findings.json"
+        os.mkfifo(path)
+        def timeout(*_):
+            raise TimeoutError("Opening Agent output blocked on a FIFO")
+        previous = signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(2)
+        try:
+            with self.assertRaises(ValueError):
+                run.read_bounded_findings(path)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
 
 
 class CommandBoundaryTests(unittest.TestCase):

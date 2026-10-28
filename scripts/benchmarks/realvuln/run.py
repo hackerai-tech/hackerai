@@ -63,13 +63,13 @@ def checked(command: list[str], *, cwd: Path | None = None, env: dict[str, str] 
             stdout = stdout.decode(errors="replace")
         if isinstance(stderr, bytes):
             stderr = stderr.decode(errors="replace")
-        log.write_text(stdout[-100_000:] + "\n" + stderr[-100_000:])
+        log.write_text(stdout[-100_000:] + "\n" + stderr[-100_000:], encoding="utf-8")
         raise RuntimeError(f"{command[0]} timed out after {timeout}s; private log: {log}") from error
     if result.returncode:
         log_dir = ARTIFACTS / "command-failures"
         log_dir.mkdir(parents=True, exist_ok=True)
         log = log_dir / (uuid.uuid4().hex + ".log")
-        log.write_text(result.stdout[-100_000:] + "\n" + result.stderr[-100_000:])
+        log.write_text(result.stdout[-100_000:] + "\n" + result.stderr[-100_000:], encoding="utf-8")
         raise RuntimeError(f"{command[0]} {command[1] if len(command) > 1 else ''} failed ({result.returncode}); private log: {log}")
     return result.stdout.strip()
 
@@ -131,7 +131,7 @@ def prepare_target(entry: dict, target: Path) -> None:
 
 def read_bounded_findings(path: Path) -> bytes:
     """Bound untrusted Agent output before allocating its contents."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         metadata = os.fstat(stream.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_OUTPUT_BYTES:
