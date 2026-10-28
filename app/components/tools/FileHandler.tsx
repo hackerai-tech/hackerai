@@ -31,6 +31,7 @@ interface FileHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  canRequestApproval?: boolean;
 }
 
 const FILE_APPROVAL_TITLES: Partial<Record<FileInput["action"], string>> = {
@@ -67,6 +68,7 @@ function areFilePropsEqual(
   next: FileHandlerProps,
 ): boolean {
   if (prev.status !== next.status) return false;
+  if (prev.canRequestApproval !== next.canRequestApproval) return false;
   if (prev.message.parts.length !== next.message.parts.length) return false;
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
@@ -81,6 +83,7 @@ export const FileHandler = memo(function FileHandler({
   message,
   part,
   status,
+  canRequestApproval,
 }: FileHandlerProps) {
   const input = part.input as FileInput | undefined;
   const action = input?.action;
@@ -319,6 +322,7 @@ export const FileHandler = memo(function FileHandler({
     approvedAction: string;
   }) => (
     <ToolApprovalControls
+      canRequestApproval={canRequestApproval}
       key={part.toolCallId}
       approvalId={part.approval?.id}
       toolCallId={part.toolCallId}

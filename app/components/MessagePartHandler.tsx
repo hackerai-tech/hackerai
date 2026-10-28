@@ -299,7 +299,14 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <FileToolsHandler message={message} part={part} status={status} />;
 
     case "tool-file":
-      return <FileHandler message={message} part={part} status={status} />;
+      return (
+        <FileHandler
+          message={message}
+          part={part}
+          status={status}
+          canRequestApproval={isLastMessage === true && status !== "ready"}
+        />
+      );
 
     case "tool-web_search":
     case "tool-open_url":
@@ -317,6 +324,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         : undefined;
       return (
         <TerminalToolHandler
+          canRequestApproval={isLastMessage === true && status !== "ready"}
           message={message}
           part={part}
           status={status}
