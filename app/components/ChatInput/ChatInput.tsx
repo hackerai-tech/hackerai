@@ -82,6 +82,8 @@ interface ChatInputProps {
   isResolvingInitialState?: boolean;
 }
 
+const COMPOSER_TAP_CLICK_FALLBACK_MS = 500;
+
 const ChatInputLoadingState = () => (
   <div
     aria-label="Loading task input"
@@ -337,10 +339,9 @@ const ChatInputContent = ({
   const hasFilePreviews = !!uploadedFiles?.length;
 
   useEffect(() => {
-    const releasePointer = () => {
+    const releasePointer = (delay: number) => {
       if (!composerPointerDownRef.current) return;
       window.clearTimeout(composerPointerReleaseTimerRef.current);
-      // Keep the guard through the release event's blur/click sequence.
       composerPointerReleaseTimerRef.current = window.setTimeout(() => {
         composerPointerDownRef.current = false;
         const activeElement = document.activeElement;
@@ -351,13 +352,21 @@ const ChatInputContent = ({
           "[data-chat-input-agent-menu]",
         );
         if (!focusInComposer && !agentMenuOpen) setComposerFocused(false);
-      }, 0);
+      }, delay);
     };
-    document.addEventListener("pointerup", releasePointer);
-    document.addEventListener("pointercancel", releasePointer);
+    // Touch compatibility mouse events can blur the input after pointerup.
+    // Keep the selector interactive until click opens its menu. Release a
+    // canceled gesture immediately, or a gesture with no click after a fallback.
+    const releaseAfterClick = () => releasePointer(0);
+    const releaseWithoutClick = () =>
+      releasePointer(COMPOSER_TAP_CLICK_FALLBACK_MS);
+    document.addEventListener("pointerup", releaseWithoutClick);
+    document.addEventListener("pointercancel", releaseAfterClick);
+    document.addEventListener("click", releaseAfterClick);
     return () => {
-      document.removeEventListener("pointerup", releasePointer);
-      document.removeEventListener("pointercancel", releasePointer);
+      document.removeEventListener("pointerup", releaseWithoutClick);
+      document.removeEventListener("pointercancel", releaseAfterClick);
+      document.removeEventListener("click", releaseAfterClick);
       window.clearTimeout(composerPointerReleaseTimerRef.current);
     };
   }, []);

@@ -1124,12 +1124,10 @@ describe("ChatInput - Integration Tests", () => {
 
     it("does not focus the editor on a scroll gesture or an upload button click", async () => {
       mockIsMobile = true;
-      jest
-        .mocked(useAuth)
-        .mockReturnValue({
-          user: { id: "user_123" },
-          entitlements: [],
-        } as ReturnType<typeof useAuth>);
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
       render(
         <TestWrapper>
@@ -1208,10 +1206,20 @@ describe("ChatInput - Integration Tests", () => {
         .getByTestId("chat-input-mobile-sandbox")
         .querySelector("button");
       expect(sandboxTrigger).not.toBeNull();
-      fireEvent.pointerDown(sandboxTrigger!);
-      fireEvent.blur(input, { relatedTarget: sandboxTrigger });
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      act(() => input.focus());
+      fireEvent.pointerDown(sandboxTrigger!, { pointerType: "touch" });
+      jest.useFakeTimers();
+      try {
+        fireEvent.pointerUp(sandboxTrigger!, { pointerType: "touch" });
+        // Safari may deliver compatibility mouse events in a later task,
+        // blurring the textarea without focusing the tapped button.
+        act(() => jest.advanceTimersByTime(0));
+        act(() => input.blur());
+        expect(context).not.toHaveAttribute("aria-hidden", "true");
+        expect(context).not.toHaveAttribute("inert");
+      } finally {
+        jest.useRealTimers();
+      }
 
       fireEvent.click(sandboxTrigger!);
       const menu = await waitFor(() => {
