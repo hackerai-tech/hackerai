@@ -1,8 +1,44 @@
 import { normalizeMessages } from "../message-processor";
-import { INTERRUPTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
+import {
+  ABORTED_TOOL_ERROR_TEXT,
+  INTERRUPTED_TOOL_ERROR_TEXT,
+} from "@/lib/chat/tool-abort-utils";
 import type { ChatMessage } from "@/types/chat";
 
 describe("normalizeMessages", () => {
+  it.each(["tool-run_terminal_cmd", "tool-shell", "tool-file"])(
+    "settles stopped approvals for %s without retaining approval authority",
+    (type) => {
+      for (const state of ["approval-requested", "approval-responded"]) {
+        const part = {
+          type,
+          toolCallId: "awaiting-tool",
+          state,
+          input: { command: "printf approval-test" },
+          approval: { id: "approval-1", approved: true },
+        };
+        const messages = [
+          { id: "assistant-1", role: "assistant", parts: [part] },
+        ] as unknown as ChatMessage[];
+
+        // Merely preparing messages does not cancel a live approval.
+        expect(normalizeMessages(messages).messages[0].parts[0]).toBe(part);
+        const result = normalizeMessages(messages, {
+          userInitiatedAbort: true,
+        });
+        expect(result.hasChanges).toBe(true);
+        expect(result.messages[0].parts[0]).toMatchObject({
+          type,
+          toolCallId: "awaiting-tool",
+          state: "output-error",
+          input: part.input,
+          errorText: ABORTED_TOOL_ERROR_TEXT,
+        });
+        expect(result.messages[0].parts[0]).not.toHaveProperty("approval");
+      }
+    },
+  );
+
   it.each([
     [
       "tool-shell",
