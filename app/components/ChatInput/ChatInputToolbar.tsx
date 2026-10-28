@@ -77,7 +77,7 @@ export function ChatInputToolbar({
         {user && isAgentMode(chatMode) ? (
           <>
             <div
-              className="hidden shrink-0 md:block"
+              className="hidden min-w-0 md:block"
               data-testid="chat-input-desktop-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
