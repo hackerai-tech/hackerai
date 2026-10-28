@@ -197,9 +197,11 @@ function SubscriptionOffer({
 export function RegionalSubscriptionGate({
   children,
   running,
+  fallbackHeader,
 }: {
   children: ReactNode;
   running: boolean;
+  fallbackHeader?: ReactNode;
 }) {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan } = useGlobalState();
@@ -286,14 +288,22 @@ export function RegionalSubscriptionGate({
   if (!eligible) return children;
   if (!current)
     return (
-      <p
-        role="status"
-        className="p-6 text-center text-sm text-muted-foreground"
-      >
-        Loading task access…
-      </p>
+      <>
+        {fallbackHeader}
+        <p
+          role="status"
+          className="p-6 text-center text-sm text-muted-foreground"
+        >
+          Loading task access…
+        </p>
+      </>
     );
   if (assignment?.variant === "test")
-    return <SubscriptionOffer assignment={assignment} />;
+    return (
+      <>
+        {fallbackHeader}
+        <SubscriptionOffer assignment={assignment} />
+      </>
+    );
   return children;
 }

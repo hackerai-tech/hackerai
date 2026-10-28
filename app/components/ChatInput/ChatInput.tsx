@@ -224,6 +224,13 @@ export const ChatInput = (props: ChatInputProps) => {
   const { activeToolApprovalRequest } = useAgentApproval();
   return (
     <RegionalSubscriptionGate
+      fallbackHeader={
+        props.topNotice ? (
+          <div className="mx-auto max-h-[25dvh] w-full max-w-[800px] overflow-y-auto bg-background px-4">
+            {props.topNotice}
+          </div>
+        ) : undefined
+      }
       running={
         props.status === "submitted" ||
         props.status === "streaming" ||
