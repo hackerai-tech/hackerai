@@ -1024,6 +1024,11 @@ export function AgentBrowserPreview({
                   ? "Waiting for you"
                   : "Live preview";
 
+  const showTouchControls =
+    fullScreen &&
+    human &&
+    (touchDevice || (visibleViewport?.width ?? 1024) < 1024);
+
   const browserContent = (
     <section
       className={
@@ -1301,52 +1306,13 @@ export function AgentBrowserPreview({
       >
         <div
           className={
-            fullScreen
-              ? "flex flex-wrap items-center justify-center gap-2"
-              : "contents"
+            showTouchControls
+              ? "pointer-events-auto grid w-[358px] max-w-full grid-cols-[minmax(0,1fr)_132px_44px] items-center gap-2 rounded-full border border-white/10 bg-neutral-950/95 p-2 shadow-lg max-[359px]:grid-cols-[minmax(0,1fr)_44px] max-[359px]:rounded-3xl"
+              : fullScreen
+                ? "flex items-center justify-center gap-2"
+                : "contents"
           }
         >
-          {fullScreen &&
-            human &&
-            (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
-              <div
-                role="group"
-                aria-label="Touch gesture mode"
-                className="pointer-events-auto -order-1 flex basis-full justify-center"
-              >
-                <div className="flex rounded-full border border-border bg-background p-1 shadow-lg">
-                  {(["scroll", "drag"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      aria-pressed={touchMode === mode}
-                      onClick={() => {
-                        releaseMouse();
-                        touchRef.current = null;
-                        setTouchMode(mode);
-                      }}
-                      className={`min-h-11 rounded-full px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${touchMode === mode ? "bg-foreground text-background" : "text-foreground hover:bg-muted"}`}
-                    >
-                      {mode === "scroll" ? "Scroll" : "Drag"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          {fullScreen &&
-            human &&
-            (touchDevice || (visibleViewport?.width ?? 1024) < 1024) && (
-              <button
-                type="button"
-                aria-label="Show browser keyboard"
-                onClick={() =>
-                  keyboardRef.current?.focus({ preventScroll: true })
-                }
-                className="pointer-events-auto order-2 inline-flex min-h-11 items-center gap-2 rounded-full bg-background px-4 py-2 text-sm text-foreground shadow-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Keyboard size={16} aria-hidden /> Keyboard
-              </button>
-            )}
           {takingControl ||
           human ||
           effectiveState === "recovery" ||
@@ -1359,7 +1325,7 @@ export function AgentBrowserPreview({
                 setError(null);
               }}
               disabled={busy}
-              className={`${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} rounded-full bg-foreground px-5 py-2.5 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50`}
+              className={`${showTouchControls ? "h-12 w-full min-w-0 whitespace-nowrap bg-white px-3 text-sm font-semibold text-neutral-950 focus-visible:ring-white/80 max-[359px]:col-span-2" : `${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} bg-foreground px-5 py-2.5 text-sm font-medium text-background focus-visible:ring-ring`} rounded-full hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50`}
             >
               Exit takeover
             </button>
@@ -1380,6 +1346,44 @@ export function AgentBrowserPreview({
                       : "Take control to click and type. The Agent’s browser actions pause until you resume."}
             </span>
           ) : null}
+          {showTouchControls && (
+            <>
+              <div
+                role="group"
+                aria-label="Touch gesture mode"
+                className="flex h-11 w-[132px] justify-self-center rounded-full bg-white/10"
+              >
+                {(["scroll", "drag"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={touchMode === mode}
+                    onClick={() => {
+                      releaseMouse();
+                      touchRef.current = null;
+                      setTouchMode(mode);
+                    }}
+                    className={`relative h-11 min-w-0 flex-1 rounded-full text-sm font-medium before:absolute before:inset-[3px] before:rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 ${touchMode === mode ? "text-neutral-950 before:bg-neutral-200" : "text-white hover:bg-white/10"}`}
+                  >
+                    <span className="relative">
+                      {mode === "scroll" ? "Scroll" : "Drag"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                aria-label="Show browser keyboard"
+                title="Show keyboard"
+                onClick={() =>
+                  keyboardRef.current?.focus({ preventScroll: true })
+                }
+                className="inline-flex size-11 items-center justify-center rounded-full bg-white/5 text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+              >
+                <Keyboard size={20} aria-hidden />
+              </button>
+            </>
+          )}
         </div>
         {session && !liveSelection && onJumpToLive && (
           <button
