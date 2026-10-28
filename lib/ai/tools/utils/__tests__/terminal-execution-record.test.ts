@@ -260,6 +260,234 @@ describe("terminal execution records", () => {
     expect(data.get(foreign)).toBe("keep me");
   });
 
+  it.each([false, true])(
+    "bounds Windows retention I/O and preserves the retained set (timestamp ties: %s)",
+    async (tied) => {
+      const { sandbox, data } = sandboxFixture();
+      Object.assign(sandbox, {
+        sandboxKind: "centrifugo",
+        getConnectionId: () => "windows-retention",
+        isWindows: () => true,
+      });
+      const store = createTerminalRecordStore(
+        sandbox,
+        "u",
+        `bounded-retention-${tied}`,
+      );
+      const now = Date.now();
+      for (let i = 0; i < 80; i++) {
+        await store.save(
+          record({
+            session: i.toString(16).padStart(8, "0"),
+            sandboxInstance: terminalSandboxInstance(sandbox),
+            updatedAt: tied ? now + (i === 79 ? 1 : 0) : now + i,
+          }),
+        );
+      }
+      let releaseReads!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        releaseReads = resolve;
+      });
+      let firstRead!: () => void;
+      const readStarted = new Promise<void>((resolve) => {
+        firstRead = resolve;
+      });
+      let activeReads = 0;
+      let peakReads = 0;
+      sandbox.files.read.mockImplementation(async (path: string) => {
+        peakReads = Math.max(peakReads, ++activeReads);
+        firstRead();
+        await readGate;
+        if (Number.parseInt(path.split("/").pop()!, 16) % 4 === 0)
+          await Promise.resolve();
+        try {
+          return data.get(path)!;
+        } finally {
+          activeReads--;
+        }
+      });
+      let activeRemovals = 0;
+      let peakRemovals = 0;
+      sandbox.files.remove.mockImplementation(async (path: string) => {
+        peakRemovals = Math.max(peakRemovals, ++activeRemovals);
+        await Promise.resolve();
+        data.delete(path);
+        activeRemovals--;
+      });
+
+      const pruning = store.prune();
+      await readStarted;
+      releaseReads();
+      await pruning;
+
+      expect(peakReads).toBeLessThanOrEqual(4);
+      expect(peakRemovals).toBeLessThanOrEqual(4);
+      expect(sandbox.files.read).toHaveBeenCalledTimes(80);
+      expect([...data.keys()].sort()).toEqual(
+        Array.from({ length: 64 }, (_, i) =>
+          store.pathFor(
+            (tied ? (i === 63 ? 79 : i) : i + 16).toString(16).padStart(8, "0"),
+          ),
+        ).sort(),
+      );
+    },
+  );
+
+  it("shares the retention I/O budget across different record directories", async () => {
+    const { sandbox, data } = sandboxFixture();
+    Object.assign(sandbox, {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "shared-windows-retention",
+      isWindows: () => true,
+    });
+    const stores = ["first-retention", "second-retention"].map((scope) =>
+      createTerminalRecordStore(sandbox, "u", scope),
+    );
+    for (const store of stores) {
+      for (let i = 0; i < 12; i++) {
+        await store.save(
+          record({
+            session: i.toString(16).padStart(8, "0"),
+            sandboxInstance: terminalSandboxInstance(sandbox),
+          }),
+        );
+      }
+    }
+    let releaseReads!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    let firstRead!: () => void;
+    const started = new Promise<void>((resolve) => {
+      firstRead = resolve;
+    });
+    let active = 0;
+    let peak = 0;
+    sandbox.files.read.mockImplementation(async (path: string) => {
+      peak = Math.max(peak, ++active);
+      firstRead();
+      await gate;
+      try {
+        return data.get(path)!;
+      } finally {
+        active--;
+      }
+    });
+    const passes = stores.map((store) => store.prune());
+    await started;
+    releaseReads();
+    await Promise.all(passes);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(sandbox.files.read).toHaveBeenCalledTimes(24);
+    expect(data.size).toBe(24);
+  });
+
+  it("keeps the directory guarded until a failed removal batch has fully settled", async () => {
+    jest.useFakeTimers();
+    const { sandbox, data } = sandboxFixture();
+    Object.assign(sandbox, {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "failed-removal-retention",
+      isWindows: () => true,
+    });
+    const store = createTerminalRecordStore(
+      sandbox,
+      "u",
+      "failed-removal-retention",
+    );
+    for (let i = 0; i < 70; i++) {
+      await store.save(
+        record({
+          session: i.toString(16).padStart(8, "0"),
+          sandboxInstance: terminalSandboxInstance(sandbox),
+          updatedAt: Date.now() + i,
+        }),
+      );
+    }
+    let releaseRemovals!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRemovals = resolve;
+    });
+    let pendingRemoval!: () => void;
+    const started = new Promise<void>((resolve) => {
+      pendingRemoval = resolve;
+    });
+    let removalCalls = 0;
+    sandbox.files.remove.mockImplementation(async (path: string) => {
+      if (++removalCalls === 1) throw new Error("temporary removal failure");
+      pendingRemoval();
+      await gate;
+      data.delete(path);
+    });
+    let settled = false;
+    const first = store.prune().then(() => {
+      settled = true;
+    });
+    await started;
+    await jest.advanceTimersByTimeAsync(61_000);
+    const settledBeforeRelease = settled;
+    const second = createTerminalRecordStore(
+      sandbox,
+      "u",
+      "failed-removal-retention",
+    ).prune();
+    await jest.advanceTimersByTimeAsync(0);
+    const listingsBeforeRelease = sandbox.files.list.mock.calls.length;
+    releaseRemovals();
+    await Promise.all([first, second]);
+    expect(settledBeforeRelease).toBe(false);
+    expect(listingsBeforeRelease).toBe(1);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(6);
+    expect(data.size).toBe(65); // Only the locked record remains above retention.
+  });
+
+  it("does not overlap a slow retention pass across stores and releases the guard after failure", async () => {
+    jest.useFakeTimers();
+    const { sandbox, data } = sandboxFixture();
+    Object.assign(sandbox, {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "slow-windows-retention",
+      isWindows: () => true,
+    });
+    const store = createTerminalRecordStore(sandbox, "u", "slow-retention");
+    await store.save(
+      record({ sandboxInstance: terminalSandboxInstance(sandbox) }),
+    );
+    const originalList = sandbox.files.list.getMockImplementation()!;
+    let releaseListing!: () => void;
+    const listingGate = new Promise<void>((resolve) => {
+      releaseListing = resolve;
+    });
+    let firstList!: () => void;
+    const listingStarted = new Promise<void>((resolve) => {
+      firstList = resolve;
+    });
+    sandbox.files.list.mockImplementation(async () => {
+      firstList();
+      await listingGate;
+      throw new Error("temporary listing failure");
+    });
+    const first = store.prune();
+    await listingStarted;
+    jest.setSystemTime(Date.now() + 61_000);
+    const second = createTerminalRecordStore(
+      sandbox,
+      "u",
+      "slow-retention",
+    ).prune();
+    await Promise.resolve();
+    releaseListing();
+    await Promise.all([first, second]);
+    expect(sandbox.files.list).toHaveBeenCalledTimes(1);
+    expect(data.size).toBe(1);
+
+    sandbox.files.list.mockImplementation(originalList);
+    jest.setSystemTime(Date.now() + 61_000);
+    await store.prune();
+    expect(sandbox.files.list).toHaveBeenCalledTimes(2);
+    expect(data.size).toBe(1);
+  });
+
   it("retains the tail of an oversized chunk and the final exit after handle removal", async () => {
     const { sandbox } = sandboxFixture();
     const store = createTerminalRecordStore(sandbox, "u", "c");
