@@ -1028,6 +1028,7 @@ export function AgentBrowserPreview({
     fullScreen &&
     human &&
     (touchDevice || (visibleViewport?.width ?? 1024) < 1024);
+  const narrowTouchToolbar = (visibleViewport?.width ?? 1024) < 360;
 
   const browserContent = (
     <section
@@ -1307,7 +1308,7 @@ export function AgentBrowserPreview({
         <div
           className={
             showTouchControls
-              ? "pointer-events-auto grid w-[358px] max-w-full grid-cols-[minmax(0,1fr)_132px_44px] items-center gap-2 rounded-full border border-white/10 bg-neutral-950/95 p-2 shadow-lg max-[359px]:grid-cols-[minmax(0,1fr)_44px] max-[359px]:rounded-3xl"
+              ? `pointer-events-auto flex w-[358px] max-w-full flex-wrap items-center justify-center gap-2 border border-white/10 bg-neutral-950/95 p-2 shadow-lg ${narrowTouchToolbar ? "rounded-3xl" : "rounded-full"}`
               : fullScreen
                 ? "flex items-center justify-center gap-2"
                 : "contents"
@@ -1325,7 +1326,7 @@ export function AgentBrowserPreview({
                 setError(null);
               }}
               disabled={busy}
-              className={`${showTouchControls ? "h-12 w-full min-w-0 whitespace-nowrap bg-white px-3 text-sm font-semibold text-neutral-950 focus-visible:ring-white/80 max-[359px]:col-span-2" : `${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} bg-foreground px-5 py-2.5 text-sm font-medium text-background focus-visible:ring-ring`} rounded-full hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50`}
+              className={`${showTouchControls ? `min-h-12 min-w-0 flex-1 bg-white px-3 py-2 text-sm font-semibold text-neutral-950 focus-visible:ring-white/80 ${narrowTouchToolbar ? "basis-full" : "basis-[120px] whitespace-nowrap"}` : `${fullScreen ? "pointer-events-auto min-h-11 shadow-lg" : "self-start"} bg-foreground px-5 py-2.5 text-sm font-medium text-background focus-visible:ring-ring`} rounded-full hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50`}
             >
               Exit takeover
             </button>
@@ -1351,7 +1352,7 @@ export function AgentBrowserPreview({
               <div
                 role="group"
                 aria-label="Touch gesture mode"
-                className="flex h-11 w-[132px] justify-self-center rounded-full bg-white/10"
+                className="flex h-11 w-[132px] max-w-full shrink-0 rounded-full bg-white/10"
               >
                 {(["scroll", "drag"] as const).map((mode) => (
                   <button
@@ -1378,7 +1379,7 @@ export function AgentBrowserPreview({
                 onClick={() =>
                   keyboardRef.current?.focus({ preventScroll: true })
                 }
-                className="inline-flex size-11 items-center justify-center rounded-full bg-white/5 text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+                className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-white/5 text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
               >
                 <Keyboard size={20} aria-hidden />
               </button>
