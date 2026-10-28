@@ -96,6 +96,18 @@ it("recovers reasoning-only truncation and records its usage before hiding it", 
   expect(s.onDiscardedUsage).toHaveBeenCalledTimes(1);
   expect(s.onDiscardedUsage).toHaveBeenCalledWith(usage);
 });
+it("falls back when the primary stream errors and cancellation rejects", async () => {
+  const s = setup();
+  s.primary.doStream.mockResolvedValueOnce({
+    stream: new ReadableStream<Part>({
+      start(controller) {
+        controller.error(new Error("connection lost"));
+      },
+    }),
+  });
+  expect(await collect(await s.run())).toEqual(text);
+  expect(s.fallback.doStream).toHaveBeenCalledTimes(1);
+});
 it.each([
   { type: "text-delta", id: "t", delta: "published" } as Part,
   { type: "tool-input-start", id: "call", toolName: "file" } as Part,

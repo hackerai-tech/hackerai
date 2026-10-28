@@ -81,6 +81,9 @@ export function withInferenceFallback(
           if (reader) {
             try {
               await reader.cancel();
+            } catch {
+              // An errored stream rejects cancel with its stored error.
+              // Cleanup must not prevent the pre-output fallback.
             } finally {
               reader.releaseLock();
             }
