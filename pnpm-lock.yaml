@@ -238,8 +238,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       centrifuge:
-        specifier: ^5.8.0
-        version: 5.8.0
+        specifier: ^5.7.4
+        version: 5.7.4
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
@@ -271,8 +271,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       jose:
-        specifier: ^6.2.13
-        version: 6.2.13
+        specifier: ^6.2.12
+        version: 6.2.12
       jszip:
         specifier: ^3.10.2
         version: 3.10.2
@@ -4682,8 +4682,8 @@ packages:
   centrifuge@5.7.0:
     resolution: {integrity: sha512-Ptx7ELyVc7/KgzpadVlISTtdTWsuzumze5/vo9sH4RsvtFulJJMhmKr/cNDg6se1eKKbS6ZywIBl4eSZxqY3fw==}
 
-  centrifuge@5.8.0:
-    resolution: {integrity: sha512-ENH1jz6VeRuGb3yHNhgB0V0SqRKX+iYdtM9Du/E59m484epjNPfsgJw4UbmOmjgSXGEita1UoOXlZ6Ba1ooT1g==}
+  centrifuge@5.7.4:
+    resolution: {integrity: sha512-PnkJSS5uDPcdIDK4kkrgVCiT7RT+4xUTVjO9FfUjrUpOdPNKXgjfY+6gdG+RQKGSRP7AxP4NxCuFk0Eb4sjrWw==}
 
   chalk@4.1.2:
     resolution: {integrity: sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA==}
@@ -6226,8 +6226,8 @@ packages:
   jose@5.10.0:
     resolution: {integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==}
 
-  jose@6.2.13:
-    resolution: {integrity: sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ==}
+  jose@6.2.12:
+    resolution: {integrity: sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==}
 
   js-tiktoken@1.0.21:
     resolution: {integrity: sha512-biOj/6M5qdgx5TKjDnFT1ymSpM5tbd3ylwDtrQvFQSu0Z7bBYko2dF+W/aUkXUPuk6IVpRxk/3Q2sHOzGlS36g==}
@@ -9983,7 +9983,7 @@ snapshots:
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.5.2(express@5.2.1(supports-color@10.2.2))
       hono: 4.13.13
-      jose: 6.2.13
+      jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
@@ -12392,7 +12392,7 @@ snapshots:
       events: 3.3.0
       protobufjs: 7.6.5
 
-  centrifuge@5.8.0:
+  centrifuge@5.7.4:
     dependencies:
       events: 3.3.0
       protobufjs: 7.6.5
@@ -14497,7 +14497,7 @@ snapshots:
 
   jose@5.10.0: {}
 
-  jose@6.2.13: {}
+  jose@6.2.12: {}
 
   js-tiktoken@1.0.21:
     dependencies:
