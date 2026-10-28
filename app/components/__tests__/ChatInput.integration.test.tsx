@@ -3342,6 +3342,67 @@ describe("ChatInput - Integration Tests", () => {
     await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
   });
 
+  it("focuses the goal composer without changing an open queued-message edit", async () => {
+    jest
+      .mocked(useAuth)
+      .mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    render(
+      <TestWrapper>
+        <TaskPanelsSetter />
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          status="ready"
+          chatId="goal-queued-edit"
+          goalPanel={(_, edit) => (
+            <button
+              onClick={() =>
+                edit(
+                  {
+                    objective: "Check the marker",
+                    criteria: ["Check the marker"],
+                    generation: 7,
+                  },
+                  () => true,
+                )
+              }
+            >
+              Edit saved goal
+            </button>
+          )}
+        />
+      </TestWrapper>,
+    );
+    fireEvent.keyDown(
+      await screen.findByRole("button", {
+        name: "More options for queued message: Private queued message",
+      }),
+      { key: "Enter" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Edit message" }),
+    );
+    const queued = screen.getByRole("textbox", { name: "Edit queued message" });
+    fireEvent.change(queued, { target: { value: "Keep this queued edit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Edit saved goal" }));
+    const composer = screen.getByTestId("chat-input");
+    await waitFor(() => expect(composer).toHaveFocus());
+    expect(composer).toHaveValue("Check the marker");
+    expect(queued).toHaveValue("Keep this queued edit");
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     "edits and resends a goal in the composer while preserving attachments (mobile=%s)",
     async (mobile) => {

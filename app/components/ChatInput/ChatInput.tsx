@@ -364,6 +364,7 @@ const ChatInputContent = ({
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const composerPointerDownRef = useRef(false);
   const composerPointerReleaseTimerRef = useRef<number | undefined>(undefined);
   const holdComposerFocusForPointer = () => {
@@ -868,7 +869,7 @@ const ChatInputContent = ({
   const [goalMode, setGoalMode, editGeneration] = useComposerGoalMode(draftId);
   const focusGoalComposer = () => {
     if (!isMountedRef.current || prevDraftIdRef.current !== draftId) return;
-    const textarea = chatInputContainerRef.current?.querySelector("textarea");
+    const textarea = composerTextareaRef.current;
     textarea?.focus();
     textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
   };
@@ -1269,6 +1270,7 @@ const ChatInputContent = ({
             }}
           >
             <ChatInputTextarea
+              composerRef={composerTextareaRef}
               draftId={draftId}
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}

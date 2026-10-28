@@ -24,6 +24,7 @@ import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>;
   draftId: string;
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
@@ -38,6 +39,7 @@ export interface ChatInputTextareaProps {
 }
 
 export function ChatInputTextarea({
+  composerRef,
   draftId,
   chatMode,
   onEnterSubmit,
@@ -55,7 +57,8 @@ export function ChatInputTextarea({
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const localTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = composerRef ?? localTextareaRef;
   const inputRef = useRef(input);
   const prevDraftIdRef = useRef(draftId);
   useEffect(() => {
