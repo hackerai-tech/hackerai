@@ -3130,7 +3130,6 @@ describe("ChatInput - Integration Tests", () => {
       "Create a marker\n\nCriteria: Read it back",
       "Enter",
     ],
-    ["Create /go a marker", "Create a marker", "Tab"],
   ])(
     "selects an inline command in %s without losing draft content",
     async (draft, objective, selection) => {
@@ -3188,6 +3187,43 @@ describe("ChatInput - Integration Tests", () => {
       );
     },
   );
+
+  it("sends mid-draft partial commands unchanged instead of selecting goal mode", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    mockOnSubmit.mockResolvedValue(false);
+    render(
+      <TestWrapper>
+        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    // Wait for the feature decision, then replace a valid suggestion with normal text.
+    fireEvent.change(input, { target: { value: "/goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.change(input, {
+      target: { value: "Search for /go in this path" },
+    });
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(expect.anything(), undefined),
+    );
+    expect(input).toHaveValue("Search for /go in this path");
+  });
 
   it("dismisses an inline goal suggestion without changing the draft", async () => {
     mockSandboxState = {

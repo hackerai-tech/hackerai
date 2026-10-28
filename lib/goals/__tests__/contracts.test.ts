@@ -223,3 +223,29 @@ it("keeps resume copy concise while retaining current-objective instructions for
     "Goal: Current objective\nSuccess criteria:\n1. Current criterion",
   );
 });
+
+it("retains each criterion's latest proof and refreshed evidence across long goals", () => {
+  const early = [0, 1, 2].map((criterion) => ({
+    criterion,
+    runId: "early",
+    toolCallId: `criterion-${criterion}`,
+    explanation: "Original",
+  }));
+  const later = Array.from({ length: 70 }, (_, i) => ({
+    criterion: 2,
+    runId: `run-${i}`,
+    toolCallId: `tool-${i}`,
+    explanation: "Progress",
+  }));
+  const refreshed = { ...early[2], explanation: "Refreshed proof" };
+  const merged = mergeGoalEvidence([...early, ...later], [refreshed]);
+  expect(merged).toHaveLength(64);
+  expect(merged).toEqual(
+    expect.arrayContaining([early[0], early[1], refreshed, later[69]]),
+  );
+  expect(merged.at(-1)).toEqual(refreshed);
+  expect(merged).not.toContainEqual(later[0]);
+  expect(new Set(merged.map((proof) => proof.criterion))).toEqual(
+    new Set([0, 1, 2]),
+  );
+});

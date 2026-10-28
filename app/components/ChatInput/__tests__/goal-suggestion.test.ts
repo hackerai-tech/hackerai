@@ -12,6 +12,10 @@ describe("goal suggestion boundaries", () => {
     "/goal start Create a marker",
     "  /goal Create a marker",
     "ordinary draft",
+    "cd /go",
+    "Use /g here",
+    "Open /goa",
+    "/go pause",
     "Calculate 12 / 3",
     "Compare desktop / mobile",
   ])("leaves %s to normal submission", (draft) => {
@@ -29,4 +33,8 @@ describe("goal suggestion boundaries", () => {
       "Calculate 12 / 3",
     );
   });
+});
+
+it("keeps partial path text when selecting a full inline command", () => {
+  expect(getGoalSuggestionDraft("cd /go /goal")).toBe("cd /go");
 });

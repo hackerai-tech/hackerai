@@ -29,13 +29,29 @@ export function mergeGoalEvidence<
 >(prior: T[], current: T[]): T[] {
   const distinct = new Map<string, T>();
   for (const proof of [...prior, ...current]) {
-    distinct.set(
-      JSON.stringify([proof.criterion, proof.runId, proof.toolCallId]),
-      proof,
-    );
+    const key = JSON.stringify([
+      proof.criterion,
+      proof.runId,
+      proof.toolCallId,
+    ]);
+    distinct.delete(key);
+    distinct.set(key, proof);
   }
-  // Bound the saved document independently of how many work slices a goal takes.
-  return [...distinct.values()].slice(-GOAL_MAX_EVIDENCE);
+  const all = [...distinct.values()];
+  if (all.length <= GOAL_MAX_EVIDENCE) return all;
+  // Preserve coverage for every criterion (at most eight), then recent history.
+  const keep = new Set<T>();
+  const covered = new Set<number>();
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (!covered.has(all[i].criterion)) {
+      covered.add(all[i].criterion);
+      keep.add(all[i]);
+    }
+  }
+  for (let i = all.length - 1; i >= 0 && keep.size < GOAL_MAX_EVIDENCE; i--) {
+    keep.add(all[i]);
+  }
+  return all.filter((proof) => keep.has(proof));
 }
 
 export type GoalCheckpoint = {

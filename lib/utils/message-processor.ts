@@ -237,10 +237,15 @@ const transformTerminalToolPart = (
   userInitiatedAbort = false,
 ): BaseToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
+  const { approval: _approval, ...stoppedPart } =
+    terminalPart as TerminalToolPart & {
+      approval?: unknown;
+    };
 
   // Shell tool returns { output: string } directly, not nested in result
   if (terminalPart.type === "tool-shell") {
     return {
+      ...stoppedPart,
       type: "tool-shell",
       toolCallId: terminalPart.toolCallId,
       state: "output-error",
@@ -253,6 +258,7 @@ const transformTerminalToolPart = (
   }
 
   return {
+    ...stoppedPart,
     type: terminalPart.type,
     toolCallId: terminalPart.toolCallId,
     state: "output-error",

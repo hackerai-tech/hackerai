@@ -6,7 +6,12 @@ import {
 import type { ChatMessage } from "@/types/chat";
 
 describe("normalizeMessages", () => {
-  it.each(["tool-run_terminal_cmd", "tool-shell", "tool-file"])(
+  it.each([
+    "tool-run_terminal_cmd",
+    "tool-interact_terminal_session",
+    "tool-shell",
+    "tool-file",
+  ])(
     "settles stopped approvals for %s without retaining approval authority",
     (type) => {
       for (const state of ["approval-requested", "approval-responded"]) {
@@ -16,6 +21,10 @@ describe("normalizeMessages", () => {
           state,
           input: { command: "printf approval-test" },
           approval: { id: "approval-1", approved: true },
+          callProviderMetadata: {
+            google: { thoughtSignature: "signed-call-fixture" },
+          },
+          providerExecuted: false,
         };
         const messages = [
           { id: "assistant-1", role: "assistant", parts: [part] },
@@ -32,9 +41,12 @@ describe("normalizeMessages", () => {
           toolCallId: "awaiting-tool",
           state: "output-error",
           input: part.input,
+          callProviderMetadata: part.callProviderMetadata,
+          providerExecuted: false,
           errorText: ABORTED_TOOL_ERROR_TEXT,
         });
         expect(result.messages[0].parts[0]).not.toHaveProperty("approval");
+        expect(part.approval).toEqual({ id: "approval-1", approved: true });
       }
     },
   );

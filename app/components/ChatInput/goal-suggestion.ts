@@ -1,7 +1,8 @@
 /** Return the draft after selecting a standalone goal command, or null. */
 export function getGoalSuggestionDraft(input: string): string | null {
-  if (input.trim() === "/") return "";
-  const match = /(^|\s)(\/g(?:o(?:a(?:l)?)?)?)(?=\s|$)/i.exec(input);
+  // Partial shortcuts must occupy the draft; do not consume paths like `cd /go`.
+  if (/^\/(?:g(?:o(?:a(?:l)?)?)?)?$/i.test(input.trim())) return "";
+  const match = /(^|\s)(\/goal)(?=\s|$)/i.exec(input);
   if (!match) return null;
 
   const start = match.index + match[1].length;
