@@ -344,10 +344,19 @@ const ChatInputContent = ({
 
   useEffect(() => {
     const releasePointer = () => {
+      if (!composerPointerDownRef.current) return;
       window.clearTimeout(composerPointerReleaseTimerRef.current);
       // Keep the guard through the release event's blur/click sequence.
       composerPointerReleaseTimerRef.current = window.setTimeout(() => {
         composerPointerDownRef.current = false;
+        const activeElement = document.activeElement;
+        const focusInComposer =
+          activeElement instanceof Node &&
+          chatInputContainerRef.current?.contains(activeElement);
+        const agentMenuOpen = document.querySelector(
+          "[data-chat-input-agent-menu]",
+        );
+        if (!focusInComposer && !agentMenuOpen) setComposerFocused(false);
       }, 0);
     };
     document.addEventListener("pointerup", releasePointer);

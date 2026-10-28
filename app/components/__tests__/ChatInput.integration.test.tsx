@@ -1166,6 +1166,14 @@ describe("ChatInput - Integration Tests", () => {
         expect(openedMenu).toBeInTheDocument();
         return openedMenu;
       });
+      jest.useFakeTimers();
+      try {
+        fireEvent.pointerUp(sandboxTrigger!);
+        act(() => jest.runOnlyPendingTimers());
+        expect(context).not.toHaveAttribute("inert");
+      } finally {
+        jest.useRealTimers();
+      }
       fireEvent.pointerDown(menu!);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
@@ -1243,16 +1251,20 @@ describe("ChatInput - Integration Tests", () => {
             : screen.getByRole("button", { name: /^Agent permissions:/ });
         jest.useFakeTimers();
         try {
-          fireEvent.focus(input);
+          act(() => input.focus());
+          fireEvent.pointerDown(input, { pointerType: "touch" });
+          fireEvent.pointerUp(input, { pointerType: "touch" });
+          act(() => jest.runOnlyPendingTimers());
+          expect(context).not.toHaveAttribute("inert");
+
           fireEvent.pointerDown(trigger, { pointerType: "touch" });
           act(() => jest.advanceTimersByTime(100));
-          fireEvent.blur(input, { relatedTarget: null });
+          act(() => input.blur());
           expect(context).not.toHaveAttribute("aria-hidden", "true");
           expect(context).not.toHaveAttribute("inert");
 
           fireEvent(document, new Event(release, { bubbles: true }));
           act(() => jest.runOnlyPendingTimers());
-          fireEvent.blur(input, { relatedTarget: null });
           expect(context).toHaveAttribute("aria-hidden", "true");
           expect(context).toHaveAttribute("inert");
         } finally {
