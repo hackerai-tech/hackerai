@@ -208,6 +208,74 @@ describe("ComputerSidebar reconnect behavior", () => {
     }
   });
 
+  it("closes the Computer panel when leaving a disconnected takeover", async () => {
+    const originalFetch = global.fetch;
+    const actions: string[] = [];
+    let disconnected = false;
+    const frame = {
+      image: "data:image/png;base64,test",
+      width: 800,
+      height: 600,
+      capturedAt: Date.now(),
+      browserSessionName: "default",
+    };
+    mockUseQuery.mockReturnValue({ sessionId: "session-a", state: "waiting" });
+    global.fetch = jest.fn(async (_url, options) => {
+      const action = options?.body
+        ? JSON.parse(String(options.body)).action
+        : undefined;
+      if (action) actions.push(action);
+      return {
+        ok: !disconnected,
+        status: disconnected ? 503 : 200,
+        json: async () =>
+          disconnected
+            ? { state: "disconnected" }
+            : action === "take"
+              ? { grant: "grant-a", frame }
+              : { frame },
+      } as Response;
+    });
+    try {
+      const view = render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: "agent-browser snapshot -i",
+          }}
+        />,
+      );
+      await act(async () => {});
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Take control of Agent browser" }),
+        );
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+      disconnected = true;
+      await act(async () => {
+        jest.advanceTimersByTime(1600);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+      expect(
+        screen.getByRole("button", { name: "Send and continue" }),
+      ).toBeDisabled();
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+      });
+      expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+      expect(actions).not.toContain("resume");
+      view.unmount();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("shows command expansion only alongside a browser section", () => {
     const props = {
       sidebarOpen: true,

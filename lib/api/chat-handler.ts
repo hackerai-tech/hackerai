@@ -604,7 +604,11 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
-        previewEnvironment: process.env.VERCEL_ENV === "preview",
+        inferenceEnvironment:
+          process.env.VERCEL_ENV === "production" ||
+          process.env.VERCEL_ENV === "preview"
+            ? process.env.VERCEL_ENV
+            : undefined,
         posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,

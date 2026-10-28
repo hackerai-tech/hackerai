@@ -1259,6 +1259,213 @@ describe("saveMessage", () => {
 });
 
 describe("getMessagesByChatId", () => {
+  it.each([
+    {
+      name: "empty history",
+      hasClientMessages: false,
+      mode: "agent",
+      regenerate: false,
+      page: [],
+      fileTokens: [],
+      before: 0,
+      reason: "no_candidate_messages",
+    },
+    {
+      name: "over-budget history",
+      hasClientMessages: false,
+      mode: "ask",
+      regenerate: false,
+      page: [
+        {
+          id: "private-message",
+          role: "user",
+          parts: [{ type: "file", fileId: "private-file" }],
+        },
+      ],
+      fileTokens: [{ fileId: "private-file", tokenSize: 1_000_000 }],
+      before: 0,
+      reason: "token_projection_empty",
+    },
+    {
+      name: "assistant-only regeneration",
+      hasClientMessages: false,
+      mode: "agent",
+      regenerate: true,
+      page: [
+        {
+          id: "private-message",
+          role: "assistant",
+          parts: [{ type: "text", text: "private-content" }],
+        },
+      ],
+      fileTokens: [],
+      before: 1,
+      reason: "regenerate_removed_all",
+    },
+    {
+      name: "empty regeneration candidate with ignored client messages",
+      hasClientMessages: true,
+      mode: "agent",
+      regenerate: true,
+      page: [],
+      fileTokens: [],
+      before: 0,
+      reason: "no_candidate_messages",
+    },
+  ] as const)(
+    "diagnoses $name without changing its empty return",
+    async ({
+      mode,
+      regenerate,
+      page,
+      fileTokens,
+      before,
+      reason,
+      hasClientMessages,
+    }) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const newMessages = hasClientMessages
+        ? [
+            {
+              id: "client-only",
+              role: "user" as const,
+              parts: [
+                { type: "text" as const, text: "private-client-content" },
+              ],
+            },
+          ]
+        : [];
+      try {
+        mockQuery
+          .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+          .mockResolvedValueOnce({
+            page,
+            fileTokens,
+            isDone: true,
+            continueCursor: null,
+          });
+        const result = await getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "pro",
+          newMessages,
+          regenerate,
+          mode,
+        });
+        expect(result.truncatedMessages).toEqual([]);
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        const events = warnSpy.mock.calls
+          .map(([line]) => JSON.parse(String(line)))
+          .filter((event) => event.event === "chat_history_projection_empty");
+        expect(events).toEqual([
+          {
+            level: "warn",
+            event: "chat_history_projection_empty",
+            service: "chat-handler",
+            timestamp: expect.any(String),
+            chat_id: "chat-1",
+            user_id: "user-1",
+            mode,
+            regenerate,
+            fetched_messages_count: page.length,
+            new_messages_count: newMessages.length,
+            projected_messages_before_regenerate_count: before,
+            projected_messages_count: 0,
+            pages_fetched: 1,
+            projection_reason: reason,
+          },
+        ]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it("keeps an empty history return when projection diagnostics fail", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    try {
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [],
+          isDone: true,
+          continueCursor: null,
+        });
+      await expect(
+        getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "pro",
+          newMessages: [],
+          mode: "agent",
+        }),
+      ).resolves.toMatchObject({ truncatedMessages: [] });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    "does not log an empty projection when summary=%s returns usable history",
+    async (hasSummary) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const message = {
+        id: "message-1",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "private-content" }],
+      };
+      try {
+        mockQuery.mockResolvedValueOnce({
+          id: "chat-1",
+          user_id: "user-1",
+          ...(hasSummary ? { latest_summary_id: "summary-1" } : {}),
+        });
+        if (hasSummary)
+          mockQuery.mockResolvedValueOnce({
+            summary_text: "private-summary",
+            summary_up_to_message_id: "prior-message",
+          });
+        mockQuery.mockResolvedValueOnce({
+          page: hasSummary ? [] : [message],
+          isDone: true,
+          continueCursor: null,
+        });
+        const result = await getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "pro",
+          newMessages: [],
+          mode: "agent",
+        });
+        if (hasSummary)
+          expect(result.truncatedMessages).toEqual([
+            expect.objectContaining({
+              role: "user",
+              parts: [
+                expect.objectContaining({
+                  text: expect.stringContaining("private-summary"),
+                }),
+              ],
+            }),
+          ]);
+        else expect(result.truncatedMessages).toEqual([message]);
+        expect(warnSpy).not.toHaveBeenCalled();
+        expect(mockQuery).toHaveBeenCalledTimes(hasSummary ? 3 : 2);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it.each([false, true])(
     "uses only backend provenance and disables inheritance on regenerate=%s",
     async (regenerate) => {

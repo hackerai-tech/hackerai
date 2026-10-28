@@ -65,7 +65,7 @@ import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
-  goalPanel?: React.ReactNode;
+  goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
   hasActiveGoalRun?: boolean;
   pauseGoalOnSend?: boolean;
   onSubmit: (
@@ -91,9 +91,14 @@ interface ChatInputProps {
   offlineProtection?: boolean;
   sendDisabledReason?: string;
   isResolvingInitialState?: boolean;
+  topNotice?: React.ReactNode;
 }
 
-const ChatInputLoadingState = () => (
+const COMPOSER_TAP_CLICK_FALLBACK_MS = 500;
+
+const ChatInputLoadingState = ({
+  topNotice,
+}: Pick<ChatInputProps, "topNotice">) => (
   <div
     aria-label="Loading task input"
     aria-live="polite"
@@ -102,6 +107,9 @@ const ChatInputLoadingState = () => (
     role="status"
   >
     <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto bg-background">
+        {topNotice}
+      </div>
       <div
         className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
         data-testid="chat-input-loading-surface"
@@ -227,7 +235,15 @@ export const ChatInput = (props: ChatInputProps) => {
   const { activeToolApprovalRequest } = useAgentApproval();
   return (
     <RegionalSubscriptionGate
+      fallbackHeader={
+        props.topNotice ? (
+          <div className="mx-auto w-full max-w-[800px] px-4">
+            {props.topNotice}
+          </div>
+        ) : undefined
+      }
       running={
+        !!props.hasActiveGoalRun ||
         props.status === "submitted" ||
         props.status === "streaming" ||
         !!activeToolApprovalRequest ||
@@ -263,6 +279,7 @@ const ChatInputContent = ({
   offlineProtection = true,
   sendDisabledReason,
   isResolvingInitialState = false,
+  topNotice,
 }: ChatInputProps) => {
   const {
     chatMode,
@@ -352,12 +369,18 @@ const ChatInputContent = ({
     !showAgentApprovalPrompt &&
     (todoPanelVisible || messageQueue.length > 0);
   const hasFilePreviews = !!uploadedFiles?.length;
+  const goalPlacement =
+    isMobile === true ||
+    showAgentApprovalPrompt ||
+    hasJoinedComposerPanels ||
+    hasFilePreviews
+      ? "detached"
+      : "attached";
 
   useEffect(() => {
-    const releasePointer = () => {
+    const releasePointer = (delay: number) => {
       if (!composerPointerDownRef.current) return;
       window.clearTimeout(composerPointerReleaseTimerRef.current);
-      // Keep the guard through the release event's blur/click sequence.
       composerPointerReleaseTimerRef.current = window.setTimeout(() => {
         composerPointerDownRef.current = false;
         const activeElement = document.activeElement;
@@ -368,13 +391,21 @@ const ChatInputContent = ({
           "[data-chat-input-agent-menu]",
         );
         if (!focusInComposer && !agentMenuOpen) setComposerFocused(false);
-      }, 0);
+      }, delay);
     };
-    document.addEventListener("pointerup", releasePointer);
-    document.addEventListener("pointercancel", releasePointer);
+    // Touch compatibility mouse events can blur the input after pointerup.
+    // Keep the selector interactive until click opens its menu. Release a
+    // canceled gesture immediately, or a gesture with no click after a fallback.
+    const releaseAfterClick = () => releasePointer(0);
+    const releaseWithoutClick = () =>
+      releasePointer(COMPOSER_TAP_CLICK_FALLBACK_MS);
+    document.addEventListener("pointerup", releaseWithoutClick);
+    document.addEventListener("pointercancel", releaseAfterClick);
+    document.addEventListener("click", releaseAfterClick);
     return () => {
-      document.removeEventListener("pointerup", releasePointer);
-      document.removeEventListener("pointercancel", releasePointer);
+      document.removeEventListener("pointerup", releaseWithoutClick);
+      document.removeEventListener("pointercancel", releaseAfterClick);
+      document.removeEventListener("click", releaseAfterClick);
       window.clearTimeout(composerPointerReleaseTimerRef.current);
     };
   }, []);
@@ -980,7 +1011,7 @@ const ChatInputContent = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState />;
+    return <ChatInputLoadingState topNotice={topNotice} />;
   }
 
   return (
@@ -996,8 +1027,9 @@ const ChatInputContent = ({
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
-          className={`flex min-h-0 shrink-0 flex-col overflow-y-auto [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink flex-col overflow-y-auto bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
+          {topNotice}
           {isOffline && (
             <div
               role="status"
@@ -1062,11 +1094,11 @@ const ChatInputContent = ({
             />
           )}
 
-          {/* Keep the row's geometry fixed when an existing mobile chat hides
-              its selector, so focus changes never move the composer. */}
+          {/* Hidden selectors take no space; the bottom-anchored composer stays
+              in place while the panels above it use the available height. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 mb-1 flex min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
+              className={`relative z-0 mb-1 min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "hidden" : "flex"}`}
               data-testid="chat-input-agent-context"
               aria-hidden={mobileSandboxHidden || undefined}
               inert={mobileSandboxHidden || undefined}
@@ -1138,7 +1170,12 @@ const ChatInputContent = ({
             </span>
           </button>
         )}
-        {goalPanel}
+        <div
+          className={`min-w-0 shrink-0 ${goalPlacement === "detached" ? "order-first" : "order-1"}`}
+          data-testid="chat-input-goal-slot"
+        >
+          {goalPanel?.(goalPlacement)}
+        </div>
 
         <input
           ref={fileInputRef}
@@ -1163,9 +1200,23 @@ const ChatInputContent = ({
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onFocusCapture={() => setComposerFocused(true)}
-            onPointerDownCapture={() => {
-              setComposerFocused(true);
-              holdComposerFocusForPointer();
+            onPointerDownCapture={holdComposerFocusForPointer}
+            onClick={(event) => {
+              // Reveal controls only after focus, not during touch start. Focus
+              // padding taps inside the click gesture so mobile opens the keyboard.
+              const target = event.target;
+              if (
+                !(target instanceof Element) ||
+                !event.currentTarget.contains(target) ||
+                target.closest(
+                  "button, a, input, textarea, select, label, [contenteditable], [role='button'], [role='menuitem'], [role='option'], [role='combobox']",
+                )
+              )
+                return;
+              const textarea = event.currentTarget.querySelector("textarea");
+              if (textarea && textarea !== document.activeElement) {
+                textarea.focus({ preventScroll: true });
+              }
             }}
           >
             <ChatInputTextarea

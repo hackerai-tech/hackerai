@@ -1225,6 +1225,59 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
+    it.each(["surface", "writing-area"])(
+      "focuses the mobile editor on the first %s tap and accepts a draft",
+      async (targetName) => {
+        mockIsMobile = true;
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByTestId("chat-input");
+        const target =
+          targetName === "surface"
+            ? screen.getByTestId("chat-input-surface")
+            : input.parentElement!;
+        expect(input).not.toHaveFocus();
+        fireEvent.click(target);
+        expect(input).toHaveFocus();
+        fireEvent.change(input, { target: { value: "First tap draft" } });
+        expect(input).toHaveValue("First tap draft");
+      },
+    );
+
+    it("does not focus the editor on a scroll gesture or an upload button click", async () => {
+      mockIsMobile = true;
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            status="ready"
+            hasMessages
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByTestId("chat-input");
+      const surface = screen.getByTestId("chat-input-surface");
+      fireEvent.pointerDown(surface, { pointerType: "touch" });
+      fireEvent.pointerCancel(surface, { pointerType: "touch" });
+      expect(input).not.toHaveFocus();
+      fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+      expect(input).not.toHaveFocus();
+    });
+
     it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
       mockIsMobile = true;
       jest.mocked(useAuth).mockReturnValue({
@@ -1283,10 +1336,20 @@ describe("ChatInput - Integration Tests", () => {
         .getByTestId("chat-input-mobile-sandbox")
         .querySelector("button");
       expect(sandboxTrigger).not.toBeNull();
-      fireEvent.pointerDown(sandboxTrigger!);
-      fireEvent.blur(input, { relatedTarget: sandboxTrigger });
-      expect(context).not.toHaveAttribute("aria-hidden", "true");
-      expect(context).not.toHaveAttribute("inert");
+      act(() => input.focus());
+      fireEvent.pointerDown(sandboxTrigger!, { pointerType: "touch" });
+      jest.useFakeTimers();
+      try {
+        fireEvent.pointerUp(sandboxTrigger!, { pointerType: "touch" });
+        // Safari may deliver compatibility mouse events in a later task,
+        // blurring the textarea without focusing the tapped button.
+        act(() => jest.advanceTimersByTime(0));
+        act(() => input.blur());
+        expect(context).not.toHaveAttribute("aria-hidden", "true");
+        expect(context).not.toHaveAttribute("inert");
+      } finally {
+        jest.useRealTimers();
+      }
 
       fireEvent.click(sandboxTrigger!);
       const menu = await waitFor(() => {
@@ -1312,7 +1375,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(context).toHaveAttribute("aria-hidden", "true");
       expect(context).toHaveAttribute("inert");
 
-      fireEvent.pointerDown(input);
+      fireEvent.pointerDown(input, { pointerType: "touch" });
+      expect(context).toHaveAttribute("inert");
+      fireEvent.focus(input);
       expect(context).not.toHaveAttribute("aria-hidden", "true");
       expect(context).not.toHaveAttribute("inert");
 
@@ -1657,6 +1722,7 @@ describe("ChatInput - Integration Tests", () => {
             chatId="approval-chat"
             hasMessages
             isResolvingInitialState
+            topNotice={<button>Take control</button>}
           />
         </TestWrapper>,
       );
@@ -1664,6 +1730,9 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         await screen.findByTestId("chat-input-loading-state"),
       ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Take control" }),
+      ).toBeVisible();
       expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
         "h-[98px]",
       );
@@ -2748,6 +2817,84 @@ describe("ChatInput - Integration Tests", () => {
       rerender(content());
       expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
     });
+  });
+
+  it("moves goal controls clear of files, approvals, and mobile panels without remounting their draft", async () => {
+    jest
+      .mocked(useAuth)
+      .mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    const panel = (placement: "attached" | "detached") => (
+      <input
+        aria-label="Goal reply draft"
+        defaultValue=""
+        data-placement={placement}
+      />
+    );
+    const approval = {
+      approvalId: "goal-approval",
+      toolCallId: "goal-tool",
+      title: "Approve command",
+      target: "printf goal-ok",
+      detail: "Waiting for approval",
+      kind: "terminal" as const,
+    };
+    const content = (request?: typeof approval) => (
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+          goalPanel={panel}
+          storedApprovalRequest={request}
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(content());
+    const reply = await screen.findByRole("textbox", {
+      name: "Goal reply draft",
+    });
+    fireEvent.change(reply, { target: { value: "Keep these instructions" } });
+    expect(reply).toHaveAttribute("data-placement", "attached");
+    mockSandboxState = {
+      ...mockSandboxState,
+      uploadedFiles: [
+        {
+          file: new File(["goal"], "goal.txt", { type: "text/plain" }),
+          fileId: "goal-file",
+          uploaded: true,
+          uploading: false,
+        },
+      ] as UploadedFileState[],
+    };
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(screen.getByRole("textbox", { name: "Goal reply draft" })).toBe(
+      reply,
+    );
+    expect(reply).toHaveValue("Keep these instructions");
+    mockSandboxState = { ...mockSandboxState, uploadedFiles: [] };
+    rerender(content(approval));
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(reply).toBeVisible();
+    expect(reply).toHaveValue("Keep these instructions");
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "attached");
+    mockIsMobile = true;
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(screen.getByRole("textbox", { name: "Goal reply draft" })).toBe(
+      reply,
+    );
+    expect(reply).toHaveValue("Keep these instructions");
   });
 
   it("selects /goal without sending and submits its objective through goal mode", async () => {

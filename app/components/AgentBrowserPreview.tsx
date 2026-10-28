@@ -64,6 +64,7 @@ export function AgentBrowserPreview({
   onJumpToLive,
   onContinue,
   onVisibilityChange,
+  onReturnToChat,
 }: {
   chatId: string;
   agentId: string;
@@ -72,6 +73,7 @@ export function AgentBrowserPreview({
   takeoverRequest?: { requestId: string; sessionId: string };
   onTakeoverRequestConsumed?: (requestId: string) => void;
   onVisibilityChange?: (visible: boolean) => void;
+  onReturnToChat?: () => void;
   runActive?: boolean;
   onJumpToLive?: () => void;
   onContinue?: (message: { id: string; text: string }) => Promise<void>;
@@ -81,6 +83,10 @@ export function AgentBrowserPreview({
   const [frameSeenAt, setFrameSeenAt] = useState(0);
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
+  const previewHealthRef = useRef({ previewState, frameSeenAt });
+  useLayoutEffect(() => {
+    previewHealthRef.current = { previewState, frameSeenAt };
+  }, [previewState, frameSeenAt]);
   const [fullScreen, setFullScreen] = useState(false);
   const inputRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<HTMLTextAreaElement>(null);
@@ -277,11 +283,15 @@ export function AgentBrowserPreview({
       return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
     const poll = async () => {
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
         const response = await fetch(endpoint, {
           cache: "no-store",
           credentials: "same-origin",
+          signal: controller.signal,
         });
         const data = await response.json();
         if (stopped) return;
@@ -295,6 +305,7 @@ export function AgentBrowserPreview({
       } catch {
         if (!stopped) setPreviewState("disconnected");
       } finally {
+        clearTimeout(timeout);
         if (!stopped) timer = setTimeout(poll, grantRef.current ? 200 : 1600);
       }
     };
@@ -302,8 +313,36 @@ export function AgentBrowserPreview({
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      controller?.abort();
     };
-  }, [showPreview, endpoint, activeSessionId, grant, relayUrl]);
+  }, [showPreview, endpoint, activeSessionId, grant, relayUrl, relayReconnect]);
+
+  useEffect(() => {
+    if (!showPreview) return;
+    let lastRestartAt = -Infinity;
+    const wake = () => {
+      if (document.hidden) return;
+      const wokeAt = Date.now();
+      setNow(wokeAt);
+      const health = previewHealthRef.current;
+      if (
+        (health.previewState === "ready" &&
+          wokeAt - health.frameSeenAt <= FRAME_STALE_MS) ||
+        wokeAt - lastRestartAt < 250
+      )
+        return;
+      lastRestartAt = wokeAt;
+      // Mobile browsers can suspend a pending fetch while backgrounded. Start
+      // a new preview transport rather than waiting for that request to settle.
+      setRelayReconnect((value) => value + 1);
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [showPreview]);
 
   useEffect(() => {
     if (!relayUrl || !grant || !activeSessionId) return;
@@ -1463,7 +1502,10 @@ export function AgentBrowserPreview({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            openButtonRef.current?.focus({ preventScroll: true });
+            const target = openButtonRef.current?.disabled
+              ? resumeButtonRef.current
+              : openButtonRef.current;
+            target?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
             // Escape leaves remote keyboard control, rather than silently
@@ -1512,7 +1554,9 @@ export function AgentBrowserPreview({
                   ? keyboardRef.current
                   : inputRef.current
                 : resumeButtonRef.current
-              : openButtonRef.current;
+              : openButtonRef.current?.disabled
+                ? resumeButtonRef.current
+                : openButtonRef.current;
             target?.focus({ preventScroll: true });
           }}
           onEscapeKeyDown={(event) => {
@@ -1570,13 +1614,48 @@ export function AgentBrowserPreview({
                 your saved context.
               </p>
             )}
+            {session && !canResume && !busy && (
+              <p role="status" className="text-sm text-muted-foreground">
+                Reconnect the browser preview to continue. You can return to
+                chat while the Agent stays paused. Your note is saved.
+              </p>
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}
               </p>
             )}
           </div>
-          <div className="flex shrink-0 justify-end border-t px-4 py-3 sm:px-6">
+          <div className="flex shrink-0 flex-col justify-end gap-2 border-t px-4 py-3 sm:flex-row sm:px-6">
+            {fullScreen && !canResume && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  // The server resets the pointer on the next take/resume.
+                  mouseRef.current = null;
+                  touchRef.current = null;
+                  const activeGrant = grantRef.current;
+                  grantRef.current = null;
+                  setGrant(null);
+                  setRenewalPending(false);
+                  setExitOpen(false);
+                  setFullScreen(false);
+                  // Leaving the UI must work offline. Revoke this tab's input
+                  // when reachable; lease expiry covers a failed release.
+                  // Only Send and continue may resume the Agent.
+                  if (activeGrant)
+                    void post(
+                      { action: "release", grant: activeGrant },
+                      true,
+                    ).catch(() => undefined);
+                  onReturnToChat?.();
+                }}
+                className="rounded-xl border border-border px-5 py-3 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Return to chat
+              </button>
+            )}
             <button
               type="button"
               disabled={!canResume || busy}

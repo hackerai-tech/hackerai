@@ -141,6 +141,140 @@ it("stops input and resume when the preview disconnects", async () => {
   expect(actions.some((body) => body.action === "input")).toBe(false);
 });
 
+it.each([false, true])(
+  "returns to chat with a disconnected preview without resuming (expired control: %s)",
+  async (expired) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    const defaultFetch = global.fetch;
+    global.fetch = jest.fn((url, options) =>
+      !options?.body
+        ? Promise.resolve(response({ state: "disconnected" }, false))
+        : defaultFetch(url, options),
+    );
+    handleAction = async (body) => {
+      if (body.action === "release") throw new Error("offline");
+      return body.action === "heartbeat" && expired
+        ? response({ state: "expired" }, false, 403)
+        : response({ frame });
+    };
+    await act(async () => {
+      jest.advanceTimersByTime(1600);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Keep my unfinished work." },
+    });
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeDisabled();
+    expect(screen.getByText(/Agent stays paused/)).toBeVisible();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(0);
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("Agent browser")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Exit takeover" })).toHaveFocus();
+    expect(actions.some((body) => body.action === "resume")).toBe(false);
+    if (!expired)
+      expect(actions.at(-1)).toMatchObject({
+        action: "release",
+        grant: "grant-a",
+      });
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    expect(screen.getByRole("textbox")).toHaveValue("Keep my unfinished work.");
+  },
+);
+
+it("keeps a healthy preview connected when the window gains focus", async () => {
+  await mount();
+  await takeControl();
+  const requests = (global.fetch as jest.Mock).mock.calls.length;
+  await act(async () => {
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  // Heartbeat renewal is independent of the preview transport.
+  const newRequests = (global.fetch as jest.Mock).mock.calls.slice(requests);
+  expect(newRequests.every(([, options]) => options?.body)).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Return to chat" })).toBeNull();
+});
+
+it.each(["reconnect", "focus", "visibilitychange"])(
+  "restarts a stalled preview after control expires on %s",
+  async (trigger) => {
+    await mount();
+    await takeControl();
+    mockSession!.state = "recovery";
+    handleAction = async () => response({ state: "expired" }, false, 403);
+    const defaultFetch = global.fetch;
+    let stalledSignal: AbortSignal | undefined;
+    let hang = true;
+    global.fetch = jest.fn((url, options) => {
+      if (options?.body) return defaultFetch(url, options);
+      if (!hang) return Promise.resolve(response({ frame }));
+      stalledSignal = options?.signal as AbortSignal;
+      return new Promise(() => {});
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(stalledSignal).toBeDefined();
+    hang = false;
+    await act(async () => {
+      if (trigger === "reconnect")
+        fireEvent.click(
+          screen.getByRole("button", { name: "Reconnect preview" }),
+        );
+      else if (trigger === "focus") fireEvent.focus(window);
+      else fireEvent(document, new Event("visibilitychange"));
+    });
+    expect(stalledSignal!.aborted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeEnabled();
+    handleAction = async () => response({ frame });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send and continue" }),
+      );
+    });
+    expect(actions.at(-1)).toMatchObject({ action: "resume", grant: null });
+  },
+);
+
+it("times out a stalled preview request and retries", async () => {
+  let signal: AbortSignal | undefined;
+  (global.fetch as jest.Mock).mockImplementationOnce((_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  });
+  await mount();
+  await act(async () => {
+    jest.advanceTimersByTime(8000);
+  });
+  expect(signal!.aborted).toBe(true);
+  await act(async () => {
+    jest.advanceTimersByTime(1600);
+  });
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
 it("waits for queued keystrokes before resuming and stops accepting new input", async () => {
   let finishInput!: (value: Response) => void;
   handleAction = (body) =>

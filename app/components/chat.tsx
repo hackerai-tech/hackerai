@@ -2314,6 +2314,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSummarizing: summarizationStatus?.status === "started",
     goalState: persistedGoal?.state,
+    goalGeneration: persistedGoal?.generation,
     isSendingNowRef,
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
@@ -2531,9 +2532,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       throw new Error("The goal run changed. Reload before changing the goal.");
     return handleStop({ requireSavedResponse: true });
   };
-  const goalPanel = (
+  const goalPanel = (placement: "attached" | "detached") => (
     <AgentGoalPanel
       key={chatId}
+      detached={placement === "detached"}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
       stopRunBeforeControl={stopGoalRunBeforeControl}
@@ -2763,13 +2765,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       isAtBottom={isAtBottom}
                     />
                   </div>
-                  {showChatLayout && (
-                    <BrowserHandoffEntry chatId={chatId} messages={messages} />
-                  )}
                   <ChatInput
                     goalPanel={goalPanel}
                     hasActiveGoalRun={hasActiveGoalRun}
                     pauseGoalOnSend={pauseGoalOnSend}
+                    topNotice={
+                      showChatLayout ? (
+                        <BrowserHandoffEntry
+                          chatId={chatId}
+                          messages={messages}
+                        />
+                      ) : undefined
+                    }
+
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}

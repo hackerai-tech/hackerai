@@ -269,7 +269,7 @@ jest.mock("../Messages", () => ({
 jest.mock("../ChatInput", () => ({
   ChatInput: ({ onSubmit, goalPanel }: any) => (
     <div data-testid="chat-input">
-      ChatInput{goalPanel}
+      ChatInput{goalPanel?.("attached")}
       <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
         Submit test message
       </button>

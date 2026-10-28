@@ -57,6 +57,7 @@ const stateLabels: Record<GoalState, string> = {
 
 export function AgentGoalPanel({
   chatId,
+  detached = false,
   exists,
   eligible,
   idle,
@@ -66,6 +67,7 @@ export function AgentGoalPanel({
   send,
 }: {
   chatId: string;
+  detached?: boolean;
   exists: boolean;
   eligible: boolean;
   idle: boolean;
@@ -511,7 +513,7 @@ export function AgentGoalPanel({
     return (
       <section
         aria-label="Agent goal"
-        className={`relative z-10 order-1 flex min-w-0 shrink-0 items-center gap-1 py-1 text-xs text-muted-foreground ${isMobile ? "justify-center" : "mx-3"}`}
+        className={`relative z-10 flex min-w-0 shrink-0 items-center gap-1 py-1 text-xs text-muted-foreground ${isMobile ? "justify-center" : "mx-3"}`}
       >
         <Popover open={expanded} onOpenChange={setExpanded}>
           <PopoverTrigger asChild>
@@ -560,7 +562,7 @@ export function AgentGoalPanel({
     return (
       <section
         aria-label="Agent goal"
-        className="relative z-10 order-1 flex min-w-0 shrink-0 justify-center py-1.5"
+        className="relative z-10 flex min-w-0 shrink-0 justify-center py-1.5"
       >
         <Popover open={mobileOpen} onOpenChange={setMobileOpen}>
           <PopoverTrigger asChild>
@@ -625,9 +627,11 @@ export function AgentGoalPanel({
   return (
     <section
       aria-label="Agent goal"
-      className="relative z-0 order-1 mx-3 -mb-5 flex min-w-0 shrink-0 flex-col-reverse text-sm"
+      className={`relative z-0 mx-3 flex min-w-0 shrink-0 flex-col-reverse text-sm ${detached ? "mb-2" : "-mb-5"}`}
     >
-      <div className="rounded-t-[22px] border border-black/8 bg-muted px-2 pb-5 dark:border-border">
+      <div
+        className={`border border-black/8 bg-muted px-2 dark:border-border ${detached ? "rounded-[22px]" : "rounded-t-[22px] pb-5"}`}
+      >
         <div className="flex min-h-9 min-w-0 items-center gap-2">
           <button
             type="button"

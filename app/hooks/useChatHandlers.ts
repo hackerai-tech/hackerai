@@ -52,6 +52,7 @@ import {
 
 interface UseChatHandlersProps {
   goalState?: string;
+  goalGeneration?: number;
   sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
@@ -129,6 +130,7 @@ export const useChatHandlers = ({
   resetAutoContinueCount,
   sendDisabledReason,
   goalState,
+  goalGeneration,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
@@ -522,18 +524,88 @@ export const useChatHandlers = ({
     status === "submitted" ||
     Boolean(activeTriggerRunRef?.current);
 
+  const controlSavedGoal = async (
+    action: "pause" | "stop" | "clear",
+  ): Promise<{
+    state: string;
+    stoppedRun: boolean;
+    stopGeneration: number;
+  }> => {
+    let controlGeneration = stopGenerationRef.current;
+    const savedResponse = await fetch(
+      `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+      { cache: "no-store" },
+    );
+    const saved = await savedResponse.json();
+    if (
+      !savedResponse.ok ||
+      !saved.goal ||
+      !Number.isInteger(saved.goal.generation)
+    )
+      throw new Error(saved.message ?? "No saved goal in this chat.");
+    if (
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== controlGeneration
+    )
+      throw new Error("The task changed. Your draft is saved.");
+    if (
+      goalGeneration !== undefined &&
+      saved.goal.generation !== goalGeneration
+    )
+      throw new Error("The goal changed. Reload before changing it.");
+    const stoppedRun = Boolean(saved.goal.activeRunId);
+    if (stoppedRun) {
+      if (activeTriggerRunRef?.current !== saved.goal.activeRunId)
+        throw new Error(
+          "The goal run changed. Reload before changing the goal.",
+        );
+      // Use the same normalization, persistence, and cancellation path as Stop.
+      // Capture its generation synchronously so a later explicit Stop still wins.
+      const stopping = handleStop({ requireSavedResponse: true });
+      controlGeneration = stopGenerationRef.current;
+      if (!(await stopping))
+        throw new Error(
+          "Could not stop and save the current run. Your draft is saved.",
+        );
+    }
+    if (
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== controlGeneration
+    )
+      throw new Error("The task changed. Your draft is saved.");
+    const response = await fetch("/api/agent-goal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chatId,
+        action,
+        generation: saved.goal.generation,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? "Goal control failed");
+    if (
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== controlGeneration
+    )
+      throw new Error("The task changed. Your draft is saved.");
+    return { state: data.state, stoppedRun, stopGeneration: controlGeneration };
+  };
+
   const handleSubmit = async (
     e: React.FormEvent,
     inputOverride?: string,
   ): Promise<boolean> => {
     e.preventDefault();
     if (sendDisabledReasonRef.current) return false;
-    const stopGeneration = stopGenerationRef.current;
+    let stopGeneration = stopGenerationRef.current;
+    let stoppedGoalForMessage = false;
     const wasSummarizing = isSummarizingRef.current;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
     const submittedInput = getInput();
+    const uploadedFiles = getUploadedFiles();
     const input = inputOverride ?? submittedInput;
     let goalCommand;
     let resumeMessage: string | undefined;
@@ -557,20 +629,21 @@ export const useChatHandlers = ({
           return true;
         }
         try {
-          const response =
+          const data =
             goalCommand.action === "status"
-              ? await fetch(
-                  `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
-                  { cache: "no-store" },
-                )
-              : await fetch("/api/agent-goal", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ chatId, action: goalCommand.action }),
-                });
-          const data = await response.json();
-          if (!response.ok)
-            throw new Error(data.message ?? "Goal control failed");
+              ? await (async () => {
+                  const response = await fetch(
+                    `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+                    { cache: "no-store" },
+                  );
+                  const result = await response.json();
+                  if (!response.ok)
+                    throw new Error(result.message ?? "Goal control failed");
+                  return result;
+                })()
+              : await controlSavedGoal(
+                  goalCommand.action as "pause" | "stop" | "clear",
+                );
           toast.info(
             data.goal
               ? `Goal: ${data.goal.state.replaceAll("_", " ")} (${data.goal.runs}/${data.goal.maxRuns} runs)`
@@ -578,7 +651,7 @@ export const useChatHandlers = ({
                 ? `Goal ${data.state}`
                 : "No goal in this chat. Use /goal followed by an objective.",
           );
-          clearInput();
+          if (getInput() === submittedInput) clearInput();
           return true;
         } catch (error) {
           toast.error(
@@ -624,7 +697,6 @@ export const useChatHandlers = ({
         }
       }
     }
-    const uploadedFiles = getUploadedFiles();
     const clearSubmittedDraft = () => {
       if (
         getInput() === submittedInput &&
@@ -760,15 +832,11 @@ export const useChatHandlers = ({
       ["queued", "running", "waiting", "needs_approval"].includes(goalState)
     ) {
       try {
-        const r = await fetch("/api/agent-goal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chatId, action: "pause" }),
-        });
-        if (!r.ok)
-          throw new Error(
-            "Could not pause the goal before sending your message. Your draft is saved.",
-          );
+        const control = await controlSavedGoal("pause");
+        stopGeneration = control.stopGeneration;
+        stoppedGoalForMessage = control.stoppedRun;
+        // This user message deliberately replaces the stopped goal's work.
+        if (stoppedGoalForMessage) hasManuallyStoppedRef.current = false;
         toast.info(
           "Goal paused for your message. Resume it from the goal panel when ready.",
         );
@@ -781,7 +849,10 @@ export const useChatHandlers = ({
     }
 
     // While an Agent run is starting or streaming, honor the queue behavior.
-    if (status === "streaming" || status === "submitted") {
+    if (
+      !stoppedGoalForMessage &&
+      (status === "streaming" || status === "submitted")
+    ) {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)

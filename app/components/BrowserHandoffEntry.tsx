@@ -89,7 +89,7 @@ export function BrowserHandoffEntry({
   if (!needsAttention) return null;
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[800px] px-4">
+    <div className="mb-2 w-full">
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background p-3 shadow-sm sm:flex-nowrap sm:gap-3">
         <MousePointerClick
           size={18}

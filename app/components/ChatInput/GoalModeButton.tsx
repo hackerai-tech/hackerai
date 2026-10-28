@@ -36,7 +36,7 @@ export function GoalModeButton({
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" sideOffset={6}>
-          Clear goal
+          Exit goal mode
         </TooltipContent>
       </Tooltip>
     </div>
