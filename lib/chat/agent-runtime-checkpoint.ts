@@ -1,5 +1,34 @@
 export const AGENT_RUNTIME_CHECKPOINT_FLAG = "agent-runtime-checkpoint-v1";
 
+/** Optional assignment must not hold startup through analytics SDK retries. */
+export function resolveAgentRuntimeCheckpointEnabled({
+  loadDecision,
+  signal,
+}: {
+  loadDecision: () => Promise<boolean | null>;
+  signal: AbortSignal;
+}): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const finish = (enabled: boolean) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(enabled);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(false), 1000);
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Attach both handlers even if the timeout/abort wins. Late SDK results
+    // cannot change assignment or cause an unhandled rejection.
+    Promise.resolve()
+      .then(loadDecision)
+      .then(
+        (decision) => finish(decision === true),
+        () => finish(false),
+      );
+  });
+}
+
 export type AgentRuntimeCheckpoint = {
   /** Prepare without consuming; a failed preparation may retry before dispatch. */
   takeNotice: () => string | undefined;

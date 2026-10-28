@@ -193,6 +193,7 @@ import {
 import {
   AGENT_RUNTIME_CHECKPOINT_FLAG,
   createAgentRuntimeCheckpoint,
+  resolveAgentRuntimeCheckpointEnabled,
 } from "@/lib/chat/agent-runtime-checkpoint";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
@@ -2269,13 +2270,16 @@ export const agentLongTask = task({
       });
       activeRuntimeBudget = runtimeBudget;
       const runtimeCheckpoint = createAgentRuntimeCheckpoint({
-        enabled:
-          (await getPostHogBooleanFlagDecisionForUser(
-            AGENT_RUNTIME_CHECKPOINT_FLAG,
-            userId,
-            undefined,
-            { sendFeatureFlagEvents: false },
-          )) === true,
+        enabled: await resolveAgentRuntimeCheckpointEnabled({
+          signal: userStopSignal.signal,
+          loadDecision: () =>
+            getPostHogBooleanFlagDecisionForUser(
+              AGENT_RUNTIME_CHECKPOINT_FLAG,
+              userId,
+              undefined,
+              { sendFeatureFlagEvents: false },
+            ),
+        }),
         maxDurationMs: agentLongMaxDurationMs,
         getElapsedTimeMs: runtimeBudget.getElapsedTimeMs,
         onExposed: (timing) =>
@@ -2289,6 +2293,7 @@ export const agentLongTask = task({
             $process_person_profile: false,
           }),
       });
+      userStopSignal.signal.throwIfAborted();
       runtimeSettlementWatchdog = createRuntimeSettlementWatchdog({
         delayMs: AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS,
         onStalled: ({ runtimeBudgetExceededAt, stalledForMs }) => {

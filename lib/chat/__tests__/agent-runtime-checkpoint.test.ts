@@ -1,7 +1,74 @@
-import { createAgentRuntimeCheckpoint } from "../agent-runtime-checkpoint";
+import {
+  createAgentRuntimeCheckpoint,
+  resolveAgentRuntimeCheckpointEnabled,
+} from "../agent-runtime-checkpoint";
 import { createActiveRuntimeBudget } from "../active-runtime-budget";
 
 describe("Agent runtime checkpoint", () => {
+  it.each([true, false, null])(
+    "uses an available assignment %s",
+    async (decision) => {
+      await expect(
+        resolveAgentRuntimeCheckpointEnabled({
+          loadDecision: async () => decision,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toBe(decision === true);
+    },
+  );
+
+  it("skips lookup when already stopped, and bypasses a pending lookup on Stop", async () => {
+    const controller = new AbortController();
+    const loadDecision = jest.fn(() => new Promise<boolean>(() => {}));
+    const pending = resolveAgentRuntimeCheckpointEnabled({
+      loadDecision,
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    expect(loadDecision).toHaveBeenCalledTimes(1);
+    controller.abort();
+    await expect(pending).resolves.toBe(false);
+    await expect(
+      resolveAgentRuntimeCheckpointEnabled({
+        loadDecision,
+        signal: controller.signal,
+      }),
+    ).resolves.toBe(false);
+    expect(loadDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds optional flag startup time and ignores a late decision", async () => {
+    jest.useFakeTimers();
+    try {
+      let resolveDecision!: (value: boolean) => void;
+      const pending = resolveAgentRuntimeCheckpointEnabled({
+        loadDecision: () =>
+          new Promise<boolean>((resolve) => {
+            resolveDecision = resolve;
+          }),
+        signal: new AbortController().signal,
+      });
+      await Promise.resolve();
+      jest.advanceTimersByTime(1000);
+      await expect(pending).resolves.toBe(false);
+      resolveDecision(true);
+      await expect(pending).resolves.toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("fails closed on lookup errors", async () => {
+    await expect(
+      resolveAgentRuntimeCheckpointEnabled({
+        loadDecision: async () => {
+          throw new Error("unavailable");
+        },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe(false);
+  });
+
   it.each([undefined, 0, -1, Infinity, NaN])(
     "ignores unknown or invalid allowance %s",
     (maxDurationMs) => {
