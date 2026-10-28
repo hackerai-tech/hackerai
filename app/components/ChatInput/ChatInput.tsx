@@ -989,11 +989,11 @@ const ChatInputContent = ({
             />
           )}
 
-          {/* Keep the row's geometry fixed when an existing mobile chat hides
-              its selector, so focus changes never move the composer. */}
+          {/* Hidden selectors take no space; the bottom-anchored composer stays
+              in place while the panels above it use the available height. */}
           {user && isAgent && !showAgentApprovalPrompt && (
             <div
-              className={`relative z-0 mb-1 flex min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "invisible pointer-events-none md:visible md:pointer-events-auto" : ""}`}
+              className={`relative z-0 mb-1 min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "hidden" : "flex"}`}
               data-testid="chat-input-agent-context"
               aria-hidden={mobileSandboxHidden || undefined}
               inert={mobileSandboxHidden || undefined}
