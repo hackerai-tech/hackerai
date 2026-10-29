@@ -5168,6 +5168,9 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it("emits sanitized provider and retained-message diagnostics", async () => {
+    jest
+      .mocked(require("ai").convertToModelMessages)
+      .mockImplementationOnce(jest.requireActual("ai").convertToModelMessages);
     const onProviderRequestDiagnostics = jest.fn();
     const tracker = {
       hasSummarized: true,
@@ -5183,6 +5186,11 @@ describe("createAgentStream repeated compaction", () => {
     state.transcriptSourceMessages = [
       uiMessage("transcript-1", "private transcript content"),
     ];
+    state.finalMessages[0].parts.push({
+      type: "file",
+      mediaType: "image/png",
+      url: "https://private.test/diagnostic-fixture",
+    });
 
     await createAgentStream(
       "test-model",
@@ -5199,6 +5207,12 @@ describe("createAgentStream repeated compaction", () => {
         source: "initial",
         message_count: 2,
         role_counts: { user: 2 },
+        media_counts: expect.objectContaining({
+          image_parts: 1,
+          user_image_parts: 1,
+          url_images: 1,
+          inline_images: 0,
+        }),
         serialized_message_bytes: expect.any(Number),
         invalid_tool_call_name_count: 0,
         invalid_tool_result_name_count: 0,
@@ -5218,6 +5232,9 @@ describe("createAgentStream repeated compaction", () => {
     expect(
       JSON.stringify(onProviderRequestDiagnostics.mock.calls),
     ).not.toContain("private transcript content");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("https://private.test/diagnostic-fixture");
   });
 
   it("retains the handoff note when preparing a compacted request falls back", async () => {
