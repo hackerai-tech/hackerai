@@ -802,7 +802,5 @@ export async function processChatMessages({
     sandboxFiles,
     moderationChecked: true,
     platformAuthorized: moderationResult.shouldUncensorResponse,
-    allowsAbliterationContinuation:
-      moderationResult.allowsAbliterationContinuation,
   };
 }
