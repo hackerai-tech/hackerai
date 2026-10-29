@@ -349,6 +349,7 @@ const sanitizeProviderFingerprintPart = (value: string): string =>
 
 const buildProviderErrorFingerprint = (details: {
   category: ProviderErrorCategory;
+  origin?: "browser_handoff_read";
   statusCode?: number;
   requestedModelSlug?: string;
   modelProviderSlug?: string;
@@ -359,6 +360,7 @@ const buildProviderErrorFingerprint = (details: {
     "provider_error",
     details.category,
     details.statusCode ? `status_${details.statusCode}` : undefined,
+    details.origin ? `origin_${details.origin}` : undefined,
     providerPart
       ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
       : undefined,
@@ -827,21 +829,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
         openRouterMetadata?: OpenRouterModelMetadata;
       },
     ) {
+      const details = extractErrorDetails(error);
+      const browserHandoffRead = details.errorOrigin === "browser_handoff_read";
+      // prepareStep can fail before a provider call. Its context still describes
+      // the previous request, which cannot identify the owner of a safety read.
       const {
         providerRequest,
         openRouterMetadata: providedOpenRouterMetadata,
         ...providerContext
-      } = context;
-      const details = extractErrorDetails(error);
-      const openRouterMetadata = mergeOpenRouterMetadata(
-        providedOpenRouterMetadata ?? {},
-        extractOpenRouterMetadataFromError(error),
-      );
+      } = browserHandoffRead
+        ? {
+            mode: context.mode,
+            userId: context.userId,
+            subscription: context.subscription,
+          }
+        : context;
+      const openRouterMetadata: OpenRouterModelMetadata = browserHandoffRead
+        ? {}
+        : mergeOpenRouterMetadata(
+            providedOpenRouterMetadata ?? {},
+            extractOpenRouterMetadataFromError(error),
+          );
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
       const diagnosticMessage = getProviderDiagnosticMessage(details);
-      const providerName = nonEmptyString(details.providerName);
+      const providerName = browserHandoffRead
+        ? undefined
+        : nonEmptyString(details.providerName);
       const attributedProviderName =
         nonEmptyString(openRouterMetadata.provider_name) ?? providerName;
       const configuredModel =
@@ -851,18 +866,30 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerContext.requestedModelSlug) ??
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
-      const openrouterGenerationId = nonEmptyString(
-        openRouterMetadata.openrouter_generation_id ??
-          details.openrouterGenerationId,
-      );
+      const openrouterGenerationId = browserHandoffRead
+        ? undefined
+        : nonEmptyString(
+            openRouterMetadata.openrouter_generation_id ??
+              details.openrouterGenerationId,
+          );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
+        origin:
+          details.errorOrigin === "browser_handoff_read"
+            ? "browser_handoff_read"
+            : undefined,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
         providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
+        ...(browserHandoffRead && {
+          selected_model: undefined,
+          response_model: undefined,
+          requested_model_slug: undefined,
+          model_provider_slug: undefined,
+        }),
         // Clear response-level attribution inherited from diagnostic context.
         // A previous successful step does not identify this failed call.
         provider_name: attributedProviderName,

@@ -1,3 +1,4 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { randomBytes } from "node:crypto";
 import type { ToolSet } from "ai";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
@@ -282,7 +283,7 @@ export class BrowserSessions {
               sessionId: session.sessionId,
             }),
           ),
-        ),
+        ).catch(rethrowBrowserHandoffReadError),
         signal,
       );
       signal?.throwIfAborted();
@@ -348,7 +349,7 @@ export class BrowserSessions {
             sessionId: session.sessionId,
           }),
         ),
-    );
+    ).catch(rethrowBrowserHandoffReadError);
     return notes.flat();
   }
 
