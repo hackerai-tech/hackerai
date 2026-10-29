@@ -11,6 +11,7 @@ import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
   type AbliteratedAssignment,
 } from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
@@ -84,6 +85,17 @@ export class AbliteratedModelTelemetry {
   private successfulAbliterationGeneration = false;
   private selectionSource: "moderation" | "history" | "paid_first_step";
   private readonly startedAt = Date.now();
+  private firstVisibleContentMs?: number;
+  private readonly toolCalls = new Map<string, boolean>();
+  private readonly toolResults = new Set<string>();
+  private readonly toolMetrics = {
+    tool_call_invalid_count: 0,
+    tool_result_matched_count: 0,
+    tool_result_unmatched_count: 0,
+    tool_result_reported_error_count: 0,
+    tool_result_denied_count: 0,
+    tool_result_without_reported_error_count: 0,
+  };
   private readonly properties: Record<string, string | number | boolean>;
   private readonly generationStepLimit: number;
 
@@ -97,6 +109,7 @@ export class AbliteratedModelTelemetry {
       mode: ChatMode;
       subscription: SubscriptionTier;
       selectedModelOverride?: SelectedModel;
+      release?: string;
     },
   ) {
     this.selectionSource = args.assignment.selectionSource ?? "moderation";
@@ -124,6 +137,10 @@ export class AbliteratedModelTelemetry {
       routing_version: 2,
       ...(args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY && {
         pro_three_steps_measurement_version: 1,
+      }),
+      ...(args.assignment.key === ABLITERATED_FREE_THREE_STEPS_KEY && {
+        free_three_steps_measurement_version: 1,
+        experiment_release: args.release ?? "unknown",
       }),
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
@@ -166,11 +183,76 @@ export class AbliteratedModelTelemetry {
     };
   }
 
+  /** Count execution evidence without exporting tool inputs, outputs or IDs.
+   * A result without a reported error is an executor proxy, not task quality.
+   */
+  recordToolStep(
+    calls: readonly { toolCallId: string; invalid?: boolean }[],
+    results: readonly { toolCallId: string; output: unknown }[],
+    errors: readonly { toolCallId: string }[] = [],
+  ) {
+    for (const call of calls) {
+      if (this.toolCalls.has(call.toolCallId)) continue;
+      this.toolCalls.set(call.toolCallId, call.invalid !== true);
+      if (call.invalid === true) this.toolMetrics.tool_call_invalid_count++;
+    }
+    for (const result of results) {
+      if (this.toolResults.has(result.toolCallId)) continue;
+      this.toolResults.add(result.toolCallId);
+      if (!this.toolCalls.has(result.toolCallId)) {
+        this.toolMetrics.tool_result_unmatched_count++;
+        continue;
+      }
+      this.toolMetrics.tool_result_matched_count++;
+      const output = result.output;
+      const record =
+        typeof output === "object" && output !== null
+          ? (output as Record<string, unknown>)
+          : undefined;
+      if (record?.approvalDenied === true) {
+        this.toolMetrics.tool_result_denied_count++;
+      } else if (
+        this.toolCalls.get(result.toolCallId) === false ||
+        Boolean(record?.error) ||
+        record?.isError === true ||
+        record?.success === false ||
+        (typeof record?.exitCode === "number" && record.exitCode !== 0) ||
+        (typeof record?.exit_code === "number" && record.exit_code !== 0)
+      ) {
+        this.toolMetrics.tool_result_reported_error_count++;
+      } else {
+        this.toolMetrics.tool_result_without_reported_error_count++;
+      }
+    }
+    for (const error of errors) {
+      if (this.toolResults.has(error.toolCallId)) continue;
+      this.toolResults.add(error.toolCallId);
+      if (this.toolCalls.has(error.toolCallId)) {
+        this.toolMetrics.tool_result_matched_count++;
+        this.toolMetrics.tool_result_reported_error_count++;
+      } else {
+        this.toolMetrics.tool_result_unmatched_count++;
+      }
+    }
+  }
+
   /** Request totals include retries and replacement messages; no per-step array. */
   getSummary() {
     return {
       telemetry_version: 2,
       generation_step_limit: this.generationStepLimit,
+      ...(this.properties.experiment_key ===
+        ABLITERATED_FREE_THREE_STEPS_KEY && {
+        free_three_steps_measurement_version: 1,
+        experiment_release: this.properties.experiment_release,
+        experiment_duration_ms: Math.max(0, Date.now() - this.startedAt),
+        time_to_first_visible_content_ms: this.firstVisibleContentMs,
+        tool_call_unique_count: this.toolCalls.size,
+        tool_result_missing_count: [...this.toolCalls.keys()].filter(
+          (id) => !this.toolResults.has(id),
+        ).length,
+        ...this.toolMetrics,
+      }),
       ...this.routing,
       // Planned step/vision selection never establishes a fallback. Evidence
       // must come from a recovering call or an actual upstream fallback model.
@@ -345,6 +427,7 @@ export class AbliteratedModelTelemetry {
           };
           const expose = () => {
             firstContentMs ??= Date.now() - start;
+            this.firstVisibleContentMs ??= Date.now() - this.startedAt;
             recordServedRouting();
             if (this.exposed) return;
             this.exposed = true;

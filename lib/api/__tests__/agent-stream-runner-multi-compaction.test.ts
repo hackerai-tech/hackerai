@@ -3068,6 +3068,8 @@ describe("createAgentStream repeated compaction", () => {
     ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
     ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
     ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "free", "ask-model-free-glm", 3],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3],
   ] as const)(
     "routes %s %s through Abliteration then %s after %i steps",
     async (mode, subscription, baselineModel, generationStepLimit) => {

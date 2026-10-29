@@ -1083,6 +1083,71 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
+  it.each(["ask", "agent"] as const)(
+    "retains Free %s comparison and cost coverage after an aborted fallback",
+    (mode) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        hasResponseContent: false,
+        abliteratedProviderSummary: {
+          free_three_steps_measurement_version: 1,
+          experiment_release: "preview-worker",
+          provider_attempt_count: 2,
+          tool_result_reported_error_count: 1,
+          provider_content_filter_count: 1,
+          time_to_first_visible_content_ms: undefined,
+        } as any,
+        usageMeasurement: {
+          usage_observed_model_cost_dollars: 0.03,
+          usage_summary_cost_dollars: 0,
+          usage_model_calls_started: 2,
+          usage_model_records: 1,
+          usage_observed_non_model_cost_dollars: 0.01,
+        } as any,
+        posthog: { capture } as any,
+        userId: "free",
+        chatId: "fixture",
+        mode,
+        endpoint: mode === "agent" ? "/api/agent" : "/api/chat",
+        subscription: "free",
+        outcome: "aborted",
+        abortSource: "request_cancel",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model-large-flash",
+        responseModel: "z-ai/glm-5.3-flash",
+        fallbackServed: true,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        experiment: {
+          key: "abliterated_free_three_steps_v1",
+          variant: "test",
+          requestId: "original",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            experiment_request_id: "original",
+            experiment_variant: "test",
+            outcome: "aborted",
+            abort_source: "request_cancel",
+            natural_completion: false,
+            usage_model_calls_started: 2,
+            usage_model_records: 1,
+            usage_observed_model_cost_dollars: 0.03,
+            usage_observed_non_model_cost_dollars: 0.01,
+            provider_content_filter_count: 1,
+            tool_result_reported_error_count: 1,
+            $insert_id: "original:free-three-step-outcome",
+          }),
+        }),
+      );
+      expect(
+        capture.mock.calls.some(([e]) => e.event === "free_response_completed"),
+      ).toBe(false);
+    },
+  );
   it("preserves the existing Agent event alongside successful free activation", () => {
     const capture = jest.fn();
 
