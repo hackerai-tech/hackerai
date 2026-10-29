@@ -429,48 +429,51 @@ it("settles a displaced browser owner as cancellation without executing its queu
   expect(execute).not.toHaveBeenCalled();
 });
 
-it("retains browser safety-read provenance without changing the transport failure or retry eligibility", async () => {
-  const { sessions } = await owner();
-  const failure = Object.freeze(
-    Object.assign(new TypeError("fetch failed"), {
-      cause: Object.assign(new Error("read ECONNRESET"), {
-        code: "ECONNRESET",
+it.each(["waitForAgentControl", "getExitNotes"] as const)(
+  "retains %s read provenance without changing the transport failure or retry eligibility",
+  async (readMethod) => {
+    const { sessions } = await owner();
+    const failure = Object.freeze(
+      Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("read ECONNRESET"), {
+          code: "ECONNRESET",
+        }),
       }),
-    }),
-  );
-  const eligibleBefore = isRetriableProviderStreamDisconnectError(failure);
-  mockQuery.mockRejectedValue(failure);
-  await expect(sessions.waitForAgentControl()).rejects.toBe(failure);
-  expect(mockQuery).toHaveBeenCalledTimes(1);
-  expect(extractErrorDetails(failure)).toMatchObject({
-    errorOrigin: "browser_handoff_read",
-    errorCode: "ECONNRESET",
-  });
-  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(
-    eligibleBefore,
-  );
-  const terminal = wrapProviderTerminalError(failure, {
-    model: "previous/model",
-    openRouterMetadata: {
-      provider_name: "Together",
-      openrouter_selected_model: "previous/model",
-      openrouter_generation_id: "gen-previous",
-      openrouter_request_id: "request-previous",
-      openrouter_upstream_id: "upstream-previous",
-    },
-  });
-  expect(terminal).toMatchObject({
-    origin: "browser_handoff_read",
-    provider: "unknown",
-    model: "unknown",
-    category: "stream_terminated",
-    cause: failure,
-  });
-  expect(terminal.message).toContain("origin=browser_handoff_read");
-  expect(terminal.openrouterGenerationId).toBeUndefined();
-  expect(terminal.openrouterRequestId).toBeUndefined();
-  expect(terminal.openrouterUpstreamId).toBeUndefined();
-});
+    );
+    const eligibleBefore = isRetriableProviderStreamDisconnectError(failure);
+    mockQuery.mockRejectedValue(failure);
+    await expect(sessions[readMethod]()).rejects.toBe(failure);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(extractErrorDetails(failure)).toMatchObject({
+      errorOrigin: "browser_handoff_read",
+      errorCode: "ECONNRESET",
+    });
+    expect(isRetriableProviderStreamDisconnectError(failure)).toBe(
+      eligibleBefore,
+    );
+    const terminal = wrapProviderTerminalError(failure, {
+      model: "previous/model",
+      openRouterMetadata: {
+        provider_name: "Together",
+        openrouter_selected_model: "previous/model",
+        openrouter_generation_id: "gen-previous",
+        openrouter_request_id: "request-previous",
+        openrouter_upstream_id: "upstream-previous",
+      },
+    });
+    expect(terminal).toMatchObject({
+      origin: "browser_handoff_read",
+      provider: "unknown",
+      model: "unknown",
+      category: "stream_terminated",
+      cause: failure,
+    });
+    expect(terminal.message).toContain("origin=browser_handoff_read");
+    expect(terminal.openrouterGenerationId).toBeUndefined();
+    expect(terminal.openrouterRequestId).toBeUndefined();
+    expect(terminal.openrouterUpstreamId).toBeUndefined();
+  },
+);
 
 it("keeps Stop separate from a later rejected browser safety read", async () => {
   const { sessions } = await owner();

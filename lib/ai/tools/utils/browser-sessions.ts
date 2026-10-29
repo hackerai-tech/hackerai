@@ -349,7 +349,7 @@ export class BrowserSessions {
             sessionId: session.sessionId,
           }),
         ),
-    );
+    ).catch(rethrowBrowserHandoffReadError);
     return notes.flat();
   }
 
