@@ -97,6 +97,7 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride,
   moderationEligible,
   moderationChecked = true,
+  allowsFreeAbliteration = false,
   allowsAbliterationContinuation = false,
   newUserTurn = false,
   messages,
@@ -112,6 +113,7 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   moderationChecked?: boolean;
+  allowsFreeAbliteration?: boolean;
   allowsAbliterationContinuation?: boolean;
   newUserTurn?: boolean;
   messages: UIMessage[];
@@ -165,6 +167,7 @@ export async function evaluateAbliteratedModel({
       !newUserTurn ||
       !moderationChecked ||
       !moderationEligible ||
+      !allowsFreeAbliteration ||
       !messages.length ||
       messagesContainUnsupportedFiles(messages)
     ) {

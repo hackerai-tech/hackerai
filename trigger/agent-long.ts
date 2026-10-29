@@ -2097,6 +2097,7 @@ export const agentLongTask = task({
         platformAuthorized,
         moderationChecked,
         allowsAbliterationContinuation,
+        allowsFreeAbliteration,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2138,6 +2139,7 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        allowsFreeAbliteration,
         moderationChecked,
         allowsAbliterationContinuation,
         newUserTurn: !regenerate && !isAutoContinue && !isAutomaticContinuation,

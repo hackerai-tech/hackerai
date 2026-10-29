@@ -40,6 +40,7 @@ describe.each(["ask", "agent"] as const)("Free %s three-step trial", (mode) => {
     selectedModel: selectModel(mode, "free"),
     moderationEligible: true,
     moderationChecked: true,
+    allowsFreeAbliteration: true,
     newUserTurn: true,
     messages,
   });
@@ -105,6 +106,8 @@ describe.each(["ask", "agent"] as const)("Free %s three-step trial", (mode) => {
     { newUserTurn: false },
     { moderationChecked: false },
     { moderationEligible: false },
+    { allowsFreeAbliteration: false },
+    { allowsFreeAbliteration: undefined },
     { userId: "" },
     { messages: [] },
     {

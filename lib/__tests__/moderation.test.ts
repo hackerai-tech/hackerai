@@ -208,4 +208,55 @@ describe("getModerationResult", () => {
       (await getModerationResult(request, true)).allowsAbliterationContinuation,
     ).toBe(false);
   });
+  it.each(["illicit", "illicit/violent"])(
+    "excludes flagged %s intent from Free treatment without changing paid routing",
+    async (category) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          {
+            categories: {
+              illicit: false,
+              "illicit/violent": false,
+              [category]: true,
+            },
+            category_scores: { illicit: 0.9 },
+          },
+        ],
+      });
+      expect(await getModerationResult(request, false)).toMatchObject({
+        shouldUncensorResponse: true,
+        allowsFreeAbliteration: false,
+      });
+      expect(await getModerationResult(request, true)).toMatchObject({
+        shouldUncensorResponse: true,
+        allowsAbliterationContinuation: true,
+      });
+    },
+  );
+  it("keeps legitimate eligible security tasks and requires known illicit-category results", async () => {
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: { illicit: false, "illicit/violent": false },
+          category_scores: { illicit: 0.15 },
+        },
+      ],
+    });
+    expect(await getModerationResult(request, false)).toHaveProperty(
+      "allowsFreeAbliteration",
+      true,
+    );
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: {},
+          category_scores: { illicit: 0.15 },
+        },
+      ],
+    });
+    expect(await getModerationResult(request, false)).toHaveProperty(
+      "allowsFreeAbliteration",
+      false,
+    );
+  });
 });
