@@ -4,9 +4,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import PostHogClient from "@/app/posthog";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { GOAL_FLAG } from "./contracts";
-import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
-import { getWorkOS } from "@/app/api/workos";
-import { getStripe } from "@/app/api/stripe";
+import { getCurrentAgentEntitlementContext } from "@/lib/db/actions";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
@@ -59,9 +57,9 @@ export async function assertGoalExecutionAllowed(
   payload: GoalExecutionContext,
 ) {
   await assertUserCanMakeCostIncurringRequest(payload.userId);
-  const fresh = await resolveCurrentAgentEntitlementContext(payload, {
-    workos: getWorkOS(),
-    stripe: getStripe(),
+  const fresh = await getCurrentAgentEntitlementContext({
+    userId: payload.userId,
+    organizationId: payload.organizationId,
   });
   if (
     fresh.subscription !== payload.subscription ||
