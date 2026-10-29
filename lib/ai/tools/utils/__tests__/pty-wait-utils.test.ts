@@ -126,21 +126,50 @@ describe("pty-wait-utils", () => {
     expect(chunks).toEqual(["first chunk"]);
   });
 
-  it("resolves early when aborted", async () => {
-    const session = makeSession();
-    const controller = new AbortController();
+  it.each([
+    "before waiting",
+    "while emitting buffered output",
+    "after subscribing",
+  ])(
+    "settles immediately and preserves output when aborted %s",
+    async (timing) => {
+      jest.useFakeTimers();
+      const session = makeSession("buffered output\n");
+      const controller = new AbortController();
+      const onChunk = jest.fn(() => {
+        if (timing === "while emitting buffered output") controller.abort();
+      });
+      if (timing === "before waiting") controller.abort();
+      let settled = false;
+      const pending = waitForOutput(
+        session,
+        1_000,
+        controller.signal,
+        onChunk,
+        consume,
+        { quietMs: 20 },
+      ).then((output) => {
+        settled = true;
+        return output;
+      });
+      if (timing === "after subscribing") controller.abort();
 
-    const pending = waitForOutput(
-      session,
-      1_000,
-      controller.signal,
-      jest.fn(),
-      consume,
-    );
-    controller.abort();
-
-    await expect(pending).resolves.toEqual(new Uint8Array());
-  });
+      try {
+        await jest.advanceTimersByTimeAsync(0);
+        expect(settled).toBe(true);
+        await expect(pending).resolves.toEqual(
+          encoder.encode("buffered output\n"),
+        );
+        expect(jest.getTimerCount()).toBe(0);
+        onChunk.mockClear();
+        session.emit("later output\n");
+        expect(onChunk).not.toHaveBeenCalled();
+        expect(consume(session)).toEqual(encoder.encode("later output\n"));
+      } finally {
+        await jest.runAllTimersAsync();
+      }
+    },
+  );
 
   it("strips ANSI sequences and caps long output", () => {
     expect(stripAnsi("\x1b[31mred\x1b[0m \x1b]0;title\x07plain")).toBe(
