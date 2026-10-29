@@ -312,4 +312,44 @@ describe("cancellation reason lifecycle", () => {
     ).toEqual({ applied: false });
     expect(rows("current_cancellation_reasons")).toHaveLength(0);
   });
+  it("does not collapse a new cancellation into an old completed legacy decision", async () => {
+    const { ctx, rows } = database();
+    const legacy = await invoke("recordCancellationStarted", ctx, {
+      ...input,
+      operation: undefined,
+    });
+    await invoke("markCancellationCompleted", ctx, complete(undefined));
+    const current = await invoke("recordCancellationStarted", ctx, {
+      ...input,
+      startedAt: 30_000,
+    });
+    expect(current).not.toBe(legacy);
+    await invoke("markCancellationCompleted", ctx, complete(current, 31_000));
+    expect(rows("cancellation_reason_details")).toHaveLength(2);
+    expect(
+      rows("current_cancellation_reasons").map((r) => r.cancellation_reason_id),
+    ).toEqual([current]);
+  });
+
+  it("distinguishes a legacy retention attempt from an actual cancellation with identical feedback", async () => {
+    const { ctx } = database();
+    const legacy = await invoke("recordCancellationStarted", ctx, {
+      ...input,
+      operation: undefined,
+    });
+    await invoke("recordRetentionOfferAccepted", ctx, {
+      cancellationReasonId: legacy,
+      retentionOffer: "downgrade",
+      acceptedAt: 11_000,
+    });
+    const cancel = await invoke("recordCancellationStarted", ctx, {
+      ...input,
+      startedAt: 11_500,
+    });
+    expect(cancel).not.toBe(legacy);
+    expect(
+      (await invoke("markCancellationCompleted", ctx, complete(cancel, 12_000)))
+        .updatedCount,
+    ).toBe(1);
+  });
 });

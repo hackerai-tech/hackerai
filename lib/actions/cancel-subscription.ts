@@ -237,7 +237,9 @@ export default async function cancelSubscriptionAction(
           reasonDetails: cancellationReason.reasonDetails,
           accountCreatedAt,
           accountAgeDays,
-          startedAt: now,
+          // Use request admission time so an overlapping request that observed
+          // Stripe before cancellation can still join the completed attempt.
+          startedAt,
           source: "in_app",
         },
       );

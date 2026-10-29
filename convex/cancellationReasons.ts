@@ -248,7 +248,10 @@ export const recordCancellationStarted = mutation({
         if (
           latest.user_id === args.userId &&
           latest.organization_id === args.organizationId &&
-          (latest.operation ?? "cancel") === operation &&
+          (latest.operation ?? latest.retention_offer_accepted ?? "cancel") ===
+            operation &&
+          (latest.status === "started" ||
+            now <= (latest.completed_at ?? latest.updated_at) + 999) &&
           latest.reason_category === args.reasonCategory &&
           latest.reason_subcategory === args.reasonSubcategory &&
           detail?.reason_details === reasonDetails
