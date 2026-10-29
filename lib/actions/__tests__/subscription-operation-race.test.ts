@@ -268,3 +268,64 @@ it("rejects a stale read-only result after its preflight claim expires", async (
     BILLING_ERRORS.subscriptionChangeInProgress,
   );
 });
+
+it("keeps already-scheduled cancellation read-only when both cleanup attempts fail", async () => {
+  subscription.cancel_at_period_end = true;
+  const invoke = mockMutation.getMockImplementation()!;
+  let releaseAttempts = 0;
+  mockMutation.mockImplementation((ref, args) => {
+    if (getFunctionName(ref) === "billingOperations:finish") {
+      releaseAttempts++;
+      return Promise.reject(new Error("cleanup unavailable"));
+    }
+    return invoke(ref, args);
+  });
+  await expect(cancel(reason)).resolves.toMatchObject({
+    canceled: true,
+    alreadyScheduled: true,
+  });
+  expect(releaseAttempts).toBe(2);
+  expect(rows[0].writing).toBe(false);
+  expect(mockUpdate).not.toHaveBeenCalled();
+  jest.spyOn(Date, "now").mockReturnValue(Date.now() + 120_001);
+  mockMutation.mockImplementation(invoke);
+  await keep();
+  expect(subscription.cancel_at_period_end).toBe(false);
+  expect(rows).toHaveLength(0);
+});
+
+it("retries a lost cleanup response without releasing a successor or masking success", async () => {
+  const invoke = mockMutation.getMockImplementation()!;
+  let failed = false;
+  mockMutation.mockImplementation(async (ref, args) => {
+    const result = await invoke(ref, args);
+    if (getFunctionName(ref) === "billingOperations:finish" && !failed) {
+      failed = true;
+      await (operations.begin as any).handler(ctx, {
+        serviceKey: "test",
+        stripeCustomerId: "cus_test",
+        token: "successor",
+        operation: "keep",
+      });
+      throw new Error("lost response");
+    }
+    return result;
+  });
+  await expect(cancel(reason)).resolves.toMatchObject({ canceled: true });
+  expect(rows[0].token).toBe("successor");
+});
+
+it("does not promote an already-kept request without a schedule to a writing claim", async () => {
+  const invoke = mockMutation.getMockImplementation()!;
+  mockMutation.mockImplementation((ref, args) => {
+    if (getFunctionName(ref) === "billingOperations:finish")
+      return Promise.reject(new Error("cleanup unavailable"));
+    return invoke(ref, args);
+  });
+  await expect(keep()).resolves.toMatchObject({
+    kept: true,
+    alreadyKept: true,
+  });
+  expect(rows[0].writing).toBe(false);
+  expect(mockUpdate).not.toHaveBeenCalled();
+});

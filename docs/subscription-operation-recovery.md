@@ -9,6 +9,9 @@ Preflight claims expire after two minutes. Before an external write, the owner
 atomically changes its claim to `writing`; that claim never expires automatically.
 A stale preflight owner cannot write or release a replacement owner's claim.
 Successful operations and definitive Stripe rejections release the claim.
+Token-matched cleanup retries once. If both attempts fail, the confirmed result
+or original error is preserved and `billing_operation_release_failed` is logged;
+a read-only claim still expires normally.
 Network failures, conflicting requests, 5xx responses, process termination, or
 failure to release can leave it in place. This deliberately trades temporary
 billing unavailability for preventing an unresolved cancel from applying after a
@@ -19,7 +22,8 @@ successful keep. Normal feedback failures do not bypass the claim.
 1. Verify the intended HackerAI environment, Convex account/project/deployment,
    and Stripe account/mode before reading or changing anything.
 2. Inspect that customer's `billing_operations` row and the corresponding
-   `billing_operation_requires_reconciliation` error (a killed process may not
+   `billing_operation_requires_reconciliation` or `billing_operation_release_failed`
+   error (a killed process may not
    emit it). Record the operation, creation time and exact owner token. Do not
    delete the row merely because it is old.
 3. Verify the original web request has stopped and every Stripe write it issued

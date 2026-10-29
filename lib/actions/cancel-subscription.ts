@@ -291,13 +291,15 @@ async function cancelWithinOperation(
   let updatedSubscription: Stripe.Subscription;
   try {
     // A pending retention downgrade would block the cancellation update.
-    await guard.write(() =>
-      releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
-        ...billingFields,
-        stripe_subscription_id: subscriptionContext.id,
-        reason: "cancellation",
-      }),
-    );
+    if (subscriptionContext.scheduleId) {
+      await guard.write(() =>
+        releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+          ...billingFields,
+          stripe_subscription_id: subscriptionContext.id,
+          reason: "cancellation",
+        }),
+      );
+    }
     const cancellationDetails = {
       feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
       comment: cancellationReason.reasonDetails,

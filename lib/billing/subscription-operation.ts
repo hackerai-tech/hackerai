@@ -72,7 +72,7 @@ export async function withSubscriptionOperation<T>(
     });
     // Even a read-only early return must still own its snapshot. A slow
     // preflight read may have outlived its claim and observed stale state.
-    if (!(await client.mutation(api.billingOperations.startWrite, owner))) {
+    if (!(await client.mutation(api.billingOperations.verifyOwner, owner))) {
       throw new Error(BILLING_ERRORS.subscriptionChangeInProgress);
     }
     return result;
@@ -83,8 +83,21 @@ export async function withSubscriptionOperation<T>(
         operation,
       });
     } else {
-      // A failed release leaves the fence in place; never report false success.
-      await client.mutation(api.billingOperations.finish, owner);
+      // Token-matched release is idempotent, including a lost response. Retry
+      // once; preserve the confirmed result/original error if cleanup is down.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await client.mutation(api.billingOperations.finish, owner);
+          break;
+        } catch {
+          if (attempt === 1) {
+            phLogger.error("billing_operation_release_failed", {
+              stripe_customer_id: stripeCustomerId,
+              operation,
+            });
+          }
+        }
+      }
     }
   }
 }

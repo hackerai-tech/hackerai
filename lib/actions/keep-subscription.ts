@@ -150,15 +150,17 @@ async function keepWithinOperation(
   if (!subscriptionContext.cancelAtPeriodEnd) {
     // "Keep plan" while a retention downgrade is scheduled: release the
     // schedule so the subscription keeps renewing on the current price.
-    const planChangeCanceled = await guard.write(() =>
-      releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
-        userId: user.id,
-        org_id: organizationId,
-        stripe_customer_id: stripeCustomerId,
-        stripe_subscription_id: subscriptionContext.id,
-        reason: "keep_plan",
-      }),
-    );
+    const planChangeCanceled = subscriptionContext.scheduleId
+      ? await guard.write(() =>
+          releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+            userId: user.id,
+            org_id: organizationId,
+            stripe_customer_id: stripeCustomerId,
+            stripe_subscription_id: subscriptionContext.id,
+            reason: "keep_plan",
+          }),
+        )
+      : false;
     if (planChangeCanceled) {
       phLogger.event(
         PAID_FUNNEL_EVENTS.retentionDowngradeCanceled,

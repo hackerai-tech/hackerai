@@ -64,6 +64,26 @@ export const startWrite = mutation({
   },
 });
 
+/** Validate a final snapshot without converting a read-only request into a write. */
+export const verifyOwner = mutation({
+  args,
+  returns: v.boolean(),
+  handler: async (ctx, input) => {
+    validateServiceKey(input.serviceKey);
+    const owner = await ctx.db
+      .query("billing_operations")
+      .withIndex("by_stripe_customer_id", (q) =>
+        q.eq("stripe_customer_id", input.stripeCustomerId),
+      )
+      .unique();
+    return Boolean(
+      owner &&
+      owner.token === input.token &&
+      (owner.writing || owner.expires_at > Date.now()),
+    );
+  },
+});
+
 /** Release only this owner; a stale preflight request cannot release its successor. */
 export const finish = mutation({
   args,
