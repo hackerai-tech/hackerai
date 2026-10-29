@@ -573,6 +573,7 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsFreeAbliteration,
       } = await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -615,6 +616,8 @@ export const createChatHandler = () => {
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        allowsFreeAbliteration,
+        newUserTurn: !regenerate && !isAutoContinue,
         moderationChecked,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
@@ -634,6 +637,7 @@ export const createChatHandler = () => {
             mode,
             subscription,
             selectedModelOverride,
+            release: process.env.VERCEL_GIT_COMMIT_SHA,
           })
         : undefined;
 

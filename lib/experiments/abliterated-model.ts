@@ -13,6 +13,7 @@ import {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
@@ -22,6 +23,7 @@ export {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
 } from "./abliteration-keys";
 import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { UIMessage } from "ai";
@@ -42,6 +44,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
     | typeof ABLITERATED_PRO_THREE_STEPS_KEY
+    | typeof ABLITERATED_FREE_THREE_STEPS_KEY
     | typeof INFERENCE_CYBER_FLAG;
   variant: "control" | "test";
   modelKey: ModelName;
@@ -93,6 +96,8 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride,
   moderationEligible,
   moderationChecked = true,
+  allowsFreeAbliteration = false,
+  newUserTurn = false,
   messages,
   limitRescue = false,
   diagnosticContext,
@@ -106,6 +111,8 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   moderationChecked?: boolean;
+  allowsFreeAbliteration?: boolean;
+  newUserTurn?: boolean;
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
@@ -137,6 +144,47 @@ export async function evaluateAbliteratedModel({
       // Diagnostics must never change assignment or provider behavior.
     }
   };
+  // Free enrollment is independent of paid routing and the closed Pro trial.
+  // Capture today's selected Free route for both control and later steps.
+  if (subscription === "free") {
+    if (
+      !providerConfigured ||
+      !posthog ||
+      !userId ||
+      limitRescue ||
+      !newUserTurn ||
+      !moderationChecked ||
+      !moderationEligible ||
+      !allowsFreeAbliteration ||
+      !messages.length ||
+      messagesContainUnsupportedFiles(messages)
+    ) {
+      reportDecision("free_user", undefined, ABLITERATED_FREE_THREE_STEPS_KEY);
+      return undefined;
+    }
+    try {
+      const variant = await getPostHogFlagWithoutExposure(
+        posthog,
+        ABLITERATED_FREE_THREE_STEPS_KEY,
+        userId,
+        { subscription, subscription_tier: subscription },
+      );
+      if (variant !== "control" && variant !== "test") return undefined;
+      return {
+        key: ABLITERATED_FREE_THREE_STEPS_KEY,
+        variant,
+        modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+        baselineModel: selectedModel,
+        generationStepLimit: 3,
+        inferenceCyberEnabled: false,
+        selectionSource: "moderation",
+        moderationEligible,
+        moderationChecked,
+      };
+    } catch {
+      return undefined;
+    }
+  }
   if (
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
@@ -148,7 +196,6 @@ export async function evaluateAbliteratedModel({
   ) {
     let reason = "moderation_not_eligible";
     if (!providerConfigured) reason = "provider_not_configured";
-    else if (subscription === "free") reason = "free_user";
     else if (limitRescue) reason = "limit_rescue";
     else if (!messages.length || messagesContainUnsupportedFiles(messages))
       reason = "unsupported_input";

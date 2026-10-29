@@ -15,4 +15,7 @@ export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
 // Historical attribution only. New requests cannot enroll in this stopped experiment.
 export const ABLITERATED_PRO_THREE_STEPS_KEY = "abliterated_pro_three_steps_v1";
 
+export const ABLITERATED_FREE_THREE_STEPS_KEY =
+  "abliterated_free_three_steps_v1";
+
 export const INFERENCE_CYBER_FLAG = "inference_cyber_v1";

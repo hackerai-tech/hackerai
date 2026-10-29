@@ -369,6 +369,10 @@ export class UsageTracker {
       usage_observed_model_cost_dollars: sumCost(steps),
       usage_discarded_retry_cost_dollars: sumCost(this.discardedModelSteps),
       usage_summary_cost_dollars: sumCost(this.summarizationStepCosts),
+      // Includes tool/auxiliary-vision costs plus any sandbox and Trigger run
+      // costs already added at settlement. Do not add their separate fields
+      // again. Missing unreported calls still remain unknown.
+      usage_observed_non_model_cost_dollars: this.nonModelCost,
       usage_observed_input_tokens: steps.reduce(
         (sum, step) => sum + step.inputTokens,
         0,
