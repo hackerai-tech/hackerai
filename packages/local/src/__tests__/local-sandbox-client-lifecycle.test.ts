@@ -26,9 +26,10 @@ jest.mock("../command-cancellation", () => ({
 }));
 
 jest.mock("../private-artifact-hardening", () => ({
-  hardenExistingTerminalArtifacts: jest.fn().mockResolvedValue(true),
+  preparePrivateArtifactStorage: jest.fn().mockResolvedValue({ ready: true }),
 }));
 
+import { preparePrivateArtifactStorage } from "../private-artifact-hardening";
 import { LocalSandboxClient } from "../index";
 import { EventEmitter } from "events";
 
@@ -291,6 +292,9 @@ describe("LocalSandboxClient cleanup", () => {
       }
     ).startIdleCheck = jest.fn();
 
+    jest
+      .mocked(preparePrivateArtifactStorage)
+      .mockResolvedValueOnce({ ready: true, namespace: "uid-1000" });
     const start = client.start();
     await setupStarted;
     expect(mutation).toHaveBeenCalledTimes(1);
@@ -298,7 +302,11 @@ describe("LocalSandboxClient cleanup", () => {
       "localSandbox:connect",
       expect.objectContaining({
         environmentId: "test-environment",
-        capabilities: expect.objectContaining({ commandStdin: true }),
+        clientVersion: require("../../package.json").version,
+        capabilities: expect.objectContaining({
+          commandStdin: true,
+          privateArtifactNamespace: "uid-1000",
+        }),
       }),
     );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(

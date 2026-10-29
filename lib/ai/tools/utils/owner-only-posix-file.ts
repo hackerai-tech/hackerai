@@ -1,5 +1,8 @@
-import { persistenceCommandError } from "./persistence-failure";
-import { randomUUID } from "node:crypto";
+import {
+  classifyPersistenceFailure,
+  persistenceCommandError,
+} from "./persistence-failure";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AnySandbox } from "@/types";
 import { isCentrifugoSandbox } from "./sandbox-types";
@@ -57,9 +60,10 @@ const runChecked = async (
   sandbox: LocalPosixSandbox,
   command: string,
   stdin?: string | Buffer,
+  timeoutMs = COMMAND_TIMEOUT_MS,
 ): Promise<string> => {
   // The local client advertises this capability only after atomically
-  // creating or opening both fixed /tmp roots with O_NOFOLLOW and confirming
+  // creating or opening both selected /tmp roots with O_NOFOLLOW and confirming
   // ownership. The sticky /tmp parent then prevents a different UID from
   // replacing those trust anchors between these pathname-based operations.
   if (
@@ -71,7 +75,7 @@ const runChecked = async (
     );
   }
   const result = await sandbox.commands.run(command, {
-    timeoutMs: COMMAND_TIMEOUT_MS,
+    timeoutMs,
     displayName: "",
     ...(stdin !== undefined ? { stdin } : {}),
   });
@@ -114,6 +118,50 @@ export async function writeOwnerOnlyPosixFile(
   const encodedFilePath = quote(filePath);
   const encodedTemporaryPath = quote(temporaryPath);
 
+  // A lost command reply is not evidence that its stdin write failed. Verify
+  // the exact bytes through a bounded read-only probe; never append them twice.
+  const verifyAfterTimeout = async (
+    error: unknown,
+    target: string,
+    expected: Buffer,
+    stage: "append" | "commit",
+  ): Promise<void> => {
+    if (classifyPersistenceFailure(error) !== "timeout") throw error;
+    try {
+      const digest = await runChecked(
+        sandbox,
+        `
+set -eu
+for candidate in ${quote(root)} ${quote(directory)}; do
+  [ ! -L "$candidate" ] && [ -d "$candidate" ] && [ -O "$candidate" ] || exit 73
+done
+[ ! -L ${quote(target)} ] && [ -f ${quote(target)} ] && [ -O ${quote(target)} ] || exit 73
+${stage === "commit" ? `[ ! -e ${encodedTemporaryPath} ] && [ ! -L ${encodedTemporaryPath} ] || exit 73` : ""}
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum < ${quote(target)}
+else
+  shasum -a 256 < ${quote(target)}
+fi
+`,
+        undefined,
+        5000,
+      );
+      if (
+        digest.trim().split(/\s+/)[0] !==
+        createHash("sha256").update(expected).digest("hex")
+      )
+        throw error;
+    } catch {
+      throw error;
+    }
+    console.info(
+      JSON.stringify({
+        event: "local_private_artifact_write_recovered",
+        stage,
+      }),
+    );
+  };
+
   await runChecked(
     sandbox,
     `${secureDirectoriesScript(root, directory)}
@@ -135,6 +183,13 @@ if [ -L ${encodedTemporaryPath} ] || [ ! -f ${encodedTemporaryPath} ] || [ ! -O 
 cat >> ${encodedTemporaryPath}
 `,
         bytes.subarray(offset, offset + WRITE_CHUNK_BYTES),
+      ).catch((error) =>
+        verifyAfterTimeout(
+          error,
+          temporaryPath,
+          bytes.subarray(0, offset + WRITE_CHUNK_BYTES),
+          "append",
+        ),
       );
     }
 
@@ -148,7 +203,7 @@ chmod 600 ${encodedTemporaryPath}
 mv -f ${encodedTemporaryPath} ${encodedFilePath}
 chmod 600 ${encodedFilePath}
 `,
-    );
+    ).catch((error) => verifyAfterTimeout(error, filePath, bytes, "commit"));
   } catch (error) {
     await sandbox.commands
       .run(
