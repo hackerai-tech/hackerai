@@ -217,6 +217,7 @@ export const FileUploadPreview = ({
   );
 
   useEffect(() => {
+    let cancelled = false;
     const loadPreviews = async () => {
       const previews: FilePreview[] = [];
 
@@ -258,7 +259,7 @@ export const FileUploadPreview = ({
         previews.push(preview);
       }
 
-      setFilePreviews(previews);
+      if (!cancelled) setFilePreviews(previews);
     };
 
     if (uploadedFiles && uploadedFiles.length > 0) {
@@ -267,6 +268,10 @@ export const FileUploadPreview = ({
       setFilePreviews([]);
       // Don't clear cache when no files - we might get the same files back
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [uploadedFiles, generateFileKey]);
 
   useEffect(() => {

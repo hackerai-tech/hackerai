@@ -3,8 +3,11 @@ import { registerPostHogLogProvider } from "@/lib/posthog/logs";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 import type { Instrumentation } from "next";
 
-export function register() {
+export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerServiceTransportObserver } =
+      await import("./lib/db/service-transport-observation.node");
+    registerServiceTransportObserver();
     registerPostHogLogProvider();
   }
 }
