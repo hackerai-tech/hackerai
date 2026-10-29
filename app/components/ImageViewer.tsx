@@ -143,6 +143,7 @@ export const ImageViewer = ({
       );
     } catch {
       if (
+        !dialogRef.current ||
         !currentImageRef.current.isOpen ||
         currentImageRef.current.imageSrc !== imageSrc
       )

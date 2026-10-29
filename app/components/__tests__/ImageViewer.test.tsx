@@ -15,6 +15,7 @@ describe("ImageViewer downloads", () => {
   let fetchMock: jest.Mock;
   let downloaded: Array<{ href: string; name: string }>;
   let rerender: ReturnType<typeof render>["rerender"];
+  let unmount: ReturnType<typeof render>["unmount"];
 
   beforeEach(() => {
     fetchMock = jest.fn();
@@ -28,7 +29,7 @@ describe("ImageViewer downloads", () => {
       .mockImplementation(function (this: HTMLAnchorElement) {
         downloaded.push({ href: this.href, name: this.download });
       });
-    ({ rerender } = render(
+    ({ rerender, unmount } = render(
       <ImageViewer
         isOpen
         onClose={jest.fn()}
@@ -112,6 +113,24 @@ describe("ImageViewer downloads", () => {
       "href",
       imageSrc,
     );
+  });
+
+  it("does not open a failed download after the viewer unmounts", async () => {
+    let rejectDownload!: (error: Error) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectDownload = reject;
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    unmount();
+
+    await act(async () => {
+      rejectDownload(new Error("offline"));
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(downloaded).toEqual([]);
   });
 
   it("keeps the current image's recovery link when an older download fails later", async () => {
