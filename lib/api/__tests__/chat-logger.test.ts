@@ -1720,6 +1720,19 @@ describe("createChatLogger provider stream termination", () => {
         last_message_role: "user",
         last_message_content_types: ["tool-result"],
         serialized_message_bytes: 680000,
+        media_counts: {
+          image_parts: 2,
+          user_image_parts: 1,
+          assistant_image_parts: 0,
+          tool_image_parts: 1,
+          other_image_parts: 0,
+          url_images: 2,
+          inline_images: 0,
+          provider_id_images: 0,
+          unknown_images: 0,
+          pdf_file_parts: 0,
+          other_file_parts: 0,
+        },
         estimated_serialized_message_tokens: 170000,
         context_used_tokens: 171844,
         context_max_tokens: 200000,
@@ -1764,6 +1777,9 @@ describe("createChatLogger provider stream termination", () => {
         estimated_serialized_message_tokens: 170000,
         content_part_counts: { text: 6, "tool-result": 3 },
       });
+      expect(wideEvent.provider_request.media_counts).toEqual(
+        providerRequest.media_counts,
+      );
       expect(wideEvent.provider_error).not.toHaveProperty("request");
       expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
       expect(errorSpy.mock.calls.flat().map(String).join("\n")).not.toContain(
