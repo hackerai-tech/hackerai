@@ -3065,14 +3065,26 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
-    ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
-    ["ask", "free", "ask-model-free-glm", 3],
-    ["agent", "free", "model-glm-5.3-flash-agent", 3],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1, false],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, false],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, true],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, true],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, true],
   ] as const)(
-    "routes %s %s through Abliteration then %s after %i steps",
-    async (mode, subscription, baselineModel, generationStepLimit) => {
+    "routes %s %s through direct treatment then %s after %i steps, inference=%s",
+    async (
+      mode,
+      subscription,
+      baselineModel,
+      generationStepLimit,
+      inferenceCyberEnabled,
+    ) => {
+      const expectedTreatment = inferenceCyberEnabled
+        ? "model-inference-cyber"
+        : "model-abliterated";
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -3092,6 +3104,7 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedStepRouting: {
             baselineModel,
             generationStepLimit,
+            inferenceCyberEnabled,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -3113,9 +3126,9 @@ describe("createAgentStream repeated compaction", () => {
         });
 
       const firstStep = await prepare(0);
-      expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(firstStep.model.modelId).toBe(expectedTreatment);
       expect(wrap).toHaveBeenLastCalledWith(
-        expect.objectContaining({ modelId: "model-abliterated" }),
+        expect.objectContaining({ modelId: expectedTreatment }),
         0,
         expect.objectContaining({
           plannedBaselineContinuation: false,
@@ -3128,7 +3141,7 @@ describe("createAgentStream repeated compaction", () => {
 
       for (let index = 1; index < generationStepLimit; index++) {
         const treatmentStep = await prepare(index);
-        expect(treatmentStep.model.modelId).toBe("model-abliterated");
+        expect(treatmentStep.model.modelId).toBe(expectedTreatment);
         expect(JSON.stringify(treatmentStep.messages)).not.toContain(
           PLATFORM_AUTHORIZATION_ANNOTATION,
         );

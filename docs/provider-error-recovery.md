@@ -69,6 +69,11 @@ replace history; discarded output usage is still accounted to its actual
 model. Cancellation stops the chain. Disabling the flag restores the previous
 compaction policy for new runs; an active run retains its initial assignment.
 
+Eligible Free three-step treatment uses the same Inference-first provider
+route. Its separate experiment controls enrollment, and control users retain
+their baseline. Compare outcomes by actual provider and release: the historical
+experiment key alone does not identify which direct provider served a request.
+
 ## Diagnosing a failure
 
 Inspect the existing `provider_streaming_error` / `provider_stream_terminated`

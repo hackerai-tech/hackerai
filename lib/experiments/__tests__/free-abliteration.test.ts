@@ -22,11 +22,15 @@ const messages = [
   },
 ];
 const originalKey = process.env.ABLITERATION_API_KEY;
+const originalInferenceKey = process.env.INFERENCE_API_KEY;
 beforeEach(() => {
   jest.clearAllMocks();
   process.env.ABLITERATION_API_KEY = "test-only";
+  process.env.INFERENCE_API_KEY = "test-only";
 });
 afterAll(() => {
+  if (originalInferenceKey === undefined) delete process.env.INFERENCE_API_KEY;
+  else process.env.INFERENCE_API_KEY = originalInferenceKey;
   if (originalKey === undefined) delete process.env.ABLITERATION_API_KEY;
   else process.env.ABLITERATION_API_KEY = originalKey;
 });
@@ -93,6 +97,63 @@ describe.each(["ask", "agent"] as const)("Free %s three-step trial", (mode) => {
     },
   );
 
+  it.each(["preview", "production"] as const)(
+    "uses Inference for eligible %s treatment without changing enrollment",
+    async (inferenceEnvironment) => {
+      flag.mockResolvedValueOnce("test").mockResolvedValueOnce(true);
+      const input = { ...args(), inferenceEnvironment };
+      const assignment = await evaluateAbliteratedModel(input);
+      expect(assignment).toMatchObject({
+        key: ABLITERATED_FREE_THREE_STEPS_KEY,
+        variant: "test",
+        modelKey: "model-abliterated",
+        baselineModel: input.selectedModel,
+        generationStepLimit: 3,
+        inferenceCyberEnabled: true,
+      });
+      expect(flag.mock.calls.map((call) => call[1])).toEqual([
+        ABLITERATED_FREE_THREE_STEPS_KEY,
+        "inference_cyber_v1",
+      ]);
+    },
+  );
+  it("never switches Free control to Inference", async () => {
+    flag.mockResolvedValueOnce("control");
+    expect(
+      await evaluateAbliteratedModel({
+        ...args(),
+        inferenceEnvironment: "production",
+      }),
+    ).toMatchObject({ variant: "control", inferenceCyberEnabled: false });
+    expect(flag).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, undefined, "test"])(
+    "retains Abliteration recovery policy when Inference assignment is %s",
+    async (value) => {
+      flag.mockResolvedValueOnce("test").mockResolvedValueOnce(value);
+      expect(
+        await evaluateAbliteratedModel({
+          ...args(),
+          inferenceEnvironment: "production",
+        }),
+      ).toMatchObject({ variant: "test", inferenceCyberEnabled: false });
+    },
+  );
+  it("retains enrolled Free treatment when the Inference lookup fails", async () => {
+    flag
+      .mockResolvedValueOnce("test")
+      .mockRejectedValueOnce(new Error("unavailable"));
+    expect(
+      await evaluateAbliteratedModel({
+        ...args(),
+        inferenceEnvironment: "production",
+      }),
+    ).toMatchObject({
+      key: ABLITERATED_FREE_THREE_STEPS_KEY,
+      variant: "test",
+      inferenceCyberEnabled: false,
+    });
+  });
   it.each([undefined, false, true, "unexpected"])(
     "does not enroll an absent/off/invalid flag (%s)",
     async (value) => {
