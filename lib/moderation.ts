@@ -6,13 +6,11 @@ const MODERATION_TOKEN_LIMIT = 512;
 
 export type ModerationResult = {
   shouldUncensorResponse: boolean;
-  allowsAbliterationContinuation: boolean;
   moderationText: string;
 };
 
 const emptyModerationResult = (): ModerationResult => ({
   shouldUncensorResponse: false,
-  allowsAbliterationContinuation: false,
   moderationText: "",
 });
 
@@ -62,15 +60,8 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    const allowsAbliterationContinuation = determineShouldUncensorResponse(
-      moderationLevel,
-      hazardCategories,
-      isPaidUser,
-      0,
-    );
     return {
       shouldUncensorResponse,
-      allowsAbliterationContinuation,
       moderationText: input,
     };
   } catch (_error: any) {

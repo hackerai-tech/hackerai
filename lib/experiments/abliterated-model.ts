@@ -2,7 +2,6 @@ import {
   INFERENCE_CYBER_FLAG,
   isInferenceConfigured,
 } from "@/lib/ai/inference";
-import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { phLogger } from "@/lib/posthog/server";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
@@ -94,8 +93,6 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride,
   moderationEligible,
   moderationChecked = true,
-  allowsAbliterationContinuation = false,
-  newUserTurn = false,
   messages,
   limitRescue = false,
   diagnosticContext,
@@ -109,26 +106,16 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   moderationChecked?: boolean;
-  allowsAbliterationContinuation?: boolean;
-  newUserTurn?: boolean;
   messages: UIMessage[];
   limitRescue?: boolean;
   diagnosticContext?: { chatId: string; requestId: string; logAll?: boolean };
   inferenceEnvironment?: "preview" | "production";
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
-  const proThreeStepsEligible =
-    subscription === "pro" &&
-    !moderationEligible &&
-    moderationChecked &&
-    allowsAbliterationContinuation &&
-    newUserTurn;
   const reportDecision = (
     reason: string,
     variant?: string,
-    experimentKey = proThreeStepsEligible
-      ? ABLITERATED_PRO_THREE_STEPS_KEY
-      : ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    experimentKey = ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ) => {
     if (!diagnosticContext?.logAll) return;
     try {
@@ -142,7 +129,6 @@ export async function evaluateAbliteratedModel({
         selected_model_override: selectedModelOverride,
         moderation_eligible: moderationEligible,
         moderation_checked: moderationChecked,
-        continuation_moderation_allowed: allowsAbliterationContinuation,
         provider_configured: providerConfigured,
         reason,
         ...(variant && { variant }),
@@ -155,7 +141,7 @@ export async function evaluateAbliteratedModel({
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
-      moderationEligible: moderationEligible || proThreeStepsEligible,
+      moderationEligible,
       messages,
       limitRescue,
     })
@@ -171,8 +157,8 @@ export async function evaluateAbliteratedModel({
   }
 
   // Only trusted deployed callers supply environment identity. The rollout is
-  // independent of the historical Pro experiment; disabling it restores that
-  // experiment and the existing moderated Abliteration route.
+  // independent of the historical Pro experiment; disabling it restores the
+  // existing moderated Abliteration route.
   let inferenceCyberEnabled = false;
   if (inferenceEnvironment && isInferenceConfigured() && posthog) {
     try {
@@ -189,15 +175,7 @@ export async function evaluateAbliteratedModel({
   }
 
   if (inferenceCyberEnabled) {
-    const baselineModel = proThreeStepsEligible
-      ? resolvePaidProAutoModel({
-          userId,
-          subscription,
-          selectedModel,
-          selectedModelOverride,
-          limitRescue,
-        })
-      : selectedModel;
+    const baselineModel = selectedModel;
     reportDecision("inference_cyber_rollout", "test", INFERENCE_CYBER_FLAG);
     return {
       key: INFERENCE_CYBER_FLAG,
@@ -206,57 +184,10 @@ export async function evaluateAbliteratedModel({
       baselineModel,
       generationStepLimit: 3,
       inferenceCyberEnabled: true,
-      selectionSource: proThreeStepsEligible ? "paid_first_step" : "moderation",
+      selectionSource: "moderation",
       moderationEligible,
       moderationChecked,
     };
-  }
-
-  if (proThreeStepsEligible && posthog) {
-    try {
-      const variant = await getPostHogFlagWithoutExposure(
-        posthog,
-        ABLITERATED_PRO_THREE_STEPS_KEY,
-        userId,
-        { subscription, subscription_tier: subscription },
-      );
-      // Only explicit variants enroll. Off, missing and legacy boolean flags
-      // must not create a control cohort or silently enable treatment.
-      if (variant === "control" || variant === "test") {
-        // Resolve the shipped route before enrollment locks subsequent policies.
-        // Both control and treatment's later steps must use today's baseline.
-        const baselineModel = resolvePaidProAutoModel({
-          userId,
-          subscription,
-          selectedModel,
-          selectedModelOverride,
-          limitRescue,
-        });
-        reportDecision("pro_three_steps", variant);
-        return {
-          key: ABLITERATED_PRO_THREE_STEPS_KEY,
-          variant,
-          modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : baselineModel,
-          baselineModel,
-          generationStepLimit: 3,
-          inferenceCyberEnabled: variant === "test" && inferenceCyberEnabled,
-          // Historical source label for unmoderated paid routing; the step
-          // budget is carried separately by generationStepLimit.
-          selectionSource: "paid_first_step",
-          moderationEligible: false,
-          moderationChecked,
-        };
-      }
-      reportDecision("pro_three_steps_flag_off");
-    } catch {
-      reportDecision("pro_three_steps_flag_error");
-    }
-    return undefined;
-  }
-
-  if (!moderationEligible) {
-    reportDecision("moderation_not_eligible");
-    return undefined;
   }
 
   reportDecision("moderated_three_step_default", "test");
