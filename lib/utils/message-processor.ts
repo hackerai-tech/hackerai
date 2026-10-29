@@ -170,7 +170,10 @@ export const normalizeMessages = (
         toolPart.type === "tool-shell";
       const isIncomplete =
         toolPart.state === "input-available" ||
-        toolPart.state === "input-streaming";
+        toolPart.state === "input-streaming" ||
+        (options?.userInitiatedAbort === true &&
+          (toolPart.state === "approval-requested" ||
+            toolPart.state === "approval-responded"));
 
       if (isTerminalTool && isIncomplete) {
         // Transform terminal tools to collect streaming output
@@ -180,6 +183,20 @@ export const normalizeMessages = (
           options?.userInitiatedAbort,
         );
         processedParts.push(transformedPart);
+        messageChanged = true;
+      } else if (
+        options?.userInitiatedAbort &&
+        toolPart.type.startsWith("tool-") &&
+        (toolPart.state === "approval-requested" ||
+          toolPart.state === "approval-responded")
+      ) {
+        // A saved approval must not remain actionable after its run is stopped.
+        const { approval: _approval, ...stoppedPart } = part;
+        processedParts.push({
+          ...stoppedPart,
+          state: "output-error",
+          errorText: getIncompleteToolErrorText(undefined, true),
+        });
         messageChanged = true;
       } else {
         // Keep parts unchanged - backend handles incomplete non-terminal tools
@@ -220,10 +237,15 @@ const transformTerminalToolPart = (
   userInitiatedAbort = false,
 ): BaseToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
+  const { approval: _approval, ...stoppedPart } =
+    terminalPart as TerminalToolPart & {
+      approval?: unknown;
+    };
 
   // Shell tool returns { output: string } directly, not nested in result
   if (terminalPart.type === "tool-shell") {
     return {
+      ...stoppedPart,
       type: "tool-shell",
       toolCallId: terminalPart.toolCallId,
       state: "output-error",
@@ -236,6 +258,7 @@ const transformTerminalToolPart = (
   }
 
   return {
+    ...stoppedPart,
     type: terminalPart.type,
     toolCallId: terminalPart.toolCallId,
     state: "output-error",

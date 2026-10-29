@@ -431,7 +431,14 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
@@ -535,6 +542,7 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export type MessageMetadata = {
+  goal?: { sent?: boolean; achievedElapsedMs?: number };
   feedbackType?: "positive" | "negative";
   isAutoContinue?: boolean;
   mode?: "agent" | "ask";

@@ -1,6 +1,9 @@
 import type { ChatMessage } from "@/types";
 
-type ReconciledMessage = Pick<ChatMessage, "id" | "role" | "parts">;
+type ReconciledMessage = Pick<
+  ChatMessage,
+  "id" | "role" | "parts" | "metadata"
+>;
 
 const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
   if (Object.is(current, next)) return true;
@@ -116,6 +119,7 @@ export const areMessagesEquivalentForConvexSync = (
     (message, index) =>
       message.id === next[index].id &&
       message.role === next[index].role &&
+      haveSameJsonValue(message.metadata?.goal, next[index].metadata?.goal) &&
       haveSameJsonValue(message.parts, next[index].parts),
   );
 
@@ -139,3 +143,39 @@ export const arePersistedMessagesAtLeastAsComplete = (
     );
   });
 };
+
+// Preserve local content when an older persisted part is less complete, while
+// allowing independent saved goal messages and receipts to become visible.
+export function mergePersistedGoalMessages<T extends ReconciledMessage>(
+  current: readonly T[],
+  persisted: readonly T[],
+): T[] {
+  if (arePersistedMessagesAtLeastAsComplete(current, persisted))
+    return [...persisted];
+  const savedById = new Map(persisted.map((message) => [message.id, message]));
+  const currentIds = new Set(current.map((message) => message.id));
+  const beforeShared = new Map<string, T[]>();
+  let pending: T[] = [];
+  for (const saved of persisted) {
+    if (currentIds.has(saved.id)) {
+      beforeShared.set(saved.id, pending);
+      pending = [];
+    } else {
+      pending.push(saved);
+    }
+  }
+  return [
+    ...current.flatMap((message) => {
+      const saved = savedById.get(message.id);
+      const merged =
+        saved?.role === message.role && saved.metadata?.goal
+          ? {
+              ...message,
+              metadata: { ...message.metadata, goal: saved.metadata.goal },
+            }
+          : message;
+      return [...(beforeShared.get(message.id) ?? []), merged];
+    }),
+    ...pending,
+  ];
+}

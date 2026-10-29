@@ -1,3 +1,4 @@
+import { AgentGoalEditor, type GoalEditorDraft } from "./AgentGoalEditor";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -1448,11 +1449,20 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
+  continueGoal?: React.ComponentProps<typeof AgentGoalEditor>["continueGoal"];
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
-}> = ({ chatId, messages, status, onBrowserContinue }) => {
+}> = ({
+  chatId,
+  messages,
+  status,
+  onBrowserContinue,
+  stopGoalRunBeforeControl,
+  continueGoal,
+}) => {
   const {
     sidebarOpen,
     sidebarContent,
@@ -1460,6 +1470,49 @@ export const ComputerSidebar: React.FC<{
     openSidebar,
     consumeBrowserTakeoverRequest,
   } = useGlobalState();
+
+  const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft) => {
+    setGoalDraft(draft);
+  }, []);
+  const closeGoalEditor = useCallback(() => {
+    setGoalDraft(undefined);
+    closeSidebar();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+        )
+        ?.focus(),
+    );
+  }, [closeSidebar]);
+
+  if (
+    sidebarOpen &&
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal"
+  ) {
+    return (
+      <AgentGoalEditor
+        key={sidebarContent.chatId}
+        chatId={sidebarContent.chatId}
+        onClose={closeGoalEditor}
+        continueGoal={
+          sidebarContent.chatId === chatId ? continueGoal : undefined
+        }
+        draft={
+          goalDraft?.chatId === sidebarContent.chatId ? goalDraft : undefined
+        }
+        onDraftChange={keepGoalDraft}
+        stopRunBeforeControl={
+          sidebarContent.chatId === chatId
+            ? stopGoalRunBeforeControl
+            : undefined
+        }
+      />
+    );
+  }
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (

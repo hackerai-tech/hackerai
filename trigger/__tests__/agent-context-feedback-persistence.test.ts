@@ -18,8 +18,18 @@ it("binds every assistant save path to the run used for feedback reservation", (
       ts.isCallExpression(node) &&
       node.expression.getText(source) === "saveMessage" &&
       ts.isObjectLiteralExpression(node.arguments[0])
-    )
-      saves.push(node.arguments[0]);
+    ) {
+      const save = node.arguments[0];
+      // Hidden goal continuation prompts are user-role control messages, not
+      // visible results eligible for a feedback survey.
+      const hidden = save.properties.some(
+        (p) =>
+          ts.isPropertyAssignment(p) &&
+          p.name.getText(source) === "isHidden" &&
+          p.initializer.kind === ts.SyntaxKind.TrueKeyword,
+      );
+      if (!hidden) saves.push(save);
+    }
     ts.forEachChild(node, visit);
   }
   visit(source);

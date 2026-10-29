@@ -15,7 +15,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
 
@@ -62,6 +62,7 @@ const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
+let mockSavedGoal: Record<string, unknown> | undefined;
 let mockLocalConnections:
   Array<{ connectionId: string; isDesktop: boolean }> | undefined;
 let mockChatHandlerArgs: Parameters<
@@ -105,6 +106,7 @@ jest.mock("convex/react", () => {
     },
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
+      if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
       if (getFunctionName(query) === "localSandbox:listConnections")
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
@@ -265,9 +267,9 @@ jest.mock("../Messages", () => ({
 }));
 
 jest.mock("../ChatInput", () => ({
-  ChatInput: ({ onSubmit }: any) => (
+  ChatInput: ({ onSubmit, goalPanel }: any) => (
     <div data-testid="chat-input">
-      ChatInput
+      ChatInput{goalPanel?.("attached")}
       <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
         Submit test message
       </button>
@@ -286,11 +288,22 @@ jest.mock("../ComputerSidebar", () => ({
     onBrowserContinue: typeof mockBrowserContinue;
   }) => {
     mockBrowserContinue = onBrowserContinue;
+    const [draft, setDraft] = useState("");
     return (
       <div data-testid="computer-sidebar">
         Sidebar
         <button type="button">First computer action</button>
+        <textarea
+          aria-label="Computer draft"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+        />
         <button type="button">Last computer action</button>
+        <input aria-label="Hidden computer field" hidden />
+        <details>
+          <summary>More computer actions</summary>
+          <input aria-label="Collapsed computer field" />
+        </details>
       </div>
     );
   },
@@ -501,6 +514,7 @@ describe("Chat Component Integration", () => {
     mockIsAtBottom = true;
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
+    mockSavedGoal = undefined;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1017,9 +1031,171 @@ describe("Chat Component Integration", () => {
         screen.queryByRole("button", { name: "Scroll to bottom" }),
       ).toBeNull();
     });
+
+    it("moves beside the mobile goal pill when it fits, never duplicating the button", async () => {
+      const { useIsMobile } = require("@/hooks/use-mobile");
+      const observers: ResizeObserverCallback[] = [];
+      const originalResizeObserver = Object.getOwnPropertyDescriptor(
+        globalThis,
+        "ResizeObserver",
+      );
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: class {
+          constructor(callback: ResizeObserverCallback) {
+            observers.push(callback);
+          }
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      });
+      let pillRight = 200;
+      const rectSpy = jest
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          const right = this.matches('section[aria-label="Agent goal"]')
+            ? 288
+            : pillRight;
+          return { right, height: 0 } as DOMRect;
+        });
+      try {
+        useIsMobile.mockReturnValue(true);
+        mockIsAtBottom = false;
+        mockRouteParams = { id: "goal-chat" };
+        mockRestoredChat = { id: "goal-chat", default_model_slug: "agent" };
+        mockSavedGoal = {
+          _id: "goal",
+          state: "paused",
+          objective: "Create marker",
+          criteria: ["Marker exists"],
+          evidence: [],
+          reason: "Paused",
+          updatedAt: 2000,
+        };
+        mockUseChat.mockReturnValue({
+          ...mockUseChat(),
+          messages: [
+            {
+              id: "assistant-1",
+              role: "assistant",
+              parts: [{ type: "text", text: "Answer" }],
+            },
+          ],
+        });
+        const view = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        await act(async () => {});
+        const goalRegion = screen.getByRole("region", { name: "Agent goal" });
+        let buttons = screen.getAllByRole("button", {
+          name: "Scroll to bottom",
+        });
+        expect(buttons).toHaveLength(1);
+        expect(goalRegion).toContainElement(buttons[0]);
+        fireEvent.click(buttons[0]);
+        expect(mockScrollToBottom).toHaveBeenCalledWith({ force: true });
+
+        // Not enough room beside the pill: restore the floating placement.
+        pillRight = 260;
+        act(() =>
+          observers.forEach((callback) => callback([], {} as ResizeObserver)),
+        );
+        buttons = screen.getAllByRole("button", { name: "Scroll to bottom" });
+        expect(buttons).toHaveLength(1);
+        expect(goalRegion).not.toContainElement(buttons[0]);
+
+        // Expanded todos still suppress it in either placement.
+        pillRight = 200;
+        act(() =>
+          observers.forEach((callback) => callback([], {} as ResizeObserver)),
+        );
+        mockDesktopState = { isTodoPanelExpanded: true };
+        rerender(view());
+        expect(
+          screen.queryByRole("button", { name: "Scroll to bottom" }),
+        ).toBeNull();
+      } finally {
+        rectSpy.mockRestore();
+        useIsMobile.mockReturnValue(false);
+        if (originalResizeObserver)
+          Object.defineProperty(
+            globalThis,
+            "ResizeObserver",
+            originalResizeObserver,
+          );
+        else Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
+    });
   });
 
   describe("Message Display", () => {
+    it("dismisses completed goals from saved user messages, not optimistic sends or assistant updates", async () => {
+      const convexReact = require("convex/react");
+      mockRouteParams = { id: "goal-chat" };
+      mockRestoredChat = { id: "goal-chat", default_model_slug: "agent" };
+      mockSavedGoal = {
+        _id: "goal",
+        state: "achieved",
+        objective: "Create marker",
+        criteria: ["Marker exists"],
+        evidence: [],
+        runs: 1,
+        maxRuns: 3,
+        achievedAt: 2000,
+        updatedAt: 2000,
+      };
+      const original = {
+        id: "original",
+        chat_id: "goal-chat",
+        role: "user",
+        parts: [{ type: "text", text: "Create marker" }],
+        created_at: 1000,
+      };
+      const followup = { ...original, id: "followup", created_at: 3000 };
+      const saved = (results: unknown[]) =>
+        convexReact.setMockPaginatedQueryResult({
+          results,
+          status: "Exhausted",
+          loadMore: jest.fn(),
+          isLoading: false,
+        });
+      saved([original]);
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        messages: [{ ...followup, metadata: { createdAt: 3000 } }],
+        error: new Error("Send failed"),
+      });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender, unmount } = render(view());
+      expect(
+        screen.getByRole("button", { name: "Show goal details" }),
+      ).toBeVisible();
+      saved([{ ...followup, role: "assistant" }, original]);
+      rerender(view());
+      expect(
+        screen.getByRole("button", { name: "Show goal details" }),
+      ).toBeVisible();
+      saved([followup, original]);
+      rerender(view());
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      unmount();
+      render(view());
+      expect(
+        screen.queryByRole("region", { name: "Agent goal" }),
+      ).not.toBeInTheDocument();
+      await act(async () => {});
+    });
     it("arms the inline survey for a fresh completed response, hides during the next run, and ignores history", () => {
       mockSurveyAuth();
       mockRouteParams = { id: "survey-chat" };
@@ -1624,6 +1800,46 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
+    it("preserves an open editor draft across split and overlay layouts", async () => {
+      const view = (
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view);
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Unsaved goal edits" } },
+      );
+      mockComputerOverlayMedia = true;
+      rerender(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(
+        screen.getByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Unsaved goal edits");
+      mockComputerOverlayMedia = false;
+      rerender(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(
+        screen.queryByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Unsaved goal edits");
+    });
     it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
       render(
         <TestWrapper>
@@ -1716,6 +1932,11 @@ describe("Chat Component Integration", () => {
 
     it("uses an accessible Computer overlay on narrow workspaces", async () => {
       mockComputerOverlayMedia = true;
+      const rects = jest
+        .spyOn(HTMLElement.prototype, "getClientRects")
+        .mockImplementation(function (this: HTMLElement) {
+          return (this.hidden ? [] : [{}]) as unknown as DOMRectList;
+        });
 
       render(
         <TestWrapper>
@@ -1742,9 +1963,7 @@ describe("Chat Component Integration", () => {
       const firstAction = screen.getByRole("button", {
         name: "First computer action",
       });
-      const lastAction = screen.getByRole("button", {
-        name: "Last computer action",
-      });
+      const lastAction = screen.getByText("More computer actions");
       await waitFor(() => expect(firstAction).toHaveFocus());
 
       // Portal dialogs (browser takeover / exit prompt) own their keyboard focus.
@@ -1767,6 +1986,8 @@ describe("Chat Component Integration", () => {
       lastAction.focus();
       fireEvent.keyDown(document, { key: "Tab" });
       expect(firstAction).toHaveFocus();
+      fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+      expect(lastAction).toHaveFocus();
 
       fireEvent.keyDown(document, { key: "Escape" });
       await waitFor(() => {
@@ -1775,6 +1996,7 @@ describe("Chat Component Integration", () => {
         ).not.toBeInTheDocument();
       });
       expect(trigger).toHaveFocus();
+      rects.mockRestore();
     });
 
     // Mobile task navigation is covered by ChatLayout accessibility tests.

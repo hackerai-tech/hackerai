@@ -32,6 +32,15 @@ const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
+const mockGoalMutation = jest.fn<any>();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ mutation: mockGoalMutation }),
+}));
+jest.mock("@/lib/goals/server", () => ({
+  goalEnabled: async () => true,
+  goalServiceKey: () => "synthetic",
+  reconcileGoal: async () => null,
+}));
 const mockSandboxContext = jest.fn<any>();
 const mockSandboxClose = jest.fn<any>();
 
@@ -98,7 +107,7 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
   hasLocalDesktopSourcePaths: jest.fn(),
   prepareLocalDesktopAttachmentsForTrigger: jest.fn(),
   rewriteSandboxFilePathsInMessages: jest.fn(),
-  stripLocalDesktopSourcePaths: jest.fn(),
+  stripLocalDesktopSourcePaths: jest.fn((messages: unknown[]) => messages),
   uploadSandboxFiles: jest.fn(),
 }));
 
@@ -809,6 +818,78 @@ describe("Agent trigger route lifecycle", () => {
     );
   });
 
+  it("waits for goal association before returning its startup handle", async () => {
+    let associate!: (value: boolean) => void;
+    let associationStarted!: () => void;
+    const associating = new Promise<void>((resolve) => {
+      associationStarted = resolve;
+    });
+    mockGoalMutation.mockImplementationOnce(() => {
+      associationStarted();
+      return new Promise<boolean>((resolve) => {
+        associate = resolve;
+      });
+    });
+    const settled = jest.fn();
+    const started = finalizeStartedAgentRun({
+      chatId: "chat-1",
+      runId: "run-1",
+      approvalSessionId: undefined,
+      goal: { userId: "user-1", generation: 2 },
+    }).then(settled);
+    await associating;
+    expect(settled).not.toHaveBeenCalled();
+    expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
+      serviceKey: "synthetic",
+      chatId: "chat-1",
+      runId: "run-1",
+      userId: "user-1",
+      generation: 2,
+      approvalSessionId: undefined,
+    });
+    associate(true);
+    await started;
+    expect(settled).toHaveBeenCalledWith({ publicAccessToken: "run-token" });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("does not attach a goal worker when token creation fails", async () => {
+    mockCreatePublicToken
+      .mockReset()
+      .mockRejectedValueOnce(new Error("Token unavailable"));
+    await expect(
+      finalizeStartedAgentRun({
+        chatId: "chat-1",
+        runId: "run-1",
+        approvalSessionId: undefined,
+        goal: { userId: "user-1", generation: 2 },
+      }),
+    ).rejects.toThrow("Token unavailable");
+    expect(mockGoalMutation).not.toHaveBeenCalled();
+    expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it("cancels a dispatched worker when its goal was replaced before association", async () => {
+    mockGoalMutation.mockResolvedValueOnce(false);
+    await expect(
+      finalizeStartedAgentRun({
+        chatId: "chat-1",
+        runId: "run-old",
+        approvalSessionId: undefined,
+        goal: { userId: "user-1", generation: 1 },
+      }),
+    ).rejects.toMatchObject({ metadata: { agent_run_association: "stale" } });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-old");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerRunId: null,
+        expectedRunId: "run-old",
+      }),
+    );
+  });
+
   it("cancels the atomically displaced run without clearing the new owner", async () => {
     mockReplaceActiveTriggerRun.mockResolvedValue({
       previousRunId: "old-run",
@@ -1108,4 +1189,112 @@ describe("regional subscription gate before Agent dispatch", () => {
       expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("goal reservations on oversized dispatch", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "owner",
+      subscription: "pro",
+    });
+    mockGoalMutation.mockResolvedValue({ generation: 1 });
+  });
+  it.each(["full_access", "ask_approval", "trigger_api_413"])(
+    "releases the reserved goal for %s",
+    async (path) => {
+      mockTriggerTask.mockRejectedValue(
+        Object.assign(new Error("Request body too large"), {
+          name: "TriggerApiError",
+          status: 413,
+        }),
+      );
+      const response = await createAgentTriggerPost({ endpoint: "/api/agent" })(
+        {
+          headers: new Headers(),
+          cookies: { get: () => undefined },
+          json: async () => ({
+            chatId: "goal-chat",
+            messages: [
+              {
+                id: "input",
+                role: "user",
+                parts: [{ type: "text", text: "Create marker" }],
+              },
+            ],
+            goal: {
+              action: "start",
+              expectedGeneration: 7,
+              objective: "Create marker",
+              criteria: ["Marker exists"],
+              maxRuns: 1,
+            },
+            agentPermissionMode:
+              path === "ask_approval" ? "ask_approval" : "full_access",
+            todos:
+              path === "trigger_api_413"
+                ? []
+                : [
+                    {
+                      id: "todo",
+                      content: "x".repeat(AGENT_TRIGGER_PAYLOAD_MAX_BYTES),
+                      status: "pending",
+                    },
+                  ],
+          }),
+        } as any,
+      );
+      expect(response.status).toBe(413);
+      expect(mockGoalMutation).toHaveBeenCalledTimes(3);
+      expect(mockGoalMutation).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.objectContaining({
+          messageId: "input",
+          generation: 1,
+          chatId: "goal-chat",
+        }),
+      );
+      expect(mockGoalMutation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          expectedGeneration: 7,
+          objective: "Create marker",
+        }),
+      );
+      expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
+        serviceKey: "synthetic",
+        chatId: "goal-chat",
+        userId: "owner",
+        generation: 1,
+      });
+      if (path !== "trigger_api_413")
+        expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+  it("fences update-and-continue against a different saved goal", async () => {
+    mockGoalMutation.mockRejectedValue(new Error("Goal changed"));
+    const response = await createAgentTriggerPost({ endpoint: "/api/agent" })({
+      headers: new Headers(),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "goal-chat",
+        messages: [
+          {
+            id: "input",
+            role: "user",
+            parts: [{ type: "text", text: "Resume goal: Revised request" }],
+          },
+        ],
+        goal: { action: "resume", expectedGeneration: 5 },
+        agentPermissionMode: "full_access",
+      }),
+    } as any);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(mockGoalMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "resume", generation: 5 }),
+    );
+    expect(mockTriggerTask).not.toHaveBeenCalled();
+  });
 });
