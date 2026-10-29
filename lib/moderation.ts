@@ -36,7 +36,8 @@ export async function getModerationResult(
     return emptyModerationResult();
   }
 
-  const input = prepareInput(targetMessage);
+  const { text: input, truncated: inputTruncated } =
+    prepareInput(targetMessage);
 
   try {
     const moderation = await openai.moderations.create({
@@ -65,9 +66,10 @@ export async function getModerationResult(
     return {
       shouldUncensorResponse,
       // Free treatment must not replace baseline refusals for flagged illicit
-      // intent. Missing category evidence keeps the existing Free route.
+      // intent. Partial input or missing categories keep the existing Free route.
       allowsFreeAbliteration:
         shouldUncensorResponse &&
+        !inputTruncated &&
         result.categories.illicit === false &&
         result.categories["illicit/violent"] === false,
       moderationText: input,
@@ -144,7 +146,9 @@ function createCombinedMessage(messages: any[]): any {
   };
 }
 
-function prepareInput(message: any): string {
+type ModerationInput = { text: string; truncated: boolean };
+
+function prepareInput(message: any): ModerationInput {
   // Handle UIMessage format with parts array
   if (message.parts && Array.isArray(message.parts)) {
     const textContent = message.parts
@@ -158,13 +162,13 @@ function prepareInput(message: any): string {
   else if (typeof message.content === "string") {
     return truncateByTokens(message.content);
   }
-  return "";
+  return { text: "", truncated: false };
 }
 
-function truncateByTokens(content: string): string {
+function truncateByTokens(content: string): ModerationInput {
   const tokens = safeEncode(content);
   if (tokens.length <= MODERATION_TOKEN_LIMIT) {
-    return content;
+    return { text: content, truncated: false };
   }
 
   // For large inputs, include both beginning and end for better context
@@ -172,7 +176,10 @@ function truncateByTokens(content: string): string {
   const startTokens = tokens.slice(0, halfLimit);
   const endTokens = tokens.slice(-halfLimit);
 
-  return decode(startTokens) + " [...] " + decode(endTokens);
+  return {
+    text: decode(startTokens) + " [...] " + decode(endTokens),
+    truncated: true,
+  };
 }
 
 function calculateModerationLevel(
