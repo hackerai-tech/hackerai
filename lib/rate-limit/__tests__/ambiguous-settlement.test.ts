@@ -25,9 +25,11 @@ afterAll(() => {
 });
 const mockAction = jest.fn();
 const mockRefund = jest.fn();
+const mockRedisEval = jest.fn();
 beforeEach(() => {
   mockAction.mockReset();
   mockRefund.mockReset();
+  mockRedisEval.mockReset();
 });
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ action: mockAction, mutation: mockRefund }),
@@ -36,7 +38,10 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { error: jest.fn(), warn: jest.fn() },
 }));
 jest.mock("@/lib/rate-limit/redis", () => ({
-  createRedisClient: () => ({ hget: async () => null }),
+  createRedisClient: () => ({
+    hget: async () => null,
+    eval: mockRedisEval,
+  }),
   formatTimeRemaining: () => "",
 }));
 jest.mock("@/lib/rate-limit/paid-bucket", () => ({
@@ -150,6 +155,7 @@ it("does not refund acknowledged points while another debit outcome is unknown",
   );
   expect(mockAction).toHaveBeenCalledTimes(1);
   expect(mockRefund.mock.calls.length).toBe(0);
+  expect(mockRedisEval).not.toHaveBeenCalled();
   expect(final).toMatchObject({
     includedPointsDeducted: 7,
     extraUsagePointsDeducted: 11,
