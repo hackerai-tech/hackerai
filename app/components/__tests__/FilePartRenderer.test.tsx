@@ -11,11 +11,13 @@ import type { ComponentProps } from "react";
 import { FileUrlCacheProvider } from "@/app/contexts/FileUrlCacheContext";
 import { useFileUrlCache } from "@/app/hooks/useFileUrlCache";
 import { startBlobDownload } from "@/lib/utils/file-download";
+import { toast } from "sonner";
 import { FilePartRenderer } from "../FilePartRenderer";
 
 jest.mock("@/lib/utils/file-download", () => ({
   startBlobDownload: jest.fn(),
 }));
+jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
 
 jest.mock("next/image", () => ({
   __esModule: true,
@@ -107,6 +109,7 @@ describe("FilePartRenderer", () => {
         .mockResolvedValue({ ok: true, blob: async () => blob });
       global.fetch = fetchMock;
       jest.mocked(startBlobDownload).mockClear();
+      jest.mocked(toast.error).mockClear();
       mockGetFileUrlAction.mockResolvedValue(freshUrl);
     });
 
@@ -145,6 +148,7 @@ describe("FilePartRenderer", () => {
       mockGetFileUrlAction.mockClear();
       await clickDownload();
       expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenLastCalledWith(freshUrl);
       expect(startBlobDownload).toHaveBeenCalledTimes(2);
     });
 
@@ -186,6 +190,31 @@ describe("FilePartRenderer", () => {
       ).toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalled();
       expect(startBlobDownload).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("button", { name: "Download report.txt" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("allows retry after a temporary URL-resolution failure without remounting", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      mockGetFileUrlAction.mockRejectedValueOnce(
+        new Error("Connection interrupted"),
+      );
+      renderWithCache(part);
+
+      await clickDownload();
+
+      expect(toast.error).toHaveBeenCalledWith("Connection interrupted");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Download report.txt" }),
+      ).toBeEnabled();
+
+      await clickDownload();
+
+      expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+      expect(fetchMock).not.toHaveBeenCalledWith(oldUrl);
+      expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
     });
   });
 });

@@ -211,7 +211,7 @@ const FilePartRendererComponent = ({
             : error instanceof Error
               ? error.message
               : "Failed to fetch download URL";
-        setUrlError(errorMessage);
+        // Keep the download control available so a temporary failure can be retried.
         toast.error(errorMessage);
       }
     },
