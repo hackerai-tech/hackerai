@@ -207,6 +207,7 @@ export function createServiceConvexClient(
   let warningTimes: number[] = [];
   const observeMutation = (reference: unknown, secrets: string[]) => {
     const startedAt = Date.now();
+    let warningAttempted = false;
     const callId = ++mutationSequence;
     const pendingAtStart = pendingMutations++;
     const clientId =
@@ -231,6 +232,7 @@ export function createServiceConvexClient(
       warningTimes = warningTimes.filter((time) => now - time < 60_000);
       if (warningTimes.length >= 2) return;
       warningTimes.push(now);
+      warningAttempted = true;
       try {
         console.warn(
           JSON.stringify({
@@ -261,11 +263,27 @@ export function createServiceConvexClient(
       }
     }, 10_000);
     timer.unref?.();
-    return () => {
+    return (outcome: "fulfilled" | "rejected") => {
       clearTimeout(timer);
       pendingMutations--;
       // Do not guess the oldest remaining call after the tracked one settles.
       if (oldestPending?.id === callId) oldestPending = undefined;
+      if (!warningAttempted) return;
+      try {
+        console.info(
+          JSON.stringify({
+            event: "convex_service_mutation_wait_settled",
+            ...(clientId ? { client_instance_id: clientId } : {}),
+            sdk_call_id: callId,
+            ...(functionName ? { function_name: functionName } : {}),
+            sdk_elapsed_ms: Math.max(0, Date.now() - startedAt),
+            outcome,
+            pending_mutations_now: pendingMutations,
+          }),
+        );
+      } catch {
+        // Diagnostics must not replace the SDK's result or rejection.
+      }
     };
   };
   const signal = options?.signal;
@@ -309,8 +327,11 @@ export function createServiceConvexClient(
           property === "mutation"
             ? observeMutation(parameters[0], secrets)
             : undefined;
+        let outcome: "fulfilled" | "rejected" = "rejected";
         try {
-          return await method.apply(target, parameters);
+          const result = await method.apply(target, parameters);
+          outcome = "fulfilled";
+          return result;
         } catch (error) {
           let message = error instanceof Error ? error.message : String(error);
           for (const secret of secrets)
@@ -319,7 +340,7 @@ export function createServiceConvexClient(
           if (error instanceof Error && clean === error.message) throw error;
           throw new Error(clean);
         } finally {
-          finishObservation?.();
+          finishObservation?.(outcome);
         }
       };
     },

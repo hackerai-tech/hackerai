@@ -499,10 +499,18 @@ it("cancels only the request-scoped client's in-flight transport", async () => {
 
 describe("SDK mutation wait diagnostics", () => {
   let warning: jest.SpyInstance;
+  let info: jest.SpyInstance;
   const observations = () =>
     warning.mock.calls.flatMap(([line]) => {
       const value = JSON.parse(String(line));
       return value.event === "convex_service_mutation_wait_pending"
+        ? [value]
+        : [];
+    });
+  const settlements = () =>
+    info.mock.calls.flatMap(([line]) => {
+      const value = JSON.parse(String(line));
+      return value.event === "convex_service_mutation_wait_settled"
         ? [value]
         : [];
     });
@@ -511,6 +519,7 @@ describe("SDK mutation wait diagnostics", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    info = jest.spyOn(console, "info").mockImplementation(() => {});
   });
   afterEach(() => {
     jest.useRealTimers();
@@ -583,6 +592,20 @@ describe("SDK mutation wait diagnostics", () => {
       await expect(second).resolves.toBe("follower");
     }
     expect(transport).toHaveBeenCalledTimes(2);
+    expect(settlements()).toEqual(
+      observations().map((pending) =>
+        expect.objectContaining({
+          client_instance_id: pending.client_instance_id,
+          sdk_call_id: pending.sdk_call_id,
+          function_name: pending.function_name,
+          outcome: "fulfilled",
+          sdk_elapsed_ms: expect.any(Number),
+        }),
+      ),
+    );
+    expect(settlements().at(-1).pending_mutations_now).toBe(0);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_TARGET");
   });
 
   it("bounds warning attempts in a rolling minute even when logging throws", async () => {
@@ -607,6 +630,9 @@ describe("SDK mutation wait diagnostics", () => {
     const calls: Promise<unknown>[] = [];
     warning.mockImplementation(() => {
       throw new Error("logger unavailable");
+    });
+    info.mockImplementation(() => {
+      throw new Error("settlement logger unavailable");
     });
     await jest.advanceTimersByTimeAsync(49000);
     calls.push(client.mutation(ref, {}));
@@ -633,6 +659,62 @@ describe("SDK mutation wait diagnostics", () => {
         "ok",
       ]);
     }
+    expect(settlements()).toHaveLength(3);
+  });
+
+  it("pairs a slow rejection and queued success without exporting errors or results", async () => {
+    const failure = new Error("PRIVATE_ERROR_DETAIL");
+    let rejectHead!: (error: Error) => void;
+    const held = new Promise<Response>((_resolve, reject) => {
+      rejectHead = reject;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      })
+      .mockImplementation(() => Promise.resolve(success("PRIVATE_RESULT")));
+    const client = createServiceConvexClient(deployment);
+    const first = client.mutation(
+      makeFunctionReference<"mutation">("fixture:failed"),
+      { serviceKey: secret, target: "PRIVATE_TARGET" },
+    );
+    const rejection = expect(first).rejects.toBe(failure);
+    await started;
+    const second = client.mutation(
+      makeFunctionReference<"mutation">("fixture:follower"),
+      {},
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+    } finally {
+      jest.useRealTimers();
+      rejectHead(failure);
+      await rejection;
+      await expect(second).resolves.toBe("PRIVATE_RESULT");
+    }
+    expect(settlements()).toEqual([
+      expect.objectContaining({
+        outcome: "rejected",
+        function_name: "fixture:failed",
+      }),
+      expect.objectContaining({
+        outcome: "fulfilled",
+        function_name: "fixture:follower",
+      }),
+    ]);
+    for (const value of [
+      secret,
+      "PRIVATE_TARGET",
+      failure.message,
+      "PRIVATE_RESULT",
+    ])
+      expect(JSON.stringify(info.mock.calls)).not.toContain(value);
   });
 
   it("cleans up a rejected call before observing the next mutation", async () => {
@@ -722,6 +804,7 @@ describe("SDK mutation wait diagnostics", () => {
     for (const timer of diagnosticTimers)
       expect(cleared).toHaveBeenCalledWith(timer.value);
     expect(observations()).toEqual([]);
+    expect(settlements()).toEqual([]);
   });
 
   it("keeps pending counts and correlation scoped to each client", async () => {
