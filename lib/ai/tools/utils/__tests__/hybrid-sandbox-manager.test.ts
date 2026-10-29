@@ -171,6 +171,74 @@ describe("stable environment acquisition", () => {
     }
   });
 
+  it.each(["preference", "reset"])(
+    "rejects a local probe invalidated by %s",
+    async (change) => {
+      const oldWs = process.env.CENTRIFUGO_WS_URL;
+      const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+      let finish!: () => void;
+      const probe = jest
+        .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+        .mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+      const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "conn-online",
+        "service-key",
+        null,
+        "pro",
+      );
+      jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          isDesktop: true,
+          capabilities: {
+            commands: true,
+            files: false,
+            operationChannels: true,
+          },
+        }),
+      ]);
+      try {
+        const pending = manager.getSandbox().catch((error) => error);
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        let resetting: Promise<void> | undefined;
+        const cloud = { sandboxId: "cloud-replacement" } as any;
+        if (change === "preference") {
+          await manager.setSandboxPreference("e2b");
+          manager.setSandbox(cloud);
+        } else resetting = manager.resetSandbox();
+        finish();
+        expect(await pending).toBeInstanceOf(Error);
+        await resetting;
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(
+          setSandbox.mock.calls.some(
+            ([sandbox]) => sandbox instanceof CentrifugoSandbox,
+          ),
+        ).toBe(false);
+        if (change === "preference")
+          expect((manager as any).sandbox).toBe(cloud);
+        else expect((manager as any).sandbox).toBeNull();
+      } finally {
+        probe.mockRestore();
+        close.mockRestore();
+        if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+        else process.env.CENTRIFUGO_WS_URL = oldWs;
+        if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+        else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+      }
+    },
+  );
+
   it("reports a failed connection lookup without falsely asking for reconnection", async () => {
     const manager = new HybridSandboxManager(
       "user-1",
