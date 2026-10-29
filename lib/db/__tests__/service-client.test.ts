@@ -145,6 +145,65 @@ describe("bounded RPC failure diagnostics", () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([
+    "9abc1234def56789-IAD",
+    "PRIVATE_HEADER",
+    "9abc1234def56789-IAD, another",
+    "a".repeat(200),
+  ])("retains only a validated CF-Ray on an HTTP failure (%s)", async (ray) => {
+    const response = await createServiceFetch(
+      deployment,
+      jest.fn().mockResolvedValue(
+        new Response(`Cloudflare 520 ${secret}`, {
+          status: 520,
+          headers: {
+            "cf-ray": ray,
+            "set-cookie": "PRIVATE_COOKIE",
+            authorization: "PRIVATE_HEADER",
+          },
+        }),
+      ),
+    )(`${deployment}/api/query`, request());
+    expect(response.status).toBe(520);
+    expect(await response.text()).not.toContain(secret);
+    expect(diagnostics()).toHaveLength(1);
+    if (ray === "9abc1234def56789-IAD")
+      expect(diagnostics()[0].cf_ray).toBe(ray);
+    else expect(diagnostics()[0]).not.toHaveProperty("cf_ray");
+    expect(JSON.stringify(diagnostics())).not.toMatch(
+      /PRIVATE|synthetic-credential/,
+    );
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("keeps the response Ray when its body resets and allows only known syscall labels", async () => {
+    const failure = new TypeError("PRIVATE_ERROR", {
+      cause: Object.assign(new Error("PRIVATE_CAUSE"), {
+        code: "ECONNRESET",
+        syscall: "read",
+        address: "PRIVATE_ADDRESS",
+      }),
+    });
+    const response = new Response("unused", {
+      headers: { "cf-ray": "9abc1234def56789-ORD" },
+    });
+    jest.spyOn(response, "text").mockRejectedValue(failure);
+    await expect(
+      createServiceFetch(deployment, jest.fn().mockResolvedValue(response))(
+        `${deployment}/api/query`,
+        request(),
+      ),
+    ).rejects.toBe(failure);
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({
+        cf_ray: "9abc1234def56789-ORD",
+        transport_syscall: "read",
+        stage: "response_body",
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics())).not.toContain("PRIVATE");
+  });
+
   it("attributes a real SDK failure while preserving signed arguments and redacted errors", async () => {
     let wire: Record<string, unknown> | undefined;
     globalThis.fetch = jest.fn(async (_input, init) => {
