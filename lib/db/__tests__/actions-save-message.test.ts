@@ -1321,6 +1321,7 @@ describe("getMessagesByChatId", () => {
               input: {},
               output: { text: "\u0001".repeat(70_001) },
             },
+            { untyped: "private-shape-canary" },
           ],
         },
         {
@@ -1414,11 +1415,11 @@ describe("getMessagesByChatId", () => {
                   projection_blocked_message_role:
                     mode === "agent" ? "assistant" : "user",
                   projection_blocked_message_part_count:
-                    mode === "agent" ? 3 : 1,
+                    mode === "agent" ? 4 : 1,
                   projection_blocked_text_part_count: mode === "agent" ? 1 : 0,
                   projection_blocked_tool_part_count: mode === "agent" ? 1 : 0,
                   projection_blocked_file_part_count: mode === "agent" ? 0 : 1,
-                  projection_blocked_other_part_count: mode === "agent" ? 1 : 0,
+                  projection_blocked_other_part_count: mode === "agent" ? 2 : 0,
                 }
               : {}),
           },

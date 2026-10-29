@@ -1611,12 +1611,14 @@ export async function getMessagesByChatId({
             ({ budgetTokens, newestMessageTokens }) => {
               const newest = candidate[candidate.length - 1];
               const counts = { text: 0, tool: 0, file: 0, other: 0 };
+              // Stored parts are untyped; only fixed categories reach logs.
               for (const part of newest.parts) {
                 if (part.type === "text") counts.text++;
                 else if (part.type === "file") counts.file++;
                 else if (
                   part.type === "dynamic-tool" ||
-                  part.type.startsWith("tool-")
+                  (typeof part.type === "string" &&
+                    part.type.startsWith("tool-"))
                 )
                   counts.tool++;
                 else counts.other++;
