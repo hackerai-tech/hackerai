@@ -1,4 +1,6 @@
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
+import type { UIMessage } from "ai";
+import type { Id } from "@/convex/_generated/dataModel";
 import { decode, encode } from "gpt-tokenizer";
 import {
   getMaxTokensForSubscription,
@@ -8,7 +10,62 @@ import {
   safeEncode,
   sliceByTokens,
   truncateContent,
+  truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
+
+describe("empty whole-message projection diagnostics", () => {
+  const newest = {
+    id: "private-message",
+    role: "user",
+    parts: [{ type: "file", fileId: "private-file" }],
+  } as unknown as UIMessage;
+  const files = { ["private-file" as Id<"files">]: 101 };
+
+  it("reports the blocking cost without retaining an over-budget message", () => {
+    const observe = jest.fn();
+    expect(truncateMessagesToTokenLimit([newest], files, 100, observe)).toEqual(
+      [],
+    );
+    expect(observe).toHaveBeenCalledWith({
+      budgetTokens: 100,
+      newestMessageTokens: 101,
+    });
+  });
+
+  it("does not report an empty projection when the newest message fits", () => {
+    const observe = jest.fn();
+    expect(truncateMessagesToTokenLimit([newest], files, 101, observe)).toEqual(
+      [newest],
+    );
+    expect(observe).not.toHaveBeenCalled();
+  });
+
+  it("does not report an empty projection after retaining a newer message", () => {
+    const observe = jest.fn();
+    const smaller = {
+      ...newest,
+      id: "newest",
+      parts: [{ type: "file", fileId: "small-file" }],
+    } as unknown as UIMessage;
+    expect(
+      truncateMessagesToTokenLimit(
+        [newest, smaller],
+        { ...files, ["small-file" as Id<"files">]: 1 },
+        100,
+        observe,
+      ),
+    ).toEqual([smaller]);
+    expect(observe).not.toHaveBeenCalled();
+  });
+
+  it("preserves the empty result when optional diagnostics throw", () => {
+    expect(
+      truncateMessagesToTokenLimit([newest], files, 100, () => {
+        throw new Error("diagnostics unavailable");
+      }),
+    ).toEqual([]);
+  });
+});
 
 describe("getMaxTokensForSubscription", () => {
   it("uses the 128k cap for free users", () => {

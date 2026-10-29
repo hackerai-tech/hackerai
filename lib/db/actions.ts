@@ -1539,6 +1539,8 @@ export async function getMessagesByChatId({
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
+        let emptyProjectionDiagnostics:
+          Record<string, number | string> | undefined;
         const skipFileTokens = mode === "agent";
 
         while (pagesFetched < MAX_PAGES) {
@@ -1606,6 +1608,36 @@ export async function getMessagesByChatId({
             candidate,
             fileTokensFromLoop,
             maxTokens,
+            ({ budgetTokens, newestMessageTokens }) => {
+              const newest = candidate[candidate.length - 1];
+              const counts = { text: 0, tool: 0, file: 0, other: 0 };
+              // Stored parts are untyped; only fixed categories reach logs.
+              for (const part of newest.parts) {
+                if (part.type === "text") counts.text++;
+                else if (part.type === "file") counts.file++;
+                else if (
+                  part.type === "dynamic-tool" ||
+                  (typeof part.type === "string" &&
+                    part.type.startsWith("tool-"))
+                )
+                  counts.tool++;
+                else counts.other++;
+              }
+              const role = newest.role;
+              emptyProjectionDiagnostics = {
+                projection_budget_tokens: budgetTokens,
+                projection_blocked_message_tokens: newestMessageTokens,
+                projection_blocked_message_role:
+                  role === "user" || role === "assistant" || role === "system"
+                    ? role
+                    : "other",
+                projection_blocked_message_part_count: newest.parts.length,
+                projection_blocked_text_part_count: counts.text,
+                projection_blocked_tool_part_count: counts.tool,
+                projection_blocked_file_part_count: counts.file,
+                projection_blocked_other_part_count: counts.other,
+              };
+            },
           );
 
           const hitBudget = truncatedMessages.length < candidate.length;
@@ -1760,6 +1792,7 @@ export async function getMessagesByChatId({
                     projectedMessageCountBeforeRegenerate,
                   projected_messages_count: 0,
                   pages_fetched: pagesFetched,
+                  ...emptyProjectionDiagnostics,
                   projection_reason:
                     projectedMessageCountBeforeRegenerate > 0
                       ? "regenerate_removed_all"
