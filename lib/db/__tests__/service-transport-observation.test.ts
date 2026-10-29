@@ -99,7 +99,11 @@ it("registers once and clears the previous dispatch evidence for another request
     publish("client:sendHeaders", { request: a, socket: {} });
     publish("request:create", { request: b });
   });
-  expect(observation.snapshot()).toMatchObject({
+  expect(observation.snapshot()).toEqual({
+    node_version: process.versions.node,
+    ...(process.versions.undici
+      ? { node_bundled_undici_version: process.versions.undici }
+      : {}),
     transport_observation: "request_created",
     transport_request_count: 2,
   });
