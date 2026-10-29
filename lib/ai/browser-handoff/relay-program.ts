@@ -151,7 +151,8 @@ const timer = setInterval(() => {
 socket.addEventListener('open', () => {
   if (!valid()) { stop(); return; }
   server.listen(0, '0.0.0.0', () => {
-    fs.writeFileSync(directory + '/port', String(server.address().port), {mode: 0o600});
+    fs.writeFileSync(directory + '/port.next', String(server.address().port), {mode: 0o600});
+    fs.renameSync(directory + '/port.next', directory + '/port');
   });
 });
 `;
@@ -210,7 +211,13 @@ process.stdin.on('end', async () => {
   child.unref();
   for (let i = 0; i < 100; i++) {
     if (exited) break;
-    try { const port = fs.readFileSync(directory + '/port', 'utf8'); process.stdout.write(port); return; } catch {}
+    try {
+      const port = Number(fs.readFileSync(directory + '/port', 'utf8'));
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        process.stdout.write(String(port));
+        return;
+      }
+    } catch {}
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
