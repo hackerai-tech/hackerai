@@ -18,6 +18,9 @@ export const ImageViewer = ({
   fileName,
 }: ImageViewerProps) => {
   const [isImageLoading, setIsImageLoading] = useState(true);
+  const [failedDownloadSrc, setFailedDownloadSrc] = useState<string | null>(
+    null,
+  );
   const [zoom, setZoom] = useState(100);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -34,7 +37,6 @@ export const ImageViewer = ({
 
   // Reset loading state when imageSrc changes
   useEffect(() => {
-     
     setIsImageLoading(true);
     setZoom(100);
     setPan({ x: 0, y: 0 });
@@ -134,7 +136,11 @@ export const ImageViewer = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(blobUrl);
+      setFailedDownloadSrc((current) =>
+        current === imageSrc ? null : current,
+      );
     } catch {
+      setFailedDownloadSrc(imageSrc);
       window.open(imageSrc, "_blank", "noopener,noreferrer");
     }
   };
@@ -239,6 +245,22 @@ export const ImageViewer = ({
       tabIndex={-1}
       data-testid="image-zoom-modal"
     >
+      {failedDownloadSrc === imageSrc && (
+        <div
+          role="alert"
+          className="absolute bottom-[4.5rem] left-1/2 z-10 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-black/65 px-3 py-1.5 text-center text-sm text-white backdrop-blur-2xl"
+        >
+          Download failed.{" "}
+          <a
+            href={imageSrc}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            Open image
+          </a>
+        </div>
+      )}
       <div className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-black/65 py-1 pl-1 pr-3 text-white shadow-2xl backdrop-blur-2xl">
         <button
           type="button"

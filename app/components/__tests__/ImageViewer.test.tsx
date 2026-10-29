@@ -14,6 +14,7 @@ describe("ImageViewer downloads", () => {
   const originalRevokeObjectURL = URL.revokeObjectURL;
   let fetchMock: jest.Mock;
   let downloaded: Array<{ href: string; name: string }>;
+  let rerender: ReturnType<typeof render>["rerender"];
 
   beforeEach(() => {
     fetchMock = jest.fn();
@@ -27,7 +28,7 @@ describe("ImageViewer downloads", () => {
       .mockImplementation(function (this: HTMLAnchorElement) {
         downloaded.push({ href: this.href, name: this.download });
       });
-    render(
+    ({ rerender } = render(
       <ImageViewer
         isOpen
         onClose={jest.fn()}
@@ -35,7 +36,7 @@ describe("ImageViewer downloads", () => {
         imageAlt="Screenshot"
         fileName="screenshot.png"
       />,
-    );
+    ));
   });
 
   afterEach(() => {
@@ -67,6 +68,11 @@ describe("ImageViewer downloads", () => {
       expect(errorBlob).not.toHaveBeenCalled();
       expect(URL.createObjectURL).not.toHaveBeenCalled();
       expect(downloaded).toEqual([]);
+      expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+      const fallback = screen.getByRole("link", { name: "Open image" });
+      expect(fallback).toHaveAttribute("href", imageSrc);
+      expect(fallback).toHaveAttribute("target", "_blank");
+      expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
       expect(window.open).toHaveBeenCalledWith(
         imageSrc,
         "_blank",
@@ -84,6 +90,7 @@ describe("ImageViewer downloads", () => {
       ]);
       expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:image-fixture");
       expect(window.open).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },
   );
 
@@ -99,5 +106,34 @@ describe("ImageViewer downloads", () => {
     );
     expect(downloaded).toEqual([]);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Open image" })).toHaveAttribute(
+      "href",
+      imageSrc,
+    );
+  });
+
+  it("does not show a late download failure on a different image", async () => {
+    let rejectDownload!: (error: Error) => void;
+    fetchMock.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectDownload = reject;
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    rerender(
+      <ImageViewer
+        isOpen
+        onClose={jest.fn()}
+        imageSrc="https://files.example/other.png"
+        imageAlt="Other image"
+      />,
+    );
+
+    await act(async () => {
+      rejectDownload(new Error("offline"));
+    });
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(downloaded).toEqual([]);
   });
 });
