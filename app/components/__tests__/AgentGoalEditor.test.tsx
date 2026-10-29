@@ -59,6 +59,42 @@ describe("simple goal sidebar editor", () => {
     expect(stop).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
+  it("saves ordinary labelled lines literally while preserving explicit legacy constraints", async () => {
+    const saved = {
+      ...goal,
+      state: "paused",
+      activeRunId: undefined,
+      constraints: "Do not delete files",
+    };
+    setMockQueryResult(saved);
+    jest.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ goal: saved }),
+    } as Response);
+    render(<AgentGoalEditor chatId="chat" onClose={jest.fn()} />);
+    const objective =
+      "Revise the report\nScope: local files\nVerify: read it\nRuns: summarize the results";
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: objective },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            objective,
+            criteria: [objective],
+            constraints: saved.constraints,
+            action: "update",
+            chatId: "chat",
+            generation: 1,
+          }),
+        }),
+      ),
+    );
+  });
   it("only stops on Save and uses the generation read after stop-and-save", async () => {
     let current = { ...goal, generation: 2 };
     jest.mocked(fetch).mockImplementation(
@@ -131,6 +167,7 @@ describe("simple goal sidebar editor", () => {
       "Could not stop and save",
     );
     expect(screen.getByRole("textbox")).toHaveValue("Keep my edit");
+    expect(screen.getByRole("textbox")).toHaveFocus();
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/agent-goal",
       expect.objectContaining({ method: "POST" }),

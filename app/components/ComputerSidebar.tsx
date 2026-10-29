@@ -1,4 +1,4 @@
-import { AgentGoalEditor } from "./AgentGoalEditor";
+import { AgentGoalEditor, type GoalEditorDraft } from "./AgentGoalEditor";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -1469,6 +1469,22 @@ export const ComputerSidebar: React.FC<{
     consumeBrowserTakeoverRequest,
   } = useGlobalState();
 
+  const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft) => {
+    setGoalDraft(draft);
+  }, []);
+  const closeGoalEditor = useCallback(() => {
+    setGoalDraft(undefined);
+    closeSidebar();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+        )
+        ?.focus(),
+    );
+  }, [closeSidebar]);
+
   if (
     sidebarOpen &&
     sidebarContent &&
@@ -1479,7 +1495,11 @@ export const ComputerSidebar: React.FC<{
       <AgentGoalEditor
         key={sidebarContent.chatId}
         chatId={sidebarContent.chatId}
-        onClose={closeSidebar}
+        onClose={closeGoalEditor}
+        draft={
+          goalDraft?.chatId === sidebarContent.chatId ? goalDraft : undefined
+        }
+        onDraftChange={keepGoalDraft}
         stopRunBeforeControl={
           sidebarContent.chatId === chatId
             ? stopGoalRunBeforeControl

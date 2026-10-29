@@ -2861,6 +2861,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {sidebarOpen && (
                 <ComputerSidebar
+                  key={chatId}
                   stopGoalRunBeforeControl={stopGoalRunBeforeControl}
                   onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}

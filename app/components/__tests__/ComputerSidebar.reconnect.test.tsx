@@ -178,6 +178,37 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(mockCloseSidebar).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
   });
+  it("restores an unsaved goal draft after inspecting a terminal tool", () => {
+    const goalContent: SidebarContent = { kind: "goal", chatId: "chat" };
+    mockSidebarContent = goalContent;
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Original",
+      criteria: ["Original"],
+      generation: 1,
+      state: "running",
+    });
+    const { rerender } = render(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "Keep this edit" },
+    });
+    mockSidebarContent = activeSidebarContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Goal objective" }),
+    ).not.toBeInTheDocument();
+    mockSidebarContent = goalContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Keep this edit",
+    );
+  });
   beforeEach(() => {
     mockComputerSidebarOverlay = false;
     jest.useFakeTimers();
