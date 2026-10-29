@@ -59,6 +59,21 @@ and their IDs are retained; incomplete or ambiguous batches are left unchanged
 and reported by shape diagnostics. Storage's hard byte limit can still remove
 old parts as before.
 
+Conversation compaction shares the `inference_cyber_v1` rollout control with
+eligible security generation. With the flag enabled and Inference configured,
+all plans use Inference for ordinary and expanded-context summaries, with
+Abliteration as the first recovery provider when configured. Existing
+OpenRouter recovery follows if both direct providers fail. The summary must
+finish normally and contain every required checkpoint section before it can
+replace history; discarded output usage is still accounted to its actual
+model. Cancellation stops the chain. Disabling the flag restores the previous
+compaction policy for new runs; an active run retains its initial assignment.
+
+Eligible Free three-step treatment uses the same Inference-first provider
+route. Its separate experiment controls enrollment, and control users retain
+their baseline. Compare outcomes by actual provider and release: the historical
+experiment key alone does not identify which direct provider served a request.
+
 ## Diagnosing a failure
 
 Inspect the existing `provider_streaming_error` / `provider_stream_terminated`

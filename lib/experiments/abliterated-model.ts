@@ -144,6 +144,25 @@ export async function evaluateAbliteratedModel({
       // Diagnostics must never change assignment or provider behavior.
     }
   };
+  // Only trusted deployed callers can enable the direct-provider rollout.
+  // Evaluate lazily after eligibility and Free treatment assignment, so Free
+  // control and excluded requests never enter the provider rollout.
+  const evaluateInference = async (): Promise<boolean> => {
+    if (!inferenceEnvironment || !isInferenceConfigured() || !posthog)
+      return false;
+    try {
+      return (
+        (await getPostHogFlagWithoutExposure(
+          posthog,
+          INFERENCE_CYBER_FLAG,
+          userId,
+          { subscription, subscription_tier: subscription },
+        )) === true
+      );
+    } catch {
+      return false;
+    }
+  };
   // Free enrollment is independent of paid routing and the closed Pro trial.
   // Capture today's selected Free route for both control and later steps.
   if (subscription === "free") {
@@ -176,7 +195,8 @@ export async function evaluateAbliteratedModel({
         modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
         baselineModel: selectedModel,
         generationStepLimit: 3,
-        inferenceCyberEnabled: false,
+        inferenceCyberEnabled:
+          variant === "test" && (await evaluateInference()),
         selectionSource: "moderation",
         moderationEligible,
         moderationChecked,
@@ -203,23 +223,7 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  // Only trusted deployed callers supply environment identity. The rollout is
-  // independent of the historical Pro experiment; disabling it restores the
-  // existing moderated Abliteration route.
-  let inferenceCyberEnabled = false;
-  if (inferenceEnvironment && isInferenceConfigured() && posthog) {
-    try {
-      inferenceCyberEnabled =
-        (await getPostHogFlagWithoutExposure(
-          posthog,
-          INFERENCE_CYBER_FLAG,
-          userId,
-          { subscription, subscription_tier: subscription },
-        )) === true;
-    } catch {
-      /* Keep Abliteration on unavailable assignment. */
-    }
-  }
+  const inferenceCyberEnabled = await evaluateInference();
 
   if (inferenceCyberEnabled) {
     const baselineModel = selectedModel;

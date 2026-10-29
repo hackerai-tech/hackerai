@@ -179,6 +179,149 @@ describe("default compaction policy pipeline", () => {
       expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
     },
   );
+  it.each([false, true])(
+    "uses Inference without invoking fallback, expanded=%s",
+    async (expanded) => {
+      resolve.mockResolvedValue({
+        model: "model-inference-cyber",
+        fallbackModel: expanded
+          ? "model-abliterated-large-v2"
+          : "model-abliterated",
+        expandedAgentContext: expanded,
+        flagEnabled: true,
+        policy: "inference_abliteration_fallback_v1",
+      });
+      mockGenerateText.mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        response: { modelId: "deepseek-v4.1-flash-1017-cyber" },
+        usage: {
+          inputTokens: 500,
+          outputTokens: 30,
+          inputTokenDetails: { cacheReadTokens: 100 },
+        },
+      });
+      const result = await compact();
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summarizationUsage).toMatchObject({
+        model: "deepseek-v4.1-flash-1017-cyber",
+        cacheReadTokens: 100,
+      });
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      const args = mockGenerateText.mock.calls[0][0];
+      expect(args).toMatchObject({
+        model: { modelId: "model-inference-cyber" },
+        providerOptions: { inference: { reasoningEffort: "low" } },
+        timeout: 120000,
+        maxRetries: 0,
+        maxOutputTokens: 8192,
+      });
+      expect(args.providerOptions).not.toHaveProperty("openrouter");
+      expect(args.providerOptions).not.toHaveProperty("abliteration");
+      if (expanded)
+        expect(estimateSummaryInputTokens(args.messages)).toBeGreaterThan(
+          64000,
+        );
+      expect(finish).toHaveBeenCalledWith("completed", "model-inference-cyber");
+    },
+  );
+  it.each(["provider", "truncated", "invalid", "empty"])(
+    "recovers Inference %s with a validated Abliteration checkpoint",
+    async (failure) => {
+      resolve.mockResolvedValue({
+        model: "model-inference-cyber",
+        fallbackModel: "model-abliterated",
+        flagEnabled: true,
+      });
+      if (failure === "provider")
+        mockGenerateText.mockRejectedValueOnce(
+          Object.assign(new Error("rejected"), { statusCode: 400 }),
+        );
+      else
+        mockGenerateText.mockResolvedValueOnce({
+          text:
+            failure === "empty"
+              ? ""
+              : failure === "invalid"
+                ? "Missing checkpoint sections"
+                : summary,
+          finishReason: failure === "truncated" ? "length" : "stop",
+          response: { modelId: "deepseek-v4.1-flash-1017-cyber" },
+          usage: {
+            inputTokens: 90,
+            outputTokens: 20,
+            inputTokenDetails: { cacheReadTokens: 40 },
+          },
+        });
+      mockGenerateText.mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 90, outputTokens: 30 },
+      });
+      expect((await compact()).needsSummarization).toBe(true);
+      expect(
+        mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+      ).toEqual(["model-inference-cyber", "model-abliterated"]);
+      expect(mockGenerateText.mock.calls[1][0].providerOptions).toEqual({
+        abliteration: { reasoningEffort: "low" },
+      });
+      if (failure !== "provider") {
+        expect(onDiscardedUsage).toHaveBeenCalledTimes(1);
+        expect(onDiscardedUsage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            model: "deepseek-v4.1-flash-1017-cyber",
+            inputTokens: 90,
+            outputTokens: 20,
+            cacheReadTokens: 40,
+          }),
+        );
+      }
+    },
+  );
+  it.each(["model-abliterated-large-v2", "model-glm-5.3-flash"])(
+    "retains expanded context and recovery order with %s fallback",
+    async (fallbackModel) => {
+      resolve.mockResolvedValue({
+        model: "model-inference-cyber",
+        fallbackModel,
+        expandedAgentContext: true,
+        flagEnabled: true,
+      });
+      mockGenerateText.mockRejectedValue(
+        Object.assign(new Error("rejected"), { statusCode: 400 }),
+      );
+      expect((await compact()).needsSummarization).toBe(false);
+      expect(
+        mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+      ).toEqual([
+        "model-inference-cyber",
+        ...(fallbackModel === "model-abliterated-large-v2"
+          ? [fallbackModel]
+          : []),
+        "model-deepseek-v4.1-flash-1017-pro",
+        "model-glm-5.3-flash",
+      ]);
+      for (const [args] of mockGenerateText.mock.calls)
+        expect(estimateSummaryInputTokens(args.messages)).toBeGreaterThan(
+          64000,
+        );
+    },
+  );
+  it("does not call Abliteration after cancellation during Inference", async () => {
+    resolve.mockResolvedValue({
+      model: "model-inference-cyber",
+      fallbackModel: "model-abliterated",
+      flagEnabled: true,
+    });
+    const controller = new AbortController();
+    mockGenerateText.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new DOMException("canceled", "AbortError");
+    });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith("aborted", undefined);
+  });
   it("keeps more than 64K source tokens for Max checkpoints and only retries a large-context model", async () => {
     resolve.mockResolvedValue({
       model: "model-abliterated-large-v2",
