@@ -7,6 +7,9 @@ export const STARTUP_COMPACTION_FALLBACK_MODELS = [
 
 export type StartupCompactionVariant =
   | typeof STARTUP_COMPACTION_VARIANT
+  | "inference_abliteration_fallback_v1"
+  | "max_inference_context_v1"
+  | "pro_inference_context_v1"
   | "abliteration_glm53_fallback_v1"
   | "moderation_glm53_abliteration_recovery_v2"
   | "max_large_v2_context_v1"

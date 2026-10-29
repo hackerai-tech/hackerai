@@ -5,10 +5,12 @@ import { getCompactionResponseFormat } from "./structured-summary";
 
 import {
   CompactionModelPolicy,
+  COMPACTION_FALLBACK_MODEL,
   MAX_CONTEXT_SUMMARY_INPUT_TOKENS,
   hasStructuredCompactionSummary,
 } from "@/lib/chat/summarization/compaction-policy";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 
 import {
   UIMessage,
@@ -582,20 +584,32 @@ const generateSummaryTextWithRetry = async ({
     abortSignal?.throwIfAborted();
     if (assignment && compactionPolicy) {
       const telemetry = compactionPolicy.start(assignment, persistence);
+      const inferencePrimary = isInferenceCyberModel(assignment.model);
       const deepSeekFirst =
         assignment.expandedAgentContext &&
-        isAbliterationModel(assignment.model);
+        (isAbliterationModel(assignment.model) || inferencePrimary);
       const models = [
-        assignment.model,
-        // Expanded recovery tries the exact 1M-context DeepSeek route before
-        // GLM, retaining the 484K projection and independent summary fallbacks.
-        ...(deepSeekFirst ? [DEEPSEEK_1017_MODEL_KEY] : []),
-        ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
-        ...(deepSeekFirst
-          ? []
-          : assignment.expandedAgentContext
-            ? [DEEPSEEK_1017_MODEL_KEY]
-            : STARTUP_COMPACTION_FALLBACK_MODELS),
+        ...new Set([
+          assignment.model,
+          // Inference always tries the retained direct provider before the
+          // existing OpenRouter recovery chain, including expanded histories.
+          ...(inferencePrimary && assignment.fallbackModel
+            ? [assignment.fallbackModel]
+            : []),
+          // Expanded recovery tries the exact 1M-context DeepSeek route before
+          // GLM, retaining the 484K projection and independent summary fallbacks.
+          ...(deepSeekFirst ? [DEEPSEEK_1017_MODEL_KEY] : []),
+          ...(inferencePrimary
+            ? [COMPACTION_FALLBACK_MODEL]
+            : assignment.fallbackModel
+              ? [assignment.fallbackModel]
+              : []),
+          ...(deepSeekFirst
+            ? []
+            : assignment.expandedAgentContext
+              ? [DEEPSEEK_1017_MODEL_KEY]
+              : STARTUP_COMPACTION_FALLBACK_MODELS),
+        ]),
       ];
       let servedModel: string | undefined;
       try {
@@ -607,7 +621,8 @@ const generateSummaryTextWithRetry = async ({
           // even when the separate moderation compaction experiment is paused.
           const isStructuredRecovery =
             (assignment.expandedAgentContext === true &&
-              !isAbliterationModel(modelName)) ||
+              !isAbliterationModel(modelName) &&
+              !isInferenceCyberModel(modelName)) ||
             (assignment.flagEnabled === true &&
               modelName === "model-glm-5.3-flash");
           let discardedUsage: SummarizationUsage | undefined;
@@ -623,17 +638,19 @@ const generateSummaryTextWithRetry = async ({
               chatSystemPrompt,
               hasExistingSummary,
               undefined,
-              isAbliterationModel(modelName)
-                ? {
-                    abliteration: {
-                      reasoningEffort: "low",
-                    },
-                  }
-                : buildStartupCompactionProviderOptions(
-                    providerOptions,
-                    isStructuredRecovery ? mode : undefined,
-                    modelName === "model-glm-5.3-flash",
-                  ),
+              isInferenceCyberModel(modelName)
+                ? { inference: { reasoningEffort: "low" } }
+                : isAbliterationModel(modelName)
+                  ? {
+                      abliteration: {
+                        reasoningEffort: "low",
+                      },
+                    }
+                  : buildStartupCompactionProviderOptions(
+                      providerOptions,
+                      isStructuredRecovery ? mode : undefined,
+                      modelName === "model-glm-5.3-flash",
+                    ),
               abortSignal,
               modelMessages,
               assignment.expandedAgentContext
@@ -641,13 +658,15 @@ const generateSummaryTextWithRetry = async ({
                 : summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                // Abliteration must finish the full checkpoint before returning.
-                // Give it two minutes while retaining bounded recovery and cancellation.
-                timeout: isAbliterationModel(modelName)
-                  ? 120_000
-                  : isStructuredRecovery
-                    ? 75_000
-                    : 60_000,
+                // Direct providers must finish the full checkpoint before
+                // returning; retain bounded recovery and cancellation.
+                timeout:
+                  isAbliterationModel(modelName) ||
+                  isInferenceCyberModel(modelName)
+                    ? 120_000
+                    : isStructuredRecovery
+                      ? 75_000
+                      : 60_000,
                 // GLM shares this budget between mandatory reasoning and text.
                 maxOutputTokens: isStructuredRecovery ? 16384 : 8192,
                 structuredSummary: isStructuredRecovery,
@@ -698,6 +717,7 @@ const generateSummaryTextWithRetry = async ({
               index === models.length - 1 ||
               !(
                 isAbliterationModel(modelName) ||
+                isInferenceCyberModel(modelName) ||
                 // Expanded DeepSeek recovery may also reject the provider
                 // request outright. Give the assigned GLM one final attempt.
                 (deepSeekFirst && modelName === DEEPSEEK_1017_MODEL_KEY) ||
