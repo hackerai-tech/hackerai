@@ -115,6 +115,36 @@ describe("ImageViewer downloads", () => {
     );
   });
 
+  it.each([true, false])(
+    "keeps the latest download recovery state when an older attempt succeeds: %s",
+    async (olderSucceeds) => {
+      let settleOlder!: (response: unknown) => void;
+      fetchMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          settleOlder = resolve;
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+      const success = { ok: true, blob: async () => new Blob(["image"]) };
+      const failure = { ok: false, status: 403 };
+      fetchMock.mockResolvedValueOnce(olderSucceeds ? failure : success);
+      await download();
+      const popupCount = olderSucceeds ? 1 : 0;
+
+      await act(async () => {
+        settleOlder(olderSucceeds ? success : failure);
+      });
+
+      expect(window.open).toHaveBeenCalledTimes(popupCount);
+      if (olderSucceeds) {
+        expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+      } else {
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+      expect(downloaded).toHaveLength(1);
+    },
+  );
+
   it("does not open a failed download after the viewer unmounts", async () => {
     let rejectDownload!: (error: Error) => void;
     fetchMock.mockReturnValueOnce(

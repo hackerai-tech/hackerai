@@ -27,6 +27,7 @@ export const ImageViewer = ({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const downloadAttemptRef = useRef(0);
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const didDragRef = useRef(false);
   const dragStartRef = useRef<{
@@ -117,6 +118,7 @@ export const ImageViewer = ({
   };
 
   const handleDownload = async () => {
+    const attempt = ++downloadAttemptRef.current;
     const downloadName =
       fileName ||
       imageAlt
@@ -139,11 +141,14 @@ export const ImageViewer = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(blobUrl);
-      setFailedDownloadSrc((current) =>
-        current === imageSrc ? null : current,
-      );
+      if (attempt === downloadAttemptRef.current) {
+        setFailedDownloadSrc((current) =>
+          current === imageSrc ? null : current,
+        );
+      }
     } catch {
       if (
+        attempt !== downloadAttemptRef.current ||
         !dialogRef.current ||
         !currentImageRef.current.isOpen ||
         currentImageRef.current.imageSrc !== imageSrc
