@@ -1055,6 +1055,143 @@ describe("CentrifugoSandbox", () => {
     },
   );
 
+  describe("Desktop capability recovery before first use", () => {
+    const unavailableDesktop = () =>
+      new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: {
+            commands: true,
+            files: false,
+            operationChannels: true,
+          },
+        },
+        defaultConfig,
+        "/project",
+      );
+
+    async function dispatchProbe(sandbox: CentrifugoSandbox) {
+      const pending = sandbox.confirmNativeFileRelay();
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      reply.emit("publication", {
+        data: { type: "operation_ready", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      return { pending, reply, control };
+    }
+
+    it("recovers a pinned negative capability using only a stat, then preserves scoped writes", async () => {
+      const sandbox = unavailableDesktop();
+      const { pending, reply, control } = await dispatchProbe(sandbox);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(control.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_stat",
+          path: "/project/.",
+          targetConnectionId: "conn-1",
+        }),
+      );
+      reply.emit("publication", {
+        data: {
+          type: "file_stat_result",
+          requestId: FIXED_UUID,
+          kind: "not_file",
+          path: "/project",
+        },
+      });
+      await pending;
+      expect(sandbox.supportsNativeFileRelay()).toBe(true);
+      expect(sandbox.supportsCommandStdin()).toBe(false);
+      await sandbox.confirmNativeFileRelay();
+      expect(mockClients).toHaveLength(1);
+      const write = sandbox.files.write("result.txt", "once");
+      await jest.advanceTimersByTimeAsync(0);
+      const writeReply = mockSubscriptions[2];
+      writeReply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const writeControl = mockSubscriptions[3];
+      expect(writeControl.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_write",
+          path: "/project/result.txt",
+          allowedRoot: "/project",
+        }),
+      );
+      writeReply.emit("publication", {
+        data: { type: "operation_ready", requestId: FIXED_UUID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      writeReply.emit("subscribed");
+      writeReply.emit("publication", {
+        data: { type: "file_ok", requestId: FIXED_UUID },
+      });
+      await write;
+      expect(writeControl.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["timeout", "error"])(
+      "keeps guards and ignores late recovery after %s",
+      async (failure) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply } = await dispatchProbe(sandbox);
+        if (failure === "error")
+          reply.emit("publication", {
+            data: {
+              type: "file_error",
+              requestId: FIXED_UUID,
+              message: "File handler unavailable",
+            },
+          });
+        else await jest.advanceTimersByTimeAsync(3000);
+        await pending;
+        reply.emit("publication", {
+          data: {
+            type: "file_stat_result",
+            requestId: FIXED_UUID,
+            kind: "not_file",
+            path: "/project",
+          },
+        });
+        expect(sandbox.supportsNativeFileRelay()).toBe(false);
+        await expect(
+          sandbox.files.write("result.txt", "unsafe"),
+        ).rejects.toThrow("require the native file bridge");
+        await sandbox.confirmNativeFileRelay();
+        expect(mockClients).toHaveLength(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it.each([
+      { isDesktop: false, files: false, operationChannels: true },
+      { isDesktop: true, files: undefined, operationChannels: true },
+      { isDesktop: true, files: false, operationChannels: false },
+      { isDesktop: true, files: true, operationChannels: true },
+    ])(
+      "does not probe compatible or unsupported clients: %j",
+      async ({ isDesktop, files, operationChannels }) => {
+        const sandbox = new CentrifugoSandbox(
+          "user-1",
+          {
+            ...defaultConnection,
+            isDesktop,
+            capabilities: { commands: true, files, operationChannels },
+          },
+          defaultConfig,
+        );
+        await sandbox.confirmNativeFileRelay();
+        expect(mockClients).toHaveLength(0);
+        expect(sandbox.supportsCommandStdin()).toBe(false);
+      },
+    );
+  });
+
   it("uses an isolated file reply channel and never republishes a write after reconnect", async () => {
     const sandbox = new CentrifugoSandbox(
       "user-1",

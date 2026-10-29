@@ -306,6 +306,12 @@ export class HybridSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private localSelection: {
+    generation: number;
+    promise: Promise<{ sandbox: SandboxInstance }>;
+  } | null = null;
+  private localAcquisitionGeneration = 0;
+  private localAcquisition: Promise<void> | null = null;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
@@ -437,10 +443,16 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     const previousConnection = this.sandbox.getConnectionInfo();
+    const beforeReset = this.localAcquisitionGeneration;
     await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    this.assertLocalAcquisitionCurrent(beforeReset);
     await this.resetSandbox(reason);
-
-    const replacement = (await this.listConnections())
+    // This recovery owns one reset; any additional invalidation supersedes it.
+    const generation = beforeReset + 1;
+    this.assertLocalAcquisitionCurrent(generation);
+    const connections = await this.listConnections();
+    this.assertLocalAcquisitionCurrent(generation);
+    const replacement = connections
       .filter(
         (connection) =>
           connection.connectionId !== connectionId &&
@@ -463,6 +475,7 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     await this.useCentrifugoConnection(replacement);
+    this.assertLocalAcquisitionCurrent(generation);
     this.requiredConnectionIdAfterQuarantine = null;
     if (this.sandboxPreference !== "desktop") {
       this.sandboxPreference = environmentPreference(replacement);
@@ -535,6 +548,8 @@ export class HybridSandboxManager implements SandboxManager {
    * @param preference - Cloud, a logical environment, or a legacy connection ID.
    */
   async setSandboxPreference(preference: SandboxPreference): Promise<void> {
+    if (preference !== this.sandboxPreference)
+      this.localAcquisitionGeneration++;
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
     if (
@@ -739,6 +754,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    const generation = this.localAcquisitionGeneration;
     if (this.requiredConnectionIdAfterQuarantine) {
       throw new Error(
         "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
@@ -761,7 +777,25 @@ export class HybridSandboxManager implements SandboxManager {
       return this.getCloudSandbox();
     }
 
-    // Check if the preferred connection is available
+    if (this.localSelection?.generation === generation)
+      return this.localSelection.promise;
+    const selection = {
+      generation,
+      promise: this.getSelectedLocalSandbox(generation),
+    };
+    this.localSelection = selection;
+    try {
+      return await selection.promise;
+    } finally {
+      if (this.localSelection === selection) this.localSelection = null;
+    }
+  }
+
+  private async getSelectedLocalSandbox(
+    generation: number,
+  ): Promise<{ sandbox: SandboxInstance }> {
+    // Share lookup as well as the probe: concurrent health snapshots can choose
+    // different connections, and must not close the first caller's sandbox.
     const connections = await this.listConnections();
 
     // Find the preferred connection
@@ -771,6 +805,7 @@ export class HybridSandboxManager implements SandboxManager {
       this.currentConnectionId,
     );
 
+    this.assertLocalAcquisitionCurrent(generation);
     if (preferredConnection) {
       // Use the preferred local connection
       if (
@@ -779,7 +814,7 @@ export class HybridSandboxManager implements SandboxManager {
       ) {
         await this.useCentrifugoConnection(preferredConnection);
       }
-
+      this.assertLocalAcquisitionCurrent(generation);
       return { sandbox: this.sandbox! };
     }
 
@@ -802,13 +837,44 @@ export class HybridSandboxManager implements SandboxManager {
     );
   }
 
+  private assertLocalAcquisitionCurrent(generation: number): void {
+    if (generation !== this.localAcquisitionGeneration) {
+      throw new Error(
+        "Sandbox selection changed while connecting. Retry with the current selection.",
+      );
+    }
+  }
+
   /**
    * Create and wire up a CentrifugoSandbox for the given connection.
    */
   private async useCentrifugoConnection(
     connection: ConnectionInfo,
   ): Promise<void> {
+    const generation = this.localAcquisitionGeneration;
+    while (this.localAcquisition) {
+      await this.localAcquisition.catch(() => undefined);
+      this.assertLocalAcquisitionCurrent(generation);
+      if (this.currentConnectionId === connection.connectionId && this.sandbox)
+        return;
+    }
+    this.localAcquisition = this.acquireCentrifugoConnection(
+      connection,
+      generation,
+    );
+    try {
+      await this.localAcquisition;
+    } finally {
+      this.localAcquisition = null;
+    }
+  }
+
+  private async acquireCentrifugoConnection(
+    connection: ConnectionInfo,
+    generation: number,
+  ): Promise<void> {
     await this.closeCurrentSandbox();
+    this.assertLocalAcquisitionCurrent(generation);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
     const centrifugoTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     if (!centrifugoWsUrl || !centrifugoTokenSecret) {
@@ -818,7 +884,7 @@ export class HybridSandboxManager implements SandboxManager {
       wsUrl: centrifugoWsUrl,
       tokenSecret: centrifugoTokenSecret,
     };
-    this.sandbox = new CentrifugoSandbox(
+    const sandbox = new CentrifugoSandbox(
       this.userID,
       connection,
       centrifugoConfig,
@@ -826,6 +892,13 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
+    await sandbox.confirmNativeFileRelay();
+    if (generation !== this.localAcquisitionGeneration) {
+      // Close only this unpublished instance, never a newer selected sandbox.
+      await sandbox.close();
+      this.assertLocalAcquisitionCurrent(generation);
+    }
+    this.sandbox = sandbox;
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
     this.currentConnectionName = connection.name;
@@ -908,6 +981,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: SandboxInstance): void {
+    this.localAcquisitionGeneration++;
     if (isE2BSandbox(sandbox)) registerE2BWorkspaceLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
@@ -924,8 +998,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
+    const generation = ++this.localAcquisitionGeneration;
     // Settle acquisition before clearing its result; never destroy the VM.
     await this.cloudAcquisition?.catch(() => undefined);
+    await this.localAcquisition?.catch(() => undefined);
+    if (generation !== this.localAcquisitionGeneration) return;
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;
