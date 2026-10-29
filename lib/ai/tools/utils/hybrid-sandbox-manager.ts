@@ -306,6 +306,10 @@ export class HybridSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private localSelection: {
+    generation: number;
+    promise: Promise<{ sandbox: SandboxInstance }>;
+  } | null = null;
   private localAcquisitionGeneration = 0;
   private localAcquisition: Promise<void> | null = null;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
@@ -439,10 +443,16 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     const previousConnection = this.sandbox.getConnectionInfo();
+    const beforeReset = this.localAcquisitionGeneration;
     await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    this.assertLocalAcquisitionCurrent(beforeReset);
     await this.resetSandbox(reason);
-
-    const replacement = (await this.listConnections())
+    // This recovery owns one reset; any additional invalidation supersedes it.
+    const generation = beforeReset + 1;
+    this.assertLocalAcquisitionCurrent(generation);
+    const connections = await this.listConnections();
+    this.assertLocalAcquisitionCurrent(generation);
+    const replacement = connections
       .filter(
         (connection) =>
           connection.connectionId !== connectionId &&
@@ -465,6 +475,7 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     await this.useCentrifugoConnection(replacement);
+    this.assertLocalAcquisitionCurrent(generation);
     this.requiredConnectionIdAfterQuarantine = null;
     if (this.sandboxPreference !== "desktop") {
       this.sandboxPreference = environmentPreference(replacement);
@@ -766,7 +777,25 @@ export class HybridSandboxManager implements SandboxManager {
       return this.getCloudSandbox();
     }
 
-    // Check if the preferred connection is available
+    if (this.localSelection?.generation === generation)
+      return this.localSelection.promise;
+    const selection = {
+      generation,
+      promise: this.getSelectedLocalSandbox(generation),
+    };
+    this.localSelection = selection;
+    try {
+      return await selection.promise;
+    } finally {
+      if (this.localSelection === selection) this.localSelection = null;
+    }
+  }
+
+  private async getSelectedLocalSandbox(
+    generation: number,
+  ): Promise<{ sandbox: SandboxInstance }> {
+    // Share lookup as well as the probe: concurrent health snapshots can choose
+    // different connections, and must not close the first caller's sandbox.
     const connections = await this.listConnections();
 
     // Find the preferred connection
@@ -969,10 +998,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
-    this.localAcquisitionGeneration++;
+    const generation = ++this.localAcquisitionGeneration;
     // Settle acquisition before clearing its result; never destroy the VM.
     await this.cloudAcquisition?.catch(() => undefined);
     await this.localAcquisition?.catch(() => undefined);
+    if (generation !== this.localAcquisitionGeneration) return;
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;
