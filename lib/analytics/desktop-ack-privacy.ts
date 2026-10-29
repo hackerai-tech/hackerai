@@ -64,9 +64,51 @@ const ALLOWED_PROPERTIES = new Set([
   "terminalType",
   "terminalAcknowledged",
   "durationMs",
+  "terminalExitCode",
+  "telemetry_sampled",
+  "telemetry_sample_rate",
   ...AGE_PROPERTIES,
 ]);
 
+const SUMMARY_PROPERTIES = new Set([
+  "token",
+  "distinct_id",
+  "$session_id",
+  "$window_id",
+  "$is_identified",
+  "$process_person_profile",
+  "$lib",
+  "$lib_version",
+  "schemaVersion",
+  "outputProtocol",
+  "connectionId",
+  "hackerai_frontend_build_commit",
+  "telemetrySessionId",
+  "windowSequence",
+  "telemetry_sample_rate",
+  "windowStartedAt",
+  "windowEndedAt",
+  "startedCount",
+  "settledCount",
+  "acknowledgedCount",
+  "canceledCount",
+  "incompleteCount",
+  "terminalErrorCount",
+  "nonzeroExitCount",
+  "retryEvidenceCount",
+  "retryEvidenceAcknowledgedCount",
+  "bufferLimitCount",
+  "deadlineExceededCount",
+  "ownershipLostCount",
+  "stoppedCount",
+  "publishFailureCount",
+  "replayCount",
+  "resumeCount",
+  "pendingAtStart",
+  "pendingAtEnd",
+]);
+
+/** Strip SDK enrichment from command details and cross-command summaries. */
 export function sanitizeDesktopAckEvent<
   T extends {
     event?: string;
@@ -77,14 +119,18 @@ export function sanitizeDesktopAckEvent<
 >(event: T): T {
   if (
     event.event !== "desktop_ack_command_started" &&
-    event.event !== "desktop_ack_command_settled"
+    event.event !== "desktop_ack_command_settled" &&
+    event.event !== "desktop_ack_delivery_summary"
   )
     return event;
   if (event.properties) {
     event.properties = Object.fromEntries(
       Object.entries(event.properties).filter(
         ([key, value]) =>
-          ALLOWED_PROPERTIES.has(key) &&
+          (event.event === "desktop_ack_delivery_summary"
+            ? SUMMARY_PROPERTIES
+            : ALLOWED_PROPERTIES
+          ).has(key) &&
           (!AGE_PROPERTIES.has(key) ||
             (event.event === "desktop_ack_command_settled" &&
               isDesktopAckAge(value))) &&

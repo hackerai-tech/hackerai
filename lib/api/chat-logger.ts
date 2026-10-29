@@ -63,6 +63,7 @@ import {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
 } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -348,6 +349,7 @@ const sanitizeProviderFingerprintPart = (value: string): string =>
 
 const buildProviderErrorFingerprint = (details: {
   category: ProviderErrorCategory;
+  origin?: "browser_handoff_read";
   statusCode?: number;
   requestedModelSlug?: string;
   modelProviderSlug?: string;
@@ -358,6 +360,7 @@ const buildProviderErrorFingerprint = (details: {
     "provider_error",
     details.category,
     details.statusCode ? `status_${details.statusCode}` : undefined,
+    details.origin ? `origin_${details.origin}` : undefined,
     providerPart
       ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
       : undefined,
@@ -826,21 +829,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
         openRouterMetadata?: OpenRouterModelMetadata;
       },
     ) {
+      const details = extractErrorDetails(error);
+      const browserHandoffRead = details.errorOrigin === "browser_handoff_read";
+      // prepareStep can fail before a provider call. Its context still describes
+      // the previous request, which cannot identify the owner of a safety read.
       const {
         providerRequest,
         openRouterMetadata: providedOpenRouterMetadata,
         ...providerContext
-      } = context;
-      const details = extractErrorDetails(error);
-      const openRouterMetadata = mergeOpenRouterMetadata(
-        providedOpenRouterMetadata ?? {},
-        extractOpenRouterMetadataFromError(error),
-      );
+      } = browserHandoffRead
+        ? {
+            mode: context.mode,
+            userId: context.userId,
+            subscription: context.subscription,
+          }
+        : context;
+      const openRouterMetadata: OpenRouterModelMetadata = browserHandoffRead
+        ? {}
+        : mergeOpenRouterMetadata(
+            providedOpenRouterMetadata ?? {},
+            extractOpenRouterMetadataFromError(error),
+          );
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
       const diagnosticMessage = getProviderDiagnosticMessage(details);
-      const providerName = nonEmptyString(details.providerName);
+      const providerName = browserHandoffRead
+        ? undefined
+        : nonEmptyString(details.providerName);
       const attributedProviderName =
         nonEmptyString(openRouterMetadata.provider_name) ?? providerName;
       const configuredModel =
@@ -850,18 +866,30 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerContext.requestedModelSlug) ??
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
-      const openrouterGenerationId = nonEmptyString(
-        openRouterMetadata.openrouter_generation_id ??
-          details.openrouterGenerationId,
-      );
+      const openrouterGenerationId = browserHandoffRead
+        ? undefined
+        : nonEmptyString(
+            openRouterMetadata.openrouter_generation_id ??
+              details.openrouterGenerationId,
+          );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
+        origin:
+          details.errorOrigin === "browser_handoff_read"
+            ? "browser_handoff_read"
+            : undefined,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
         providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
+        ...(browserHandoffRead && {
+          selected_model: undefined,
+          response_model: undefined,
+          requested_model_slug: undefined,
+          model_provider_slug: undefined,
+        }),
         // Clear response-level attribution inherited from diagnostic context.
         // A previous successful step does not identify this failed call.
         provider_name: attributedProviderName,
@@ -1874,7 +1902,8 @@ export function captureAgentCompletionAnalytics(
     args.experiment?.key === ABLITERATED_PAID_THREE_STEPS_KEY ||
     args.experiment?.key ===
       ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ||
-    args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY
+    args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY ||
+    args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY
   ) {
     try {
       posthog?.capture({
@@ -1883,6 +1912,31 @@ export function captureAgentCompletionAnalytics(
         properties: {
           ...args.abliteratedProviderSummary,
           ...getExperimentAnalyticsProperties(args.experiment),
+          ...(args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY && {
+            ...args.usageMeasurement,
+            message_id: args.responseMessageId ?? args.experiment.requestId,
+            trigger_run_id: args.triggerRunId,
+            natural_completion:
+              outcome === "success" &&
+              args.hasResponseContent &&
+              !args.stepLimitTelemetry?.stepLimitReached &&
+              args.finishReason !== "length" &&
+              args.finishReason !== "error",
+            request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+            active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+            approval_wait_duration_ms: args.approvalWaitDurationMs,
+            handled_tool_failure_count: args.handledToolFailureCount,
+            attachment_count: args.attachmentCount,
+            image_attachment_count: args.imageAttachmentCount,
+            sandbox_type: sandboxInfo?.type,
+            sandbox_provider: sandboxInfo?.provider,
+            trigger_total_cost_usd: args.triggerTotalCostUsd,
+            provider_error_category: args.providerErrorCategory,
+            provider_error_status_code: args.providerErrorStatusCode,
+            ...(args.experiment.requestId && {
+              $insert_id: `${args.experiment.requestId}:free-three-step-outcome`,
+            }),
+          }),
           chat_id: args.chatId,
           mode,
           subscription_tier: subscription,

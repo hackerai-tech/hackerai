@@ -162,8 +162,10 @@ const buildPlaceholderFromParts = (
     }
 
     case "file":
+    case "file_edit":
     case "file_write": {
-      const action = input?.action ?? "unknown";
+      const action =
+        input?.action ?? (toolName === "file_edit" ? "edit" : "unknown");
       const path = input?.path ?? input?.file_path ?? "unknown";
       if (action === "read") {
         const content = output?.content ?? output ?? "";
@@ -484,7 +486,11 @@ const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
     return part;
   }
 
-  if (part.type === "tool-file" || part.type === "tool-file_write") {
+  if (
+    part.type === "tool-file" ||
+    part.type === "tool-file_edit" ||
+    part.type === "tool-file_write"
+  ) {
     const { originalContent, modifiedContent, ...restOutput } =
       output as Record<string, unknown>;
 

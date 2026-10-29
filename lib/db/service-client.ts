@@ -3,6 +3,7 @@ import { getFunctionName } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { signServiceArgs, type ServiceScope } from "./service-proof";
 import { redactSensitiveErrorMessage } from "../utils/error-redaction";
+import { observeServiceTransport } from "./service-transport-observation";
 
 const safeFunctionName = (name: unknown, secrets: string[]) =>
   typeof name === "string" &&
@@ -64,8 +65,10 @@ export function createServiceFetch(
         ? clientInstanceId
         : undefined;
     const startedAt = Date.now();
+    const observation = observeServiceTransport(url);
     let stage: "request" | "response_body" = "request";
     let statusCode: number | undefined;
+    let cfRay: string | undefined;
     let reported = false;
     const reportFailure = (
       reason: "http_5xx" | "transport_error",
@@ -74,13 +77,17 @@ export function createServiceFetch(
       if (reported) return;
       reported = true;
       // At most one failure diagnostic attempt per RPC. Never include arguments,
-      // headers, URLs, response bodies or arbitrary error messages/codes.
+      // raw headers, URLs, response bodies or arbitrary error messages/codes.
       // Reporting must not replace the original transport result or error.
       try {
         const code =
           error instanceof Error && error.cause instanceof Error
             ? (error.cause as NodeJS.ErrnoException).code
             : (error as NodeJS.ErrnoException | undefined)?.code;
+        const syscall =
+          error instanceof Error && error.cause instanceof Error
+            ? (error.cause as NodeJS.ErrnoException).syscall
+            : (error as NodeJS.ErrnoException | undefined)?.syscall;
         console.warn(
           JSON.stringify({
             event: "convex_service_rpc_failed",
@@ -89,6 +96,11 @@ export function createServiceFetch(
             ...(functionName ? { function_name: functionName } : {}),
             stage,
             reason,
+            ...observation.snapshot(),
+            ...(cfRay ? { cf_ray: cfRay } : {}),
+            ...(["connect", "read", "write", "shutdown"].includes(syscall ?? "")
+              ? { transport_syscall: syscall }
+              : {}),
             ...(statusCode !== undefined ? { status_code: statusCode } : {}),
             ...([
               "ECONNRESET",
@@ -133,11 +145,26 @@ export function createServiceFetch(
     }, 10_000);
     pendingWarning.unref?.();
     try {
-      response = await transport(input, {
-        ...init,
-        body: JSON.stringify(body),
-      });
+      response = await observation.run(() =>
+        transport(input, {
+          ...init,
+          body: JSON.stringify(body),
+        }),
+      );
       statusCode = response.status;
+      // Only the bounded Cloudflare correlation ID is permitted. Never copy
+      // arbitrary response headers into logs or the reconstructed SDK response.
+      try {
+        const ray = response.headers.get("cf-ray");
+        if (
+          ray &&
+          /^[a-f0-9]{16}-[A-Z]{3}$/i.test(ray) &&
+          (!secret || !ray.includes(secret))
+        )
+          cfRay = ray;
+      } catch {
+        /* Optional diagnostics must not interrupt body consumption. */
+      }
       if (statusCode >= 500 && statusCode <= 599) reportFailure("http_5xx");
       stage = "response_body";
       text = await response.text();
@@ -146,6 +173,7 @@ export function createServiceFetch(
       throw error;
     } finally {
       clearTimeout(pendingWarning);
+      observation.finish();
     }
     // Scrub errors and SDK log lines before the SDK can print or rethrow them.
     // Successful result values are preserved byte-for-byte.
@@ -207,6 +235,7 @@ export function createServiceConvexClient(
   let warningTimes: number[] = [];
   const observeMutation = (reference: unknown, secrets: string[]) => {
     const startedAt = Date.now();
+    let warningAttempted = false;
     const callId = ++mutationSequence;
     const pendingAtStart = pendingMutations++;
     const clientId =
@@ -231,6 +260,7 @@ export function createServiceConvexClient(
       warningTimes = warningTimes.filter((time) => now - time < 60_000);
       if (warningTimes.length >= 2) return;
       warningTimes.push(now);
+      warningAttempted = true;
       try {
         console.warn(
           JSON.stringify({
@@ -261,11 +291,27 @@ export function createServiceConvexClient(
       }
     }, 10_000);
     timer.unref?.();
-    return () => {
+    return (outcome: "fulfilled" | "rejected") => {
       clearTimeout(timer);
       pendingMutations--;
       // Do not guess the oldest remaining call after the tracked one settles.
       if (oldestPending?.id === callId) oldestPending = undefined;
+      if (!warningAttempted) return;
+      try {
+        console.info(
+          JSON.stringify({
+            event: "convex_service_mutation_wait_settled",
+            ...(clientId ? { client_instance_id: clientId } : {}),
+            sdk_call_id: callId,
+            ...(functionName ? { function_name: functionName } : {}),
+            sdk_elapsed_ms: Math.max(0, Date.now() - startedAt),
+            outcome,
+            pending_mutations_now: pendingMutations,
+          }),
+        );
+      } catch {
+        // Diagnostics must not replace the SDK's result or rejection.
+      }
     };
   };
   const signal = options?.signal;
@@ -309,8 +355,11 @@ export function createServiceConvexClient(
           property === "mutation"
             ? observeMutation(parameters[0], secrets)
             : undefined;
+        let outcome: "fulfilled" | "rejected" = "rejected";
         try {
-          return await method.apply(target, parameters);
+          const result = await method.apply(target, parameters);
+          outcome = "fulfilled";
+          return result;
         } catch (error) {
           let message = error instanceof Error ? error.message : String(error);
           for (const secret of secrets)
@@ -319,7 +368,7 @@ export function createServiceConvexClient(
           if (error instanceof Error && clean === error.message) throw error;
           throw new Error(clean);
         } finally {
-          finishObservation?.();
+          finishObservation?.(outcome);
         }
       };
     },

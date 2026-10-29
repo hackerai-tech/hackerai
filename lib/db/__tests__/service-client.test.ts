@@ -145,6 +145,65 @@ describe("bounded RPC failure diagnostics", () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([
+    "9abc1234def56789-IAD",
+    "PRIVATE_HEADER",
+    "9abc1234def56789-IAD, another",
+    "a".repeat(200),
+  ])("retains only a validated CF-Ray on an HTTP failure (%s)", async (ray) => {
+    const response = await createServiceFetch(
+      deployment,
+      jest.fn().mockResolvedValue(
+        new Response(`Cloudflare 520 ${secret}`, {
+          status: 520,
+          headers: {
+            "cf-ray": ray,
+            "set-cookie": "PRIVATE_COOKIE",
+            authorization: "PRIVATE_HEADER",
+          },
+        }),
+      ),
+    )(`${deployment}/api/query`, request());
+    expect(response.status).toBe(520);
+    expect(await response.text()).not.toContain(secret);
+    expect(diagnostics()).toHaveLength(1);
+    if (ray === "9abc1234def56789-IAD")
+      expect(diagnostics()[0].cf_ray).toBe(ray);
+    else expect(diagnostics()[0]).not.toHaveProperty("cf_ray");
+    expect(JSON.stringify(diagnostics())).not.toMatch(
+      /PRIVATE|synthetic-credential/,
+    );
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("keeps the response Ray when its body resets and allows only known syscall labels", async () => {
+    const failure = new TypeError("PRIVATE_ERROR", {
+      cause: Object.assign(new Error("PRIVATE_CAUSE"), {
+        code: "ECONNRESET",
+        syscall: "read",
+        address: "PRIVATE_ADDRESS",
+      }),
+    });
+    const response = new Response("unused", {
+      headers: { "cf-ray": "9abc1234def56789-ORD" },
+    });
+    jest.spyOn(response, "text").mockRejectedValue(failure);
+    await expect(
+      createServiceFetch(deployment, jest.fn().mockResolvedValue(response))(
+        `${deployment}/api/query`,
+        request(),
+      ),
+    ).rejects.toBe(failure);
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({
+        cf_ray: "9abc1234def56789-ORD",
+        transport_syscall: "read",
+        stage: "response_body",
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics())).not.toContain("PRIVATE");
+  });
+
   it("attributes a real SDK failure while preserving signed arguments and redacted errors", async () => {
     let wire: Record<string, unknown> | undefined;
     globalThis.fetch = jest.fn(async (_input, init) => {
@@ -499,10 +558,18 @@ it("cancels only the request-scoped client's in-flight transport", async () => {
 
 describe("SDK mutation wait diagnostics", () => {
   let warning: jest.SpyInstance;
+  let info: jest.SpyInstance;
   const observations = () =>
     warning.mock.calls.flatMap(([line]) => {
       const value = JSON.parse(String(line));
       return value.event === "convex_service_mutation_wait_pending"
+        ? [value]
+        : [];
+    });
+  const settlements = () =>
+    info.mock.calls.flatMap(([line]) => {
+      const value = JSON.parse(String(line));
+      return value.event === "convex_service_mutation_wait_settled"
         ? [value]
         : [];
     });
@@ -511,6 +578,7 @@ describe("SDK mutation wait diagnostics", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    info = jest.spyOn(console, "info").mockImplementation(() => {});
   });
   afterEach(() => {
     jest.useRealTimers();
@@ -583,6 +651,20 @@ describe("SDK mutation wait diagnostics", () => {
       await expect(second).resolves.toBe("follower");
     }
     expect(transport).toHaveBeenCalledTimes(2);
+    expect(settlements()).toEqual(
+      observations().map((pending) =>
+        expect.objectContaining({
+          client_instance_id: pending.client_instance_id,
+          sdk_call_id: pending.sdk_call_id,
+          function_name: pending.function_name,
+          outcome: "fulfilled",
+          sdk_elapsed_ms: expect.any(Number),
+        }),
+      ),
+    );
+    expect(settlements().at(-1).pending_mutations_now).toBe(0);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_TARGET");
   });
 
   it("bounds warning attempts in a rolling minute even when logging throws", async () => {
@@ -607,6 +689,9 @@ describe("SDK mutation wait diagnostics", () => {
     const calls: Promise<unknown>[] = [];
     warning.mockImplementation(() => {
       throw new Error("logger unavailable");
+    });
+    info.mockImplementation(() => {
+      throw new Error("settlement logger unavailable");
     });
     await jest.advanceTimersByTimeAsync(49000);
     calls.push(client.mutation(ref, {}));
@@ -633,6 +718,62 @@ describe("SDK mutation wait diagnostics", () => {
         "ok",
       ]);
     }
+    expect(settlements()).toHaveLength(3);
+  });
+
+  it("pairs a slow rejection and queued success without exporting errors or results", async () => {
+    const failure = new Error("PRIVATE_ERROR_DETAIL");
+    let rejectHead!: (error: Error) => void;
+    const held = new Promise<Response>((_resolve, reject) => {
+      rejectHead = reject;
+    });
+    let connected!: () => void;
+    const started = new Promise<void>((resolve) => {
+      connected = resolve;
+    });
+    globalThis.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => {
+        connected();
+        return held;
+      })
+      .mockImplementation(() => Promise.resolve(success("PRIVATE_RESULT")));
+    const client = createServiceConvexClient(deployment);
+    const first = client.mutation(
+      makeFunctionReference<"mutation">("fixture:failed"),
+      { serviceKey: secret, target: "PRIVATE_TARGET" },
+    );
+    const rejection = expect(first).rejects.toBe(failure);
+    await started;
+    const second = client.mutation(
+      makeFunctionReference<"mutation">("fixture:follower"),
+      {},
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(10000);
+    } finally {
+      jest.useRealTimers();
+      rejectHead(failure);
+      await rejection;
+      await expect(second).resolves.toBe("PRIVATE_RESULT");
+    }
+    expect(settlements()).toEqual([
+      expect.objectContaining({
+        outcome: "rejected",
+        function_name: "fixture:failed",
+      }),
+      expect.objectContaining({
+        outcome: "fulfilled",
+        function_name: "fixture:follower",
+      }),
+    ]);
+    for (const value of [
+      secret,
+      "PRIVATE_TARGET",
+      failure.message,
+      "PRIVATE_RESULT",
+    ])
+      expect(JSON.stringify(info.mock.calls)).not.toContain(value);
   });
 
   it("cleans up a rejected call before observing the next mutation", async () => {
@@ -722,6 +863,7 @@ describe("SDK mutation wait diagnostics", () => {
     for (const timer of diagnosticTimers)
       expect(cleared).toHaveBeenCalledWith(timer.value);
     expect(observations()).toEqual([]);
+    expect(settlements()).toEqual([]);
   });
 
   it("keeps pending counts and correlation scoped to each client", async () => {

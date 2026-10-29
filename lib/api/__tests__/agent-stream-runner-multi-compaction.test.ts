@@ -3065,12 +3065,26 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
-    ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
-    ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1, false],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, false],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, true],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, true],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, true],
   ] as const)(
-    "routes %s %s through Abliteration then %s after %i steps",
-    async (mode, subscription, baselineModel, generationStepLimit) => {
+    "routes %s %s through direct treatment then %s after %i steps, inference=%s",
+    async (
+      mode,
+      subscription,
+      baselineModel,
+      generationStepLimit,
+      inferenceCyberEnabled,
+    ) => {
+      const expectedTreatment = inferenceCyberEnabled
+        ? "model-inference-cyber"
+        : "model-abliterated";
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -3090,6 +3104,7 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedStepRouting: {
             baselineModel,
             generationStepLimit,
+            inferenceCyberEnabled,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -3111,9 +3126,9 @@ describe("createAgentStream repeated compaction", () => {
         });
 
       const firstStep = await prepare(0);
-      expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(firstStep.model.modelId).toBe(expectedTreatment);
       expect(wrap).toHaveBeenLastCalledWith(
-        expect.objectContaining({ modelId: "model-abliterated" }),
+        expect.objectContaining({ modelId: expectedTreatment }),
         0,
         expect.objectContaining({
           plannedBaselineContinuation: false,
@@ -3126,7 +3141,7 @@ describe("createAgentStream repeated compaction", () => {
 
       for (let index = 1; index < generationStepLimit; index++) {
         const treatmentStep = await prepare(index);
-        expect(treatmentStep.model.modelId).toBe("model-abliterated");
+        expect(treatmentStep.model.modelId).toBe(expectedTreatment);
         expect(JSON.stringify(treatmentStep.messages)).not.toContain(
           PLATFORM_AUTHORIZATION_ANNOTATION,
         );
@@ -5168,6 +5183,9 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it("emits sanitized provider and retained-message diagnostics", async () => {
+    jest
+      .mocked(require("ai").convertToModelMessages)
+      .mockImplementationOnce(jest.requireActual("ai").convertToModelMessages);
     const onProviderRequestDiagnostics = jest.fn();
     const tracker = {
       hasSummarized: true,
@@ -5183,6 +5201,11 @@ describe("createAgentStream repeated compaction", () => {
     state.transcriptSourceMessages = [
       uiMessage("transcript-1", "private transcript content"),
     ];
+    state.finalMessages[0].parts.push({
+      type: "file",
+      mediaType: "image/png",
+      url: "https://private.test/diagnostic-fixture",
+    });
 
     await createAgentStream(
       "test-model",
@@ -5199,6 +5222,12 @@ describe("createAgentStream repeated compaction", () => {
         source: "initial",
         message_count: 2,
         role_counts: { user: 2 },
+        media_counts: expect.objectContaining({
+          image_parts: 1,
+          user_image_parts: 1,
+          url_images: 1,
+          inline_images: 0,
+        }),
         serialized_message_bytes: expect.any(Number),
         invalid_tool_call_name_count: 0,
         invalid_tool_result_name_count: 0,
@@ -5218,6 +5247,9 @@ describe("createAgentStream repeated compaction", () => {
     expect(
       JSON.stringify(onProviderRequestDiagnostics.mock.calls),
     ).not.toContain("private transcript content");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("https://private.test/diagnostic-fixture");
   });
 
   it("retains the handoff note when preparing a compacted request falls back", async () => {

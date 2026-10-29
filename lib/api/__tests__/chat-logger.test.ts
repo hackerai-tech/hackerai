@@ -1,3 +1,4 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
@@ -1083,6 +1084,71 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
+  it.each(["ask", "agent"] as const)(
+    "retains Free %s comparison and cost coverage after an aborted fallback",
+    (mode) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        hasResponseContent: false,
+        abliteratedProviderSummary: {
+          free_three_steps_measurement_version: 1,
+          experiment_release: "preview-worker",
+          provider_attempt_count: 2,
+          tool_result_reported_error_count: 1,
+          provider_content_filter_count: 1,
+          time_to_first_visible_content_ms: undefined,
+        } as any,
+        usageMeasurement: {
+          usage_observed_model_cost_dollars: 0.03,
+          usage_summary_cost_dollars: 0,
+          usage_model_calls_started: 2,
+          usage_model_records: 1,
+          usage_observed_non_model_cost_dollars: 0.01,
+        } as any,
+        posthog: { capture } as any,
+        userId: "free",
+        chatId: "fixture",
+        mode,
+        endpoint: mode === "agent" ? "/api/agent" : "/api/chat",
+        subscription: "free",
+        outcome: "aborted",
+        abortSource: "request_cancel",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model-large-flash",
+        responseModel: "z-ai/glm-5.3-flash",
+        fallbackServed: true,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        experiment: {
+          key: "abliterated_free_three_steps_v1",
+          variant: "test",
+          requestId: "original",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            experiment_request_id: "original",
+            experiment_variant: "test",
+            outcome: "aborted",
+            abort_source: "request_cancel",
+            natural_completion: false,
+            usage_model_calls_started: 2,
+            usage_model_records: 1,
+            usage_observed_model_cost_dollars: 0.03,
+            usage_observed_non_model_cost_dollars: 0.01,
+            provider_content_filter_count: 1,
+            tool_result_reported_error_count: 1,
+            $insert_id: "original:free-three-step-outcome",
+          }),
+        }),
+      );
+      expect(
+        capture.mock.calls.some(([e]) => e.event === "free_response_completed"),
+      ).toBe(false);
+    },
+  );
   it("preserves the existing Agent event alongside successful free activation", () => {
     const capture = jest.fn();
 
@@ -1720,6 +1786,19 @@ describe("createChatLogger provider stream termination", () => {
         last_message_role: "user",
         last_message_content_types: ["tool-result"],
         serialized_message_bytes: 680000,
+        media_counts: {
+          image_parts: 2,
+          user_image_parts: 1,
+          assistant_image_parts: 0,
+          tool_image_parts: 1,
+          other_image_parts: 0,
+          url_images: 2,
+          inline_images: 0,
+          provider_id_images: 0,
+          unknown_images: 0,
+          pdf_file_parts: 0,
+          other_file_parts: 0,
+        },
         estimated_serialized_message_tokens: 170000,
         context_used_tokens: 171844,
         context_max_tokens: 200000,
@@ -1764,6 +1843,9 @@ describe("createChatLogger provider stream termination", () => {
         estimated_serialized_message_tokens: 170000,
         content_part_counts: { text: 6, "tool-result": 3 },
       });
+      expect(wideEvent.provider_request.media_counts).toEqual(
+        providerRequest.media_counts,
+      );
       expect(wideEvent.provider_error).not.toHaveProperty("request");
       expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
       expect(errorSpy.mock.calls.flat().map(String).join("\n")).not.toContain(
@@ -2817,3 +2899,114 @@ it.each([
     expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
   },
 );
+
+it("separates marked handoff reads in existing fingerprints without changing ordinary provider groups", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "fixture",
+      endpoint: "/api/chat",
+    });
+    for (const marked of [false, true]) {
+      // An arbitrary public origin property is not evidence of a local read.
+      const error = Object.assign(new Error("read ECONNRESET"), {
+        origin: "browser_handoff_read",
+      });
+      if (marked) {
+        try {
+          rethrowBrowserHandoffReadError(error);
+        } catch (failure) {
+          expect(failure).toBe(error);
+        }
+      }
+      logger.recordProviderError(error, { requestedModelSlug: "test/model" });
+    }
+    const fields = phWarn.mock.calls.map(
+      (call) => call[1] as Record<string, unknown>,
+    );
+    expect(fields).toHaveLength(2);
+    expect(fields[0].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|provider_test|model_test/model",
+    );
+    expect(fields[1].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|origin_browser_handoff_read",
+    );
+    expect(fields[0].errorOrigin).toBeUndefined();
+    expect(fields[1].errorOrigin).toBe("browser_handoff_read");
+  } finally {
+    warn.mockRestore();
+    phWarn.mockRestore();
+  }
+});
+
+it("does not attribute a handoff read failure to the preceding provider request", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "handoff",
+      endpoint: "/api/agent",
+    });
+    const metadata = {
+      provider_name: "PreviousProvider",
+      openrouter_generation_id: "gen-previous",
+      openrouter_request_id: "req-previous",
+      openrouter_upstream_id: "upstream-previous",
+    };
+    const request = {
+      model: "previous-configured",
+      requested_model_slug: "previous/model",
+      step_index: 27,
+      source: "prepare_step",
+    };
+    logger.setModelResponse("previous/response", metadata);
+    logger.recordProviderRequestDiagnostics(request);
+    const cause = Object.freeze(
+      Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+    );
+    const error = Object.freeze(new Error("read ECONNRESET", { cause }));
+    try {
+      rethrowBrowserHandoffReadError(error);
+    } catch (failure) {
+      expect(failure).toBe(error);
+    }
+    logger.recordProviderError(error, {
+      mode: "agent",
+      model: request.model,
+      requestedModelSlug: request.requested_model_slug,
+      fallbackModelSlugs: ["previous/fallback"],
+      providerRequest: request,
+      openRouterMetadata: metadata,
+    });
+    expect(error.cause).toBe(cause);
+    expect(phWarn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const fields = phWarn.mock.calls[0][1] as Record<string, unknown>;
+    expect(fields).toMatchObject({
+      errorOrigin: "browser_handoff_read",
+      provider_attribution_available: false,
+      providerErrorFingerprint:
+        "provider_error|stream_terminated|origin_browser_handoff_read",
+    });
+    expect(fields.provider_request).toBeUndefined();
+    const failureEvents = JSON.stringify([warn.mock.calls, phWarn.mock.calls]);
+    expect(failureEvents).not.toMatch(/previous|PreviousProvider/);
+    logger.emitUnexpectedError(error);
+    const wideEvent = JSON.parse(String(log.mock.calls.at(-1)![0]));
+    expect(JSON.stringify(wideEvent.provider_error)).not.toMatch(
+      /previous|PreviousProvider/,
+    );
+    expect(wideEvent.provider_error.provider_error_fingerprint).toBe(
+      fields.providerErrorFingerprint,
+    );
+    // Prior successful-call history remains useful, but does not own this failure.
+    expect(wideEvent.model.provider_name).toBe("PreviousProvider");
+    expect(wideEvent.provider_request).toEqual(request);
+  } finally {
+    warn.mockRestore();
+    log.mockRestore();
+    phWarn.mockRestore();
+  }
+});

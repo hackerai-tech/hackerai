@@ -407,6 +407,18 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         connection_id: "conn-2",
       },
     ],
+    current_cancellation_reasons: [
+      {
+        _id: "current-cancel-user",
+        user_id: userId,
+        reason_details: "private feedback",
+      },
+      {
+        _id: "current-cancel-other",
+        user_id: otherUserId,
+        reason_details: "keep",
+      },
+    ],
     cancellation_reason_details: [
       {
         _id: "cancel-detail-user",
@@ -629,6 +641,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     paid_start_mix_daily: [
       { _id: "paid-mix", day: "2026-06-21", tier: "pro", plan: "pro" },
     ],
+    billing_operations: [
+      {
+        _id: "billing-owner",
+        stripe_customer_id: "cus_user",
+        token: "in-flight-owner",
+        writing: true,
+      },
+    ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
     user_deletion_fences: [
@@ -802,6 +822,12 @@ describe("userDeletion", () => {
       row(tables, "subagent_work_items", "subagent-work-other"),
     ).toBeTruthy();
 
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-other"),
+    ).toBeDefined();
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });

@@ -8,7 +8,10 @@ import {
   AuthenticationError,
   NotFoundError,
 } from "@e2b/code-interpreter";
-import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
+import {
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
 import {
   getActiveTriggerRunsForUser,
   getCurrentAgentEntitlementContext,
@@ -43,7 +46,7 @@ jest.mock("@e2b/code-interpreter", () => ({
 }));
 jest.mock("@/lib/posthog/server", () => ({
   getPostHogBooleanFlagDecisionForUser: jest.fn(),
-  phLogger: { event: jest.fn() },
+  phLogger: { event: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/db/actions", () => ({
   getActiveTriggerRunsForUser: jest.fn(),
@@ -105,6 +108,8 @@ const exists = jest.fn();
 const prior = process.env;
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(phLogger.event).mockReset();
+  jest.mocked(phLogger.flush).mockResolvedValue(undefined);
   process.env = {
     ...prior,
     HACKERAI_ENVIRONMENT: "preview",
@@ -159,6 +164,81 @@ beforeEach(() => {
 afterAll(() => {
   process.env = prior;
 });
+it.each([false, true])(
+  "delivers buffered recovery outcome before worker settlement (failed=%s)",
+  async (failed) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    if (failed)
+      jest
+        .mocked(recoverE2BDiskOnly)
+        .mockRejectedValueOnce(new Error("provider unavailable"));
+    let release!: () => void;
+    let flushing!: () => void;
+    const started = new Promise<void>((resolve) => {
+      flushing = resolve;
+    });
+    const delivered: string[] = [];
+    const buffered: string[] = [];
+    jest.mocked(phLogger.event).mockImplementation((_name, fields) => {
+      buffered.push(String(fields?.outcome));
+    });
+    jest.mocked(phLogger.flush).mockImplementation(async () => {
+      flushing();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      delivered.push(...buffered);
+    });
+    let settled = false;
+    const run = executeCustomerRecovery("owner", token, "us-east-1").then(
+      (value) => {
+        settled = true;
+        return value;
+      },
+      (error: Error) => {
+        settled = true;
+        return error;
+      },
+    );
+    // Observe the terminal event without waiting forever when flush is absent.
+    await Promise.race([started, run]);
+    expect(settled).toBe(false);
+    expect(delivered).toEqual([]);
+    release();
+    const outcome = await run;
+    expect(delivered).toEqual([failed ? "support_required" : "verified"]);
+    if (failed)
+      expect(outcome).toEqual(
+        expect.objectContaining({
+          message: "Recovery requires support reconciliation",
+        }),
+      );
+    else expect(outcome).toEqual({ status: "verified" });
+  },
+);
+it.each([false, true])(
+  "analytics failure preserves recovery outcome (failed=%s)",
+  async (failed) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    jest
+      .mocked(phLogger.flush)
+      .mockRejectedValueOnce(new Error("analytics unavailable"));
+    if (failed)
+      jest
+        .mocked(recoverE2BDiskOnly)
+        .mockRejectedValueOnce(new Error("provider unavailable"));
+    const run = executeCustomerRecovery("owner", token, "us-east-1");
+    if (failed)
+      await expect(run).rejects.toThrow(
+        "Recovery requires support reconciliation",
+      );
+    else await expect(run).resolves.toEqual({ status: "verified" });
+  },
+);
 it("rechecks the confirmed organization's real paid-entitlement resolution before recovery", async () => {
   jest
     .mocked(readConsent)

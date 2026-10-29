@@ -259,6 +259,31 @@ describe("PostHogProvider", () => {
       expect(sanitized?.properties).toEqual(allowed);
       expect(JSON.stringify(sanitized)).not.toContain("private");
     }
+    const summary = config.before_send({
+      event: "desktop_ack_delivery_summary",
+      properties: {
+        schemaVersion: 2,
+        startedCount: 10,
+        settledCount: 9,
+        pendingAtEnd: 1,
+        windowSequence: 0,
+        telemetry_sample_rate: 1,
+        $current_url: "private",
+        commandId: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set_once: { content: "private" },
+    });
+    expect(summary?.properties).toEqual({
+      schemaVersion: 2,
+      startedCount: 10,
+      settledCount: 9,
+      pendingAtEnd: 1,
+      windowSequence: 0,
+      telemetry_sample_rate: 1,
+    });
+    expect(JSON.stringify(summary)).not.toContain("private");
     const ordinaryEvent = {
       event: "ordinary_event",
       properties: { retained: "value" },

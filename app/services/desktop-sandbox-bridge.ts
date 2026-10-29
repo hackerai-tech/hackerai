@@ -6,7 +6,7 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { startDesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
+import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   isDesktopAckStopSource,
   type DesktopAckStopSource,
@@ -317,6 +317,7 @@ export class DesktopSandboxBridge {
   private relayStarted = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly relayTelemetry: DesktopRelayTelemetry;
+  private readonly ackTelemetry = new DesktopAckTelemetry();
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
     this.relayTelemetry =
@@ -491,6 +492,7 @@ export class DesktopSandboxBridge {
     this.commandOutputStopSource = reason;
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
     this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
@@ -1009,7 +1011,8 @@ export class DesktopSandboxBridge {
       Date.now() +
       (command.timeout ?? 30_000) +
       DESKTOP_COMMAND_DELIVERY_GRACE_MS;
-    const onSettled = startDesktopAckTelemetry({
+    let terminalExitCode: number | null = null;
+    const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
       chatId: command.chatId,
@@ -1023,7 +1026,11 @@ export class DesktopSandboxBridge {
         !this.isStoppingOrStopped &&
         this.operationRouter === router &&
         this.connectionId === connectionId,
-      (settlement) => onSettled(settlement, this.commandOutputStopSource),
+      (settlement) =>
+        onSettled(
+          { ...settlement, terminalExitCode },
+          this.commandOutputStopSource,
+        ),
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
@@ -1032,10 +1039,12 @@ export class DesktopSandboxBridge {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
+        if (chunk.type === "exit") terminalExitCode = chunk.exitCode ?? null;
         if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
       };
       try {
         if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          terminalExitCode = 130;
           stream.append({ type: "exit", exitCode: 130 });
         } else {
           await invoke("execute_stream_command", {
@@ -2415,6 +2424,7 @@ export class DesktopSandboxBridge {
     this.commandOutputStopSource = "bridge_stop";
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
     this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);

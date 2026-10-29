@@ -1303,6 +1303,38 @@ describe("getMessagesByChatId", () => {
       reason: "regenerate_removed_all",
     },
     {
+      name: "oversized Agent tool history",
+      hasClientMessages: false,
+      mode: "agent",
+      regenerate: false,
+      page: [
+        {
+          id: "private-assistant",
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            { type: "text", text: "private-assistant-canary" },
+            {
+              type: "tool-private-name",
+              toolCallId: "private-call",
+              state: "output-available",
+              input: {},
+              output: { text: "\u0001".repeat(70_001) },
+            },
+            { untyped: "private-shape-canary" },
+          ],
+        },
+        {
+          id: "private-user",
+          role: "user",
+          parts: [{ type: "text", text: "private-user-canary" }],
+        },
+      ],
+      fileTokens: [],
+      before: 0,
+      reason: "token_projection_empty",
+    },
+    {
       name: "empty regeneration candidate with ignored client messages",
       hasClientMessages: true,
       mode: "agent",
@@ -1375,8 +1407,30 @@ describe("getMessagesByChatId", () => {
             projected_messages_count: 0,
             pages_fetched: 1,
             projection_reason: reason,
+            ...(reason === "token_projection_empty"
+              ? {
+                  projection_budget_tokens: 200_000,
+                  projection_blocked_message_tokens:
+                    mode === "agent" ? expect.any(Number) : 1_000_000,
+                  projection_blocked_message_role:
+                    mode === "agent" ? "assistant" : "user",
+                  projection_blocked_message_part_count:
+                    mode === "agent" ? 4 : 1,
+                  projection_blocked_text_part_count: mode === "agent" ? 1 : 0,
+                  projection_blocked_tool_part_count: mode === "agent" ? 1 : 0,
+                  projection_blocked_file_part_count: mode === "agent" ? 0 : 1,
+                  projection_blocked_other_part_count: mode === "agent" ? 2 : 0,
+                }
+              : {}),
           },
         ]);
+        const serializedEvents = JSON.stringify(events);
+        expect(serializedEvents).not.toContain("private-");
+        if (reason === "token_projection_empty") {
+          expect(events[0].projection_blocked_message_tokens).toBeGreaterThan(
+            events[0].projection_budget_tokens,
+          );
+        }
       } finally {
         warnSpy.mockRestore();
       }

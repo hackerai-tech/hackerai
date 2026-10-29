@@ -1,3 +1,5 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import {
   createUIMessageStream,
   convertToModelMessages,
@@ -581,4 +583,40 @@ it("recognizes HTTP rejection delivered asynchronously before any content, with 
   expect(
     decideProviderRecovery({ ...eligible, alreadyRetried: true }).attempt,
   ).toBe(false);
+});
+
+it("keeps safety-read ownership through real SDK prepareStep error delivery", async () => {
+  const failure = Object.freeze(
+    Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    }),
+  );
+  const call = jest.fn();
+  const observed = jest.fn();
+  const prepare = jest.fn(async () => rethrowBrowserHandoffReadError(failure));
+  const result = streamText({
+    model: model(call),
+    prompt: "fixture",
+    prepareStep: prepare,
+    onError: ({ error }) => {
+      observed(error);
+    },
+  });
+  await result.consumeStream();
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(call).not.toHaveBeenCalled();
+  expect(observed).toHaveBeenCalledWith(failure);
+  const terminal = wrapProviderTerminalError(observed.mock.calls[0][0], {
+    model: "previous/model",
+  });
+  expect(terminal).toMatchObject({
+    origin: "browser_handoff_read",
+    category: "stream_terminated",
+    provider: "unknown",
+    model: "unknown",
+    cause: failure,
+  });
+  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
 });

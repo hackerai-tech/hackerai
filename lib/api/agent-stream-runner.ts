@@ -33,6 +33,7 @@ import {
 } from "@/lib/ai/abliteration";
 import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import { getProviderRequestMediaCounts } from "@/lib/ai/provider-request-media";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
@@ -736,6 +737,7 @@ const buildProviderRequestDiagnostics = (args: {
     message_count: args.messages.length,
     role_counts: roleCounts,
     content_part_counts: contentPartCounts,
+    media_counts: getProviderRequestMediaCounts(args.messages),
     last_message_role:
       typeof lastMessage?.role === "string" ? lastMessage.role : undefined,
     last_message_content_types: summarizeContentTypes(lastMessage?.content),
@@ -3026,6 +3028,7 @@ export async function createAgentStream(
     },
 
     onStepFinish: async ({
+      content,
       usage,
       response,
       providerMetadata,
@@ -3035,6 +3038,13 @@ export async function createAgentStream(
       finishReason,
     }) => {
       lastCompletedResponseMessages = response?.messages ?? [];
+      if (ctx.subscription === "free") {
+        ctx.abliteratedTelemetry?.recordToolStep(
+          toolCalls ?? [],
+          toolResults ?? [],
+          content.filter((part) => part.type === "tool-error"),
+        );
+      }
       // An assignment, failed attempt, reasoning-only output or vision baseline
       // cannot activate this context. State survives retries within this run only.
       if (

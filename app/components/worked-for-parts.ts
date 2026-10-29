@@ -362,6 +362,7 @@ const toolSummaryCategory = (
       return "tool";
     }
     case "tool-file_write":
+    case "tool-file_edit":
     case "tool-write_file":
     case "tool-search_replace":
     case "tool-multi_edit":

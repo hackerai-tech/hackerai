@@ -1,5 +1,6 @@
 import { asSchema } from "ai";
 import {
+  createFileEditToolSchema,
   createFileToolSchema,
   createFileWriteToolSchema,
   createAgentToolSchemaSet,
@@ -49,7 +50,7 @@ describe("file mutation schema", () => {
   });
 
   test.each([true, false])(
-    "read and edit need no content; view follows supportsView=%s",
+    "read needs no mutation content; view follows supportsView=%s",
     async (supportsView) => {
       const schema = asSchema(
         createFileToolSchema({ supportsView }).inputSchema,
@@ -61,12 +62,33 @@ describe("file mutation schema", () => {
         await schema.validate?.({ action: "view", path: "/project/image.png" }),
       ).toMatchObject({ success: supportsView });
       expect(
-        await schema.validate?.({
-          action: "edit",
-          path: "/project/notes.txt",
-          edits: [{ find: "before", replace: "after" }],
-        }),
-      ).toMatchObject({ success: true });
+        await schema.validate?.({ action: "edit", path: "/project/notes.txt" }),
+      ).toMatchObject({ success: false });
     },
   );
+
+  test("file_edit requires a nonempty replacement list in a plain object", async () => {
+    const schema = asSchema(createAgentToolSchemaSet().file_edit.inputSchema);
+    const input = { path: "/project/notes.txt" };
+    expect(await schema.validate?.(input)).toMatchObject({ success: false });
+    expect(await schema.validate?.({ ...input, edits: [] })).toMatchObject({
+      success: false,
+    });
+    expect(
+      await schema.validate?.({
+        ...input,
+        edits: [{ find: "before", replace: "after" }],
+      }),
+    ).toMatchObject({ success: true });
+    expect(
+      asSchema(createFileEditToolSchema().inputSchema).jsonSchema,
+    ).toMatchObject({
+      type: "object",
+      required: expect.arrayContaining(["path", "edits"]),
+    });
+    expect(schema.jsonSchema).not.toHaveProperty("anyOf");
+    expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
+      "file_edit",
+    );
+  });
 });

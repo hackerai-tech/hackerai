@@ -100,16 +100,58 @@ independently of Vercel, Trigger and Convex deployments.
 `desktop_ack_command_started` and `desktop_ack_command_settled` measure the
 Desktop sender's `ack-v1` delivery window. They are separate from the legacy
 `desktop_stream_command_settled` event. Join each pair by connection and command
-ID, and use `triggerRunId` / `chatId` for outcome correlation. Schema version 1
-includes the loaded frontend commit when available; worker version alone cannot
+ID, and use `triggerRunId` / `chatId` for outcome correlation. Both schema versions
+include the loaded frontend commit when available; worker version alone cannot
 identify the Desktop frontend. Deduplicate by event name, connection and command.
 
-Every identified command emits a start and, on sender settlement, at most one
-final event. Analytics is best effort, uses the existing bounded authenticated
-queue and consent settings, and is suppressed across account changes. A missing
-final (including app exit, lost telemetry or identity changes) is unknown, never
-successful delivery. Report start/final coverage and build availability alongside
-rates; this is not a census of commands from unidentified clients.
+Schema version 1 emits every identified command's start/final. Version 2 keeps
+stable 10% command samples, selected by hashing connection/command IDs at start.
+Sampled starts and finals carry `telemetry_sampled=true`. Every incomplete,
+canceled, error-frame, nonzero/unknown-exit, retry/resume/publish-failure or
+30-second-plus settlement is retained, including unsampled commands; these
+extra finals carry `telemetry_sampled=false`. `telemetry_sample_rate` is 1 for
+always-retained diagnostic finals and 0.1 for routine sampled details. For
+unbiased detailed coverage and latency distributions, filter version 2 to
+`telemetry_sampled=true` on **both** sides, including diagnostic finals in that
+cohort. Do not divide all retained finals by sampled starts.
+
+`desktop_ack_delivery_summary` carries unsampled version 2 counters for every
+consent-eligible identified command, independently of detail sampling. One bridge
+keeps fixed-size counters and flushes after one minute of activity, on page hide,
+on visibility becoming hidden, and after settling streams on bridge shutdown.
+Summaries include the connection and loaded frontend build, but no command,
+chat or run IDs. `telemetrySessionId` and `windowSequence` distinguish windows
+and let consumers detect missing windows. The authenticated queue also assigns
+a stable ingestion UUID per summary. Failed capture retains counters until the
+next flush; bridge teardown makes one final attempt and releases its listeners.
+
+Use sums of summary counters for version 2 reliability metrics:
+
+- Delivery ACK rate: `sum(acknowledgedCount) / sum(startedCount)`.
+- Settlement coverage: `sum(settledCount) / sum(startedCount)`; report canceled
+  and incomplete counts separately.
+- ACK rate among streams with retry evidence:
+  `sum(retryEvidenceAcknowledgedCount) / sum(retryEvidenceCount)`.
+- Failure diagnostics: `terminalErrorCount`, `nonzeroExitCount`,
+  `bufferLimitCount`, `deadlineExceededCount`, `ownershipLostCount`, `stoppedCount`.
+  `publishFailureCount`, `replayCount` and `resumeCount` count attempts/requests,
+  whereas `retryEvidenceCount` counts affected commands once.
+
+Starts and settlements can land in different windows. For each complete session,
+`sum(startedCount) - sum(settledCount)` equals its last `pendingAtEnd` (the first
+`pendingAtStart` is zero). For a partial session, include the first
+`pendingAtStart`. Do not sum pending gauges or treat an unclosed command as
+successful. Prefer complete sessions for rates and report open commands and
+window-sequence gaps at reporting boundaries. During mixed-version rollout,
+combine version 1 individual counts with version 2 summary sums; never add
+version 2 detail events to summary counts.
+
+Analytics remains best effort through the existing bounded authenticated queue.
+Identity/consent changes discard pending counters and invalidate old settlements.
+App/process termination can lose the last unflushed minute or queued events;
+pagehide is not guaranteed on native quit. These counters are observed telemetry,
+not an execution ledger or a census of unidentified clients. Sampled start/final
+coverage and missing summary windows remain useful data-quality checks.
 
 `acknowledged` means the cumulative receiver ACK reached the terminal frame.
 `terminalType` distinguishes an exit frame from an error frame; acknowledgement
@@ -128,3 +170,25 @@ resume or publish-failure evidence; never claim a retransmission alone proves
 recovery. Counts, pending bytes and duration are frozen before buffer release,
 including when native invocation or publication has not returned. No command
 text, stdout/stderr, error message, paths or environment values are collected.
+
+## Terminal call timing logs
+
+`terminal_call_finished` version 2 retains 10% of routine calls, deterministically
+by run/chat and tool-call ID. Routine means a returned zero exit or live session,
+under 30 seconds, without an error, abort, wait expiry, timeout, explicit unknown
+status, unsuccessful result, recovered-record marker or persistence failure.
+All other calls are retained. Nested session exit codes are checked too.
+`telemetry_selection` identifies sampled versus diagnostic logs;
+`telemetry_sample_rate` is 0.1 or 1 respectively. Use inverse-probability weights
+for estimated log totals; raw counts and unweighted percentiles across the
+combined retained population are biased toward diagnostics. Old logs have an
+implicit rate of 1. Existing unsampled `hackerai-tool_usage`, request outcomes,
+cost events, and separate recovery/persistence logs remain authoritative for
+aggregate tool usage and reliability. A silent relay retry does not necessarily
+set a recovered marker on the returned tool result; its separate recovery logs
+remain unsampled.
+
+Sampling only controls PostHog log capture. Tool execution, thrown errors,
+returned content, and `callTiming` on every tool result are unchanged. Only
+bounded status metadata and timing/counts are logged; error text, commands,
+stdin, session handles, paths, and output are excluded.

@@ -4,6 +4,7 @@ import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-g
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
@@ -89,6 +90,92 @@ describe("Abliteration stream telemetry", () => {
       mode: "ask",
       subscription: "pro",
     });
+  it.each(["control", "test"] as const)(
+    "measures Free %s exposure, retries and tools without exporting content",
+    async (variant) => {
+      capture.mockClear();
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "free", {
+        assignment: {
+          key: ABLITERATED_FREE_THREE_STEPS_KEY,
+          variant,
+          modelKey:
+            variant === "test" ? "model-abliterated" : "ask-model-free-glm",
+          baselineModel: "ask-model-free-glm",
+          generationStepLimit: 3,
+        },
+        messageId: "original",
+        chatId: "fixture",
+        mode: "ask",
+        subscription: "free",
+        release: "qa-commit",
+      });
+      expect(events("abliterated_model_eligible")).toHaveLength(1);
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await expect(consume(telemetry, model([], true), 0)).rejects.toThrow();
+      await consume(
+        telemetry,
+        model(
+          [
+            { type: "text-delta", id: "t", delta: "private answer" },
+            finishPart,
+          ],
+          false,
+          "z-ai/glm-5.3-flash",
+        ),
+      );
+      const calls = [
+        { toolCallId: "secret-id" },
+        { toolCallId: "bad", invalid: true },
+        { toolCallId: "deny" },
+        { toolCallId: "missing" },
+        { toolCallId: "thrown" },
+      ];
+      const results = [
+        {
+          toolCallId: "secret-id",
+          output: { content: "private tool output", exitCode: 0 },
+        },
+        { toolCallId: "bad", output: { error: "private error" } },
+        { toolCallId: "deny", output: { approvalDenied: true } },
+        { toolCallId: "unmatched", output: "private unmatched" },
+      ];
+      telemetry.recordToolStep(calls, results, [{ toolCallId: "thrown" }]);
+      telemetry.recordToolStep(calls, results, [{ toolCallId: "thrown" }]);
+      telemetry.setMessageId("replacement");
+      expect(telemetry.getSummary()).toMatchObject({
+        experiment_release: "qa-commit",
+        free_three_steps_measurement_version: 1,
+        provider_attempt_count: 2,
+        provider_error_count: 1,
+        time_to_first_visible_content_ms: expect.any(Number),
+        experiment_duration_ms: expect.any(Number),
+        tool_call_unique_count: 5,
+        tool_call_invalid_count: 1,
+        tool_result_matched_count: 4,
+        tool_result_missing_count: 1,
+        tool_result_unmatched_count: 1,
+        tool_result_denied_count: 1,
+        tool_result_reported_error_count: 2,
+        tool_result_without_reported_error_count: 1,
+      });
+      const encoded = JSON.stringify({
+        events: capture.mock.calls,
+        summary: telemetry.getSummary(),
+      });
+      for (const value of [
+        "private answer",
+        "private tool output",
+        "private error",
+        "secret-id",
+        "private unmatched",
+      ])
+        expect(encoded).not.toContain(value);
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_variant: variant,
+        experiment_request_id: "original",
+      });
+    },
+  );
   it.each(["control", "test"] as const)(
     "keeps %s assignment and request linkage through failed attempts and fallback",
     async (variant) => {
