@@ -81,6 +81,7 @@ function database() {
   return { ctx, rows: (table: string) => tables[table] ?? [] };
 }
 const input = {
+  operation: "cancel",
   userId: "user",
   organizationId: "org",
   stripeCustomerId: "cus",
@@ -257,9 +258,10 @@ describe("cancellation reason lifecycle", () => {
     const latest = await invoke("recordCancellationStarted", ctx, {
       ...input,
       reasonDetails: "New",
+      operation: undefined,
       startedAt: 12_000,
     });
-    delete (await ctx.db.get(latest)).operation;
+    expect((await ctx.db.get(latest)).operation).toBeUndefined();
     await invoke("markCancellationCompleted", ctx, complete(undefined, 13_000));
     await invoke("markCancellationCompleted", ctx, complete(undefined, 14_000));
     expect((await ctx.db.get(old)).status).toBe("started");

@@ -224,6 +224,7 @@ export default async function cancelSubscriptionAction(
         api.cancellationReasons.recordCancellationStarted,
         {
           serviceKey,
+          operation: "cancel",
           userId: user.id,
           organizationId,
           stripeCustomerId,

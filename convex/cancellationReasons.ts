@@ -263,7 +263,9 @@ export const recordCancellationStarted = mutation({
     const recentUsage = await recentUsageSummary(ctx, args.userId, now);
 
     const cancellationReasonId = await ctx.db.insert("cancellation_reasons", {
-      operation,
+      // Older app servers do not send operation/attempt metadata. Keep their
+      // rows distinguishable until both sides of the rollout are upgraded.
+      operation: args.operation,
       user_id: args.userId,
       organization_id: args.organizationId,
       stripe_customer_id: args.stripeCustomerId,
