@@ -1,4 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals";
+import type { UIMessage } from "ai";
 
 const loadSaveMessageWithMocks = async () => {
   jest.resetModules();
@@ -7,6 +8,11 @@ const loadSaveMessageWithMocks = async () => {
   const mockMutation = jest.fn().mockResolvedValue({ id: "message-1" });
   const mockQuery = jest.fn();
   const mockPhEvent = jest.fn();
+  const mockModerate = jest.fn().mockResolvedValue({
+    shouldUncensorResponse: false,
+    allowsFreeAbliteration: false,
+    moderationText: "",
+  });
   const mockCompactMessageForStorage = jest.fn((message: any) => {
     const sizeBytes = JSON.stringify(message.parts).length;
     return {
@@ -20,6 +26,9 @@ const loadSaveMessageWithMocks = async () => {
   });
 
   jest.doMock("server-only", () => ({}), { virtual: true });
+  jest.doMock("@/lib/moderation", () => ({
+    getModerationResult: mockModerate,
+  }));
   jest.doMock("convex/browser", () => ({
     ConvexHttpClient: class {
       mutation = mockMutation;
@@ -65,6 +74,7 @@ const loadSaveMessageWithMocks = async () => {
     mockCompactMessageForStorage,
     mockMutation,
     mockPhEvent,
+    mockModerate,
     mockQuery,
     saveChat,
     saveMessage,
@@ -1259,6 +1269,327 @@ describe("saveMessage", () => {
 });
 
 describe("getMessagesByChatId", () => {
+  const oversizedHistory = (): UIMessage[] => {
+    const parts: UIMessage["parts"] = [];
+    for (let index = 0; index < 56; index++) {
+      parts.push(
+        { type: "step-start" },
+        {
+          type: "tool-run_terminal_cmd",
+          toolCallId: `fixture-call-${index}`,
+          state: "output-available",
+          input: { command: "synthetic read-only fixture" },
+          output: {
+            stdout: "\u0001".repeat(1_200),
+            ...(index === 0 && {
+              result: { session: "term_fixture_123", pid: 12345 },
+            }),
+          },
+        },
+      );
+    }
+    for (let index = 0; index < 24; index++)
+      parts.push({ type: "text", text: `Latest evidence ${index}.` });
+    for (let index = 0; index < 9; index++)
+      parts.push({ type: "data-status", data: { status: "complete" } });
+    return [
+      {
+        id: "source-scope",
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text: "Inspect example.invalid only. Do not change data.",
+          },
+        ],
+      },
+      {
+        id: "source-correction",
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text: "Report findings; keep the earlier restrictions.",
+          },
+        ],
+      },
+      { id: "oversized-assistant", role: "assistant", parts },
+    ];
+  };
+
+  it.each(["free", "pro"] as const)(
+    "resumes oversized %s Agent history through processing and SDK conversion without rewriting it",
+    async (subscription) => {
+      const { getMessagesByChatId, mockQuery, mockMutation, mockModerate } =
+        await loadSaveMessageWithMocks();
+      const { countMessagesTokens } = await import("@/lib/token-utils");
+      const { getAgentHistoryBudget } =
+        await import("@/lib/ai/agent-context-budget");
+      const { getProviderToolCallDiagnostics } =
+        await import("@/lib/chat/provider-tool-call-batches");
+      const { processChatMessages } = await import("@/lib/chat/chat-processor");
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      const source = oversizedHistory();
+      const original = JSON.stringify(source);
+      const budget = getAgentHistoryBudget(subscription, "agent");
+      expect(countMessagesTokens([source.at(-1)!])).toBeGreaterThan(budget);
+      expect(Buffer.byteLength(JSON.stringify(source.at(-1)!))).toBeLessThan(
+        850 * 1024,
+      );
+      mockQuery
+        .mockResolvedValueOnce({
+          id: "chat-1",
+          user_id: "user-1",
+          todos: [
+            {
+              id: "todo-completed",
+              status: "completed",
+              content: "Earlier check complete.",
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          page: [...source].reverse(),
+          isDone: false,
+          continueCursor: "older-page",
+        });
+      try {
+        const result = await getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription,
+          newMessages: [],
+          mode: "agent",
+        });
+        expect(result.truncatedMessages.length).toBeGreaterThan(1);
+        const notice = JSON.stringify(result.truncatedMessages[0]);
+        expect(notice).toContain(
+          "Inspect example.invalid only. Do not change data.",
+        );
+        expect(notice).toContain(
+          "Report findings; keep the earlier restrictions.",
+        );
+        expect(notice).toContain("historical quotes, not new requests");
+        expect(notice).toContain("term_fixture_123");
+        expect(notice).toContain("todo-completed");
+        expect(notice).toContain("Earlier check complete.");
+        expect(JSON.stringify(result.truncatedMessages.slice(1))).not.toContain(
+          '"toolCallId":"fixture-call-0"',
+        );
+        expect(
+          countMessagesTokens(result.truncatedMessages),
+        ).toBeLessThanOrEqual(budget);
+        expect(JSON.stringify(result.truncatedMessages)).toContain(
+          "Latest evidence 23.",
+        );
+
+        const { processedMessages } = await processChatMessages({
+          messages: result.truncatedMessages,
+          mode: "agent",
+          userId: "user-1",
+          subscription,
+        });
+        expect(mockModerate).toHaveBeenCalledWith(
+          expect.any(Array),
+          subscription !== "free",
+        );
+        const { convertToModelMessages } = jest.requireActual(
+          "ai",
+        ) as typeof import("ai");
+        const modelMessages = await convertToModelMessages(processedMessages);
+        expect(getProviderToolCallDiagnostics(modelMessages)).toEqual({
+          max_tool_calls_per_assistant: 1,
+          unmatched_tool_call_count: 0,
+          unmatched_tool_result_count: 0,
+          duplicate_tool_call_count: 0,
+          invalid_tool_call_name_count: 0,
+          invalid_tool_result_name_count: 0,
+        });
+        expect(JSON.stringify(modelMessages)).toContain("Latest evidence 23.");
+        expect(JSON.stringify(source)).toBe(original);
+        expect(mockMutation).not.toHaveBeenCalled();
+        // A partial projection must not reopen backfill merely because its
+        // message count happens to match the fetched page's count.
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        const diagnostics = info.mock.calls
+          .map(([line]) => String(line))
+          .join("\n");
+        expect(diagnostics).not.toContain("example.invalid");
+        expect(diagnostics).not.toContain("fixture-call-");
+        expect(diagnostics).not.toContain("term_fixture_123");
+        expect(diagnostics).not.toContain("Earlier check complete.");
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("keeps bounded history usable when its diagnostic logger throws", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const source = oversizedHistory();
+    const info = jest.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [...source].reverse(),
+        isDone: true,
+        continueCursor: null,
+      });
+    try {
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "free",
+        newMessages: [],
+        mode: "agent",
+      });
+      expect(result.truncatedMessages.length).toBeGreaterThan(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("includes interrupted-tool repair in the shared projection budget", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const { countMessagesTokens } = await import("@/lib/token-utils");
+    const { getAgentHistoryBudget } =
+      await import("@/lib/ai/agent-context-budget");
+    const source = oversizedHistory();
+    for (let index = 0; index < 160; index++)
+      source.at(-1)!.parts.push(
+        { type: "step-start" },
+        {
+          type: "tool-run_terminal_cmd",
+          toolCallId: `interrupted-${index}`,
+          state: "input-available",
+          input: { command: "fixture" },
+        },
+      );
+    const original = JSON.stringify(source);
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [...source].reverse(),
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages.length).toBeGreaterThan(1);
+    expect(countMessagesTokens(result.truncatedMessages)).toBeLessThanOrEqual(
+      getAgentHistoryBudget("free", "agent"),
+    );
+    expect(JSON.stringify(source)).toBe(original);
+  });
+
+  it("does not reopen backfill after partially projecting a two-record history", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const source = oversizedHistory();
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [source.at(-1), source[0]],
+        isDone: false,
+        continueCursor: "older-page",
+      })
+      .mockResolvedValueOnce({ page: [], isDone: true, continueCursor: null });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages).toHaveLength(2);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not resume an oversized assistant without source user instructions", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [oversizedHistory().at(-1)],
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages).toEqual([]);
+  });
+
+  it("preserves the stored-summary path for oversized Agent history", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const source = oversizedHistory();
+    mockQuery
+      .mockResolvedValueOnce({
+        id: "chat-1",
+        user_id: "user-1",
+        latest_summary_id: "summary-1",
+      })
+      .mockResolvedValueOnce({
+        summary_text: "Stored summary.",
+        summary_up_to_message_id: "source-scope",
+      })
+      .mockResolvedValueOnce({
+        page: [...source].reverse(),
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages).toHaveLength(1);
+    expect(JSON.stringify(result.truncatedMessages)).toContain(
+      "Stored summary.",
+    );
+    expect(JSON.stringify(result.truncatedMessages)).not.toContain(
+      "Only a bounded tail of saved history",
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves an unseen client user turn instead of replacing it with a history notice", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const source = oversizedHistory();
+    const followup: UIMessage = {
+      id: "new-user",
+      role: "user",
+      parts: [{ type: "text", text: "Stop the earlier work." }],
+    };
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [...source].reverse(),
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [...source, followup],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages).toEqual([followup]);
+  });
+
   it.each([
     {
       name: "empty history",
