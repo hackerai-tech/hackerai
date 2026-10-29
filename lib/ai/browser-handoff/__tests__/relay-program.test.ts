@@ -313,29 +313,60 @@ it.each(["expiry", "browser replacement", "Agent resume", "run cleanup"])(
   },
 );
 
-it("starts the detached relay from protected stdin and prints only its port", async () => {
-  const second = join(root, "second-relay");
-  const config = JSON.parse(await readFile(join(directory, "config"), "utf8"));
-  const launcher = spawn(process.execPath, ["-e", RELAY_START_PROGRAM], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let stdout = "";
-  launcher.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  launcher.stdin.end(
-    JSON.stringify({
-      directory: second,
-      config,
-      program: browserRelayProgram(),
-      lease: Date.now() + 3000,
-    }),
-  );
-  const [code] = await once(launcher, "exit");
-  expect(code).toBe(0);
-  expect(stdout).toMatch(/^\d+$/);
-  expect(await stopRelay(second)).toBe(0);
-});
+it.each([false, true])(
+  "starts the detached relay from protected stdin despite an initial empty port read: %s",
+  async (emptyPortRead) => {
+    const second = join(root, "second-relay");
+    const config = JSON.parse(
+      await readFile(join(directory, "config"), "utf8"),
+    );
+    // Model the create/write window without depending on filesystem scheduling.
+    const initialRead = emptyPortRead
+      ? `
+    (() => {
+      const fs = require('node:fs');
+      const read = fs.readFileSync;
+      let first = true;
+      fs.readFileSync = function(path, ...args) {
+        if (first && typeof path === 'string' && path.endsWith('/port')) {
+          first = false;
+          return '';
+        }
+        return read.call(this, path, ...args);
+      };
+    })();
+  `
+      : "";
+    const launcher = spawn(
+      process.execPath,
+      ["-e", initialRead + RELAY_START_PROGRAM],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    launcher.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    launcher.stdin.end(
+      JSON.stringify({
+        directory: second,
+        config,
+        program: browserRelayProgram(),
+        lease: Date.now() + 3000,
+      }),
+    );
+    try {
+      const [code] = await once(launcher, "close");
+      expect(code).toBe(0);
+      expect(stdout).toMatch(/^\d+$/);
+      expect(Number(stdout)).toBeGreaterThan(0);
+      expect(Number(stdout)).toBeLessThanOrEqual(65535);
+    } finally {
+      expect(await stopRelay(second)).toBe(0);
+    }
+  },
+);
 
 async function stopRelay(target = directory) {
   const stopper = spawn(
