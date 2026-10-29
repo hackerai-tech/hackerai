@@ -3028,6 +3028,7 @@ export async function createAgentStream(
     },
 
     onStepFinish: async ({
+      content,
       usage,
       response,
       providerMetadata,
@@ -3037,6 +3038,13 @@ export async function createAgentStream(
       finishReason,
     }) => {
       lastCompletedResponseMessages = response?.messages ?? [];
+      if (ctx.subscription === "free") {
+        ctx.abliteratedTelemetry?.recordToolStep(
+          toolCalls ?? [],
+          toolResults ?? [],
+          content.filter((part) => part.type === "tool-error"),
+        );
+      }
       // An assignment, failed attempt, reasoning-only output or vision baseline
       // cannot activate this context. State survives retries within this run only.
       if (

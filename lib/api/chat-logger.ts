@@ -63,6 +63,7 @@ import {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_KEY,
 } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -1874,7 +1875,8 @@ export function captureAgentCompletionAnalytics(
     args.experiment?.key === ABLITERATED_PAID_THREE_STEPS_KEY ||
     args.experiment?.key ===
       ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ||
-    args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY
+    args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY ||
+    args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY
   ) {
     try {
       posthog?.capture({
@@ -1883,6 +1885,31 @@ export function captureAgentCompletionAnalytics(
         properties: {
           ...args.abliteratedProviderSummary,
           ...getExperimentAnalyticsProperties(args.experiment),
+          ...(args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY && {
+            ...args.usageMeasurement,
+            message_id: args.responseMessageId ?? args.experiment.requestId,
+            trigger_run_id: args.triggerRunId,
+            natural_completion:
+              outcome === "success" &&
+              args.hasResponseContent &&
+              !args.stepLimitTelemetry?.stepLimitReached &&
+              args.finishReason !== "length" &&
+              args.finishReason !== "error",
+            request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+            active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+            approval_wait_duration_ms: args.approvalWaitDurationMs,
+            handled_tool_failure_count: args.handledToolFailureCount,
+            attachment_count: args.attachmentCount,
+            image_attachment_count: args.imageAttachmentCount,
+            sandbox_type: sandboxInfo?.type,
+            sandbox_provider: sandboxInfo?.provider,
+            trigger_total_cost_usd: args.triggerTotalCostUsd,
+            provider_error_category: args.providerErrorCategory,
+            provider_error_status_code: args.providerErrorStatusCode,
+            ...(args.experiment.requestId && {
+              $insert_id: `${args.experiment.requestId}:free-three-step-outcome`,
+            }),
+          }),
           chat_id: args.chatId,
           mode,
           subscription_tier: subscription,

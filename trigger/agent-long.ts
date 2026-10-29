@@ -2159,6 +2159,7 @@ export const agentLongTask = task({
             mode,
             subscription,
             selectedModelOverride,
+            release: ctx.deployment?.version,
           })
         : undefined;
 

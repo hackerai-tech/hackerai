@@ -637,6 +637,7 @@ export const createChatHandler = () => {
             mode,
             subscription,
             selectedModelOverride,
+            release: process.env.VERCEL_GIT_COMMIT_SHA,
           })
         : undefined;
 
