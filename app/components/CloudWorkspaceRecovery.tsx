@@ -19,10 +19,26 @@ export function CloudWorkspaceRecovery({
   surface?: "cloud_connection_error" | "workspace_status";
 }) {
   const [view, setView] = useState<RecoveryView>({ status: "hidden" });
+  const [observedRecovery, setObservedRecovery] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const exposed = useRef<string | null>(null);
   const statusReadGeneration = useRef(0);
+  const updateView = useCallback((next: RecoveryView) => {
+    if (
+      next.status === "offered" ||
+      next.status === "declined" ||
+      next.status === "waiting" ||
+      next.status === "recovering"
+    )
+      setObservedRecovery(true);
+    setView(next);
+  }, []);
+  // Durable recovery receipts belong to the workspace, not the current chat.
+  // Announce completion only if this mount actually displayed the incident.
+  const hidden =
+    view.status === "hidden" ||
+    (view.status === "recovered" && !observedRecovery);
   const refresh = useCallback(
     async (signal?: AbortSignal, reportError = true) => {
       const generation = ++statusReadGeneration.current;
@@ -36,14 +52,14 @@ export function CloudWorkspaceRecovery({
         if (!response.ok) throw new Error("Recovery status unavailable");
         const next = await response.json();
         if (isCurrent()) {
-          setView(next);
+          updateView(next);
           setError(false);
         }
       } catch {
         if (isCurrent() && reportError) setError(true);
       }
     },
-    [],
+    [updateView],
   );
   useEffect(() => {
     const controller = new AbortController();
@@ -58,7 +74,7 @@ export function CloudWorkspaceRecovery({
     // The acquisition deadline can close its stream before failure persistence
     // finishes. Reconcile that event independently, with six reads and backoff.
     const checkingRecordedFailure =
-      view.status === "hidden" && surface === "cloud_connection_error";
+      hidden && surface === "cloud_connection_error";
     if (
       view.status !== "recovering" &&
       view.status !== "waiting" &&
@@ -88,7 +104,7 @@ export function CloudWorkspaceRecovery({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view.status, busy, refresh, surface]);
+  }, [view.status, hidden, busy, refresh, surface]);
   useEffect(() => {
     if (
       view.status === "offered" &&
@@ -117,10 +133,10 @@ export function CloudWorkspaceRecovery({
         ),
       });
       if (!response.ok) throw new Error("Recovery confirmation unavailable");
-      setView(await response.json());
+      updateView(await response.json());
     } catch {
       // The server may have accepted consent. Read status; never repeat POST.
-      setView({ status: "recovering", step: "queued" });
+      updateView({ status: "recovering", step: "queued" });
       setError(true);
       void refresh();
     } finally {
@@ -142,14 +158,14 @@ export function CloudWorkspaceRecovery({
       window.open("https://help.hackerai.co/", "_blank", "noopener,noreferrer");
     }
   }
-  if (view.status === "hidden" && !error) return null;
+  if (hidden && !error) return null;
   return (
     <div
       className="mt-3 rounded-lg border p-4 text-sm"
       aria-label="Cloud workspace recovery"
     >
       <p className="font-medium mb-2">Cloud workspace</p>
-      {view.status === "hidden" ? null : view.status === "declined" ? (
+      {hidden ? null : view.status === "declined" ? (
         <>
           <p>Recovery is available whenever you’re ready.</p>
           <Button
@@ -230,7 +246,7 @@ export function CloudWorkspaceRecovery({
       )}
       {error && (
         <p className="mt-2" role="alert">
-          {view.status === "hidden"
+          {hidden
             ? "Workspace status couldn’t be checked. Try again when your connection returns."
             : "We couldn’t check recovery status. Your confirmation won’t be sent again."}
           <Button
