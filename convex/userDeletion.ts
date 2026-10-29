@@ -32,6 +32,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "current_cancellation_reasons",
     "research_run_members",
     "research_user_profiles",
     "subagent_messages",
@@ -498,6 +499,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
     q.eq("user_id", userId),
   );
+  const currentCancellationReasonsBatch = await collectByIndexBatch<
+    Doc<"current_cancellation_reasons">
+  >(ctx, budget, "current_cancellation_reasons", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
     Doc<"cancellation_reason_details">
   >(
@@ -679,6 +685,14 @@ async function cleanupUserDataForUser(
     "subscription_pauses",
     subscriptionPausesToAnonymize,
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  stats.hasMore ||= currentCancellationReasonsBatch.hasMore;
+  await deleteDocs(
+    ctx,
+    stats,
+    "current_cancellation_reasons",
+    currentCancellationReasonsBatch.docs,
     mode,
   );
   await deleteDocs(

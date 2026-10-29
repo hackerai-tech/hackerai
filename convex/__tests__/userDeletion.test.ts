@@ -407,6 +407,18 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         connection_id: "conn-2",
       },
     ],
+    current_cancellation_reasons: [
+      {
+        _id: "current-cancel-user",
+        user_id: userId,
+        reason_details: "private feedback",
+      },
+      {
+        _id: "current-cancel-other",
+        user_id: otherUserId,
+        reason_details: "keep",
+      },
+    ],
     cancellation_reason_details: [
       {
         _id: "cancel-detail-user",
@@ -802,6 +814,12 @@ describe("userDeletion", () => {
       row(tables, "subagent_work_items", "subagent-work-other"),
     ).toBeTruthy();
 
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-other"),
+    ).toBeDefined();
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });

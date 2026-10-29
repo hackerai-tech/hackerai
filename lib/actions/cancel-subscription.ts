@@ -215,11 +215,12 @@ export default async function cancelSubscriptionAction(
     : undefined;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   let cancellationStartRecorded = false;
+  let cancellationReasonId: string | undefined;
   let shouldEmitCancellationCompleted = true;
 
   if (serviceKey) {
     try {
-      await getConvexClient().mutation(
+      cancellationReasonId = await getConvexClient().mutation(
         api.cancellationReasons.recordCancellationStarted,
         {
           serviceKey,
@@ -272,16 +273,45 @@ export default async function cancelSubscriptionAction(
       comment: cancellationReason.reasonDetails,
     } as const;
 
+    const requestOptions = cancellationReasonId
+      ? {
+          idempotencyKey: `cancel:${cancellationReasonId}:${cancelImmediately ? "immediate" : "scheduled"}`,
+        }
+      : undefined;
+    const metadata = cancellationReasonId
+      ? { hackerai_cancellation_reason_id: cancellationReasonId }
+      : undefined;
+    // Stripe's immediate cancel API cannot write metadata. Attach the attempt
+    // first so a deleted webhook can recover completion if this request dies.
+    if (cancelImmediately && metadata) {
+      await stripe.subscriptions.update(
+        subscriptionContext.id,
+        { metadata },
+        {
+          idempotencyKey: `cancel-metadata:${cancellationReasonId}`,
+        },
+      );
+    }
+
     updatedSubscription = cancelImmediately
-      ? await stripe.subscriptions.cancel(subscriptionContext.id, {
-          cancellation_details: cancellationDetails,
-          invoice_now: false,
-          prorate: false,
-        })
-      : await stripe.subscriptions.update(subscriptionContext.id, {
-          cancel_at_period_end: true,
-          cancellation_details: cancellationDetails,
-        });
+      ? await stripe.subscriptions.cancel(
+          subscriptionContext.id,
+          {
+            cancellation_details: cancellationDetails,
+            invoice_now: false,
+            prorate: false,
+          },
+          requestOptions,
+        )
+      : await stripe.subscriptions.update(
+          subscriptionContext.id,
+          {
+            cancel_at_period_end: true,
+            cancellation_details: cancellationDetails,
+            ...(metadata && { metadata }),
+          },
+          requestOptions,
+        );
   } catch (error) {
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",
@@ -333,6 +363,7 @@ export default async function cancelSubscriptionAction(
         api.cancellationReasons.markCancellationCompleted,
         {
           serviceKey,
+          cancellationReasonId,
           stripeSubscriptionId: subscriptionContext.id,
           stripeCustomerId,
           userIds: [user.id],
@@ -404,7 +435,10 @@ export default async function cancelSubscriptionAction(
         ...proMonthlyPricingExperimentProperties(
           subscriptionContext.pricingExperiment,
         ),
-        $insert_id: cancellationCompletionInsertId(subscriptionContext.id),
+        $insert_id: cancellationCompletionInsertId(
+          subscriptionContext.id,
+          cancellationReasonId,
+        ),
       }),
     );
   }

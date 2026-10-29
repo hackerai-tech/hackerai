@@ -51,6 +51,9 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    cancellationReasons: {
+      markCancellationReversed: "cancellationReasons.markCancellationReversed",
+    },
     subscriptionPauses: {
       cancelScheduledPause: "subscriptionPauses.cancelScheduledPause",
     },

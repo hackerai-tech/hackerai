@@ -3,15 +3,17 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
+import type { Doc } from "./_generated/dataModel";
+import { paginationOptsValidator } from "convex/server";
 
 const RECENT_USAGE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MAX_REASON_DETAILS_LENGTH = 2_000;
 const MAX_RECENT_USAGE_LOGS = 5_000;
-const MAX_COMPLETION_CANDIDATES = 100;
 const MAX_REPORT_ROWS = 10_000;
 const MAX_FEEDBACK_EXPORT_ROWS = 10_000;
 
@@ -96,6 +98,79 @@ function normalizeReasonDetails(details: string): string {
   return normalized;
 }
 
+async function latestReason(ctx: Pick<QueryCtx, "db">, subscriptionId: string) {
+  return ctx.db
+    .query("cancellation_reasons")
+    .withIndex("by_stripe_subscription_id", (q) =>
+      q.eq("stripe_subscription_id", subscriptionId),
+    )
+    .order("desc")
+    .first();
+}
+
+async function currentReasons(
+  ctx: Pick<QueryCtx, "db">,
+  args: { startAt?: number; endAt?: number },
+  limit: number,
+) {
+  const current = await ctx.db
+    .query("current_cancellation_reasons")
+    .withIndex("by_created_at", (q) => {
+      if (args.startAt !== undefined && args.endAt !== undefined)
+        return q.gte("created_at", args.startAt).lte("created_at", args.endAt);
+      if (args.startAt !== undefined) return q.gte("created_at", args.startAt);
+      if (args.endAt !== undefined) return q.lte("created_at", args.endAt);
+      return q;
+    })
+    .order("desc")
+    .take(limit);
+  const reasons = await Promise.all(
+    current.map((row) => ctx.db.get(row.cancellation_reason_id)),
+  );
+  return reasons.filter(
+    (row): row is Doc<"cancellation_reasons"> => row !== null,
+  );
+}
+
+async function clearCurrentReason(ctx: MutationCtx, subscriptionId: string) {
+  const current = await ctx.db
+    .query("current_cancellation_reasons")
+    .withIndex("by_stripe_subscription_id", (q) =>
+      q.eq("stripe_subscription_id", subscriptionId),
+    )
+    .unique();
+  if (current) await ctx.db.delete(current._id);
+}
+
+async function publishCurrentReason(
+  ctx: MutationCtx,
+  row: Doc<"cancellation_reasons">,
+) {
+  if (!row.stripe_subscription_id) return;
+  await clearCurrentReason(ctx, row.stripe_subscription_id);
+  if (
+    row.status !== "completed" ||
+    row.reversed_at !== undefined ||
+    row.superseded_at !== undefined ||
+    row.retention_offer_accepted ||
+    (row.operation && row.operation !== "cancel") ||
+    !row.reason_details_id
+  )
+    return;
+  const detail = await ctx.db.get(row.reason_details_id);
+  if (!detail) return; // Account deletion removes the private feedback.
+  await ctx.db.insert("current_cancellation_reasons", {
+    stripe_subscription_id: row.stripe_subscription_id,
+    cancellation_reason_id: row._id,
+    user_id: row.user_id,
+    organization_id: row.organization_id,
+    reason_category: row.reason_category,
+    reason_subcategory: row.reason_subcategory,
+    reason_details: detail.reason_details,
+    created_at: row.started_at,
+  });
+}
+
 async function recentUsageSummary(
   ctx: MutationCtx,
   userId: string,
@@ -130,6 +205,9 @@ async function recentUsageSummary(
 
 export const recordCancellationStarted = mutation({
   args: {
+    operation: v.optional(
+      v.union(v.literal("cancel"), v.literal("pause"), v.literal("downgrade")),
+    ),
     serviceKey: v.string(),
     userId: v.string(),
     organizationId: v.optional(v.string()),
@@ -153,10 +231,39 @@ export const recordCancellationStarted = mutation({
     validateServiceKey(args.serviceKey);
 
     const now = args.startedAt ?? Date.now();
-    const recentUsage = await recentUsageSummary(ctx, args.userId, now);
     const reasonDetails = normalizeReasonDetails(args.reasonDetails);
+    const operation = args.operation ?? "cancel";
+    if (args.stripeSubscriptionId) {
+      const latest = await latestReason(ctx, args.stripeSubscriptionId);
+      if (
+        latest &&
+        latest.reversed_at === undefined &&
+        latest.superseded_at === undefined
+      ) {
+        const detail = latest.reason_details_id
+          ? await ctx.db.get(latest.reason_details_id)
+          : null;
+        // Convex serializes this read/insert transaction, so concurrent identical
+        // requests and retries after an uncertain Stripe response share one ID.
+        if (
+          latest.user_id === args.userId &&
+          latest.organization_id === args.organizationId &&
+          (latest.operation ?? "cancel") === operation &&
+          latest.reason_category === args.reasonCategory &&
+          latest.reason_subcategory === args.reasonSubcategory &&
+          detail?.reason_details === reasonDetails
+        ) {
+          return latest._id;
+        }
+        // Keep edited feedback as a distinct history entry, never overwrite it.
+        await ctx.db.patch(latest._id, { superseded_at: now });
+      }
+      await clearCurrentReason(ctx, args.stripeSubscriptionId);
+    }
+    const recentUsage = await recentUsageSummary(ctx, args.userId, now);
 
     const cancellationReasonId = await ctx.db.insert("cancellation_reasons", {
+      operation,
       user_id: args.userId,
       organization_id: args.organizationId,
       stripe_customer_id: args.stripeCustomerId,
@@ -224,6 +331,9 @@ export const recordRetentionOfferAccepted = mutation({
 
     const row = await ctx.db.get(args.cancellationReasonId);
     if (!row) return { recorded: false, reason: "not_found" as const };
+    if (row.reversed_at !== undefined || row.superseded_at !== undefined) {
+      return { recorded: false, reason: "already_decided" as const };
+    }
     // Repeating the same offer is idempotent; a different offer on a row that
     // already accepted one, or a row that already completed, is rejected so
     // the stored state cannot disagree with Stripe.
@@ -233,7 +343,15 @@ export const recordRetentionOfferAccepted = mutation({
     if (row.retention_offer_accepted) {
       return { recorded: false, reason: "different_offer_accepted" as const };
     }
-    if (row.status !== "started") {
+    // The pause webhook may arrive before the action records acceptance.
+    if (
+      row.status !== "started" &&
+      !(
+        row.status === "completed" &&
+        row.operation === "pause" &&
+        args.retentionOffer === "pause"
+      )
+    ) {
       return { recorded: false, reason: "already_decided" as const };
     }
 
@@ -245,12 +363,15 @@ export const recordRetentionOfferAccepted = mutation({
       }),
       updated_at: acceptedAt,
     });
+    if (row.stripe_subscription_id)
+      await clearCurrentReason(ctx, row.stripe_subscription_id);
     return { recorded: true };
   },
 });
 
 export const markCancellationCompleted = mutation({
   args: {
+    cancellationReasonId: v.optional(v.string()),
     serviceKey: v.string(),
     stripeSubscriptionId: v.string(),
     stripeCustomerId: v.optional(v.string()),
@@ -264,30 +385,35 @@ export const markCancellationCompleted = mutation({
   returns: v.object({
     matchedCount: v.number(),
     updatedCount: v.number(),
+    cancellationReasonId: v.optional(v.id("cancellation_reasons")),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const rows = await ctx.db
-      .query("cancellation_reasons")
-      .withIndex("by_stripe_subscription_id", (q) =>
-        q.eq("stripe_subscription_id", args.stripeSubscriptionId),
-      )
-      .order("desc")
-      .take(MAX_COMPLETION_CANDIDATES);
-
-    const userIdSet = args.userIds ? new Set(args.userIds) : null;
-    const candidates = rows
-      .filter((row) => row.status !== "completed")
-      .filter((row) => !userIdSet || userIdSet.has(row.user_id))
-      .sort((a, b) => b.started_at - a.started_at);
-
-    const target = candidates[0];
-    if (!target) {
-      return { matchedCount: rows.length, updatedCount: 0 };
-    }
-
     const completedAt = args.completedAt ?? Date.now();
+    // Select the latest attempt BEFORE checking its status. Repeated delivery
+    // must not walk backwards and complete an older failed/retained attempt.
+    const target = await latestReason(ctx, args.stripeSubscriptionId);
+    const matchedCount = target ? 1 : 0;
+    if (
+      !target ||
+      target.status !== "started" ||
+      target.reversed_at !== undefined ||
+      target.superseded_at !== undefined ||
+      (!args.cancellationReasonId && target.operation !== undefined) ||
+      (args.cancellationReasonId && args.cancellationReasonId !== target._id) ||
+      (args.userIds && !args.userIds.includes(target.user_id)) ||
+      (args.stripeCustomerId &&
+        target.stripe_customer_id !== args.stripeCustomerId) ||
+      (args.organizationId && target.organization_id !== args.organizationId) ||
+      (args.stripeCancellationReason &&
+        args.stripeCancellationReason !== "cancellation_requested") ||
+      // Stripe timestamps have second precision. Legacy events without the
+      // explicit attempt ID cannot complete attempts from a later second.
+      completedAt + 999 < target.started_at
+    ) {
+      return { matchedCount, updatedCount: 0 };
+    }
     await ctx.db.patch(target._id, {
       status: "completed",
       completed_at: completedAt,
@@ -298,14 +424,136 @@ export const markCancellationCompleted = mutation({
       cancel_at_period_end: args.cancelAtPeriodEnd,
       updated_at: completedAt,
     });
+    const completed = await ctx.db.get(target._id);
+    if (completed) await publishCurrentReason(ctx, completed);
 
-    return { matchedCount: rows.length, updatedCount: 1 };
+    return { matchedCount, updatedCount: 1, cancellationReasonId: target._id };
+  },
+});
+
+export const markCancellationReversed = mutation({
+  args: {
+    serviceKey: v.string(),
+    stripeSubscriptionId: v.string(),
+    stripeCustomerId: v.string(),
+    cancellationReasonId: v.optional(v.string()),
+    reversedAt: v.number(),
+  },
+  returns: v.object({ updatedCount: v.number() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await latestReason(ctx, args.stripeSubscriptionId);
+    if (
+      !row ||
+      row.stripe_customer_id !== args.stripeCustomerId ||
+      (!args.cancellationReasonId && row.operation !== undefined) ||
+      (args.cancellationReasonId && row._id !== args.cancellationReasonId) ||
+      args.reversedAt + 999 < row.started_at ||
+      row.reversed_at !== undefined
+    )
+      return { updatedCount: 0 };
+    await ctx.db.patch(row._id, {
+      reversed_at: args.reversedAt,
+      updated_at: args.reversedAt,
+    });
+    await clearCurrentReason(ctx, args.stripeSubscriptionId);
+    return { updatedCount: 1 };
+  },
+});
+
+// Explicit, paginated rollout reconciliation. The operator compares each
+// candidate with live Stripe state; no historical rows or feedback are deleted.
+export const getCurrentReasonBackfillPage = query({
+  args: { serviceKey: v.string(), paginationOpts: paginationOptsValidator },
+  returns: v.object({
+    continueCursor: v.string(),
+    isDone: v.boolean(),
+    page: v.array(
+      v.object({
+        id: v.id("cancellation_reasons"),
+        updatedAt: v.number(),
+        subscriptionId: v.string(),
+        customerId: v.string(),
+        reasonDetails: v.string(),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const result = await ctx.db
+      .query("cancellation_reasons")
+      .order("desc")
+      .paginate({
+        ...args.paginationOpts,
+        numItems: Math.min(args.paginationOpts.numItems, 100),
+      });
+    const page = [];
+    for (const row of result.page) {
+      if (
+        !row.stripe_subscription_id ||
+        !row.stripe_customer_id ||
+        !row.reason_details_id ||
+        row.status !== "completed" ||
+        row.reversed_at !== undefined ||
+        row.superseded_at !== undefined ||
+        row.retention_offer_accepted ||
+        (row.operation && row.operation !== "cancel")
+      )
+        continue;
+      const latest = await latestReason(ctx, row.stripe_subscription_id);
+      if (latest?._id !== row._id) continue;
+      const detail = await ctx.db.get(row.reason_details_id);
+      if (detail)
+        page.push({
+          id: row._id,
+          updatedAt: row.updated_at,
+          subscriptionId: row.stripe_subscription_id,
+          customerId: row.stripe_customer_id,
+          reasonDetails: detail.reason_details,
+        });
+    }
+    return {
+      page,
+      continueCursor: result.continueCursor,
+      isDone: result.isDone,
+    };
+  },
+});
+
+export const reconcileCurrentCancellationReason = mutation({
+  args: {
+    serviceKey: v.string(),
+    cancellationReasonId: v.id("cancellation_reasons"),
+    expectedUpdatedAt: v.number(),
+    cancellationActive: v.boolean(),
+  },
+  returns: v.object({ applied: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db.get(args.cancellationReasonId);
+    if (
+      !row?.stripe_subscription_id ||
+      row.updated_at !== args.expectedUpdatedAt ||
+      (await latestReason(ctx, row.stripe_subscription_id))?._id !== row._id
+    )
+      return { applied: false };
+    if (args.cancellationActive) await publishCurrentReason(ctx, row);
+    else {
+      // Stripe has restored this plan or replaced this cancellation with a pause.
+      await ctx.db.patch(row._id, {
+        reversed_at: Date.now(),
+        updated_at: Date.now(),
+      });
+      await clearCurrentReason(ctx, row.stripe_subscription_id);
+    }
+    return { applied: true };
   },
 });
 
 export const getCancellationReasonReport = query({
   args: {
     serviceKey: v.string(),
+    includeHistory: v.optional(v.boolean()),
     startAt: v.optional(v.number()),
     endAt: v.optional(v.number()),
     subscriptionTier: v.optional(subscriptionTierValidator),
@@ -327,24 +575,26 @@ export const getCancellationReasonReport = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const rows = await ctx.db
-      .query("cancellation_reasons")
-      .withIndex("by_started_at", (q) => {
-        if (args.startAt !== undefined && args.endAt !== undefined) {
-          return q
-            .gte("started_at", args.startAt)
-            .lte("started_at", args.endAt);
-        }
-        if (args.startAt !== undefined) {
-          return q.gte("started_at", args.startAt);
-        }
-        if (args.endAt !== undefined) {
-          return q.lte("started_at", args.endAt);
-        }
-        return q;
-      })
-      .order("desc")
-      .take(MAX_REPORT_ROWS);
+    const rows = args.includeHistory
+      ? await ctx.db
+          .query("cancellation_reasons")
+          .withIndex("by_started_at", (q) => {
+            if (args.startAt !== undefined && args.endAt !== undefined) {
+              return q
+                .gte("started_at", args.startAt)
+                .lte("started_at", args.endAt);
+            }
+            if (args.startAt !== undefined) {
+              return q.gte("started_at", args.startAt);
+            }
+            if (args.endAt !== undefined) {
+              return q.lte("started_at", args.endAt);
+            }
+            return q;
+          })
+          .order("desc")
+          .take(MAX_REPORT_ROWS)
+      : await currentReasons(ctx, args, MAX_REPORT_ROWS);
 
     const groups = new Map<
       string,
@@ -423,6 +673,7 @@ export const getCancellationReasonReport = query({
 
 export const getCancellationFeedbackForAnalysis = internalQuery({
   args: {
+    includeHistory: v.optional(v.boolean()),
     limit: v.optional(v.number()),
     startAt: v.optional(v.number()),
     endAt: v.optional(v.number()),
@@ -461,24 +712,40 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
       ),
     );
 
-    const details = await ctx.db
-      .query("cancellation_reason_details")
-      .withIndex("by_created_at", (q) => {
-        if (args.startAt !== undefined && args.endAt !== undefined) {
-          return q
-            .gte("created_at", args.startAt)
-            .lte("created_at", args.endAt);
-        }
-        if (args.startAt !== undefined) {
-          return q.gte("created_at", args.startAt);
-        }
-        if (args.endAt !== undefined) {
-          return q.lte("created_at", args.endAt);
-        }
-        return q;
-      })
-      .order("desc")
-      .take(limit);
+    const details = args.includeHistory
+      ? await ctx.db
+          .query("cancellation_reason_details")
+          .withIndex("by_created_at", (q) => {
+            if (args.startAt !== undefined && args.endAt !== undefined) {
+              return q
+                .gte("created_at", args.startAt)
+                .lte("created_at", args.endAt);
+            }
+            if (args.startAt !== undefined) {
+              return q.gte("created_at", args.startAt);
+            }
+            if (args.endAt !== undefined) {
+              return q.lte("created_at", args.endAt);
+            }
+            return q;
+          })
+          .order("desc")
+          .take(limit)
+      : await ctx.db
+          .query("current_cancellation_reasons")
+          .withIndex("by_created_at", (q) => {
+            if (args.startAt !== undefined && args.endAt !== undefined)
+              return q
+                .gte("created_at", args.startAt)
+                .lte("created_at", args.endAt);
+            if (args.startAt !== undefined)
+              return q.gte("created_at", args.startAt);
+            if (args.endAt !== undefined)
+              return q.lte("created_at", args.endAt);
+            return q;
+          })
+          .order("desc")
+          .take(limit);
 
     return Promise.all(
       details.map(async (detail) => {

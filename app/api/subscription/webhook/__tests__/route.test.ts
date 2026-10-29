@@ -123,6 +123,7 @@ jest.mock("@/convex/_generated/api", () => ({
       recordPaidStartEvent: "unitEconomics.recordPaidStartEvent",
     },
     cancellationReasons: {
+      markCancellationReversed: "cancellationReasons.markCancellationReversed",
       recordCancellation: "cancellationReasons.recordCancellation",
       completeCancellationReason:
         "cancellationReasons.completeCancellationReason",
@@ -3893,6 +3894,73 @@ describe("POST /api/subscription/webhook", () => {
         retention_pause: true,
         cancellation_completion_type: "deleted",
         $insert_id: cancellationCompletionInsertId("sub_paused"),
+      }),
+    );
+  });
+  it("records reversals against the event's attempt and occurrence time", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_reversed",
+      type: "customer.subscription.updated",
+      created: 1_800_000_000,
+      data: {
+        previous_attributes: { cancel_at_period_end: true },
+        object: {
+          id: "sub_123",
+          customer: "cus_123",
+          cancel_at_period_end: false,
+          metadata: { hackerai_cancellation_reason_id: "reason_123" },
+        },
+      },
+    });
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "cancellationReasons.markCancellationReversed",
+      expect.objectContaining({
+        cancellationReasonId: "reason_123",
+        stripeSubscriptionId: "sub_123",
+        stripeCustomerId: "cus_123",
+        reversedAt: 1_800_000_000_000,
+      }),
+    );
+  });
+
+  it("propagates a retryable failure when cancellation completion persistence fails", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_scheduled",
+      type: "customer.subscription.updated",
+      created: 1_800_000_010,
+      data: {
+        previous_attributes: { cancel_at_period_end: false },
+        object: {
+          id: "sub_123",
+          customer: "cus_123",
+          cancel_at_period_end: true,
+          canceled_at: 1_800_000_000,
+          metadata: { hackerai_cancellation_reason_id: "reason_123" },
+          items: { data: [] },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_123",
+      metadata: { workOSOrganizationId: "org_123" },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_123" }]),
+    } as never);
+    mockConvexMutation.mockImplementation((name) =>
+      name === "cancellationReasons.markCancellationCompleted"
+        ? Promise.reject(new Error("Unavailable"))
+        : Promise.resolve({ alreadyProcessed: false }),
+    );
+    const { POST } = await import("../route");
+    await expect(POST(makeWebhookRequest())).rejects.toThrow("Unavailable");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "cancellationReasons.markCancellationCompleted",
+      expect.objectContaining({
+        cancellationReasonId: "reason_123",
+        completedAt: 1_800_000_000_000,
       }),
     );
   });

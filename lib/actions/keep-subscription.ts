@@ -28,6 +28,7 @@ import type Stripe from "stripe";
 import type { SubscriptionTier } from "@/types";
 
 type SubscriptionContext = {
+  cancellationReasonId?: string;
   id: string;
   priceId?: string;
   plan?: string;
@@ -65,6 +66,8 @@ async function getActiveSubscriptionContext(
 
   const price = currentSubscription.items.data[0]?.price;
   return {
+    cancellationReasonId:
+      currentSubscription.metadata?.hackerai_cancellation_reason_id,
     id: currentSubscription.id,
     priceId: price?.id,
     plan: subscriptionPlanFromPrice(price),
@@ -113,6 +116,23 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
   const subscriptionContext =
     await getActiveSubscriptionContext(stripeCustomerId);
 
+  const recordReversal = async () => {
+    const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+    if (!serviceKey) return;
+    // This is also called for an already-kept subscription: a retry must
+    // repair a failed persistence write after Stripe restored the plan.
+    await getConvexClient().mutation(
+      api.cancellationReasons.markCancellationReversed,
+      {
+        serviceKey,
+        stripeSubscriptionId: subscriptionContext.id,
+        stripeCustomerId,
+        cancellationReasonId: subscriptionContext.cancellationReasonId,
+        reversedAt: Date.now(),
+      },
+    );
+  };
+
   if (!subscriptionContext.cancelAtPeriodEnd) {
     // "Keep plan" while a retention downgrade is scheduled: release the
     // schedule so the subscription keeps renewing on the current price.
@@ -142,6 +162,7 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
         }),
       );
     }
+    await recordReversal();
     return {
       kept: true,
       cancelAtPeriodEnd: false,
@@ -199,6 +220,8 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
       }),
     );
   }
+
+  await recordReversal();
 
   phLogger.event(
     PAID_FUNNEL_EVENTS.cancellationReversed,
