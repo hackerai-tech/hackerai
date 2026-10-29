@@ -641,6 +641,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     paid_start_mix_daily: [
       { _id: "paid-mix", day: "2026-06-21", tier: "pro", plan: "pro" },
     ],
+    billing_operations: [
+      {
+        _id: "billing-owner",
+        stripe_customer_id: "cus_user",
+        token: "in-flight-owner",
+        writing: true,
+      },
+    ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
     user_deletion_fences: [

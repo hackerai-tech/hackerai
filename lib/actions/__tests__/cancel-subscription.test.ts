@@ -23,6 +23,16 @@ const mockPostHogError = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockGetConvexClient = jest.fn();
 
+jest.mock("@/lib/billing/subscription-operation", () => ({
+  withSubscriptionOperation: async (
+    _customer: string,
+    _operation: string,
+    run: (guard: {
+      write: <T>(write: () => Promise<T>) => Promise<T>;
+    }) => Promise<unknown>,
+  ) => run({ write: (write) => write() }),
+}));
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {

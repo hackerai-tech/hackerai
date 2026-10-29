@@ -59,6 +59,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
+    // Unresolved Stripe writes must stay fenced even during account deletion.
+    "billing_operations",
     "processed_webhooks",
     "processed_checkout_sessions",
     // Reports contain only cohort-level patterns from runs with at least three

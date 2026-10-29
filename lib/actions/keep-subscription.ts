@@ -1,5 +1,10 @@
 "use server";
 
+import {
+  withSubscriptionOperation,
+  type SubscriptionOperation,
+} from "@/lib/billing/subscription-operation";
+
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
@@ -111,8 +116,17 @@ async function cancelScheduledPauseRecord(args: {
 }
 
 export default async function keepSubscriptionAction(): Promise<KeepSubscriptionResult> {
-  const { organizationId, user, stripeCustomerId } =
-    await getBillingActionContext();
+  const context = await getBillingActionContext();
+  return withSubscriptionOperation(context.stripeCustomerId, "keep", (guard) =>
+    keepWithinOperation(context, guard),
+  );
+}
+
+async function keepWithinOperation(
+  context: Awaited<ReturnType<typeof getBillingActionContext>>,
+  guard: SubscriptionOperation,
+): Promise<KeepSubscriptionResult> {
+  const { organizationId, user, stripeCustomerId } = context;
   const subscriptionContext =
     await getActiveSubscriptionContext(stripeCustomerId);
 
@@ -136,15 +150,14 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
   if (!subscriptionContext.cancelAtPeriodEnd) {
     // "Keep plan" while a retention downgrade is scheduled: release the
     // schedule so the subscription keeps renewing on the current price.
-    const planChangeCanceled = await releaseSubscriptionSchedule(
-      subscriptionContext.scheduleId,
-      {
+    const planChangeCanceled = await guard.write(() =>
+      releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
         userId: user.id,
         org_id: organizationId,
         stripe_customer_id: stripeCustomerId,
         stripe_subscription_id: subscriptionContext.id,
         reason: "keep_plan",
-      },
+      }),
     );
     if (planChangeCanceled) {
       phLogger.event(
@@ -186,12 +199,11 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
     });
     throw error;
   }
-  const updatedSubscription = await stripe.subscriptions.update(
-    subscriptionContext.id,
-    {
+  const updatedSubscription = await guard.write(() =>
+    stripe.subscriptions.update(subscriptionContext.id, {
       cancel_at_period_end: false,
       ...(pause && { metadata: clearedSubscriptionPauseMetadata() }),
-    },
+    }),
   );
 
   let pauseCanceled = false;

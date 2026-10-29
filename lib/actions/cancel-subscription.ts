@@ -1,5 +1,10 @@
 "use server";
 
+import {
+  withSubscriptionOperation,
+  type SubscriptionOperation,
+} from "@/lib/billing/subscription-operation";
+
 import { randomUUID } from "node:crypto";
 
 import type Stripe from "stripe";
@@ -156,7 +161,7 @@ function shouldCancelImmediately(status: Stripe.Subscription.Status) {
 
 /**
  * Keep survey identity across retries while reconciling each request with Stripe.
- * Feedback persistence remains best effort so an outage cannot block cancellation.
+ * After required coordination succeeds, feedback persistence is best effort.
  */
 export default async function cancelSubscriptionAction(
   input: CancelSubscriptionInput,
@@ -178,6 +183,20 @@ export default async function cancelSubscriptionAction(
     });
     throw error;
   });
+  return withSubscriptionOperation(
+    context.stripeCustomerId,
+    "cancel",
+    (guard) =>
+      cancelWithinOperation(context, cancellationReason, startedAt, guard),
+  );
+}
+
+async function cancelWithinOperation(
+  context: Awaited<ReturnType<typeof getBillingActionContext>>,
+  cancellationReason: ReturnType<typeof parseCancellationReasonInput>,
+  startedAt: number,
+  guard: SubscriptionOperation,
+) {
   const { organizationId, user, stripeCustomerId } = context;
   const billingFields = {
     userId: user.id,
@@ -272,11 +291,13 @@ export default async function cancelSubscriptionAction(
   let updatedSubscription: Stripe.Subscription;
   try {
     // A pending retention downgrade would block the cancellation update.
-    await releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
-      ...billingFields,
-      stripe_subscription_id: subscriptionContext.id,
-      reason: "cancellation",
-    });
+    await guard.write(() =>
+      releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+        ...billingFields,
+        stripe_subscription_id: subscriptionContext.id,
+        reason: "cancellation",
+      }),
+    );
     const cancellationDetails = {
       feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
       comment: cancellationReason.reasonDetails,
@@ -296,34 +317,38 @@ export default async function cancelSubscriptionAction(
     // Stripe's immediate cancel API cannot write metadata. Attach the attempt
     // first so a deleted webhook can recover completion if this request dies.
     if (cancelImmediately && metadata) {
-      await stripe.subscriptions.update(
-        subscriptionContext.id,
-        { metadata },
-        {
-          idempotencyKey: `cancel-metadata:${cancellationReasonId}:${stripeRequestId}`,
-        },
+      await guard.write(() =>
+        stripe.subscriptions.update(
+          subscriptionContext.id,
+          { metadata },
+          {
+            idempotencyKey: `cancel-metadata:${cancellationReasonId}:${stripeRequestId}`,
+          },
+        ),
       );
     }
 
-    updatedSubscription = cancelImmediately
-      ? await stripe.subscriptions.cancel(
-          subscriptionContext.id,
-          {
-            cancellation_details: cancellationDetails,
-            invoice_now: false,
-            prorate: false,
-          },
-          requestOptions,
-        )
-      : await stripe.subscriptions.update(
-          subscriptionContext.id,
-          {
-            cancel_at_period_end: true,
-            cancellation_details: cancellationDetails,
-            ...(metadata && { metadata }),
-          },
-          requestOptions,
-        );
+    updatedSubscription = await guard.write(() =>
+      cancelImmediately
+        ? stripe.subscriptions.cancel(
+            subscriptionContext.id,
+            {
+              cancellation_details: cancellationDetails,
+              invoice_now: false,
+              prorate: false,
+            },
+            requestOptions,
+          )
+        : stripe.subscriptions.update(
+            subscriptionContext.id,
+            {
+              cancel_at_period_end: true,
+              cancellation_details: cancellationDetails,
+              ...(metadata && { metadata }),
+            },
+            requestOptions,
+          ),
+    );
   } catch (error) {
     phLogger.error("billing_subscription_cancellation_action_failed", {
       event: "billing_subscription_cancellation_action_failed",

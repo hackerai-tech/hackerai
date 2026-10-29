@@ -676,6 +676,16 @@ export default defineSchema({
     feedback_details: v.optional(v.string()),
   }),
 
+  // A writing owner has no TTL: Stripe may still apply an unknown-outcome write.
+  billing_operations: defineTable({
+    stripe_customer_id: v.string(),
+    token: v.string(),
+    operation: v.union(v.literal("cancel"), v.literal("keep")),
+    writing: v.boolean(),
+    created_at: v.number(),
+    expires_at: v.number(),
+  }).index("by_stripe_customer_id", ["stripe_customer_id"]),
+
   cancellation_reasons: defineTable({
     operation: v.optional(
       v.union(v.literal("cancel"), v.literal("pause"), v.literal("downgrade")),
