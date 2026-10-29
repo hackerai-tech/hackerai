@@ -498,6 +498,25 @@ describe("persistent goal lifecycle", () => {
     });
     expect(db.goal().state).toBe("failed");
   });
+  it("replaying settlement cannot mutate a committed outcome or a successor run", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await invoke(finish, db.ctx, terminal);
+    const settled = { ...db.goal() };
+    expect(await invoke(finish, db.ctx, terminal)).toBeNull();
+    expect(db.goal()).toEqual(settled);
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(claimRun, db.ctx, {
+      ...owner,
+      generation: db.goal().generation,
+      runId: "r2",
+    });
+    expect(db.goal().activeRunId).toBe("r2");
+    expect(await invoke(finish, db.ctx, terminal)).toBeNull();
+    expect(db.goal().activeRunId).toBe("r2");
+    expect(db.goal().state).toBe("running");
+  });
   it("authorizes continuation only for the finished run and clears it on manual resume", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

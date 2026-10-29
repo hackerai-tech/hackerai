@@ -90,13 +90,27 @@ export async function finishGoalRun(
     const { setConvexUrl } = await import("@/lib/db/convex-client");
     setConvexUrl(payload.convexUrl);
   }
-  const goal = await getConvexClient().mutation(api.agentGoals.finish, {
+  const args = {
     serviceKey: goalServiceKey(),
     chatId: payload.chatId,
     userId: payload.userId,
     runId,
     ...outcome,
-  });
+  };
+  let goal: Doc<"agent_goals"> | null = null;
+  // finish is fenced by activeRunId: a committed or superseded run returns null
+  // on replay. Retry only this settlement, preserving the paid verdict and IDs;
+  // never retry the Agent work or completion verification.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      goal = await getConvexClient().mutation(api.agentGoals.finish, args);
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+
   if (goal) {
     let posthog: ReturnType<typeof PostHogClient> = null;
     try {
