@@ -1,5 +1,7 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+
 import type Stripe from "stripe";
 import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
@@ -152,6 +154,10 @@ function shouldCancelImmediately(status: Stripe.Subscription.Status) {
   return status === "past_due" || status === "unpaid";
 }
 
+/**
+ * Keep survey identity across retries while reconciling each request with Stripe.
+ * Feedback persistence remains best effort so an outage cannot block cancellation.
+ */
 export default async function cancelSubscriptionAction(
   input: CancelSubscriptionInput,
 ) {
@@ -276,9 +282,12 @@ export default async function cancelSubscriptionAction(
       comment: cancellationReason.reasonDetails,
     } as const;
 
+    // SDK transport retries share this request's key. A new user request must
+    // not replay a cached Stripe error/success from an earlier decision.
+    const stripeRequestId = randomUUID();
     const requestOptions = cancellationReasonId
       ? {
-          idempotencyKey: `cancel:${cancellationReasonId}:${cancelImmediately ? "immediate" : "scheduled"}`,
+          idempotencyKey: `cancel:${cancellationReasonId}:${stripeRequestId}:${cancelImmediately ? "immediate" : "scheduled"}`,
         }
       : undefined;
     const metadata = cancellationReasonId
@@ -291,7 +300,7 @@ export default async function cancelSubscriptionAction(
         subscriptionContext.id,
         { metadata },
         {
-          idempotencyKey: `cancel-metadata:${cancellationReasonId}`,
+          idempotencyKey: `cancel-metadata:${cancellationReasonId}:${stripeRequestId}`,
         },
       );
     }

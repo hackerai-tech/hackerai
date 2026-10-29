@@ -108,6 +108,7 @@ async function latestReason(ctx: Pick<QueryCtx, "db">, subscriptionId: string) {
     .first();
 }
 
+/** Apply report limits to current decisions, so history cannot crowd them out. */
 async function currentReasons(
   ctx: Pick<QueryCtx, "db">,
   args: { startAt?: number; endAt?: number },
@@ -142,6 +143,7 @@ async function clearCurrentReason(ctx: MutationCtx, subscriptionId: string) {
   if (current) await ctx.db.delete(current._id);
 }
 
+/** Replace the read model atomically; callers must have selected the latest attempt. */
 async function publishCurrentReason(
   ctx: MutationCtx,
   row: Doc<"cancellation_reasons">,

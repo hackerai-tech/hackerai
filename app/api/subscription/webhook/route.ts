@@ -2421,6 +2421,7 @@ async function handleSubscriptionUpdated(
   }
 }
 
+/** Use the event's attempt and occurrence time so delayed delivery cannot complete a later decision. */
 async function recordCancellationCompleted(args: {
   subscription: Stripe.Subscription;
   customerId: string;

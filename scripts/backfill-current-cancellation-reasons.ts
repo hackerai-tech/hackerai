@@ -7,8 +7,11 @@ import { api } from "../convex/_generated/api";
 import { createServiceConvexClient } from "../lib/db/service-client";
 import { subscriptionPauseFromMetadata } from "../lib/billing/retention-offers";
 
-// Run only after independently verifying the environment/account mapping.
-// No implicit .env selection, customer content output, or automatic retries.
+/**
+ * Reconcile one bounded history page after verifying the environment/account mapping.
+ * Dry-run by default; uncertain Stripe matches and changed candidates are skipped.
+ * Never print customer feedback or select credentials from an implicit environment.
+ */
 async function main() {
   const { values } = parseArgs({
     options: {

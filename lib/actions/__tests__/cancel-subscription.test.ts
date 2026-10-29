@@ -628,7 +628,7 @@ describe("cancelSubscriptionAction", () => {
       }),
     );
   });
-  it("reuses the attempt and Stripe idempotency key after a lost response", async () => {
+  it("reuses the survey attempt but refreshes the Stripe key after a lost response", async () => {
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     mockListSubscriptions.mockResolvedValue({
       data: [
@@ -666,13 +666,19 @@ describe("cancelSubscriptionAction", () => {
     await expect(cancel(input)).rejects.toThrow("Response lost");
     await expect(cancel(input)).resolves.toMatchObject({ canceled: true });
     const first = mockUpdateSubscription.mock.calls[0];
-    expect(mockUpdateSubscription.mock.calls[1]).toEqual(first);
+    const second = mockUpdateSubscription.mock.calls[1];
+    expect(second.slice(0, 2)).toEqual(first.slice(0, 2));
+    expect(second[2]).not.toEqual(first[2]);
     expect(first).toEqual([
       "sub_123",
       expect.objectContaining({
         metadata: { hackerai_cancellation_reason_id: "reason_retry" },
       }),
-      { idempotencyKey: "cancel:reason_retry:scheduled" },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^cancel:reason_retry:[a-f0-9-]{36}:scheduled$/,
+        ),
+      },
     ]);
     expect(mockConvexMutation).toHaveBeenLastCalledWith(
       expect.anything(),
