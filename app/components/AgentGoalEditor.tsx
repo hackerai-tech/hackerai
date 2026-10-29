@@ -306,7 +306,7 @@ export function AgentGoalEditor({
         {settling
           ? "Waiting for the previous run to stop before continuing with your saved goal…"
           : stale
-            ? "The goal changed or was cleared. Your unsaved draft remains above."
+            ? "The goal changed or was cleared. Your unsaved draft is kept in the editor."
             : !original
               ? goal === undefined
                 ? "Loading goal…"
