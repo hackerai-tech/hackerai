@@ -281,7 +281,7 @@ describe("goal controls", () => {
     );
   });
 
-  it("allows Pause and Stop while a submitted goal stream is still pending", async () => {
+  it("allows Edit, Pause and Clear while a submitted goal stream is still pending", async () => {
     setMockQueryResult({ ...goal, state: "paused", runs: 0 });
     const send = jest.fn(() => new Promise<void>(() => {}));
     const props = {
@@ -290,6 +290,7 @@ describe("goal controls", () => {
       eligible: true,
       idle: true,
       send,
+      onEdit: jest.fn(),
       settings,
     };
     const { rerender } = render(<AgentGoalPanel {...props} />);
@@ -301,6 +302,9 @@ describe("goal controls", () => {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     setMockQueryResult({ ...goal, state: "running", activeRunId: "r1" });
     rerender(<AgentGoalPanel {...props} idle={false} />);
+    expect(screen.getByRole("button", { name: "Edit goal" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    expect(props.onEdit).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Pause goal" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear goal" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Pause goal" }));

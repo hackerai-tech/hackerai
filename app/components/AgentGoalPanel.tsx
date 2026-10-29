@@ -347,7 +347,7 @@ export function AgentGoalPanel({
                 size={isMobile ? "icon" : "icon-sm"}
                 variant="ghost"
                 aria-label="Edit goal"
-                disabled={busy}
+                disabled={controlling}
                 onClick={() => {
                   openingEditor.current = isMobile === true;
                   setMobileOpen(false);
