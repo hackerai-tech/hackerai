@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { Download, ZoomIn, ZoomOut } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
+import { useCommittedRef } from "../hooks/useLatestRef";
 
 interface ImageViewerProps {
   isOpen: boolean;
@@ -17,11 +18,16 @@ export const ImageViewer = ({
   imageAlt,
   fileName,
 }: ImageViewerProps) => {
+  const currentImageRef = useCommittedRef({ imageSrc, isOpen });
   const [isImageLoading, setIsImageLoading] = useState(true);
+  const [failedDownloadSrc, setFailedDownloadSrc] = useState<string | null>(
+    null,
+  );
   const [zoom, setZoom] = useState(100);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const downloadAttemptRef = useRef(0);
   const imageFrameRef = useRef<HTMLDivElement>(null);
   const didDragRef = useRef(false);
   const dragStartRef = useRef<{
@@ -34,7 +40,6 @@ export const ImageViewer = ({
 
   // Reset loading state when imageSrc changes
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsImageLoading(true);
     setZoom(100);
     setPan({ x: 0, y: 0 });
@@ -113,6 +118,7 @@ export const ImageViewer = ({
   };
 
   const handleDownload = async () => {
+    const attempt = ++downloadAttemptRef.current;
     const downloadName =
       fileName ||
       imageAlt
@@ -123,7 +129,9 @@ export const ImageViewer = ({
       "image";
 
     try {
-      const response = await fetch(imageSrc);
+      // Image display can cache a response without the CORS headers fetch needs.
+      const response = await fetch(imageSrc, { cache: "no-store" });
+      if (!response.ok) throw new Error("Image download request failed");
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -133,7 +141,20 @@ export const ImageViewer = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(blobUrl);
+      if (attempt === downloadAttemptRef.current) {
+        setFailedDownloadSrc((current) =>
+          current === imageSrc ? null : current,
+        );
+      }
     } catch {
+      if (
+        attempt !== downloadAttemptRef.current ||
+        !dialogRef.current ||
+        !currentImageRef.current.isOpen ||
+        currentImageRef.current.imageSrc !== imageSrc
+      )
+        return;
+      setFailedDownloadSrc(imageSrc);
       window.open(imageSrc, "_blank", "noopener,noreferrer");
     }
   };
@@ -231,13 +252,34 @@ export const ImageViewer = ({
 
   return (
     <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="image-viewer-title"
+      aria-describedby="image-viewer-description"
       data-state="open"
-      className="radix-state-open:animate-show fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/90 dark:bg-black/80"
+      className="radix-state-open:animate-show focus:outline-hidden fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/90 dark:bg-black/80"
       style={{ pointerEvents: "auto" }}
       onClick={handleBackdropClick}
       tabIndex={-1}
       data-testid="image-zoom-modal"
     >
+      {failedDownloadSrc === imageSrc && (
+        <div
+          role="alert"
+          className="absolute bottom-[4.5rem] left-1/2 z-10 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-lg bg-black/65 px-3 py-1.5 text-center text-sm text-white backdrop-blur-2xl"
+        >
+          Download failed.{" "}
+          <a
+            href={imageSrc}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            Open image
+          </a>
+        </div>
+      )}
       <div className="absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-black/65 py-1 pl-1 pr-3 text-white shadow-2xl backdrop-blur-2xl">
         <button
           type="button"
@@ -298,11 +340,6 @@ export const ImageViewer = ({
 
       {/* Image Container */}
       <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="image-viewer-title"
-        aria-describedby="image-viewer-description"
         data-state="open"
         className={`radix-state-open:animate-contentShow focus:outline-hidden relative flex h-full w-full items-center justify-center overflow-hidden ${
           zoom > 100
