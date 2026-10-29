@@ -34,7 +34,7 @@ export const ImageViewer = ({
 
   // Reset loading state when imageSrc changes
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setIsImageLoading(true);
     setZoom(100);
     setPan({ x: 0, y: 0 });
@@ -124,6 +124,7 @@ export const ImageViewer = ({
 
     try {
       const response = await fetch(imageSrc);
+      if (!response.ok) throw new Error("Image download request failed");
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
