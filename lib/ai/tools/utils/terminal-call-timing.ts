@@ -1,6 +1,9 @@
 import type { ToolExecutionOptions } from "ai";
 import type { ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
+import { sampleDiagnosticOperation } from "@/lib/analytics/diagnostic-sampling";
+
+const SLOW_TERMINAL_CALL_MS = 30_000;
 
 type TerminalInput = {
   timeout?: number;
@@ -33,6 +36,38 @@ export function withTerminalCallTiming<
       result?: Record<string, unknown>,
     ) => {
       try {
+        const exitCode = result?.exitCode;
+        const nestedExitCode = (
+          result?.exited as { exitCode?: unknown } | undefined
+        )?.exitCode;
+        const diagnostic =
+          outcome === "threw" ||
+          options.abortSignal?.aborted === true ||
+          Boolean(result?.error) ||
+          result?.success === false ||
+          result?.waitExpired === true ||
+          result?.timedOut === true ||
+          result?.recovered === true ||
+          result?.recordPersistenceFailed === true ||
+          result?.status === "unknown" ||
+          !(
+            exitCode === 0 ||
+            nestedExitCode === 0 ||
+            typeof result?.session === "string"
+          ) ||
+          (typeof exitCode === "number" && exitCode !== 0) ||
+          (typeof nestedExitCode === "number" && nestedExitCode !== 0) ||
+          callTiming.elapsedMs >= SLOW_TERMINAL_CALL_MS;
+        if (
+          !diagnostic &&
+          !sampleDiagnosticOperation(
+            JSON.stringify([
+              context.triggerRunId ?? context.chatId,
+              options.toolCallId,
+            ]),
+          )
+        )
+          return;
         // Never include the command, brief, stdin, output, paths, or error text.
         phLogger.info("terminal_call_finished", {
           event: "terminal_call_finished",
@@ -46,6 +81,13 @@ export function withTerminalCallTiming<
           requested_wait_seconds: input.timeout ?? null,
           tool_elapsed_ms: callTiming.elapsedMs,
           outcome,
+          telemetry_version: 2,
+          telemetry_sample_rate: diagnostic ? 1 : 0.1,
+          telemetry_selection: diagnostic ? "diagnostic" : "sampled",
+          result_error: Boolean(result?.error),
+          recovered: result?.recovered === true,
+          record_persistence_failed: result?.recordPersistenceFailed === true,
+          timed_out: result?.timedOut === true,
           signal_aborted: options.abortSignal?.aborted ?? false,
           wait_expired: result?.waitExpired === true,
           session_returned: typeof result?.session === "string",
