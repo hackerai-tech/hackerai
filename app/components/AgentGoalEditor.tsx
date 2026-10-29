@@ -37,6 +37,7 @@ export function AgentGoalEditor({
   );
   const [text, setText] = useState(draft?.text ?? "");
   const [saving, setSaving] = useState(false);
+  const [settling, setSettling] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
   const statusId = useId();
@@ -71,7 +72,8 @@ export function AgentGoalEditor({
     current._id === original._id &&
     current.startedAt === original.startedAt &&
     goalEditText(current) === goalEditText(original);
-  const stale = !!original && goal !== undefined && !matchesOriginal(goal);
+  const stale =
+    !saving && !!original && goal !== undefined && !matchesOriginal(goal);
   // This is a plain-text editor, not a slash-command parser. Retain legacy
   // explicit constraints; only the implicit criterion follows a revised request.
   const objective = text.trim();
@@ -116,6 +118,42 @@ export function AgentGoalEditor({
       );
     return current!;
   }
+  async function waitForSavedGoal(generation: number): Promise<Goal | null> {
+    const deadline = Date.now() + 10_000;
+    while (mounted.current) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0)
+        throw new Error(
+          "The previous run is still stopping. Resume when ready.",
+        );
+      const response = await fetch(
+        `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+        {
+          cache: "no-store",
+          signal: AbortSignal.timeout(remaining),
+        },
+      );
+      if (!response.ok)
+        throw new Error(
+          "Could not check whether the previous run stopped. Resume when ready.",
+        );
+      const current = (await response.json()).goal as Goal | null;
+      if (
+        !current ||
+        current.deletedAt ||
+        current._id !== original?._id ||
+        current.generation !== generation ||
+        current.state !== "paused"
+      ) {
+        throw new Error(
+          "The goal changed before it could continue. Check its current state.",
+        );
+      }
+      if (!current.activeRunId) return current;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return null;
+  }
   async function save() {
     if (!canSave || !fields) return;
     setSaving(true);
@@ -158,8 +196,24 @@ export function AgentGoalEditor({
         continue_after_update: shouldContinue,
       });
       if (mounted.current) {
+        if (shouldContinue && Number.isSafeInteger(saved.generation)) {
+          setSettling(true);
+          try {
+            const settled = await waitForSavedGoal(saved.generation);
+            if (!settled || !mounted.current) return;
+            current = settled;
+          } catch (cause) {
+            if (mounted.current) {
+              onClose();
+              toast.error(
+                `Goal saved. Could not continue: ${cause instanceof Error ? cause.message : "Resume when ready."}`,
+              );
+            }
+            return;
+          }
+        }
         onClose();
-        if (shouldContinue && continueGoal) {
+        if (shouldContinue) {
           // send resolves when streaming ends. Close the editor immediately so
           // another edit is possible while the replacement run is working.
           if (!Number.isSafeInteger(saved.generation)) {
@@ -188,6 +242,7 @@ export function AgentGoalEditor({
     } finally {
       if (mounted.current) {
         setSaving(false);
+        setSettling(false);
         input.current?.focus();
       }
     }
@@ -216,7 +271,11 @@ export function AgentGoalEditor({
           onClick={save}
         >
           {saving ? (
-            "Saving…"
+            settling ? (
+              "Continuing…"
+            ) : (
+              "Saving…"
+            )
           ) : willContinue ? (
             <>
               <span className="desktop:hidden">Update</span>
@@ -262,22 +321,24 @@ export function AgentGoalEditor({
       />
       <div className="shrink-0 space-y-2 border-t px-4 py-3 text-xs text-muted-foreground">
         <p id={statusId} role="status">
-          {stale
-            ? "The goal changed or was cleared. Your unsaved draft remains above."
-            : !original
-              ? goal === undefined
-                ? "Loading goal…"
-                : "This goal is no longer available."
-              : goal &&
-                  ["running", "queued", "waiting", "needs_approval"].includes(
-                    goal.state,
-                  )
-                ? willContinue
-                  ? "The agent keeps working while you edit. Updating keeps its partial response and continues in a new run with the revised goal."
-                  : "Saving keeps the revised goal paused until you resume."
-                : goal?.state === "achieved"
-                  ? "Saving reopens this goal and resets its completion check. Resume when ready."
-                  : "Save changes, then Resume to pursue the updated goal."}
+          {settling
+            ? "Waiting for the previous run to stop before continuing with your saved goal…"
+            : stale
+              ? "The goal changed or was cleared. Your unsaved draft remains above."
+              : !original
+                ? goal === undefined
+                  ? "Loading goal…"
+                  : "This goal is no longer available."
+                : goal &&
+                    ["running", "queued", "waiting", "needs_approval"].includes(
+                      goal.state,
+                    )
+                  ? willContinue
+                    ? "The agent keeps working while you edit. Updating stops this run, keeps its partial response, and continues with the revised goal."
+                    : "Saving keeps the revised goal paused until you resume."
+                  : goal?.state === "achieved"
+                    ? "Saving reopens this goal and resets its completion check. Resume when ready."
+                    : "Save changes, then Resume to pursue the updated goal."}
         </p>
       </div>
     </section>

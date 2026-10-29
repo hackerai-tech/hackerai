@@ -266,17 +266,26 @@ describe("simple goal sidebar editor", () => {
     "continues a %s goal only after saving its new generation",
     async (state) => {
       const resume = jest.fn().mockResolvedValue(undefined);
-      const current = { ...goal, state };
-      jest.mocked(fetch).mockImplementation(
-        async (_url, init) =>
-          ({
-            ok: true,
-            json: async () =>
-              init?.method === "POST"
-                ? { state: "paused", generation: 4 }
-                : { goal: current },
-          }) as Response,
-      );
+      let saved = false;
+      jest.mocked(fetch).mockImplementation(async (_url, init) => {
+        if (init?.method === "POST") saved = true;
+        return {
+          ok: true,
+          json: async () =>
+            init?.method === "POST"
+              ? { state: "paused", generation: 4 }
+              : {
+                  goal: saved
+                    ? {
+                        ...goal,
+                        state: "paused",
+                        generation: 4,
+                        activeRunId: undefined,
+                      }
+                    : { ...goal, state },
+                },
+        } as Response;
+      });
       render(
         <AgentGoalEditor
           chatId="chat"
@@ -330,16 +339,26 @@ describe("simple goal sidebar editor", () => {
     },
   );
   it("reports a saved goal separately from a failed restart", async () => {
-    jest.mocked(fetch).mockImplementation(
-      async (_url, init) =>
-        ({
-          ok: true,
-          json: async () =>
-            init?.method === "POST"
-              ? { state: "paused", generation: 4 }
-              : { goal },
-        }) as Response,
-    );
+    let saved = false;
+    jest.mocked(fetch).mockImplementation(async (_url, init) => {
+      if (init?.method === "POST") saved = true;
+      return {
+        ok: true,
+        json: async () =>
+          init?.method === "POST"
+            ? { state: "paused", generation: 4 }
+            : {
+                goal: saved
+                  ? {
+                      ...goal,
+                      state: "paused",
+                      generation: 4,
+                      activeRunId: undefined,
+                    }
+                  : goal,
+              },
+      } as Response;
+    });
     const close = jest.fn();
     render(
       <AgentGoalEditor
@@ -394,4 +413,75 @@ describe("simple goal sidebar editor", () => {
     expect(close).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox")).toHaveValue("Revised request");
   });
+  it.each(["settled", "timeout", "changed", "unmounted"])(
+    "handles canceled run settlement: %s",
+    async (outcome) => {
+      jest.useFakeTimers();
+      try {
+        let saved = false;
+        let settled = false;
+        let changed = false;
+        const resume = jest.fn().mockResolvedValue(undefined);
+        jest.mocked(fetch).mockImplementation(async (_url, init) => {
+          if (init?.method === "POST") saved = true;
+          return {
+            ok: true,
+            json: async () =>
+              init?.method === "POST"
+                ? { state: "paused", generation: 4 }
+                : {
+                    goal: saved
+                      ? {
+                          ...goal,
+                          objective: "Revised request",
+                          criteria: ["Revised request"],
+                          state: "paused",
+                          generation: changed ? 5 : 4,
+                          activeRunId: settled ? undefined : "run",
+                        }
+                      : goal,
+                  },
+          } as Response;
+        });
+        const { unmount } = render(
+          <AgentGoalEditor
+            chatId="chat"
+            onClose={jest.fn()}
+            stopRunBeforeControl={jest.fn().mockResolvedValue(true)}
+            continueGoal={resume}
+          />,
+        );
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Revised request" },
+        });
+        await act(async () =>
+          fireEvent.click(
+            screen.getByRole("button", { name: "Update and continue" }),
+          ),
+        );
+        expect(saved).toBe(true);
+        expect(resume).not.toHaveBeenCalled();
+        settled = outcome === "settled";
+        changed = outcome === "changed";
+        if (outcome === "unmounted") unmount();
+        await act(async () =>
+          jest.advanceTimersByTimeAsync(outcome === "timeout" ? 10_000 : 500),
+        );
+        if (outcome === "settled") expect(resume).toHaveBeenCalledTimes(1);
+        else {
+          expect(resume).not.toHaveBeenCalled();
+          if (outcome === "unmounted")
+            expect(toast.error).not.toHaveBeenCalled();
+          else
+            expect(toast.error).toHaveBeenCalledWith(
+              expect.stringContaining(
+                outcome === "timeout" ? "still stopping" : "goal changed",
+              ),
+            );
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 });
