@@ -168,13 +168,7 @@ const FilePartRendererComponent = ({
     async (fileName: string) => {
       const cache = fileUrlCacheRef.current;
 
-      // Check if we already have the URL cached or in state
-      if (fileUrl) {
-        await handleDownload(fileUrl, fileName);
-        return;
-      }
-
-      // Check cache first
+      // Recheck expiry on every click; component state can outlive a signed URL.
       if (cache && part.fileId) {
         const cachedUrl = cache.getCachedUrl(part.fileId);
         if (cachedUrl) {
@@ -202,7 +196,6 @@ const FilePartRendererComponent = ({
         }
 
         if (url) {
-          setFileUrl(url);
           await handleDownload(url, fileName);
         } else {
           setUrlError("Failed to get download URL");
@@ -222,7 +215,7 @@ const FilePartRendererComponent = ({
         toast.error(errorMessage);
       }
     },
-    [fileUrl, handleDownload, part.fileId, part.url, getFileUrlAction],
+    [handleDownload, part.fileId, part.url, getFileUrlAction],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
