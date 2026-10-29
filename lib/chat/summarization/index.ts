@@ -593,7 +593,9 @@ const generateSummaryTextWithRetry = async ({
           assignment.model,
           // Inference always tries the retained direct provider before the
           // existing OpenRouter recovery chain, including expanded histories.
-          ...(inferencePrimary && assignment.fallbackModel
+          ...(inferencePrimary &&
+          assignment.fallbackModel &&
+          isAbliterationModel(assignment.fallbackModel)
             ? [assignment.fallbackModel]
             : []),
           // Expanded recovery tries the exact 1M-context DeepSeek route before

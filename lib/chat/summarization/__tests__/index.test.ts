@@ -278,28 +278,35 @@ describe("default compaction policy pipeline", () => {
       }
     },
   );
-  it("retains expanded context through Inference, Abliteration, DeepSeek and GLM recovery", async () => {
-    resolve.mockResolvedValue({
-      model: "model-inference-cyber",
-      fallbackModel: "model-abliterated-large-v2",
-      expandedAgentContext: true,
-      flagEnabled: true,
-    });
-    mockGenerateText.mockRejectedValue(
-      Object.assign(new Error("rejected"), { statusCode: 400 }),
-    );
-    expect((await compact()).needsSummarization).toBe(false);
-    expect(
-      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual([
-      "model-inference-cyber",
-      "model-abliterated-large-v2",
-      "model-deepseek-v4.1-flash-1017-pro",
-      "model-glm-5.3-flash",
-    ]);
-    for (const [args] of mockGenerateText.mock.calls)
-      expect(estimateSummaryInputTokens(args.messages)).toBeGreaterThan(64000);
-  });
+  it.each(["model-abliterated-large-v2", "model-glm-5.3-flash"])(
+    "retains expanded context and recovery order with %s fallback",
+    async (fallbackModel) => {
+      resolve.mockResolvedValue({
+        model: "model-inference-cyber",
+        fallbackModel,
+        expandedAgentContext: true,
+        flagEnabled: true,
+      });
+      mockGenerateText.mockRejectedValue(
+        Object.assign(new Error("rejected"), { statusCode: 400 }),
+      );
+      expect((await compact()).needsSummarization).toBe(false);
+      expect(
+        mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+      ).toEqual([
+        "model-inference-cyber",
+        ...(fallbackModel === "model-abliterated-large-v2"
+          ? [fallbackModel]
+          : []),
+        "model-deepseek-v4.1-flash-1017-pro",
+        "model-glm-5.3-flash",
+      ]);
+      for (const [args] of mockGenerateText.mock.calls)
+        expect(estimateSummaryInputTokens(args.messages)).toBeGreaterThan(
+          64000,
+        );
+    },
+  );
   it("does not call Abliteration after cancellation during Inference", async () => {
     resolve.mockResolvedValue({
       model: "model-inference-cyber",
