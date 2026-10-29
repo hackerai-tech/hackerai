@@ -2235,7 +2235,27 @@ async function handleCheckoutSessionCompleted(
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
+  eventOccurredAtMs: number,
 ): Promise<void> {
+  if (
+    subscription.cancel_at_period_end === false &&
+    previousAttributes?.cancel_at_period_end === true
+  ) {
+    const customerId = stripeObjectId(subscription.customer);
+    if (customerId) {
+      await getConvexClient().mutation(
+        api.cancellationReasons.markCancellationReversed,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          stripeSubscriptionId: subscription.id,
+          stripeCustomerId: customerId,
+          cancellationReasonId:
+            subscription.metadata?.hackerai_cancellation_reason_id,
+          reversedAt: eventOccurredAtMs,
+        },
+      );
+    }
+  }
   const cancellationJustScheduled =
     subscription.cancel_at_period_end === true &&
     Boolean(previousAttributes) &&
@@ -2271,6 +2291,7 @@ async function handleSubscriptionUpdated(
           tier,
           price: currentPrice,
           completionType: "scheduled",
+          eventOccurredAtMs,
         });
       }
     }
@@ -2400,6 +2421,7 @@ async function handleSubscriptionUpdated(
   }
 }
 
+/** Use the event's attempt and occurrence time so delayed delivery cannot complete a later decision. */
 async function recordCancellationCompleted(args: {
   subscription: Stripe.Subscription;
   customerId: string;
@@ -2408,14 +2430,14 @@ async function recordCancellationCompleted(args: {
   tier: SubscriptionTier | null;
   price?: Stripe.Price;
   completionType: "scheduled" | "deleted";
+  eventOccurredAtMs: number;
 }) {
   const stripeCancellationReason =
     args.subscription.cancellation_details?.reason ?? undefined;
   const canceledAt = args.subscription.canceled_at
     ? args.subscription.canceled_at * 1000
     : undefined;
-  const completedAt =
-    args.completionType === "deleted" ? (canceledAt ?? Date.now()) : Date.now();
+  const completedAt = canceledAt ?? args.eventOccurredAtMs;
   const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
     args.subscription.metadata,
     args.price?.lookup_key,
@@ -2431,11 +2453,14 @@ async function recordCancellationCompleted(args: {
   const pauseProperties = retentionPauseProperties(args.subscription);
 
   let updatedCount = 0;
+  let cancellationReasonId: string | undefined;
   try {
     const result = await getConvexClient().mutation(
       api.cancellationReasons.markCancellationCompleted,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        cancellationReasonId:
+          args.subscription.metadata?.hackerai_cancellation_reason_id,
         stripeSubscriptionId: args.subscription.id,
         stripeCustomerId: args.customerId,
         userIds: args.userIds,
@@ -2447,6 +2472,7 @@ async function recordCancellationCompleted(args: {
       },
     );
     updatedCount = result.updatedCount;
+    cancellationReasonId = result.cancellationReasonId;
   } catch (error) {
     phLogger.warn("cancellation_reason_completion_update_failed", {
       stripe_customer_id: args.customerId,
@@ -2454,6 +2480,8 @@ async function recordCancellationCompleted(args: {
       org_id: args.orgId,
       error,
     });
+    // Let Stripe retry a failed write instead of acknowledging lost feedback.
+    throw error;
   }
 
   if (updatedCount === 0) {
@@ -2485,7 +2513,10 @@ async function recordCancellationCompleted(args: {
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
         ...proMonthlyPricingExperimentProperties(pricingExperiment),
-        $insert_id: cancellationCompletionInsertId(args.subscription.id),
+        $insert_id: cancellationCompletionInsertId(
+          args.subscription.id,
+          cancellationReasonId,
+        ),
       }),
     );
   }
@@ -2636,6 +2667,7 @@ async function handleSubscriptionDeleted(
     tier,
     price,
     completionType: "deleted",
+    eventOccurredAtMs,
   });
   await markRetentionPauseEffective(subscription, eventOccurredAtMs);
   const pauseProperties = retentionPauseProperties(subscription);
@@ -2888,6 +2920,7 @@ export async function POST(req: NextRequest) {
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
           Partial<Stripe.Subscription> | undefined,
+        stripeEventOccurredAtMs(event),
       );
       break;
     }

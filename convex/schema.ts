@@ -676,7 +676,22 @@ export default defineSchema({
     feedback_details: v.optional(v.string()),
   }),
 
+  // A writing owner has no TTL: Stripe may still apply an unknown-outcome write.
+  billing_operations: defineTable({
+    stripe_customer_id: v.string(),
+    token: v.string(),
+    operation: v.union(v.literal("cancel"), v.literal("keep")),
+    writing: v.boolean(),
+    created_at: v.number(),
+    expires_at: v.number(),
+  }).index("by_stripe_customer_id", ["stripe_customer_id"]),
+
   cancellation_reasons: defineTable({
+    operation: v.optional(
+      v.union(v.literal("cancel"), v.literal("pause"), v.literal("downgrade")),
+    ),
+    reversed_at: v.optional(v.number()),
+    superseded_at: v.optional(v.number()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     stripe_customer_id: v.optional(v.string()),
@@ -753,6 +768,22 @@ export default defineSchema({
     .index("by_tier_started", ["subscription_tier", "started_at"])
     .index("by_started_at", ["started_at"])
     .index("by_status_started", ["status", "started_at"]),
+
+  // The current actual cancellation only. The two history tables below/above
+  // retain every distinct submission, including pauses and reversed decisions.
+  current_cancellation_reasons: defineTable({
+    stripe_subscription_id: v.string(),
+    cancellation_reason_id: v.id("cancellation_reasons"),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    reason_category: v.string(),
+    reason_subcategory: v.optional(v.string()),
+    reason_details: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_created_at", ["created_at"]),
 
   cancellation_reason_details: defineTable({
     cancellation_reason_id: v.id("cancellation_reasons"),
