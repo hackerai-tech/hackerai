@@ -126,31 +126,44 @@ describe("FilePartRenderer", () => {
       });
     }
 
-    it("refreshes an expired URL without remounting, then reuses the refreshed cache", async () => {
-      const now = jest.spyOn(Date, "now").mockReturnValue(1_000);
-      const { result } = renderHook(() => useFileUrlCache([]));
-      result.current.setCachedUrl("file-1", oldUrl);
-      render(
-        <FileUrlCacheProvider {...result.current}>
-          <FilePartRenderer part={part} partIndex={0} messageId="message-1" />
-        </FileUrlCacheProvider>,
-      );
-      now.mockReturnValue(1_000 + 51 * 60 * 1_000);
+    it.each([
+      { cachedUrl: oldUrl, elapsedMinutes: 51 },
+      {
+        cachedUrl: "https://files.example/short-lived?X-Amz-Expires=2400",
+        elapsedMinutes: 41,
+      },
+    ])(
+      "refreshes after $elapsedMinutes minutes without remounting, then reuses the cache",
+      async ({ cachedUrl, elapsedMinutes }) => {
+        const now = jest.spyOn(Date, "now").mockReturnValue(1_000);
+        const { result } = renderHook(() => useFileUrlCache([]));
+        result.current.setCachedUrl("file-1", cachedUrl);
+        render(
+          <FileUrlCacheProvider {...result.current}>
+            <FilePartRenderer
+              part={{ ...part, url: cachedUrl }}
+              partIndex={0}
+              messageId="message-1"
+            />
+          </FileUrlCacheProvider>,
+        );
+        now.mockReturnValue(1_000 + elapsedMinutes * 60 * 1_000);
 
-      await clickDownload();
+        await clickDownload();
 
-      expect(mockGetFileUrlAction).toHaveBeenCalledWith({ fileId: "file-1" });
-      expect(fetchMock).toHaveBeenCalledWith(freshUrl);
-      expect(fetchMock).not.toHaveBeenCalledWith(oldUrl);
-      expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
-      expect(result.current.getCachedUrl("file-1")).toBe(freshUrl);
+        expect(mockGetFileUrlAction).toHaveBeenCalledWith({ fileId: "file-1" });
+        expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+        expect(fetchMock).not.toHaveBeenCalledWith(cachedUrl);
+        expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
+        expect(result.current.getCachedUrl("file-1")).toBe(freshUrl);
 
-      mockGetFileUrlAction.mockClear();
-      await clickDownload();
-      expect(mockGetFileUrlAction).not.toHaveBeenCalled();
-      expect(fetchMock).toHaveBeenLastCalledWith(freshUrl);
-      expect(startBlobDownload).toHaveBeenCalledTimes(2);
-    });
+        mockGetFileUrlAction.mockClear();
+        await clickDownload();
+        expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenLastCalledWith(freshUrl);
+        expect(startBlobDownload).toHaveBeenCalledTimes(2);
+      },
+    );
 
     it("prefers a current cached URL over the URL stored on the attachment", async () => {
       cache.set("file-1", freshUrl);
