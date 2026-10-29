@@ -1,5 +1,6 @@
 import { serialize, deserialize } from "node:v8";
 import { ReadableStream } from "node:stream/web";
+import { UIMessageStreamError } from "ai";
 import { recoverCrashedAgentRun } from "../agent-crash-recovery";
 import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 
@@ -189,6 +190,128 @@ it("rejects a truncated message prefix without writing any progress", async () =
     "message boundary",
   );
   expect(mockSave).not.toHaveBeenCalled();
+});
+
+it.each([
+  { type: "text-delta", id: "private-part-id", delta: "private transcript" },
+  {
+    type: "tool-output-available",
+    toolCallId: "private-tool-id",
+    output: "private transcript",
+  },
+])(
+  "diagnoses invalid $type ordering without leaking stream material",
+  async (chunk) => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockRead.mockResolvedValue(
+        stream([{ type: "start", messageId: "private-message-id" }, chunk]),
+      );
+      await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
+        "Agent crash recovery message reconstruction failed",
+      );
+      expect(mockSave).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warning.mock.calls[0][0]);
+      expect(diagnostic).toMatchObject({
+        event: "agent_crash_reconstruction_failed",
+        reason: "invalid_stream_state",
+        chunk_type:
+          chunk.type === "text-delta" ? "text-delta" : "tool-invocation",
+        trigger_run_id: "run",
+        record_count: 2,
+        message_count: 1,
+        coalesced_chunk_count: 2,
+      });
+      expect(diagnostic.replay_bytes).toBeGreaterThan(0);
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+    } finally {
+      warning.mockRestore();
+    }
+  },
+);
+
+it("distinguishes the replay deadline during reconstruction without writing", async () => {
+  let now = 0;
+  const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+  const clone = jest
+    .spyOn(globalThis, "structuredClone")
+    .mockImplementation((value) => {
+      now = 15001;
+      return deserialize(serialize(value));
+    });
+  const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    mockRead.mockResolvedValue(stream(text("first", "private transcript")));
+    await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
+      "Agent crash recovery message reconstruction failed",
+    );
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({
+      reason: "deadline_exceeded",
+      chunk_type: null,
+      elapsed_ms: 15001,
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
+  } finally {
+    clock.mockRestore();
+    clone.mockRestore();
+    warning.mockRestore();
+  }
+});
+
+it("keeps unknown reducer errors private even when diagnostics fail", async () => {
+  const clone = jest
+    .spyOn(globalThis, "structuredClone")
+    .mockImplementation(() => {
+      throw new Error("private reducer failure");
+    });
+  const warning = jest.spyOn(console, "warn").mockImplementation(() => {
+    throw new Error("private logger failure");
+  });
+  try {
+    mockRead.mockResolvedValue(stream(text("first", "private transcript")));
+    await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
+      "Agent crash recovery message reconstruction failed",
+    );
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({
+      reason: "unknown",
+      chunk_type: null,
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
+  } finally {
+    clone.mockRestore();
+    warning.mockRestore();
+  }
+});
+
+it("does not log an unrecognized SDK chunk category or its private error fields", async () => {
+  const clone = jest
+    .spyOn(globalThis, "structuredClone")
+    .mockImplementation(() => {
+      throw new UIMessageStreamError({
+        chunkType: "private-category",
+        chunkId: "private-part-id",
+        message: "private reducer failure",
+      });
+    });
+  const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    mockRead.mockResolvedValue(stream(text("first", "private transcript")));
+    await expect(recoverCrashedAgentRun(input)).rejects.toThrow(
+      "Agent crash recovery message reconstruction failed",
+    );
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({
+      reason: "invalid_stream_state",
+      chunk_type: "other",
+    });
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("private");
+  } finally {
+    clone.mockRestore();
+    warning.mockRestore();
+  }
 });
 
 it("does not treat the global deadline's clean abort as a successful replay", async () => {
