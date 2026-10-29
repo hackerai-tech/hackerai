@@ -250,16 +250,18 @@ export function AgentGoalEditor({
 
   return (
     <section
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[22px] border bg-background desktop:mr-4"
+      className="fixed left-0 top-0 z-50 flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[22px] border border-border/20 bg-background p-4 shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] dark:border-border desktop:relative desktop:left-auto desktop:top-auto desktop:mr-4"
       aria-label="Goal editor"
       aria-busy={saving}
     >
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+      <header className="flex shrink-0 items-center gap-2">
         <GoalTargetIcon
-          className="size-4 text-muted-foreground"
+          className="size-5 text-muted-foreground"
           aria-hidden="true"
         />
-        <h2 className="flex-1 text-sm font-medium">Edit goal</h2>
+        <h2 className="flex-1 text-lg font-semibold text-foreground">
+          Edit goal
+        </h2>
         <Button
           size="sm"
           className="min-h-11 desktop:min-h-0"
@@ -288,19 +290,43 @@ export function AgentGoalEditor({
         <Button
           variant="ghost"
           size="icon"
-          className="min-h-11 min-w-11 desktop:min-h-0 desktop:min-w-0"
+          className="size-11 rounded-md text-muted-foreground hover:bg-muted/50 desktop:size-7"
           aria-label="Close goal editor"
           disabled={saving}
           onClick={onClose}
         >
-          <X className="size-4" />
+          <X className="size-5" />
         </Button>
       </header>
+      <p
+        id={statusId}
+        role="status"
+        className="mt-2 shrink-0 text-xs text-muted-foreground"
+      >
+        {settling
+          ? "Waiting for the previous run to stop before continuing with your saved goal…"
+          : stale
+            ? "The goal changed or was cleared. Your unsaved draft remains above."
+            : !original
+              ? goal === undefined
+                ? "Loading goal…"
+                : "This goal is no longer available."
+              : goal &&
+                  ["running", "queued", "waiting", "needs_approval"].includes(
+                    goal.state,
+                  )
+                ? willContinue
+                  ? "The agent keeps working while you edit. Updating stops this run, keeps its partial response, and continues with the revised goal."
+                  : "Saving keeps the revised goal paused until you resume."
+                : goal?.state === "achieved"
+                  ? "Saving reopens this goal and resets its completion check. Resume when ready."
+                  : "Save changes, then Resume to pursue the updated goal."}
+      </p>
       {(error || validation || stale) && (
         <p
           id={errorId}
           role="alert"
-          className="shrink-0 px-4 py-3 text-sm text-destructive"
+          className="mt-2 shrink-0 text-sm text-destructive"
         >
           {stale
             ? "The goal changed or was cleared. Copy your draft if needed, then close and reopen Edit."
@@ -317,30 +343,8 @@ export function AgentGoalEditor({
         readOnly={saving}
         aria-invalid={!!validation}
         aria-describedby={error || validation || stale ? errorId : undefined}
-        className="min-h-0 flex-1 resize-none rounded-none border-0 bg-transparent p-4 text-base shadow-none focus-visible:ring-0 md:text-sm"
+        className="mt-4 min-h-0 flex-1 resize-none rounded-none border-0 bg-transparent p-0 dark:bg-transparent text-base shadow-none focus-visible:ring-0 md:text-sm"
       />
-      <div className="shrink-0 space-y-2 border-t px-4 py-3 text-xs text-muted-foreground">
-        <p id={statusId} role="status">
-          {settling
-            ? "Waiting for the previous run to stop before continuing with your saved goal…"
-            : stale
-              ? "The goal changed or was cleared. Your unsaved draft remains above."
-              : !original
-                ? goal === undefined
-                  ? "Loading goal…"
-                  : "This goal is no longer available."
-                : goal &&
-                    ["running", "queued", "waiting", "needs_approval"].includes(
-                      goal.state,
-                    )
-                  ? willContinue
-                    ? "The agent keeps working while you edit. Updating stops this run, keeps its partial response, and continues with the revised goal."
-                    : "Saving keeps the revised goal paused until you resume."
-                  : goal?.state === "achieved"
-                    ? "Saving reopens this goal and resets its completion check. Resume when ready."
-                    : "Save changes, then Resume to pursue the updated goal."}
-        </p>
-      </div>
     </section>
   );
 }
