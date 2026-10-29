@@ -1,3 +1,4 @@
+import { isBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 /** A canceled signal alone does not establish that an unrelated error is cancellation. */
@@ -352,6 +353,9 @@ export const extractErrorDetails = (
   // Extract provider-specific error details (AI SDK format). Walk common
   // wrapper fields so stream/UI wrappers do not hide APICallError diagnostics.
   for (const source of records) {
+    if (isBrowserHandoffReadError(source)) {
+      details.errorOrigin = "browser_handoff_read";
+    }
     if (source.origin === "auxiliary_vision") {
       details.errorOrigin = "auxiliary_vision";
       if (source.name === "AuxiliaryVisionTimeoutError") {
