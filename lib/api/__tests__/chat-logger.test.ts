@@ -1,3 +1,4 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
@@ -2898,3 +2899,43 @@ it.each([
     expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
   },
 );
+
+it("separates marked handoff reads in existing fingerprints without changing ordinary provider groups", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "fixture",
+      endpoint: "/api/chat",
+    });
+    for (const marked of [false, true]) {
+      // An arbitrary public origin property is not evidence of a local read.
+      const error = Object.assign(new Error("read ECONNRESET"), {
+        origin: "browser_handoff_read",
+      });
+      if (marked) {
+        try {
+          rethrowBrowserHandoffReadError(error);
+        } catch (failure) {
+          expect(failure).toBe(error);
+        }
+      }
+      logger.recordProviderError(error, { requestedModelSlug: "test/model" });
+    }
+    const fields = phWarn.mock.calls.map(
+      (call) => call[1] as Record<string, unknown>,
+    );
+    expect(fields).toHaveLength(2);
+    expect(fields[0].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|provider_test|model_test/model",
+    );
+    expect(fields[1].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|origin_browser_handoff_read|provider_test|model_test/model",
+    );
+    expect(fields[0].errorOrigin).toBeUndefined();
+    expect(fields[1].errorOrigin).toBe("browser_handoff_read");
+  } finally {
+    warn.mockRestore();
+    phWarn.mockRestore();
+  }
+});

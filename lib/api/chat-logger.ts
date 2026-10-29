@@ -349,6 +349,7 @@ const sanitizeProviderFingerprintPart = (value: string): string =>
 
 const buildProviderErrorFingerprint = (details: {
   category: ProviderErrorCategory;
+  origin?: "browser_handoff_read";
   statusCode?: number;
   requestedModelSlug?: string;
   modelProviderSlug?: string;
@@ -359,6 +360,7 @@ const buildProviderErrorFingerprint = (details: {
     "provider_error",
     details.category,
     details.statusCode ? `status_${details.statusCode}` : undefined,
+    details.origin ? `origin_${details.origin}` : undefined,
     providerPart
       ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
       : undefined,
@@ -857,6 +859,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
       );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
+        origin:
+          details.errorOrigin === "browser_handoff_read"
+            ? "browser_handoff_read"
+            : undefined,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
