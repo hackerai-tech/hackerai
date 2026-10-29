@@ -2095,55 +2095,6 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
-  it.each([4, 5])(
-    "only sends a composer replacement for the current goal version (%s)",
-    async (generation) => {
-      mockInput = "Read the updated marker";
-      mockMessageQueue = [];
-      const { result } = renderHook(() =>
-        useChatHandlers({
-          chatId: "chat-1",
-          messages,
-          sendMessage: mockSendMessage,
-          stop: mockStop,
-          regenerate: jest.fn(),
-          setMessages: mockSetMessages,
-          isExistingChat: true,
-          status: "ready",
-          goalState: "paused",
-          goalGeneration: 4,
-          isSendingNowRef: { current: false },
-          hasManuallyStoppedRef: { current: false },
-        }),
-      );
-      await act(async () => {
-        expect(
-          await result.current.handleSubmit(
-            { preventDefault: jest.fn() } as any,
-            `/goal start ${mockInput}`,
-            { replaceGoalGeneration: generation },
-          ),
-        ).toBe(generation === 4);
-      });
-      if (generation === 4)
-        expect(mockSendMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ text: "Read the updated marker" }),
-          expect.objectContaining({
-            body: expect.objectContaining({
-              goal: expect.objectContaining({
-                action: "start",
-                expectedGeneration: 4,
-              }),
-            }),
-          }),
-        );
-      else {
-        expect(mockSendMessage).not.toHaveBeenCalled();
-        expect(mockClearInput).not.toHaveBeenCalled();
-      }
-    },
-  );
-
   it("keeps the draft when the saved objective exceeds the input budget", async () => {
     mockInput = "/goal resume";
     mockMessageQueue = [];

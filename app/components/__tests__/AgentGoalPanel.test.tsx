@@ -512,24 +512,18 @@ describe("goal controls", () => {
     ).not.toBeInTheDocument();
   });
   it.each([false, true])(
-    "pauses and saves before loading the composer (mobile=%s)",
+    "opens the editor without stopping active work (mobile=%s)",
     async (mobile) => {
       mockIsMobile = mobile;
-      const savedGoal = {
+      setMockQueryResult({
         ...goal,
-        generation: 4,
         state: "running",
+        generation: 4,
         activeRunId: "run",
         startedAt: Date.now() - 5000,
-      };
-      setMockQueryResult(savedGoal);
-      const stop = jest.fn().mockResolvedValue(false);
-      const loaded = jest.fn();
-      const onEdit = jest.fn(async (value, prepare) => {
-        if (!(await prepare())) return false;
-        loaded(value);
-        return true;
       });
+      const stop = jest.fn();
+      const onEdit = jest.fn();
       render(
         <AgentGoalPanel
           chatId="chat"
@@ -548,27 +542,11 @@ describe("goal controls", () => {
           screen.getByRole("button", { name: "Show goal controls" }),
         );
       fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
-      await waitFor(() => expect(stop).toHaveBeenCalledWith("run"));
-      expect(loaded).not.toHaveBeenCalled();
+      expect(onEdit).toHaveBeenCalledTimes(1);
+      expect(stop).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalledWith(
         "/api/agent-goal",
         expect.objectContaining({ method: "POST" }),
-      );
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "Edit goal" })).toBeEnabled(),
-      );
-      stop.mockResolvedValue(true);
-      fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
-      await waitFor(() => expect(loaded).toHaveBeenCalledWith(savedGoal));
-      expect(fetch).toHaveBeenCalledWith(
-        "/api/agent-goal",
-        expect.objectContaining({
-          body: JSON.stringify({
-            chatId: "chat",
-            action: "pause",
-            generation: 4,
-          }),
-        }),
       );
       if (mobile)
         await waitFor(() =>
@@ -579,42 +557,25 @@ describe("goal controls", () => {
     },
   );
 
-  it.each([false, true])(
-    "allows an achieved goal to be edited again (mobile=%s)",
-    async (mobile) => {
-      mockIsMobile = mobile;
-      const savedGoal = { ...goal, state: "achieved", generation: 7 };
-      setMockQueryResult(savedGoal);
-      const loaded = jest.fn();
-      const onEdit = jest.fn(async (value, prepare) => {
-        expect(prepare()).toBe(true);
-        loaded(value);
-        return true;
-      });
-      render(
-        <AgentGoalPanel
-          chatId="chat"
-          exists
-          eligible
-          idle
-          send={jest.fn()}
-          settings={settings}
-          onEdit={onEdit}
-        />,
-      );
-      await act(async () => {});
-      if (mobile)
-        fireEvent.click(
-          screen.getByRole("button", { name: "Show goal details" }),
-        );
-      fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
-      await waitFor(() => expect(loaded).toHaveBeenCalledWith(savedGoal));
-      expect(fetch).not.toHaveBeenCalledWith(
-        "/api/agent-goal",
-        expect.objectContaining({ method: "POST" }),
-      );
-    },
-  );
+  it("allows a completed goal to open the editor without starting work", async () => {
+    setMockQueryResult({ ...goal, state: "achieved", generation: 7 });
+    const onEdit = jest.fn();
+    const send = jest.fn();
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={send}
+        settings={settings}
+        onEdit={onEdit}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
+  });
 
   it("resumes a paused mobile goal from its popover and then dismisses it", async () => {
     mockIsMobile = true;

@@ -431,7 +431,14 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy

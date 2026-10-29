@@ -1,5 +1,4 @@
 "use client";
-import type { EditGoalInComposer } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
@@ -544,6 +543,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
+    sidebarContent,
+    openSidebar,
     closeSidebar,
     chatSidebarOpen,
     initializeChat,
@@ -663,7 +664,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     );
     const focusTimeout = window.setTimeout(() => {
       if (!hasNestedDialogFocus())
-        (getFocusableElements()[0] ?? dialog).focus();
+        (
+          dialog.querySelector<HTMLElement>('[aria-label="Goal objective"]') ??
+          getFocusableElements()[0] ??
+          dialog
+        ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
@@ -676,7 +681,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           previousFocus.focus();
         else if (wasGoalEditor)
           document
-            .querySelector<HTMLButtonElement>('[aria-label="Edit goal"]')
+            .querySelector<HTMLButtonElement>(
+              '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+            )
             ?.focus();
       }
     };
@@ -2540,14 +2547,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       expectedTriggerRunId: runId,
     });
   };
-  const goalPanel = (
-    placement: "attached" | "detached",
-    onEdit: EditGoalInComposer,
-  ) => (
+  const goalPanel = (placement: "attached" | "detached") => (
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
-      onEdit={onEdit}
+      onEdit={() => openSidebar({ kind: "goal", chatId })}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
       stopRunBeforeControl={stopGoalRunBeforeControl}
@@ -2839,7 +2843,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             }
             aria-label={
               computerSidebarOverlay && sidebarOpen
-                ? "HackerAI’s Computer"
+                ? sidebarContent &&
+                  "kind" in sidebarContent &&
+                  sidebarContent.kind === "goal"
+                  ? "Edit goal"
+                  : "HackerAI’s Computer"
                 : undefined
             }
             tabIndex={computerSidebarOverlay ? -1 : undefined}
@@ -2853,6 +2861,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             >
               {sidebarOpen && (
                 <ComputerSidebar
+                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
                   onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}
                   messages={messages}

@@ -33,10 +33,7 @@ import {
   Trash2,
   Pencil,
 } from "lucide-react";
-import {
-  goalResumeMessage,
-  type EditGoalInComposer,
-} from "@/lib/goals/commands";
+import { goalResumeMessage } from "@/lib/goals/commands";
 import {
   goalElapsedMs,
   isGoalTimerRunning,
@@ -87,7 +84,7 @@ export function AgentGoalPanel({
   idle: boolean;
   latestSavedUserMessageAt?: number;
   stopRunBeforeControl?: (runId: string) => Promise<boolean>;
-  onEdit?: EditGoalInComposer;
+  onEdit?: () => void;
   disabledReason?: string;
   /** Shown beside the centered mobile pill only when it fits. */
   mobileAccessory?: ReactNode;
@@ -351,28 +348,14 @@ export function AgentGoalPanel({
                 variant="ghost"
                 aria-label="Edit goal"
                 disabled={busy}
-                onClick={async () => {
-                  if (goal.activeRunId && !stopRunBeforeControl) {
-                    toast.error(
-                      "Wait for the current run to finish before editing the goal.",
-                    );
-                    return;
-                  }
-                  const loaded = await onEdit(goal, () =>
-                    ["running", "queued", "waiting", "needs_approval"].includes(
-                      goal.state,
-                    ) || goal.activeRunId
-                      ? control("pause")
-                      : true,
-                  );
-                  if (loaded) {
-                    openingEditor.current = isMobile === true;
-                    setMobileOpen(false);
-                    setExpanded(false);
-                    captureAuthenticatedEvent("agent_goal_user_control", {
-                      action: "edit",
-                    });
-                  }
+                onClick={() => {
+                  openingEditor.current = isMobile === true;
+                  setMobileOpen(false);
+                  setExpanded(false);
+                  onEdit();
+                  captureAuthenticatedEvent("agent_goal_user_control", {
+                    action: "edit",
+                  });
                 }}
               >
                 <Pencil className="size-4" />

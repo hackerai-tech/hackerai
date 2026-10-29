@@ -53,6 +53,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    agentGoals: { get: "getGoal" },
     browserHandoffs: { getForUser: "getForUser" },
     subagents: {
       getOwned: "getOwned",
@@ -139,6 +140,44 @@ const otherToolMessage = {
 };
 
 describe("ComputerSidebar reconnect behavior", () => {
+  it("keeps a goal editor open while unrelated tool messages change", async () => {
+    mockSidebarContent = { kind: "goal", chatId: "chat" };
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Keep working",
+      criteria: ["Keep working"],
+      generation: 1,
+      state: "running",
+    });
+    const stop = jest.fn();
+    const { rerender } = render(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="streaming"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "My unsaved edit" },
+    });
+    rerender(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="ready"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(6000);
+    });
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "My unsaved edit",
+    );
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     mockComputerSidebarOverlay = false;
     jest.useFakeTimers();

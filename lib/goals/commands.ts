@@ -44,7 +44,7 @@ export function parseGoalCommand(text: string): GoalCommand | null {
     }
     const name = field[1].toLowerCase();
     let value = field[2].trim();
-    // The composer serializes legacy multiline fields as JSON strings so
+    // Goal editing serializes legacy multiline fields as JSON strings so
     // shell commands and constraints survive a round trip without rewriting.
     if (value.startsWith('"') && value.endsWith('"')) {
       try {
@@ -106,10 +106,6 @@ export type EditableGoal = GoalContract & {
   criteria: string[];
   generation: number;
 };
-export type EditGoalInComposer = (
-  goal: EditableGoal,
-  prepare: () => boolean | Promise<boolean>,
-) => Promise<boolean>;
 export function goalEditText(goal: EditableGoal): string {
   const lines = [goal.objective];
   if (

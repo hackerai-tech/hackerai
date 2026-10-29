@@ -64,19 +64,13 @@ import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerCo
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
-import { goalEditText, type EditGoalInComposer } from "@/lib/goals/commands";
-
 interface ChatInputProps {
-  goalPanel?: (
-    placement: "attached" | "detached",
-    onEdit: EditGoalInComposer,
-  ) => React.ReactNode;
+  goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
   hasActiveGoalRun?: boolean;
   pauseGoalOnSend?: boolean;
   onSubmit: (
     e: React.FormEvent,
     inputOverride?: string,
-    options?: { replaceGoalGeneration?: number },
   ) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
@@ -866,41 +860,7 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
-  const [goalMode, setGoalMode, editGeneration] = useComposerGoalMode(draftId);
-  const focusGoalComposer = () => {
-    if (!isMountedRef.current || prevDraftIdRef.current !== draftId) return;
-    const textarea = composerTextareaRef.current;
-    textarea?.focus();
-    textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
-  };
-  const loadGoalForEdit: EditGoalInComposer = async (goal, prepare) => {
-    if (goalMode && editGeneration === goal.generation) {
-      focusGoalComposer();
-      return true;
-    }
-    if (getInput().trim()) {
-      toast.info("Send or clear your draft before editing the goal.");
-      return false;
-    }
-    const prepared = prepare();
-    if (!(typeof prepared === "boolean" ? prepared : await prepared))
-      return false;
-    // Stop/save can take time. Do not replace text typed in the meantime or
-    // load an old chat's goal after navigation.
-    if (!isMountedRef.current || prevDraftIdRef.current !== draftId)
-      return false;
-    if (getInput().trim()) {
-      toast.info("Your draft was kept. Clear it before editing the goal.");
-      return false;
-    }
-    setInput(goalEditText(goal));
-    setGoalMode(true, goal.generation);
-    // Preserve tap activation for the mobile keyboard when no async stop is
-    // needed, then restore the caret after React commits the loaded value.
-    focusGoalComposer();
-    requestAnimationFrame(focusGoalComposer);
-    return true;
-  };
+  const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
   const [goalEnabled, setGoalEnabled] = useState(false);
   const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
   useEffect(() => {
@@ -976,9 +936,6 @@ const ChatInputContent = ({
         const accepted = await onSubmit(
           e,
           goalMode ? `/goal start ${input}` : undefined,
-          ...(editGeneration === undefined
-            ? []
-            : [{ replaceGoalGeneration: editGeneration }]),
         );
         if (!isMountedRef.current) return;
         const unchanged =
@@ -1224,7 +1181,7 @@ const ChatInputContent = ({
           className={`min-w-0 shrink-0 ${goalPlacement === "detached" ? "order-first" : "order-1"}`}
           data-testid="chat-input-goal-slot"
         >
-          {goalPanel?.(goalPlacement, loadGoalForEdit)}
+          {goalPanel?.(goalPlacement)}
         </div>
 
         <input
@@ -1263,7 +1220,7 @@ const ChatInputContent = ({
                 )
               )
                 return;
-              const textarea = event.currentTarget.querySelector("textarea");
+              const textarea = composerTextareaRef.current;
               if (textarea && textarea !== document.activeElement) {
                 textarea.focus({ preventScroll: true });
               }

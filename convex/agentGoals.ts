@@ -256,7 +256,7 @@ export const update = mutation({
     validateServiceKey(args.serviceKey);
     const chat = await owned(ctx, args.chatId, args.userId);
     const goal = await byChat(ctx, args.chatId);
-    if (!goal || goal.deletedAt || goal.state === "achieved")
+    if (!goal || goal.deletedAt)
       throw new ConvexError("This goal is no longer editable");
     if (goal.generation !== args.generation)
       throw new ConvexError("Goal changed. Reopen the editor before saving.");
@@ -280,6 +280,7 @@ export const update = mutation({
       dispatchId: undefined,
       continuationSourceRunId: undefined,
       waitUntil: undefined,
+      achievedAt: undefined,
       reason: "Goal updated. Resume when ready.",
       updatedAt: Date.now(),
     });

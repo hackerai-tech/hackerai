@@ -9,15 +9,13 @@ import {
 } from "../ComposerState";
 
 describe("ComposerStateProvider", () => {
-  it("keeps an edit version across responsive remounts and clears it when exiting goal mode", () => {
+  it("keeps goal mode across responsive remounts and clears it when exiting", () => {
     function Draft({ id }: { id: string }) {
-      const [enabled, setEnabled, generation] = useComposerGoalMode(id);
+      const [enabled, setEnabled] = useComposerGoalMode(id);
       return (
         <>
-          <output>
-            {enabled ? `Editing ${generation}` : "Normal message"}
-          </output>
-          <button onClick={() => setEnabled(true, 7)}>Edit goal</button>
+          <output>{enabled ? "Goal mode" : "Normal message"}</output>
+          <button onClick={() => setEnabled(true)}>Edit goal</button>
           <button onClick={() => setEnabled(false)}>Exit goal</button>
         </>
       );
@@ -30,7 +28,7 @@ describe("ComposerStateProvider", () => {
     const { rerender } = render(ui("mobile"));
     fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
     rerender(ui("desktop"));
-    expect(screen.getByRole("status")).toHaveTextContent("Editing 7");
+    expect(screen.getByRole("status")).toHaveTextContent("Goal mode");
     rerender(ui("desktop", "other-chat"));
     expect(screen.getByRole("status")).toHaveTextContent("Normal message");
     rerender(ui("desktop"));

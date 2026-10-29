@@ -25,10 +25,8 @@ const ComposerActionsContext = createContext<ComposerActions | undefined>(
 
 const ComposerGoalContext = createContext<
   | {
-      draftId: { id: string; generation?: number } | null;
-      setDraftId: Dispatch<
-        SetStateAction<{ id: string; generation?: number } | null>
-      >;
+      draftId: string | null;
+      setDraftId: Dispatch<SetStateAction<string | null>>;
     }
   | undefined
 >(undefined);
@@ -36,10 +34,7 @@ const ComposerGoalContext = createContext<
 export function ComposerStateProvider({ children }: { children: ReactNode }) {
   const [input, setInputState] = useState("");
   const inputRef = useRef(input);
-  const [goalDraftId, setGoalDraftId] = useState<{
-    id: string;
-    generation?: number;
-  } | null>(null);
+  const [goalDraftId, setGoalDraftId] = useState<string | null>(null);
   const goal = useMemo(
     () => ({ draftId: goalDraftId, setDraftId: setGoalDraftId }),
     [goalDraftId],
@@ -103,20 +98,12 @@ export function useComposerGoalMode(draftId: string) {
   }
   const { setDraftId } = goal;
   const setGoalMode = useCallback(
-    (enabled: boolean, generation?: number) => {
+    (enabled: boolean) => {
       setDraftId((current) =>
-        enabled
-          ? { id: draftId, generation }
-          : current?.id === draftId
-            ? null
-            : current,
+        enabled ? draftId : current === draftId ? null : current,
       );
     },
     [draftId, setDraftId],
   );
-  return [
-    goal.draftId?.id === draftId,
-    setGoalMode,
-    goal.draftId?.id === draftId ? goal.draftId.generation : undefined,
-  ] as const;
+  return [goal.draftId === draftId, setGoalMode] as const;
 }

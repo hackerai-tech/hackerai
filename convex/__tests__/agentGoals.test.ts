@@ -603,6 +603,30 @@ describe("persistent goal lifecycle", () => {
 });
 
 describe("editing and deleting an active goal", () => {
+  it("saves an edit after completion without retaining the old completion verdict or restarting work", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    db.goal().state = "achieved";
+    db.goal().achievedAt = Date.now();
+    db.goal().judgment = { verdict: "done", reason: "Old objective completed" };
+    const edited = await invoke(update, db.ctx, {
+      ...owner,
+      generation: 1,
+      objective: "Updated objective",
+      criteria: ["Updated objective"],
+    });
+    expect(edited).toMatchObject({
+      state: "paused",
+      generation: 2,
+      objective: "Updated objective",
+      evidence: [],
+    });
+    expect(edited.achievedAt).toBeUndefined();
+    expect(edited.judgment).toBeUndefined();
+    expect(edited.dispatchId).toBeUndefined();
+    expect(edited.activeRunId).toBeUndefined();
+    expect(db.chat().canceled_at).toBeUndefined();
+  });
   it("pauses editing, preserves spent budget, and rejects old completion evidence", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);
