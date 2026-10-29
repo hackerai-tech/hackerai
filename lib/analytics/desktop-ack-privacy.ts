@@ -108,6 +108,7 @@ const SUMMARY_PROPERTIES = new Set([
   "pendingAtEnd",
 ]);
 
+/** Strip SDK enrichment from command details and cross-command summaries. */
 export function sanitizeDesktopAckEvent<
   T extends {
     event?: string;

@@ -62,6 +62,11 @@ export class DesktopAckTelemetry {
     if (document.visibilityState === "hidden") this.flush();
   };
 
+  private markActivity() {
+    if (this.counts.startedCount === 0 && this.counts.settledCount === 0)
+      this.windowStartedAt = Date.now();
+  }
+
   private scheduleFlush() {
     if (this.timer) return;
     this.timer = setTimeout(() => {
@@ -178,6 +183,7 @@ export class DesktopAckTelemetry {
       ...(context.triggerRunId && { triggerRunId: context.triggerRunId }),
       telemetry_sampled: sampled,
     };
+    this.markActivity();
     this.counts.startedCount++;
     this.pending++;
     this.scheduleFlush();
@@ -214,6 +220,7 @@ export class DesktopAckTelemetry {
         result.terminalType !== "exit" ||
         result.terminalExitCode !== 0 ||
         result.durationMs >= 30_000;
+      this.markActivity();
       this.pending--;
       this.counts.settledCount++;
       if (result.outcome === "acknowledged") this.counts.acknowledgedCount++;

@@ -373,6 +373,30 @@ describe("volume reduction and reliability counters", () => {
     expect(capture).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["start", "settle"])(
+    "starts an empty window at its first %s after idle time",
+    (activity) => {
+      jest.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+      const settle = start("first");
+      if (activity === "start") settle(routine);
+      telemetry.flush();
+      jest.advanceTimersByTime(2 * 60 * 60 * 1000);
+      const activityTime = new Date().toISOString();
+      if (activity === "start") start("second")(routine);
+      else settle(routine);
+      jest.advanceTimersByTime(30_000);
+      if (activity === "start") start("third")(routine);
+      telemetry.flush();
+      const last = summaries().at(-1)![0].properties;
+      expect(last).toMatchObject({
+        windowStartedAt: activityTime,
+        windowEndedAt: new Date().toISOString(),
+        pendingAtStart: activity === "start" ? 0 : 1,
+        pendingAtEnd: 0,
+      });
+    },
+  );
+
   it("keeps pending starts across windows without counting them as success", () => {
     const settle = start("long-running");
     jest.advanceTimersByTime(60_000);
