@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { ImageViewer } from "../ImageViewer";
 
 jest.mock("next/image", () => ({
@@ -69,7 +69,9 @@ describe("ImageViewer downloads", () => {
       expect(URL.createObjectURL).not.toHaveBeenCalled();
       expect(downloaded).toEqual([]);
       expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
-      const fallback = screen.getByRole("link", { name: "Open image" });
+      const fallback = within(screen.getByRole("dialog")).getByRole("link", {
+        name: "Open image",
+      });
       expect(fallback).toHaveAttribute("href", imageSrc);
       expect(fallback).toHaveAttribute("target", "_blank");
       expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
@@ -112,9 +114,9 @@ describe("ImageViewer downloads", () => {
     );
   });
 
-  it("does not show a late download failure on a different image", async () => {
+  it("keeps the current image's recovery link when an older download fails later", async () => {
     let rejectDownload!: (error: Error) => void;
-    fetchMock.mockReturnValue(
+    fetchMock.mockReturnValueOnce(
       new Promise((_resolve, reject) => {
         rejectDownload = reject;
       }),
@@ -129,11 +131,24 @@ describe("ImageViewer downloads", () => {
       />,
     );
 
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
+    await download();
+
     await act(async () => {
       rejectDownload(new Error("offline"));
     });
 
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog")).getByRole("link", {
+        name: "Open image",
+      }),
+    ).toHaveAttribute("href", "https://files.example/other.png");
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith(
+      "https://files.example/other.png",
+      "_blank",
+      "noopener,noreferrer",
+    );
     expect(downloaded).toEqual([]);
   });
 });

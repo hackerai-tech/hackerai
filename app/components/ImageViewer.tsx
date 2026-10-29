@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { Download, ZoomIn, ZoomOut } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
+import { useCommittedRef } from "../hooks/useLatestRef";
 
 interface ImageViewerProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ export const ImageViewer = ({
   imageAlt,
   fileName,
 }: ImageViewerProps) => {
+  const currentImageRef = useCommittedRef({ imageSrc, isOpen });
   const [isImageLoading, setIsImageLoading] = useState(true);
   const [failedDownloadSrc, setFailedDownloadSrc] = useState<string | null>(
     null,
@@ -140,6 +142,11 @@ export const ImageViewer = ({
         current === imageSrc ? null : current,
       );
     } catch {
+      if (
+        !currentImageRef.current.isOpen ||
+        currentImageRef.current.imageSrc !== imageSrc
+      )
+        return;
       setFailedDownloadSrc(imageSrc);
       window.open(imageSrc, "_blank", "noopener,noreferrer");
     }
@@ -238,8 +245,13 @@ export const ImageViewer = ({
 
   return (
     <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="image-viewer-title"
+      aria-describedby="image-viewer-description"
       data-state="open"
-      className="radix-state-open:animate-show fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/90 dark:bg-black/80"
+      className="radix-state-open:animate-show focus:outline-hidden fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/90 dark:bg-black/80"
       style={{ pointerEvents: "auto" }}
       onClick={handleBackdropClick}
       tabIndex={-1}
@@ -321,11 +333,6 @@ export const ImageViewer = ({
 
       {/* Image Container */}
       <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="image-viewer-title"
-        aria-describedby="image-viewer-description"
         data-state="open"
         className={`radix-state-open:animate-contentShow focus:outline-hidden relative flex h-full w-full items-center justify-center overflow-hidden ${
           zoom > 100
