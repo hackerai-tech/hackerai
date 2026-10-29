@@ -1,3 +1,7 @@
+import { sampleDiagnosticOperation } from "@/lib/analytics/diagnostic-sampling";
+jest.mock("@/lib/analytics/diagnostic-sampling", () => ({
+  sampleDiagnosticOperation: jest.fn(() => true),
+}));
 import { cancelDesktopRunLocally } from "../desktop-command-cancellation";
 import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
@@ -56,6 +60,7 @@ jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
   captureQueuedAuthenticatedEvent: jest.fn().mockReturnValue(true),
   getIdentifiedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
+  subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
 }));
 
 // Mock Tauri IPC
@@ -3706,6 +3711,98 @@ it.each([false, true])(
       for (const finish of running.values()) finish();
       await bridge.stop();
       mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each([0, 2])(
+  "preserves native ACK delivery while reducing routine telemetry (exit %i)",
+  async (exitCode) => {
+    jest.useFakeTimers();
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    const native = mockInvokeHandler;
+    try {
+      await bridge.start();
+      const reply = {
+        ...mockSubscription,
+        on: jest.fn(),
+        publish: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn(),
+        removeAllListeners: jest.fn(),
+      };
+      mockClient.newSubscription.mockReturnValueOnce(reply);
+      let executions = 0;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "execute_stream_command") {
+          executions++;
+          capturedChannel!.onmessage!({
+            type: "stdout",
+            data: "PRIVATE OUTPUT",
+          });
+          capturedChannel!.onmessage!({ type: "exit", exitCode });
+          return;
+        }
+        return native(cmd, args);
+      };
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "unsampled-native",
+          command: "PRIVATE COMMAND",
+          outputProtocol: "ack-v1",
+          operationChannel: true,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const publication = reply.on.mock.calls.find(
+        ([event]) => event === "publication",
+      )![1];
+      publication({
+        data: {
+          type: "command_output_ack",
+          commandId: "unsampled-native",
+          sequence: 1,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(executions).toBe(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      await bridge.stop();
+      const captures = jest.mocked(captureQueuedAuthenticatedEvent).mock.calls;
+      expect(
+        captures.filter(
+          ([event]) => event.event === "desktop_ack_command_started",
+        ),
+      ).toHaveLength(0);
+      const finals = captures.filter(
+        ([event]) => event.event === "desktop_ack_command_settled",
+      );
+      expect(finals).toHaveLength(exitCode === 0 ? 0 : 1);
+      if (exitCode !== 0)
+        expect(finals[0][0].properties).toMatchObject({
+          terminalExitCode: exitCode,
+          telemetry_sampled: false,
+          telemetry_sample_rate: 1,
+        });
+      expect(
+        captures.find(
+          ([event]) => event.event === "desktop_ack_delivery_summary",
+        )![0].properties,
+      ).toMatchObject({
+        startedCount: 1,
+        settledCount: 1,
+        acknowledgedCount: 1,
+        nonzeroExitCount: exitCode === 0 ? 0 : 1,
+      });
+      expect(JSON.stringify(captures)).not.toContain("PRIVATE");
+    } finally {
+      await bridge.stop();
+      mockInvokeHandler = native;
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
       jest.useRealTimers();
     }
   },
