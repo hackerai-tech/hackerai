@@ -48,6 +48,7 @@ import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
   LocalFileRequestError,
+  getLocalFileRequestFailure,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
 
@@ -312,6 +313,8 @@ export interface CentrifugoConfig {
 export class CentrifugoSandbox extends EventEmitter {
   readonly sandboxKind = "centrifugo" as const;
   private activeClients: Centrifuge[] = [];
+  private nativeFileRelayConfirmed = false;
+  private nativeFileRelayConfirmation?: Promise<void>;
 
   constructor(
     private userId: string,
@@ -356,7 +359,53 @@ export class CentrifugoSandbox extends EventEmitter {
   supportsNativeFileRelay(): boolean {
     return (
       this.connectionInfo.isDesktop === true &&
-      this.connectionInfo.capabilities?.files === true
+      (this.connectionInfo.capabilities?.files === true ||
+        this.nativeFileRelayConfirmed)
+    );
+  }
+
+  /** Call once before exposing this sandbox: artifact paths must not flip mid-run. */
+  confirmNativeFileRelay(): Promise<void> {
+    if (
+      this.connectionInfo.isDesktop !== true ||
+      this.connectionInfo.capabilities?.files !== false ||
+      !this.supportsOperationChannels()
+    )
+      return Promise.resolve();
+    return (this.nativeFileRelayConfirmation ??= this.probeNativeFileRelay());
+  }
+
+  private async probeNativeFileRelay(): Promise<void> {
+    // A slow startup probe can leave a working Desktop registered as files=false.
+    // Confirm on that same connection before choosing artifact paths/transport.
+    // Do not grant commandStdin or bypass Local's private-storage preparation.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 3000);
+    let failure: string | undefined;
+    try {
+      await this.dispatchFileRequest<FileStatResultMessage>(
+        { type: "file_stat", path: "." },
+        new Set(["file_stat_result"]),
+        3000,
+        controller.signal,
+      );
+      this.nativeFileRelayConfirmed = true;
+    } catch (error) {
+      failure = controller.signal.aborted
+        ? "timeout"
+        : getLocalFileRequestFailure(error);
+    } finally {
+      clearTimeout(deadline);
+    }
+    console.info(
+      JSON.stringify({
+        event: "desktop_file_capability_probe",
+        service: this.getRelayTrafficSource(),
+        request_id: this.triggerRunId,
+        connection_id: this.connectionInfo.connectionId,
+        outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
+        failure,
+      }),
     );
   }
 
@@ -373,6 +422,7 @@ export class CentrifugoSandbox extends EventEmitter {
     if (
       this.connectionInfo.isDesktop === true &&
       this.connectionInfo.capabilities?.files === false &&
+      !this.nativeFileRelayConfirmed &&
       this.workingDirectory
     ) {
       // The native adapter enforces allowedRoot, including symlinks. Do not
@@ -466,6 +516,18 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       );
     }
 
+    return this.dispatchFileRequest<T>(input, expectedTypes, timeoutMs, signal);
+  }
+
+  // Only the read-only acquisition probe may enter here without an advertised
+  // capability. All public file operations still pass through runFileRequest.
+  private async dispatchFileRequest<T extends FileResponseMessage>(
+    input: FileRequestInput,
+    expectedTypes: Set<string>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
     const isolated = this.supportsOperationChannels();
     const channel = isolated

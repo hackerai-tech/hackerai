@@ -306,6 +306,7 @@ export class HybridSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private localAcquisition: Promise<void> | null = null;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
@@ -808,6 +809,22 @@ export class HybridSandboxManager implements SandboxManager {
   private async useCentrifugoConnection(
     connection: ConnectionInfo,
   ): Promise<void> {
+    while (this.localAcquisition) {
+      await this.localAcquisition;
+      if (this.currentConnectionId === connection.connectionId && this.sandbox)
+        return;
+    }
+    this.localAcquisition = this.acquireCentrifugoConnection(connection);
+    try {
+      await this.localAcquisition;
+    } finally {
+      this.localAcquisition = null;
+    }
+  }
+
+  private async acquireCentrifugoConnection(
+    connection: ConnectionInfo,
+  ): Promise<void> {
     await this.closeCurrentSandbox();
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
     const centrifugoTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
@@ -818,7 +835,7 @@ export class HybridSandboxManager implements SandboxManager {
       wsUrl: centrifugoWsUrl,
       tokenSecret: centrifugoTokenSecret,
     };
-    this.sandbox = new CentrifugoSandbox(
+    const sandbox = new CentrifugoSandbox(
       this.userID,
       connection,
       centrifugoConfig,
@@ -826,6 +843,8 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
+    await sandbox.confirmNativeFileRelay();
+    this.sandbox = sandbox;
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
     this.currentConnectionName = connection.name;
@@ -926,6 +945,7 @@ export class HybridSandboxManager implements SandboxManager {
   async resetSandbox(reason?: string): Promise<void> {
     // Settle acquisition before clearing its result; never destroy the VM.
     await this.cloudAcquisition?.catch(() => undefined);
+    await this.localAcquisition?.catch(() => undefined);
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;

@@ -1355,6 +1355,48 @@ describe("native desktop file relay", () => {
     });
   });
 
+  it("answers a same-connection file probe after startup timed out without re-registering", async () => {
+    jest.useFakeTimers();
+    const original = mockInvokeHandler;
+    mockInvokeHandler = (cmd, args) =>
+      cmd === "desktop_file_request"
+        ? new Promise(() => {})
+        : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      const starting = bridge.start();
+      await jest.advanceTimersByTimeAsync(3000);
+      await starting;
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({ files: false }),
+        }),
+      );
+      mockInvokeHandler = original;
+      getPublicationHandler()({
+        data: {
+          type: "file_stat",
+          requestId: "recovery-probe",
+          path: ".",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_stat_result",
+          requestId: "recovery-probe",
+          kind: "not_file",
+        }),
+      );
+      expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
   it("handles file_stat through the same structured native bridge", async () => {
     const bridge = new DesktopSandboxBridge(buildConfig());
     await bridge.start();
