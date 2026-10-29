@@ -12,7 +12,9 @@ import { toast } from "sonner";
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
-jest.mock("sonner", () => ({ toast: { success: jest.fn() } }));
+jest.mock("sonner", () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
+}));
 const goal = {
   _id: "goal",
   chatId: "chat",
@@ -259,5 +261,137 @@ describe("simple goal sidebar editor", () => {
       resolve({ ok: true, json: async () => ({ goal }) } as Response),
     );
     expect(stop).not.toHaveBeenCalled();
+  });
+  it.each(["running", "queued"])(
+    "continues a %s goal only after saving its new generation",
+    async (state) => {
+      const resume = jest.fn().mockResolvedValue(undefined);
+      const current = { ...goal, state };
+      jest.mocked(fetch).mockImplementation(
+        async (_url, init) =>
+          ({
+            ok: true,
+            json: async () =>
+              init?.method === "POST"
+                ? { state: "paused", generation: 4 }
+                : { goal: current },
+          }) as Response,
+      );
+      render(
+        <AgentGoalEditor
+          chatId="chat"
+          onClose={jest.fn()}
+          stopRunBeforeControl={jest.fn().mockResolvedValue(true)}
+          continueGoal={resume}
+        />,
+      );
+      fireEvent.change(await screen.findByRole("textbox"), {
+        target: { value: "Revised request" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: /Save|Update and continue/ }),
+      );
+      await waitFor(() =>
+        expect(resume).toHaveBeenCalledWith(
+          expect.objectContaining({
+            objective: "Revised request",
+            generation: 4,
+          }),
+        ),
+      );
+    },
+  );
+  it.each(["paused", "achieved", "needs_approval", "waiting"])(
+    "does not resume a freshly %s goal even when the editor opened while running",
+    async (state) => {
+      const resume = jest.fn();
+      jest.mocked(fetch).mockImplementation(
+        async (_url, init) =>
+          ({
+            ok: true,
+            json: async () =>
+              init?.method === "POST"
+                ? { state: "paused", generation: 4 }
+                : { goal: { ...goal, state, activeRunId: undefined } },
+          }) as Response,
+      );
+      const close = jest.fn();
+      render(
+        <AgentGoalEditor chatId="chat" onClose={close} continueGoal={resume} />,
+      );
+      fireEvent.change(await screen.findByRole("textbox"), {
+        target: { value: "Revised request" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: /Save|Update and continue/ }),
+      );
+      await waitFor(() => expect(close).toHaveBeenCalled());
+      expect(resume).not.toHaveBeenCalled();
+    },
+  );
+  it("reports a saved goal separately from a failed restart", async () => {
+    jest.mocked(fetch).mockImplementation(
+      async (_url, init) =>
+        ({
+          ok: true,
+          json: async () =>
+            init?.method === "POST"
+              ? { state: "paused", generation: 4 }
+              : { goal },
+        }) as Response,
+    );
+    const close = jest.fn();
+    render(
+      <AgentGoalEditor
+        chatId="chat"
+        onClose={close}
+        stopRunBeforeControl={jest.fn().mockResolvedValue(true)}
+        continueGoal={jest
+          .fn()
+          .mockRejectedValue(new Error("Usage limit reached"))}
+      />,
+    );
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "Revised request" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Save|Update and continue/ }),
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("Goal saved"),
+      ),
+    );
+    expect(close).toHaveBeenCalled();
+  });
+  it("never continues if saving the changed objective fails", async () => {
+    const resume = jest.fn();
+    const close = jest.fn();
+    jest.mocked(fetch).mockImplementation(
+      async (_url, init) =>
+        ({
+          ok: init?.method !== "POST",
+          json: async () =>
+            init?.method === "POST" ? { message: "Goal changed" } : { goal },
+        }) as Response,
+    );
+    render(
+      <AgentGoalEditor
+        chatId="chat"
+        onClose={close}
+        stopRunBeforeControl={jest.fn().mockResolvedValue(true)}
+        continueGoal={resume}
+      />,
+    );
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "Revised request" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Update and continue" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Goal changed");
+    expect(resume).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("Revised request");
   });
 });

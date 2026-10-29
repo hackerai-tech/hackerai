@@ -212,7 +212,7 @@ type AgentGoalRequest =
       objective: string;
       criteria: string[];
     } & GoalContract)
-  | { action: "resume" };
+  | { action: "resume"; expectedGeneration?: number };
 type AgentTriggerRequestBody = {
   goal?: AgentGoalRequest;
   messages: UIMessage[];
@@ -877,6 +877,9 @@ export const createAgentTriggerPost =
                 chatId,
                 userId,
                 action: "resume",
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { generation: goalRequest.expectedGeneration }
+                  : {}),
               });
         reservedGoal = { chatId, userId, generation: savedGoal.generation };
         await captureGoalLifecycle(

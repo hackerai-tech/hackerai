@@ -1272,4 +1272,29 @@ describe("goal reservations on oversized dispatch", () => {
         expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
+  it("fences update-and-continue against a different saved goal", async () => {
+    mockGoalMutation.mockRejectedValue(new Error("Goal changed"));
+    const response = await createAgentTriggerPost({ endpoint: "/api/agent" })({
+      headers: new Headers(),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "goal-chat",
+        messages: [
+          {
+            id: "input",
+            role: "user",
+            parts: [{ type: "text", text: "Resume goal: Revised request" }],
+          },
+        ],
+        goal: { action: "resume", expectedGeneration: 5 },
+        agentPermissionMode: "full_access",
+      }),
+    } as any);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(mockGoalMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "resume", generation: 5 }),
+    );
+    expect(mockTriggerTask).not.toHaveBeenCalled();
+  });
 });

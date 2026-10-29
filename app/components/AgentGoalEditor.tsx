@@ -22,12 +22,14 @@ export function AgentGoalEditor({
   stopRunBeforeControl,
   draft,
   onDraftChange,
+  continueGoal,
 }: {
   chatId: string;
   onClose: () => void;
   stopRunBeforeControl?: (runId: string) => Promise<boolean>;
   draft?: GoalEditorDraft;
   onDraftChange?: (draft: GoalEditorDraft) => void;
+  continueGoal?: (goal: Goal) => Promise<void>;
 }) {
   const goal = useQuery(api.agentGoals.get, { chatId });
   const [original, setOriginal] = useState<Goal | null>(
@@ -90,6 +92,8 @@ export function AgentGoalEditor({
   const valid = !!fields && validGoalStart(fields);
   const validation =
     objective && !valid ? "Use a goal between 1 and 4,000 characters." : "";
+  const willContinue =
+    !!continueGoal && ["running", "queued"].includes(goal?.state ?? "");
   const canSave =
     !!original &&
     !!goal &&
@@ -119,6 +123,8 @@ export function AgentGoalEditor({
     try {
       let current = await readCurrentGoal();
       if (!mounted.current) return;
+      const shouldContinue =
+        !!continueGoal && ["running", "queued"].includes(current.state);
       if (current.activeRunId) {
         if (
           !stopRunBeforeControl ||
@@ -146,12 +152,35 @@ export function AgentGoalEditor({
         throw new Error(
           (await response.json()).message ?? "Could not save the goal.",
         );
+      const saved = await response.json();
       captureAuthenticatedEvent("agent_goal_user_control", {
         action: "update",
+        continue_after_update: shouldContinue,
       });
       if (mounted.current) {
-        toast.success("Goal updated. Resume when ready.");
         onClose();
+        if (shouldContinue && continueGoal) {
+          // send resolves when streaming ends. Close the editor immediately so
+          // another edit is possible while the replacement run is working.
+          if (!Number.isSafeInteger(saved.generation)) {
+            toast.error(
+              "Goal saved. Could not continue; reload and Resume when ready.",
+            );
+          } else {
+            toast.success("Goal updated. Continuing…");
+            void continueGoal({
+              ...current,
+              ...fields,
+              generation: saved.generation,
+            }).catch((cause) => {
+              toast.error(
+                `Goal saved. Could not continue: ${cause instanceof Error ? cause.message : "Check the chat and Resume when ready."}`,
+              );
+            });
+          }
+        } else {
+          toast.success("Goal updated. Resume when ready.");
+        }
       }
     } catch (e) {
       if (mounted.current)
@@ -168,6 +197,7 @@ export function AgentGoalEditor({
     <section
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[22px] border bg-background desktop:mr-4"
       aria-label="Goal editor"
+      aria-busy={saving}
     >
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <GoalTargetIcon
@@ -179,10 +209,22 @@ export function AgentGoalEditor({
           size="sm"
           className="min-h-11 desktop:min-h-0"
           aria-describedby={statusId}
+          aria-label={
+            willContinue && !saving ? "Update and continue" : undefined
+          }
           disabled={!canSave}
           onClick={save}
         >
-          {saving ? "Saving…" : "Save"}
+          {saving ? (
+            "Saving…"
+          ) : willContinue ? (
+            <>
+              <span className="desktop:hidden">Update</span>
+              <span className="hidden desktop:inline">Update and continue</span>
+            </>
+          ) : (
+            "Save"
+          )}
         </Button>
         <Button
           variant="ghost"
@@ -230,7 +272,9 @@ export function AgentGoalEditor({
                   ["running", "queued", "waiting", "needs_approval"].includes(
                     goal.state,
                   )
-                ? "The agent keeps working while you edit. Saving stops the current run, keeps its partial response, and pauses the goal."
+                ? willContinue
+                  ? "The agent keeps working while you edit. Updating keeps its partial response and continues in a new run with the revised goal."
+                  : "Saving keeps the revised goal paused until you resume."
                 : goal?.state === "achieved"
                   ? "Saving reopens this goal and resets its completion check. Resume when ready."
                   : "Save changes, then Resume to pursue the updated goal."}

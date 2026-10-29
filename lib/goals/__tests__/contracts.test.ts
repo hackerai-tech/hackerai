@@ -276,21 +276,24 @@ describe("composer goal edits", () => {
       ...fields,
     });
   });
-  it("only accepts a valid version fence for goal replacement", () => {
-    const start = {
-      action: "start",
-      objective: "Read marker",
-      criteria: ["Read marker"],
-    };
-    for (const expectedGeneration of [undefined, 0, 12])
-      expect(validGoalRequest({ ...start, expectedGeneration })).toBe(true);
-    for (const expectedGeneration of [
-      -1,
-      1.5,
-      "12",
-      null,
-      Number.MAX_SAFE_INTEGER + 1,
-    ])
-      expect(validGoalRequest({ ...start, expectedGeneration })).toBe(false);
-  });
+  it.each(["start", "resume"])(
+    "only accepts a valid version fence for goal %s",
+    (action) => {
+      const start = {
+        action,
+        objective: "Read marker",
+        criteria: ["Read marker"],
+      };
+      for (const expectedGeneration of [undefined, 0, 12])
+        expect(validGoalRequest({ ...start, expectedGeneration })).toBe(true);
+      for (const expectedGeneration of [
+        -1,
+        1.5,
+        "12",
+        null,
+        Number.MAX_SAFE_INTEGER + 1,
+      ])
+        expect(validGoalRequest({ ...start, expectedGeneration })).toBe(false);
+    },
+  );
 });

@@ -159,16 +159,15 @@ export function serializeGoalEvidence(part: unknown): string {
 export function validGoalRequest(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const request = value as Record<string, unknown>;
-  if (request.action === "start")
-    return (
-      (request.expectedGeneration === undefined ||
-        (typeof request.expectedGeneration === "number" &&
-          Number.isSafeInteger(request.expectedGeneration) &&
-          request.expectedGeneration >= 0)) &&
-      validGoalStart(request)
-    );
-  if (request.action !== "resume") return false;
-  return true;
+  if (
+    request.expectedGeneration !== undefined &&
+    (typeof request.expectedGeneration !== "number" ||
+      !Number.isSafeInteger(request.expectedGeneration) ||
+      request.expectedGeneration < 0)
+  )
+    return false;
+  if (request.action === "start") return validGoalStart(request);
+  return request.action === "resume";
 }
 
 export function resolveGoalOutcome(args: {

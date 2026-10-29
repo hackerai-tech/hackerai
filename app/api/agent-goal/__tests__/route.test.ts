@@ -48,6 +48,7 @@ describe("goal control admission", () => {
     mockChat.mockResolvedValue({ user_id: "owner" });
     mockMutation.mockResolvedValue({
       state: "paused",
+      generation: 5,
       activeRunId: "claimed-run",
     });
   });
@@ -96,5 +97,18 @@ describe("goal control admission", () => {
     expect(mockMutation.mock.invocationCallOrder[0]).toBeLessThan(
       mockCancel.mock.invocationCallOrder[0],
     );
+  });
+  it("returns the saved generation for a fenced continuation", async () => {
+    const response = await POST(
+      request({
+        chatId: "chat",
+        action: "update",
+        generation: 4,
+        objective: "Revised request",
+        criteria: ["Revised request"],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: "paused", generation: 5 });
   });
 });

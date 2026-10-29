@@ -1,4 +1,5 @@
 "use client";
+import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
@@ -2863,6 +2864,27 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 <ComputerSidebar
                   key={chatId}
                   stopGoalRunBeforeControl={stopGoalRunBeforeControl}
+                  continueGoal={async (goal) => {
+                    if (computerSendDisabledReason)
+                      throw new Error(computerSendDisabledReason);
+                    hasManuallyStoppedRef.current = false;
+                    resetAutoContinueCount();
+                    await sendMessage(
+                      { text: goalResumeMessage(goal) },
+                      {
+                        body: {
+                          sandboxPreference: goal.sandboxPreference,
+                          agentPermissionMode: goal.permissionMode,
+                          selectedModel: goal.selectedModel,
+                          mode: "agent",
+                          goal: {
+                            action: "resume",
+                            expectedGeneration: goal.generation,
+                          },
+                        },
+                      },
+                    );
+                  }}
                   onBrowserContinue={continueBrowserHandoff}
                   chatId={chatId}
                   messages={messages}

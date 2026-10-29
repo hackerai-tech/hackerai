@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
       { userId, chatId: body.chatId, runId: goal.activeRunId },
       goal,
     );
-    return Response.json({ state: goal.state });
+    return Response.json({ state: goal.state, generation: goal.generation });
   } catch (e) {
     return e instanceof ChatSDKError
       ? e.toResponse()
