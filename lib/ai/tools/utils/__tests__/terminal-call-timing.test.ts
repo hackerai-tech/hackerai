@@ -166,6 +166,7 @@ describe("routine terminal log sampling", () => {
     { error: "PRIVATE", exitCode: 0 },
     { exitCode: 2 },
     { exited: { exitCode: 130 }, session: "PRIVATE" },
+    { exited: { exitCode: null }, session: "PRIVATE" },
     { waitExpired: true, session: "PRIVATE" },
     { timedOut: true, exitCode: 0 },
     { recovered: true, exitCode: 0 },

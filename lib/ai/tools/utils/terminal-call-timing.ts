@@ -53,7 +53,10 @@ export function withTerminalCallTiming<
           !(
             exitCode === 0 ||
             nestedExitCode === 0 ||
-            typeof result?.session === "string"
+            (typeof result?.session === "string" &&
+              result.session.length > 0 &&
+              result.exited === undefined &&
+              exitCode == null)
           ) ||
           (typeof exitCode === "number" && exitCode !== 0) ||
           (typeof nestedExitCode === "number" && nestedExitCode !== 0) ||
