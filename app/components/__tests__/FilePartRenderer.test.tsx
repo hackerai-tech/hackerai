@@ -1,9 +1,23 @@
 import "@testing-library/jest-dom";
-import { act, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+} from "@testing-library/react";
 import { useAction } from "convex/react";
 import type { ComponentProps } from "react";
 import { FileUrlCacheProvider } from "@/app/contexts/FileUrlCacheContext";
+import { useFileUrlCache } from "@/app/hooks/useFileUrlCache";
+import { startBlobDownload } from "@/lib/utils/file-download";
+import { toast } from "sonner";
 import { FilePartRenderer } from "../FilePartRenderer";
+
+jest.mock("@/lib/utils/file-download", () => ({
+  startBlobDownload: jest.fn(),
+}));
+jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
 
 jest.mock("next/image", () => ({
   __esModule: true,
@@ -72,5 +86,148 @@ describe("FilePartRenderer", () => {
       "https://files.example/screenshot.png",
     );
     expect(cache.get("file-1")).toBe("https://files.example/screenshot.png");
+  });
+
+  describe("document downloads", () => {
+    const originalFetch = global.fetch;
+    const oldUrl = "https://files.example/old-signed-url";
+    const freshUrl = "https://files.example/fresh-signed-url";
+    const part = {
+      fileId: "file-1" as NonNullable<
+        ComponentProps<typeof FilePartRenderer>["part"]["fileId"]
+      >,
+      name: "report.txt",
+      mediaType: "text/plain",
+      url: oldUrl,
+    };
+    const blob = new Blob(["download fixture"]);
+    let fetchMock: jest.Mock;
+
+    beforeEach(() => {
+      fetchMock = jest
+        .fn()
+        .mockResolvedValue({ ok: true, blob: async () => blob });
+      global.fetch = fetchMock;
+      jest.mocked(startBlobDownload).mockClear();
+      jest.mocked(toast.error).mockClear();
+      mockGetFileUrlAction.mockResolvedValue(freshUrl);
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      jest.restoreAllMocks();
+    });
+
+    async function clickDownload() {
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Download report.txt" }),
+        );
+      });
+    }
+
+    it.each([
+      { cachedUrl: oldUrl, elapsedMinutes: 51 },
+      {
+        cachedUrl: "https://files.example/short-lived?X-Amz-Expires=2400",
+        elapsedMinutes: 41,
+      },
+    ])(
+      "refreshes after $elapsedMinutes minutes without remounting, then reuses the cache",
+      async ({ cachedUrl, elapsedMinutes }) => {
+        const now = jest.spyOn(Date, "now").mockReturnValue(1_000);
+        const { result } = renderHook(() => useFileUrlCache([]));
+        result.current.setCachedUrl("file-1", cachedUrl);
+        render(
+          <FileUrlCacheProvider {...result.current}>
+            <FilePartRenderer
+              part={{ ...part, url: cachedUrl }}
+              partIndex={0}
+              messageId="message-1"
+            />
+          </FileUrlCacheProvider>,
+        );
+        now.mockReturnValue(1_000 + elapsedMinutes * 60 * 1_000);
+
+        await clickDownload();
+
+        expect(mockGetFileUrlAction).toHaveBeenCalledWith({ fileId: "file-1" });
+        expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+        expect(fetchMock).not.toHaveBeenCalledWith(cachedUrl);
+        expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
+        expect(result.current.getCachedUrl("file-1")).toBe(freshUrl);
+
+        mockGetFileUrlAction.mockClear();
+        await clickDownload();
+        expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenLastCalledWith(freshUrl);
+        expect(startBlobDownload).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("prefers a current cached URL over the URL stored on the attachment", async () => {
+      cache.set("file-1", freshUrl);
+      renderWithCache(part);
+      await clickDownload();
+      expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+    });
+
+    it("resolves file IDs on each click when no cache provider is available", async () => {
+      render(
+        <FilePartRenderer part={part} partIndex={0} messageId="message-1" />,
+      );
+      await clickDownload();
+      mockGetFileUrlAction.mockResolvedValue("https://files.example/newer-url");
+      await clickDownload();
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "https://files.example/newer-url",
+      );
+      expect(fetchMock).not.toHaveBeenCalledWith(oldUrl);
+    });
+
+    it("downloads a direct URL when the attachment has no file ID", async () => {
+      renderWithCache({ ...part, fileId: undefined });
+      await clickDownload();
+      expect(mockGetFileUrlAction).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledWith(oldUrl);
+      expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
+    });
+
+    it("shows an unavailable error instead of downloading a stale fallback URL", async () => {
+      mockGetFileUrlAction.mockResolvedValue(null);
+      renderWithCache(part);
+      await clickDownload();
+      expect(
+        screen.getByText("Failed to get download URL"),
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(startBlobDownload).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("button", { name: "Download report.txt" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("allows retry after a temporary URL-resolution failure without remounting", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      mockGetFileUrlAction.mockRejectedValueOnce(
+        new Error("Connection interrupted"),
+      );
+      renderWithCache(part);
+
+      await clickDownload();
+
+      expect(toast.error).toHaveBeenCalledWith("Connection interrupted");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Download report.txt" }),
+      ).toBeEnabled();
+
+      await clickDownload();
+
+      expect(fetchMock).toHaveBeenCalledWith(freshUrl);
+      expect(fetchMock).not.toHaveBeenCalledWith(oldUrl);
+      expect(startBlobDownload).toHaveBeenCalledWith(blob, "report.txt");
+    });
   });
 });
