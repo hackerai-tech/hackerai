@@ -1,3 +1,7 @@
+jest.mock("@/lib/analytics/diagnostic-sampling", () => ({
+  sampleDiagnosticOperation: jest.fn(() => true),
+}));
+import { sampleDiagnosticOperation } from "@/lib/analytics/diagnostic-sampling";
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn() },
 }));
@@ -118,4 +122,91 @@ test("a diagnostic failure does not change completed output or timing", async ()
   expect(result.result.callTiming).toEqual(
     expect.objectContaining({ elapsedMs: expect.any(Number) }),
   );
+});
+
+describe("routine terminal log sampling", () => {
+  beforeEach(() =>
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(false),
+  );
+
+  test("suppresses routine log ingestion while preserving result, timing and execution count", async () => {
+    const output = { result: { exitCode: 0, output: "PRIVATE" } };
+    const execute = jest.fn(async () => output);
+    const actual = await withTerminalCallTiming(
+      context,
+      "run_terminal_cmd",
+      execute,
+    )({}, options);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(actual.result).toMatchObject(output.result);
+    expect(actual.result.callTiming.elapsedMs).toEqual(expect.any(Number));
+    expect(phLogger.info).not.toHaveBeenCalled();
+  });
+
+  test("tags sampled routine calls for weighted log analysis", async () => {
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
+    await withTerminalCallTiming(
+      context,
+      "interact_terminal_session",
+      async () => ({ result: { session: "PRIVATE" } }),
+    )({ action: "view" }, options);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "terminal_call_finished",
+      expect.objectContaining({
+        telemetry_sample_rate: 0.1,
+        telemetry_selection: "sampled",
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+      "PRIVATE",
+    );
+  });
+
+  test.each([
+    { error: "PRIVATE", exitCode: 0 },
+    { exitCode: 2 },
+    { exited: { exitCode: 130 }, session: "PRIVATE" },
+    { exited: { exitCode: null }, session: "PRIVATE" },
+    { waitExpired: true, session: "PRIVATE" },
+    { timedOut: true, exitCode: 0 },
+    { recovered: true, exitCode: 0 },
+    { recordPersistenceFailed: true, exitCode: 0 },
+    { status: "unknown", session: "PRIVATE" },
+    { success: false, exitCode: 0 },
+    {},
+  ])(
+    "keeps structured failures, recovery and unknown results: %p",
+    async (result) => {
+      await withTerminalCallTiming(context, "run_terminal_cmd", async () => ({
+        result,
+      }))({}, options);
+      expect(phLogger.info).toHaveBeenCalledWith(
+        "terminal_call_finished",
+        expect.objectContaining({
+          telemetry_sample_rate: 1,
+          telemetry_selection: "diagnostic",
+        }),
+      );
+      expect(
+        JSON.stringify(jest.mocked(phLogger.info).mock.calls),
+      ).not.toContain("PRIVATE");
+    },
+  );
+
+  test("keeps slow successful calls even outside the sampled cohort", async () => {
+    jest
+      .spyOn(performance, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(30_000);
+    await withTerminalCallTiming(context, "run_terminal_cmd", async () => ({
+      result: { exitCode: 0 },
+    }))({}, options);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "terminal_call_finished",
+      expect.objectContaining({
+        telemetry_sample_rate: 1,
+        tool_elapsed_ms: 30_000,
+      }),
+    );
+  });
 });

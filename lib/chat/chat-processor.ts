@@ -803,7 +803,5 @@ export async function processChatMessages({
     moderationChecked: true,
     platformAuthorized: moderationResult.shouldUncensorResponse,
     allowsFreeAbliteration: moderationResult.allowsFreeAbliteration,
-    allowsAbliterationContinuation:
-      moderationResult.allowsAbliterationContinuation,
   };
 }

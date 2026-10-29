@@ -128,17 +128,45 @@ function isRecoveryState(value: unknown): value is RecoveryState {
   );
 }
 
+function logWorkspaceGuardFailure(
+  userId: string,
+  operation: "read_state" | "assert_available",
+  reason:
+    | "store_unavailable"
+    | "state_read_failed"
+    | "state_invalid"
+    | "availability_rejected"
+    | "availability_store_error",
+): void {
+  try {
+    // Keep this separate from stack/state serialization so the bounded cause
+    // survives runtime-log truncation without exposing recovery records.
+    console.warn("Cloud workspace guard unavailable", {
+      event: "cloud_workspace_guard_unavailable",
+      operation,
+      reason,
+      user_id: userId.slice(0, 128),
+    });
+  } catch {
+    // Optional diagnostics must never change the workspace fence.
+  }
+}
+
 export async function readCloudWorkspaceState(
   userId: string,
 ): Promise<WorkspaceState | null> {
   const redis = createRedisClient();
   if (!redis) {
-    if (process.env.NODE_ENV === "production")
+    if (process.env.NODE_ENV === "production") {
+      logWorkspaceGuardFailure(userId, "read_state", "store_unavailable");
       throw new CloudWorkspaceUnavailableError("store_unavailable");
+    }
     return null;
   }
+  let readCompleted = false;
   try {
     const value = await redis.get<unknown>(keyFor(userId));
+    readCompleted = true;
     if (value === null) return null;
     if (isRecoveredWorkspace(value)) return value;
     if (isRecoveryState(value)) return value;
@@ -156,6 +184,11 @@ export async function readCloudWorkspaceState(
     // Unknown legacy provider records and malformed records stay fenced.
     throw new CloudWorkspaceUnavailableError();
   } catch {
+    logWorkspaceGuardFailure(
+      userId,
+      "read_state",
+      readCompleted ? "state_invalid" : "state_read_failed",
+    );
     // A failed read and an invalid persisted record both remain fenced.
     throw new CloudWorkspaceUnavailableError("state_unavailable");
   }
@@ -332,18 +365,29 @@ export async function assertCloudWorkspaceAvailable(
 ): Promise<void> {
   const redis = createRedisClient();
   if (!redis) {
-    if (process.env.NODE_ENV === "production")
+    if (process.env.NODE_ENV === "production") {
+      logWorkspaceGuardFailure(userId, "assert_available", "store_unavailable");
       throw new CloudWorkspaceUnavailableError();
+    }
     return;
   }
+  let rejected = false;
   try {
     const available = await redis.eval(
       `local raw = redis.call('GET', KEYS[1]); if raw then local ok, state = pcall(cjson.decode, raw); if not ok or type(state) ~= 'table' or state.version ~= 1 or state.phase ~= 'e2b' or type(state.token) ~= 'string' or state.token == '' or type(state.sourceId) ~= 'string' or state.sourceId == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
       [keyFor(userId), activityKeyFor(userId)],
       [String(ACTIVITY_TTL_SECONDS), sandboxId ?? ""],
     );
-    if (available !== 1) throw new CloudWorkspaceUnavailableError();
+    if (available !== 1) {
+      rejected = true;
+      throw new CloudWorkspaceUnavailableError();
+    }
   } catch {
+    logWorkspaceGuardFailure(
+      userId,
+      "assert_available",
+      rejected ? "availability_rejected" : "availability_store_error",
+    );
     throw new CloudWorkspaceUnavailableError();
   }
 }

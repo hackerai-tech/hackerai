@@ -573,7 +573,6 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
-        allowsAbliterationContinuation,
         allowsFreeAbliteration,
       } = await processChatMessages({
         messages: truncatedMessages,
@@ -618,9 +617,8 @@ export const createChatHandler = () => {
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         allowsFreeAbliteration,
-        moderationChecked,
-        allowsAbliterationContinuation,
         newUserTurn: !regenerate && !isAutoContinue,
+        moderationChecked,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
         diagnosticContext: {

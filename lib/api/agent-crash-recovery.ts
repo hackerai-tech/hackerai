@@ -3,6 +3,7 @@ import { streams } from "@trigger.dev/sdk";
 import {
   readUIMessageStream,
   uiMessageChunkSchema,
+  UIMessageStreamError,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
@@ -153,7 +154,50 @@ export async function recoverCrashedAgentRun({
           assertWithinBudget();
           latest = message;
         }
-      } catch {
+      } catch (error) {
+        try {
+          const expired = controller.signal.aborted || Date.now() >= deadline;
+          const invalidState = UIMessageStreamError.isInstance(error);
+          const chunkType = invalidState ? error.chunkType : null;
+          // SDK error messages and chunk IDs may contain private tool material.
+          // Keep only SDK-owned chunk categories and already bounded counters.
+          const knownChunkType =
+            chunkType !== null &&
+            [
+              "text-delta",
+              "text-end",
+              "reasoning-delta",
+              "reasoning-end",
+              "tool-input-delta",
+              "tool-invocation",
+            ].includes(chunkType);
+          console.warn(
+            JSON.stringify({
+              event: "agent_crash_reconstruction_failed",
+              service: "hackerai-web",
+              chat_id: chatId,
+              user_id: userId,
+              trigger_run_id: runId,
+              reason: expired
+                ? "deadline_exceeded"
+                : invalidState
+                  ? "invalid_stream_state"
+                  : "unknown",
+              chunk_type: invalidState
+                ? knownChunkType
+                  ? chunkType
+                  : "other"
+                : null,
+              record_count: records,
+              replay_bytes: bytes,
+              coalesced_chunk_count: chunkCount,
+              message_count: groups.length,
+              elapsed_ms: Date.now() - startedAt,
+            }),
+          );
+        } catch {
+          // Diagnostics must not replace the sanitized reconstruction failure.
+        }
         // Reducer errors may contain streamed tool inputs or provider material.
         throw new Error("Agent crash recovery message reconstruction failed");
       }

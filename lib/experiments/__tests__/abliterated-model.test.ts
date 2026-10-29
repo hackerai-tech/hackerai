@@ -2,9 +2,7 @@ import { INFERENCE_CYBER_FLAG } from "@/lib/ai/inference";
 import {
   evaluateAbliteratedModel,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-  ABLITERATED_PRO_THREE_STEPS_KEY,
 } from "../abliterated-model";
-import { resolveAbliterationModelForGenerationStep } from "../abliterated-model-steps";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
 import type { SubscriptionTier } from "@/types";
@@ -269,207 +267,19 @@ describe("paid moderation-gated three-step Abliteration", () => {
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
   });
 
-  describe("stateless Pro three-step experiment", () => {
-    const firstRequest = [
-      {
-        id: "followup",
-        role: "user" as const,
-        parts: [
-          {
-            type: "text" as const,
-            text: "Why did you stop helping with this authorized test?",
-          },
-        ],
-      },
-    ];
-    const proThreeSteps = {
-      ...defaults,
-      posthog: {} as any,
-      moderationEligible: false,
-      allowsAbliterationContinuation: true,
-      newUserTurn: true,
-      messages: firstRequest,
-    };
-
-    it.each(["ask", "agent"] as const)(
-      "routes a new %s chat without history and returns to baseline on step four",
-      async (mode) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
-        const assignment = await evaluateAbliteratedModel({
-          ...proThreeSteps,
-          mode,
-        });
-        expect(assignment).toMatchObject({
-          key: ABLITERATED_PRO_THREE_STEPS_KEY,
-          modelKey: ABLITERATION_MODEL_KEY,
-          baselineModel: defaults.selectedModel,
-          generationStepLimit: 3,
-          selectionSource: "paid_first_step",
-        });
-        expect(getPostHogFlagWithoutExposure).toHaveBeenCalledWith(
-          expect.anything(),
-          ABLITERATED_PRO_THREE_STEPS_KEY,
-          "u",
-          expect.objectContaining({ subscription_tier: "pro" }),
-        );
-        expect(
-          [0, 1, 2, 3].map((stepIndex) =>
-            resolveAbliterationModelForGenerationStep({
-              treatmentModel: assignment!.modelKey,
-              baselineModel: assignment!.baselineModel,
-              generationStepLimit: assignment!.generationStepLimit,
-              stepIndex,
-            }),
-          ),
-        ).toEqual([
-          ABLITERATION_MODEL_KEY,
-          ABLITERATION_MODEL_KEY,
-          ABLITERATION_MODEL_KEY,
-          defaults.selectedModel,
-        ]);
-      },
-    );
-
-    it.each(["ask", "agent"] as const)(
-      "excludes every non-Pro tier from %s three-step enrollment even with a test flag",
-      async (mode) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
-        for (const subscription of [
-          "free",
-          "pro-plus",
-          "ultra",
-          "team",
-        ] as const) {
-          expect(
-            await evaluateAbliteratedModel({
-              ...proThreeSteps,
-              mode,
-              subscription,
-            }),
-          ).toBeUndefined();
-        }
-        expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
-      },
-    );
-
-    it("routes long new requests and supported image requests without a history threshold", async () => {
-      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
-      for (const messages of [
-        [
-          {
-            ...firstRequest[0],
-            parts: [{ type: "text" as const, text: "x".repeat(2000) }],
-          },
-        ],
-        imageAttachmentMessages,
-      ]) {
-        expect(
-          await evaluateAbliteratedModel({ ...proThreeSteps, messages }),
-        ).toMatchObject({
-          key: ABLITERATED_PRO_THREE_STEPS_KEY,
-          generationStepLimit: 3,
-          modelKey: ABLITERATION_MODEL_KEY,
-        });
-      }
-    });
-
-    it("preserves the existing three-step route even when the Pro three-step flag returns test", async () => {
-      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "keeps the baseline for a %s request below the moderation threshold",
+    async (subscription) => {
       expect(
         await evaluateAbliteratedModel({
-          ...proThreeSteps,
-          moderationEligible: true,
-        }),
-      ).toMatchObject({
-        key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
-        generationStepLimit: 3,
-      });
-      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
-    });
-
-    it.each(["control", "test"] as const)(
-      "uses the shipped Pro/Auto baseline for the %s arm",
-      async (variant) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(variant);
-        const assignment = await evaluateAbliteratedModel({
-          ...proThreeSteps,
-          selectedModel: "model-deepseek-v4-flash-vision-pro",
-          selectedModelOverride: "auto",
-        });
-        expect(assignment).toMatchObject({
-          baselineModel: "model-deepseek-v4.1-flash-1017-pro",
-          modelKey:
-            variant === "test"
-              ? ABLITERATION_MODEL_KEY
-              : "model-deepseek-v4.1-flash-1017-pro",
-        });
-      },
-    );
-
-    it.each([
-      ["failed moderation", { allowsAbliterationContinuation: false }],
-      ["unchecked moderation", { moderationChecked: false }],
-      ["regeneration or auto-run", { newUserTurn: false }],
-      ["free plan", { subscription: "free" as const }],
-      ["rescue", { limitRescue: true }],
-      [
-        "unsupported file",
-        {
-          messages: [
-            {
-              ...firstRequest[0],
-              parts: [
-                {
-                  type: "file" as const,
-                  mediaType: "application/pdf",
-                  url: "https://example.test/test.pdf",
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    ])("keeps the baseline for %s", async (_label, overrides) => {
-      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("test");
-      expect(
-        await evaluateAbliteratedModel({
-          ...proThreeSteps,
-          ...(overrides as object),
+          ...defaults,
+          subscription,
+          moderationEligible: false,
+          moderationChecked: true,
         }),
       ).toBeUndefined();
-    });
-
-    it.each(["ask", "agent"] as const)(
-      "enrolls %s control without changing its model",
-      async (mode) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
-        expect(
-          await evaluateAbliteratedModel({ ...proThreeSteps, mode }),
-        ).toMatchObject({
-          key: ABLITERATED_PRO_THREE_STEPS_KEY,
-          variant: "control",
-          modelKey: defaults.selectedModel,
-          baselineModel: defaults.selectedModel,
-          selectionSource: "paid_first_step",
-        });
-      },
-    );
-    it.each([false, undefined, true, "unexpected"])(
-      "does not enroll invalid/off flag value %s",
-      async (value) => {
-        jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
-        expect(await evaluateAbliteratedModel(proThreeSteps)).toBeUndefined();
-      },
-    );
-    it("keeps the baseline when the flag is off or unavailable", async () => {
-      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValueOnce(false);
-      expect(await evaluateAbliteratedModel(proThreeSteps)).toBeUndefined();
-      jest
-        .mocked(getPostHogFlagWithoutExposure)
-        .mockRejectedValueOnce(new Error("flag unavailable"));
-      expect(await evaluateAbliteratedModel(proThreeSteps)).toBeUndefined();
-    });
-  });
+    },
+  );
 });
 
 describe("Inference rollout assignment", () => {
@@ -547,8 +357,6 @@ describe("Inference rollout assignment", () => {
     {
       moderationEligible: false,
       moderationChecked: false,
-      allowsAbliterationContinuation: true,
-      newUserTurn: true,
     },
     { messages: [] },
   ])("preserves eligibility gates: %j", async (overrides) => {
@@ -566,59 +374,24 @@ describe("Inference rollout assignment", () => {
     expect((await evaluate(undefined))?.inferenceCyberEnabled).toBe(false);
     expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
   });
-  it.each(["control", undefined])(
-    "enables eligible Pro users outside the legacy test cohort (%s)",
-    async (legacyVariant) => {
-      jest
-        .mocked(getPostHogFlagWithoutExposure)
-        .mockImplementation(async (_posthog, key) =>
-          key === INFERENCE_CYBER_FLAG ? true : legacyVariant,
-        );
-      const assignment = await evaluateAbliteratedModel({
-        posthog: { getFeatureFlagResult: jest.fn() } as never,
-        userId: "test-user",
-        selectedModel: "model-glm-5.3",
-        subscription: "pro",
-        mode: "agent",
-        inferenceEnvironment: "production",
-        moderationEligible: false,
-        moderationChecked: true,
-        allowsAbliterationContinuation: true,
-        newUserTurn: true,
-        messages: [
-          {
-            id: "u",
-            role: "user",
-            parts: [{ type: "text", text: "synthetic" }],
-          },
-        ],
-      });
-      expect(assignment).toMatchObject({
-        key: INFERENCE_CYBER_FLAG,
-        modelKey: ABLITERATION_MODEL_KEY,
-        generationStepLimit: 3,
-        inferenceCyberEnabled: true,
-      });
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "keeps the baseline for below-threshold %s requests even when Inference is enabled",
+    async (subscription) => {
+      expect(
+        await evaluate("production", subscription, undefined, {
+          moderationEligible: false,
+          moderationChecked: true,
+        }),
+      ).toBeUndefined();
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
     },
   );
   it.each([false, undefined, "test"])(
-    "retains legacy routing when rollout is %s",
+    "uses the shared moderation-gated route when Inference rollout is %s",
     async (value) => {
-      jest
-        .mocked(getPostHogFlagWithoutExposure)
-        .mockImplementation(async (_posthog, key) =>
-          key === INFERENCE_CYBER_FLAG ? value : "control",
-        );
-      expect(
-        await evaluate("production", "pro", undefined, {
-          moderationEligible: false,
-          moderationChecked: true,
-          allowsAbliterationContinuation: true,
-          newUserTurn: true,
-        }),
-      ).toMatchObject({
-        key: ABLITERATED_PRO_THREE_STEPS_KEY,
-        variant: "control",
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(value);
+      expect(await evaluate("production")).toMatchObject({
+        key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
         inferenceCyberEnabled: false,
       });
     },

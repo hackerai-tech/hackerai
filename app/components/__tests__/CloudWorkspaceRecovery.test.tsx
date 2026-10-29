@@ -16,6 +16,127 @@ beforeEach(() => {
   global.fetch = fetchMock;
 });
 const respond = (body: unknown) => ({ ok: true, json: async () => body });
+it.each(["workspace_status", "cloud_connection_error"] as const)(
+  "does not announce a historical recovery on a fresh %s mount",
+  async (surface) => {
+    jest.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(respond({ status: "recovered" }));
+      const { container } = render(
+        <CloudWorkspaceRecovery surface={surface} />,
+      );
+      await act(async () => {});
+      expect(container).toBeEmptyDOMElement();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(180000);
+      });
+      const settledReads = fetchMock.mock.calls.length;
+      if (surface === "workspace_status") expect(settledReads).toBe(1);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(300000);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(settledReads);
+      expect(container).toBeEmptyDOMElement();
+      expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(
+        true,
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+it("finds a new failure recorded after the initial historical recovery response", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(respond({ status: "recovered" }))
+      .mockResolvedValueOnce(respond({ status: "recovered" }))
+      .mockResolvedValue(respond({ status: "support" }));
+    render(<CloudWorkspaceRecovery surface="cloud_connection_error" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(15000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /needs support to recover safely/,
+    );
+    expect(screen.queryByText(/Workspace ready/)).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("keeps background read errors visible while historical success is hidden", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(respond({ status: "recovered" }))
+      .mockRejectedValue(new Error("offline"));
+    render(<CloudWorkspaceRecovery surface="cloud_connection_error" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(180000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Workspace status couldn’t be checked/,
+    );
+    expect(screen.getByRole("button", { name: "Check status" })).toBeEnabled();
+    expect(screen.queryByText(/Workspace ready/)).not.toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("shows live completion but does not repeat it after reload or a chat change", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(
+        respond({ status: "recovering", step: "backup_created" }),
+      )
+      .mockResolvedValue(respond({ status: "recovered" }));
+    const { rerender, container } = render(
+      <CloudWorkspaceRecovery key="chat-a:0" surface="workspace_status" />,
+    );
+    expect(
+      await screen.findByText(/Saving the recovered environment/),
+    ).toBeVisible();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText(/Workspace ready/)).toBeVisible();
+    for (const key of ["chat-a:reload", "chat-b:0"]) {
+      const previousReads = fetchMock.mock.calls.length;
+      await act(async () => {
+        rerender(
+          <CloudWorkspaceRecovery key={key} surface="workspace_status" />,
+        );
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(previousReads + 1);
+      expect(container).toBeEmptyDOMElement();
+    }
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it("keeps a failed status check visible until historical success is reconciled", async () => {
+  fetchMock
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce(respond({ status: "recovered" }));
+  const { container } = render(
+    <CloudWorkspaceRecovery surface="cloud_connection_error" />,
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    /Workspace status couldn’t be checked/,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(container).toBeEmptyDOMElement());
+});
+
 it("ignores an older status read after this tab submits consent", async () => {
   jest.useFakeTimers();
   try {

@@ -6,14 +6,12 @@ const MODERATION_TOKEN_LIMIT = 512;
 
 export type ModerationResult = {
   shouldUncensorResponse: boolean;
-  allowsAbliterationContinuation: boolean;
   allowsFreeAbliteration: boolean;
   moderationText: string;
 };
 
 const emptyModerationResult = (): ModerationResult => ({
   shouldUncensorResponse: false,
-  allowsAbliterationContinuation: false,
   allowsFreeAbliteration: false,
   moderationText: "",
 });
@@ -64,15 +62,8 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    const allowsAbliterationContinuation = determineShouldUncensorResponse(
-      moderationLevel,
-      hazardCategories,
-      isPaidUser,
-      0,
-    );
     return {
       shouldUncensorResponse,
-      allowsAbliterationContinuation,
       // Free treatment must not replace baseline refusals for flagged illicit
       // intent. Missing category evidence keeps the existing Free route.
       allowsFreeAbliteration:
