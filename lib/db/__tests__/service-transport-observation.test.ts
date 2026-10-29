@@ -33,11 +33,11 @@ it("correlates interleaved requests by identity after their ALS contexts exit", 
   publish("client:sendHeaders", { request: b, socket: {} });
   publish("request:bodySent", { request: b });
   publish("request:headers", { request: a });
-  expect(first.snapshot()).toEqual({
+  expect(first.snapshot()).toMatchObject({
     transport_observation: "response_headers_received",
     transport_request_count: 1,
   });
-  expect(second.snapshot()).toEqual({
+  expect(second.snapshot()).toMatchObject({
     transport_observation: "request_body_sent",
     transport_request_count: 1,
     socket_prior_service_use_observed: false,
@@ -79,7 +79,7 @@ it("ignores foreign traffic, pool errors, malformed messages and events after co
     publish("client:connectError", { error: new Error("PRIVATE_ERROR") });
     expect(() => publish("request:create", {})).not.toThrow();
   });
-  expect(observation.snapshot()).toEqual({
+  expect(observation.snapshot()).toMatchObject({
     transport_observation: "no_request_event",
   });
   const a = request();
@@ -99,7 +99,7 @@ it("registers once and clears the previous dispatch evidence for another request
     publish("client:sendHeaders", { request: a, socket: {} });
     publish("request:create", { request: b });
   });
-  expect(observation.snapshot()).toEqual({
+  expect(observation.snapshot()).toMatchObject({
     transport_observation: "request_created",
     transport_request_count: 2,
   });
@@ -174,6 +174,8 @@ it("observes real Node fetch on a reused socket reset and correlates an HTTP 520
     socket_prior_service_use_observed: true,
     transport_request_count: 1,
     socket_connection_age_ms: expect.any(Number),
+    node_version: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+    node_bundled_undici_version: expect.stringMatching(/^\d+\.\d+\.\d+$/),
   });
   expect(result.logs[1]).toMatchObject({
     reason: "http_5xx",

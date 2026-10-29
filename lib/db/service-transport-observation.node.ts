@@ -20,6 +20,14 @@ interface DiagnosticMessage {
 /** Observe the existing dispatcher; never install a new agent or retry a call. */
 export function registerServiceTransportObserver() {
   if (serviceTransportRuntime[serviceTransportObserverKey]) return;
+  const runtime: Record<string, string> = {};
+  for (const [field, value] of [
+    ["node_version", process.versions.node],
+    ["node_bundled_undici_version", process.versions.undici],
+  ] as const) {
+    if (value && /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value))
+      runtime[field] = value;
+  }
   const context = new AsyncLocalStorage<Observation>();
   const requests = new WeakMap<object, Observation>();
   const sockets = new WeakMap<object, number>();
@@ -105,7 +113,7 @@ export function registerServiceTransportObserver() {
     };
     return {
       run: (operation) => context.run(observation, operation),
-      snapshot: () => ({ ...observation.fields }),
+      snapshot: () => ({ ...runtime, ...observation.fields }),
       finish: () => {
         observation.active = false;
       },
