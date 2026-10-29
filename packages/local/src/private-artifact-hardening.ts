@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, open, readdir } from "node:fs/promises";
+import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -75,7 +75,7 @@ export async function hardenExistingTerminalArtifacts(
       if (!(await claimOwnedRoot(root, uid))) {
         rootsReady = false;
         console.warn(
-          `Could not claim private terminal artifact root ${root}; private persistence will remain disabled`,
+          `Private terminal artifact root ${root} is not an owned directory; this artifact root will not be used`,
         );
         continue;
       }
@@ -100,10 +100,57 @@ export async function hardenExistingTerminalArtifacts(
       }
     } catch (error) {
       rootsReady = false;
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const reason = [
+        "EACCES",
+        "EPERM",
+        "ELOOP",
+        "ENOTDIR",
+        "EROFS",
+        "ENOSPC",
+        "EDQUOT",
+        "ENOENT",
+      ].includes(code ?? "")
+        ? code
+        : "unknown";
       console.warn(
-        `Could not harden legacy terminal artifacts under ${root}; private persistence will remain disabled`,
+        `Could not prepare private terminal artifacts under ${root} (${reason}); this artifact root will not be used`,
       );
     }
   }
   return rootsReady;
+}
+
+export async function preparePrivateArtifactStorage(
+  roots: readonly string[] = DEFAULT_ROOTS,
+): Promise<{ ready: boolean; namespace?: string }> {
+  if (os.platform() === "win32" || typeof process.getuid !== "function") {
+    return { ready: false };
+  }
+  const uid = process.getuid();
+  const namespace = `uid-${uid}`;
+  const fallbackRoots = roots.map((root) => `${root}-${namespace}`);
+  // Keep an already-established fallback stable across CLI restarts, including
+  // when the original shared roots have subsequently been repaired.
+  const establishedFallback = (
+    await Promise.all(
+      fallbackRoots.map(async (root) => {
+        const info = await lstat(root).catch(() => undefined);
+        return info?.isDirectory() === true && info.uid === uid;
+      }),
+    )
+  ).every(Boolean);
+  if (
+    establishedFallback &&
+    (await hardenExistingTerminalArtifacts(fallbackRoots))
+  ) {
+    return { ready: true, namespace };
+  }
+  if (await hardenExistingTerminalArtifacts(roots)) return { ready: true };
+  // Never chown/remove a shared root or follow its symlink. Each fallback root
+  // is independently claimed with O_NOFOLLOW and an owner-only file handle.
+  if (await hardenExistingTerminalArtifacts(fallbackRoots)) {
+    return { ready: true, namespace };
+  }
+  return { ready: false };
 }

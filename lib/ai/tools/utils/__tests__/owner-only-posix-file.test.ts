@@ -72,6 +72,73 @@ describe("owner-only POSIX terminal artifacts", () => {
     return { root, directory, filePath, sandbox, commands };
   };
 
+  it.each(["append", "commit"])(
+    "verifies a completed %s after a lost reply without replaying it",
+    async (stage) => {
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      const content = "lost-reply payload\n".repeat(4000);
+      let faulted = false;
+      commands.run.mockImplementation(async (command, opts) => {
+        const result = await runShell(command, opts?.stdin);
+        if (
+          !faulted &&
+          (stage === "append"
+            ? opts?.stdin !== undefined
+            : command.includes("mv -f"))
+        ) {
+          faulted = true;
+          throw new Error("Local command timed out after lost reply");
+        }
+        return result;
+      });
+      await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        content,
+      );
+      expect(faulted).toBe(true);
+      expect(await readFile(filePath, "utf8")).toBe(content);
+      expect(
+        commands.run.mock.calls.filter(
+          ([, options]) => options?.stdin !== undefined,
+        ),
+      ).toHaveLength(1);
+      expect(
+        commands.run.mock.calls.filter(([command]) =>
+          command.includes("mv -f"),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not accept a partial append as recovered", async () => {
+    const { root, directory, filePath, sandbox, commands } = fixture();
+    commands.run.mockImplementation(async (command, opts) => {
+      if (opts?.stdin !== undefined) {
+        await runShell(command, Buffer.from(opts.stdin).subarray(0, 4));
+        throw new Error("Local command timed out after partial write");
+      }
+      return runShell(command);
+    });
+    await expect(
+      writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "complete payload",
+      ),
+    ).rejects.toThrow("timed out");
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      commands.run.mock.calls.filter(
+        ([, options]) => options?.stdin !== undefined,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("writes content through stdin with owner-only permissions", async () => {
     const { root, directory, filePath, sandbox, commands } = fixture();
     const content = "secret $(touch /tmp/not-executed) ' \" ;\nsecond line";

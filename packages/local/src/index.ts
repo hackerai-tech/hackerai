@@ -42,9 +42,11 @@ import {
   RelayOutputOverflowError,
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
-import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
+import { preparePrivateArtifactStorage } from "./private-artifact-hardening";
 import { CONNECT_HELP, parseCliOptions } from "./cli-options";
 import { commandDisplayText } from "./command-display";
+
+const CLIENT_VERSION: string = require("../package.json").version;
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -95,6 +97,7 @@ interface ClientCapabilities {
   commands: boolean;
   pty: boolean;
   commandStdin: boolean;
+  privateArtifactNamespace?: string;
   operationChannels: boolean;
 }
 
@@ -314,6 +317,7 @@ export class LocalSandboxClient {
   private exitRequested = false;
   private relayTransport: string | null = null;
   private privateArtifactStorageReady = false;
+  private privateArtifactNamespace?: string;
 
   constructor(
     private config: Config,
@@ -410,7 +414,26 @@ export class LocalSandboxClient {
         "⚠️  Commands run directly on your OS without any isolation.",
       ),
     );
-    this.privateArtifactStorageReady = await hardenExistingTerminalArtifacts();
+    const storage = await preparePrivateArtifactStorage();
+    this.privateArtifactStorageReady = storage.ready;
+    this.privateArtifactNamespace = storage.namespace;
+    console.info(
+      JSON.stringify({
+        event: "local_private_artifact_storage",
+        client_version: CLIENT_VERSION,
+        ready: storage.ready,
+        layout: storage.ready
+          ? storage.namespace
+            ? "per_user"
+            : "legacy"
+          : "unavailable",
+      }),
+    );
+    if (!storage.ready && os.platform() !== "win32") {
+      console.warn(
+        "Private terminal saving is unavailable. Check the artifact-root errors above, then restart this client after correcting ownership or permissions. Do not run the client with sudo to bypass them.",
+      );
+    }
     await this.connect();
   }
 
@@ -428,6 +451,9 @@ export class LocalSandboxClient {
       commands: true,
       pty: isPtyAvailable(),
       commandStdin: this.privateArtifactStorageReady,
+      ...(this.privateArtifactNamespace && {
+        privateArtifactNamespace: this.privateArtifactNamespace,
+      }),
       operationChannels: true,
     };
   }
@@ -442,7 +468,7 @@ export class LocalSandboxClient {
           token: this.config.token,
           environmentId: await getEnvironmentId(),
           connectionName: this.config.name,
-          clientVersion: "1.0.0",
+          clientVersion: CLIENT_VERSION,
           osInfo: this.getOsInfo(),
           capabilities: this.getCapabilities(),
         } as never,

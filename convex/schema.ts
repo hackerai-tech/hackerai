@@ -1292,6 +1292,7 @@ export default defineSchema({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
         operationChannels: v.optional(v.boolean()),
       }),
     ),
