@@ -127,7 +127,8 @@ export const ImageViewer = ({
       "image";
 
     try {
-      const response = await fetch(imageSrc);
+      // Image display can cache a response without the CORS headers fetch needs.
+      const response = await fetch(imageSrc, { cache: "no-store" });
       if (!response.ok) throw new Error("Image download request failed");
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
