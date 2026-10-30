@@ -414,6 +414,7 @@ export const createChatHandler = () => {
         userId,
         sandboxPreference,
         requestRegion,
+        mode,
       });
 
       // Add user context to logger (only region, not full location for privacy)

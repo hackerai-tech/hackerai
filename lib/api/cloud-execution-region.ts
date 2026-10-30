@@ -1,4 +1,4 @@
-import type { SandboxPreference } from "@/types";
+import type { ChatMode, SandboxPreference } from "@/types";
 import type { TriggerRunRegion } from "./trigger-region";
 import {
   CloudWorkspaceUnavailableError,
@@ -11,11 +11,14 @@ export async function resolveCloudExecutionRegion({
   userId,
   sandboxPreference,
   requestRegion,
+  mode = "agent",
 }: {
   userId: string;
   sandboxPreference?: SandboxPreference;
   requestRegion: TriggerRunRegion;
+  mode?: ChatMode;
 }): Promise<TriggerRunRegion> {
+  if (mode === "ask") return requestRegion;
   if (sandboxPreference && sandboxPreference !== "e2b") return requestRegion;
 
   const workspace = await readCloudWorkspaceState(userId);

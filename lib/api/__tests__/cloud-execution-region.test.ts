@@ -54,6 +54,19 @@ test("uses request placement for a new Cloud workspace", async () => {
   ).toBe("us-west-2");
 });
 
+test("Ask remains available when the Cloud workspace store is unavailable", async () => {
+  readWorkspace.mockRejectedValue(new Error("store unavailable"));
+  expect(
+    await resolveCloudExecutionRegion({
+      userId: uid,
+      mode: "ask",
+      requestRegion: "us-west-2",
+    }),
+  ).toBe("us-west-2");
+  expect(readWorkspace).not.toHaveBeenCalled();
+  expect(readFailed).not.toHaveBeenCalled();
+});
+
 test.each(["desktop", "environment:local", "desktop-environment:host"])(
   "does not read or apply Cloud state to %s",
   async (sandboxPreference) => {
