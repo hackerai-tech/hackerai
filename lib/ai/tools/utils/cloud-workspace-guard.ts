@@ -79,7 +79,8 @@ export class CloudWorkspaceUnavailableError extends Error {
 
 // Keep the persisted key namespace: removing an integration must never grant
 // permission to resume a stale source or replace a fenced workspace.
-const keyFor = (userId: string) => `cloud_workspace_migration:v1:${userId}`;
+export const cloudWorkspaceStateKey = (userId: string) =>
+  `cloud_workspace_migration:v1:${userId}`;
 export const activityKeyFor = (userId: string) =>
   `cloud_workspace_activity:v1:${userId}`;
 export const cloudRecoveryConsentKey = (userId: string) =>
@@ -169,7 +170,7 @@ export async function readCloudWorkspaceState(
   }
   let readCompleted = false;
   try {
-    const value = await redis.get<unknown>(keyFor(userId));
+    const value = await redis.get<unknown>(cloudWorkspaceStateKey(userId));
     readCompleted = true;
     if (value === null) return null;
     if (isRecoveredWorkspace(value)) return value;
@@ -283,7 +284,7 @@ export async function claimE2BDiskRecovery(args: {
      if ARGV[4] ~= '' then local consent = cjson.decode(redis.call('GET', KEYS[4])); consent.status = 'executing'; redis.call('SET', KEYS[4], cjson.encode(consent)) end
      redis.call('SET', KEYS[1], ARGV[2]); return 1`,
     [
-      keyFor(args.userId),
+      cloudWorkspaceStateKey(args.userId),
       activityKeyFor(args.userId),
       recoveryResultKeyFor(args.userId),
       ...(args.customerConsent ? [args.customerConsent.key] : []),
@@ -304,7 +305,7 @@ export async function claimE2BDiskRecovery(args: {
       const next = JSON.stringify({ ...state, ...progress });
       const updated = await redis.eval(
         `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
-        [keyFor(args.userId)],
+        [cloudWorkspaceStateKey(args.userId)],
         [serialized, next],
       );
       if (updated !== 1) throw new CloudWorkspaceUnavailableError();
@@ -317,7 +318,10 @@ export async function claimE2BDiskRecovery(args: {
          redis.call('SET', KEYS[2], ARGV[3]);
          if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end
          return 1`,
-        [keyFor(args.userId), recoveryResultKeyFor(args.userId)],
+        [
+          cloudWorkspaceStateKey(args.userId),
+          recoveryResultKeyFor(args.userId),
+        ],
         [
           serialized,
           previous
@@ -385,12 +389,12 @@ export async function assertCloudWorkspaceAvailable(
         if consent.status == 'confirmed' then return 0 end
         if consent.status == 'executing' then
           local resultOk, result = pcall(cjson.decode, redis.call('GET', KEYS[4]) or '')
-          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
+          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or (consent.target.region ~= 'us-east-1' and consent.target.region ~= 'us-west-2' and consent.target.region ~= 'eu-central-1') or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
         elseif consent.status ~= 'offered' and consent.status ~= 'declined' and consent.status ~= 'failed' then return 0 end
       end
       local raw = redis.call('GET', KEYS[1]); if raw then local ok, state = pcall(cjson.decode, raw); if not ok or type(state) ~= 'table' or state.version ~= 1 or state.phase ~= 'e2b' or type(state.token) ~= 'string' or state.token == '' or type(state.sourceId) ~= 'string' or state.sourceId == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
       [
-        keyFor(userId),
+        cloudWorkspaceStateKey(userId),
         activityKeyFor(userId),
         cloudRecoveryConsentKey(userId),
         recoveryResultKeyFor(userId),
@@ -464,7 +468,7 @@ export async function claimCloudWorkspaceCleanup(
         if not ok or type(consent) ~= 'table' or consent.status == 'confirmed' then return 0 end
         if consent.status == 'executing' then
           local resultOk, result = pcall(cjson.decode, redis.call('GET', KEYS[3]) or '')
-          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
+          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or (consent.target.region ~= 'us-east-1' and consent.target.region ~= 'us-west-2' and consent.target.region ~= 'eu-central-1') or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
         elseif consent.status ~= 'offered' and consent.status ~= 'declined' and consent.status ~= 'failed' then return 0 end
       end
       local raw = redis.call('GET', KEYS[1])
@@ -477,7 +481,7 @@ export async function claimCloudWorkspaceCleanup(
       end
       redis.call('SET', KEYS[1], ARGV[2]); return 1`,
       [
-        keyFor(userId),
+        cloudWorkspaceStateKey(userId),
         cloudRecoveryConsentKey(userId),
         recoveryResultKeyFor(userId),
       ],
@@ -503,7 +507,7 @@ export async function claimCloudWorkspaceCleanup(
       try {
         const finished = await redis.eval(
           `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end return 1`,
-          [keyFor(userId), cloudWorkspaceRegionKey(userId)],
+          [cloudWorkspaceStateKey(userId), cloudWorkspaceRegionKey(userId)],
           [serialized, next, success ? "1" : "0"],
         );
         if (finished !== 1) throw new CloudWorkspaceUnavailableError();

@@ -163,6 +163,7 @@ function sameTarget(a: ResumeFailures, b: ResumeFailures) {
   );
 }
 type RecoveryStage =
+  | "dispatch"
   | "consent_age"
   | "manifest"
   | "failure_evidence"
@@ -176,6 +177,11 @@ type RecoveryStage =
   | "suspension"
   | "disk_recovery";
 const diskRecoveryStages = new Set([
+  "capability",
+  "idempotency",
+  "fenced",
+  "traffic",
+  "preservation",
   "authorization",
   "identity",
   "readiness",
@@ -424,17 +430,16 @@ export async function executeCustomerRecovery(
   token: string,
   region: ResumeFailures["region"],
 ) {
-  if (!(await enabled(userId))) throw new RecoveryUnavailable();
   const consent = await readConsent(userId);
-  if (
-    !consent ||
-    consent.token !== token ||
-    consent.status !== "confirmed" ||
-    consent.target.region !== region
-  )
+  if (!consent || consent.token !== token || consent.status !== "confirmed")
     throw new RecoveryUnavailable();
-  let stage: RecoveryStage = "consent_age";
+  let stage: RecoveryStage = "dispatch";
   try {
+    // Settle only this still-confirmed receipt. A duplicate worker must never
+    // release an executing recovery's fence, even if the rollout was disabled.
+    if (consent.target.region !== region || !(await enabled(userId)))
+      throw new RecoveryUnavailable();
+    stage = "consent_age";
     // A delayed dispatch is not permission to reboot hours after confirmation.
     if (Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000)
       throw new RecoveryUnavailable();

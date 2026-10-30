@@ -206,6 +206,23 @@ try {
     1,
     "verified recovery must allow its original files to reconnect",
   );
+  set(keys.consent, {
+    ...offered,
+    status: "executing",
+    target: { sandboxId: target.sandboxId },
+  });
+  set(keys.result, {
+    token: offered.token,
+    status: "verified_ready",
+    sandboxId: target.sandboxId,
+  });
+  assert.equal(
+    admit(target.sandboxId),
+    0,
+    "missing region is not a verified recovery receipt",
+  );
+  assert.equal(claimCleanup(JSON.stringify(restored)), 0);
+  set(keys.consent, { ...offered, status: "executing" });
   set(keys.result, { ...result, token: "other-consent" });
   assert.equal(
     admit(target.sandboxId),

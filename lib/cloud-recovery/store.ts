@@ -1,6 +1,7 @@
 import {
   activityKeyFor,
   cloudRecoveryConsentKey,
+  cloudWorkspaceStateKey,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -143,7 +144,7 @@ export async function decideConsent(
     [
       consentKey(userId),
       activityKeyFor(userId),
-      `cloud_workspace_migration:v1:${userId}`,
+      cloudWorkspaceStateKey(userId),
     ],
     [
       consent.token,

@@ -924,7 +924,7 @@ it.each(["activity", "active_runs"])(
     expect(failConsent).toHaveBeenCalledWith("owner", token);
   },
 );
-it.each(["reboot", "private-stage"])(
+it.each(["reboot", "capability", "preservation", "private-stage"])(
   "only emits allowlisted recovery diagnostics for %s",
   async (stage) => {
     jest
@@ -946,11 +946,55 @@ it.each(["reboot", "private-stage"])(
         outcome: "support_required",
         recovery_stage: "disk_recovery",
         recovery_reason: "operation_failed",
-        ...(stage === "reboot" ? { disk_recovery_stage: "reboot" } : {}),
+        ...(stage !== "private-stage" ? { disk_recovery_stage: stage } : {}),
       },
     );
     expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
       /private-|original-files/,
     );
+  },
+);
+
+it.each(["disabled", "lookup-error", "wrong-region"])(
+  "settles confirmed consent when dispatch is %s, before provider work",
+  async (condition) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    if (condition === "disabled")
+      jest
+        .mocked(getPostHogBooleanFlagDecisionForUser)
+        .mockResolvedValue(false);
+    if (condition === "lookup-error")
+      jest
+        .mocked(getPostHogBooleanFlagDecisionForUser)
+        .mockRejectedValueOnce(new Error("private-flag-error"));
+    await expect(
+      executeCustomerRecovery(
+        "owner",
+        token,
+        condition === "wrong-region" ? "eu-central-1" : "us-east-1",
+      ),
+    ).rejects.toThrow("support reconciliation");
+    expect(failConsent).toHaveBeenCalledWith("owner", token);
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_workspace_customer_recovery_completed",
+      expect.objectContaining({
+        outcome: "support_required",
+        recovery_stage: "dispatch",
+      }),
+    );
+  },
+);
+it.each(["offered", "executing", "failed"] as const)(
+  "does not settle a %s receipt when a duplicate worker arrives",
+  async (status) => {
+    jest.mocked(readConsent).mockResolvedValue({ ...consent, status });
+    await expect(
+      executeCustomerRecovery("owner", token, "us-east-1"),
+    ).rejects.toThrow();
+    expect(failConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
   },
 );

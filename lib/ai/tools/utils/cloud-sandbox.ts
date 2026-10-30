@@ -116,9 +116,20 @@ export async function ensureCloudSandboxConnection(options: {
     });
     if (
       options.context?.triggerRunId &&
-      options.context.triggerRegion !== workspaceRegion
-    )
+      (!options.context.triggerRegion ||
+        getE2BClusterRouting(options.context.triggerRegion).createCluster
+          .cluster !==
+          getE2BClusterRouting(workspaceRegion).createCluster.cluster)
+    ) {
+      workspaceGuardDiagnostics = {
+        workspace_guard_reason: options.context.triggerRegion
+          ? "workspace_region_mismatch"
+          : "trigger_region_missing",
+        workspace_phase: "e2b",
+        workspace_region: workspaceRegion,
+      };
       throw new CloudWorkspaceUnavailableError();
+    }
     options.signal?.throwIfAborted();
     if (state) {
       if (
