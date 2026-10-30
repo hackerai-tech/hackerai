@@ -161,6 +161,26 @@ async function callDeductWithAutoReload(
   });
 }
 
+it("redacts credentials in balance lookup diagnostics without changing the failure", async () => {
+  const { convexLogger } = await import("../lib/logger");
+  const failure = new Error(
+    "HTTP 503 access_token=FAKE_ACCESS client_secret=FAKE_CLIENT refreshToken=FAKE_REFRESH convex_service_role_key=FAKE_SERVICE stripe_secret_key=FAKE_STRIPE posthog_api_key=FAKE_POSTHOG Authorization: Bearer FAKE_AUTH",
+  );
+  const ctx = makeCtx();
+  ctx.runQuery.mockResolvedValueOnce(null).mockRejectedValueOnce(failure);
+  await expect(
+    callDeductWithAutoReload(ctx, { userId: "user_member", amountPoints: 10 }),
+  ).rejects.toBe(failure);
+  const calls = jest.mocked(convexLogger.error).mock.calls;
+  const entry = calls.find(
+    ([event]) => event === "extra_usage_balance_backend_query_failed",
+  );
+  expect(entry).toBeDefined();
+  expect(JSON.stringify(entry)).not.toContain("FAKE_");
+  expect(JSON.stringify(entry)).toContain("HTTP 503");
+  expect(ctx.runMutation).not.toHaveBeenCalled();
+});
+
 const claimedAutoReload = (amountDollars: number) => ({
   status: "operation",
   operationId: "reload_op",
