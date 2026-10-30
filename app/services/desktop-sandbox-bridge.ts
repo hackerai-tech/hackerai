@@ -1689,7 +1689,7 @@ export class DesktopSandboxBridge {
       transport === "legacy_http"
         ? "legacy_http_transport"
         : "native_ipc_transport",
-      `Desktop file bridge transport failed (${transport}, ${operation}). ${transport === "legacy_http" ? "Update and fully reopen HackerAI Desktop, then reconnect." : "Reconnect the Desktop app and retry after it is ready."} A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+      `Desktop file bridge transport failed (${transport}, ${operation}). ${transport === "legacy_http" ? "Update and fully reopen HackerAI Desktop, then reconnect." : "Reconnect the Desktop app and retry after it is ready."}${["file_write", "file_append", "file_remove"].includes(operation) ? " A file change may have completed; verify the file before retrying a mutation." : ""} This is not a file-permission diagnosis.`,
     );
   }
 

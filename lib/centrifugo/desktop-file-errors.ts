@@ -60,12 +60,28 @@ export function getDesktopFileFailure(error: unknown): DesktopFileFailure {
 export function desktopFileUnavailableMessage(
   failure: DesktopFileFailure,
 ): string {
+  const blocked =
+    " This step cannot use the selected computer until file access is restored. It was not moved to Cloud or another computer.";
   if (
     failure === "legacy_http_transport" ||
     failure === "native_ipc_unavailable"
   )
-    return "Desktop file access is unavailable: the native file API is unavailable and the legacy file bridge cannot be reached. Update HackerAI Desktop, fully quit and reopen it, then reconnect this computer before retrying. No command was started on this computer.";
+    return (
+      "Desktop cannot save command output on the selected computer because its file bridge is unavailable. Update HackerAI Desktop from hackerai.co/download on that computer, fully quit and reopen it, then retry once it is connected." +
+      blocked
+    );
   if (failure === "native_ipc_denied")
-    return "Desktop file access was denied by the app's native permissions. Update HackerAI Desktop and fully reopen it from its normal app window, then reconnect this computer. No command was started on this computer.";
-  return "Desktop file access could not be verified. Reconnect this computer and retry after the Desktop app is ready. If it persists, update and fully reopen HackerAI Desktop. No command was started on this computer.";
+    return (
+      "The Desktop app rejected file access on the selected computer. Fully quit and reopen HackerAI Desktop; if it persists, install the latest version from hackerai.co/download. Changing project access settings does not grant the app's native file permission." +
+      blocked
+    );
+  if (failure === "filesystem")
+    return (
+      "Desktop could not access the selected project folder. Check that the folder still exists and is accessible to the app, then reconnect the selected computer and retry." +
+      blocked
+    );
+  return (
+    "Desktop file access could not be verified. Reconnect the selected computer and retry after the app is ready. If it persists, update HackerAI Desktop from hackerai.co/download and fully reopen it." +
+    blocked
+  );
 }
