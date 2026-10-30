@@ -196,6 +196,28 @@ it("preserves an inventory exception without logging its private message", async
   expect(mockSet).not.toHaveBeenCalled();
 });
 
+it("does not misattribute a late inventory result after a provider rejection", async () => {
+  const failure = new Error("private-provider-failure");
+  let finishLate!: (items: { metadata: { userID: string } }[]) => void;
+  const late = new Promise<{ metadata: { userID: string } }[]>((resolve) => {
+    finishLate = resolve;
+  });
+  jest.mocked(Sandbox.list).mockImplementation(
+    (options) =>
+      ({
+        hasNext: false,
+        nextItems: () => (options?.domain ? late : Promise.reject(failure)),
+      }) as never,
+  );
+  await expect(resolve("us-east-1")).rejects.toBe(failure);
+  expect(warning).not.toHaveBeenCalled();
+  finishLate([{ metadata: { userID: "other" } }]);
+  await late;
+  await Promise.resolve();
+  expect(warning).not.toHaveBeenCalled();
+  expect(mockSet).not.toHaveBeenCalled();
+});
+
 it("keeps a rejected workspace fenced when diagnostic output fails", async () => {
   mockData.set(regionKey, "invalid");
   warning.mockImplementation(() => {

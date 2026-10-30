@@ -96,18 +96,27 @@ export async function resolveCloudWorkspaceRegion({
     const { Sandbox } = await import("@e2b/code-interpreter");
     const occupied = await Promise.all(
       clusters.map(async (cluster) => {
-        const list = Sandbox.list({
-          ...cluster.connectionOptions,
-          retries: 0,
-          requestTimeoutMs: 10_000,
-          query: { metadata: { userID: userId }, state: ["running", "paused"] },
-        });
-        const items = await list.nextItems({ signal });
-        if (items.some((item) => item.metadata?.userID !== userId))
-          throw unavailable("inventory_owner_mismatch");
-        if (!items.length && list.hasNext)
-          throw unavailable("inventory_incomplete");
-        return items.length ? cluster.cluster : null;
+        try {
+          const list = Sandbox.list({
+            ...cluster.connectionOptions,
+            retries: 0,
+            requestTimeoutMs: 10_000,
+            query: {
+              metadata: { userID: userId },
+              state: ["running", "paused"],
+            },
+          });
+          const items = await list.nextItems({ signal });
+          if (items.some((item) => item.metadata?.userID !== userId))
+            throw unavailable("inventory_owner_mismatch");
+          if (!items.length && list.hasNext)
+            throw unavailable("inventory_incomplete");
+          return items.length ? cluster.cluster : null;
+        } catch (error) {
+          // A slower sibling must not attribute an already failed discovery.
+          reportedFailure = true;
+          throw error;
+        }
       }),
     );
     const regions = occupied.filter((region) => region !== null);
