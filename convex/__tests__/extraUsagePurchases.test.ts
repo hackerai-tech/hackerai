@@ -395,6 +395,18 @@ describe("extra usage purchase ledger", () => {
     expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
   });
 
+  it("does not promote later lines when redacting a multiline quoted credential", async () => {
+    const { ctx, tables } = createMockCtx();
+    await callRecordPurchaseFailed(
+      ctx,
+      'HTTP 503 access_token="FAKE_CREDENTIAL\n"private second line',
+    );
+    const saved = tables.extra_usage_purchases[0].last_error;
+    expect(saved).toContain("HTTP 503");
+    expect(saved).not.toContain("FAKE_CREDENTIAL");
+    expect(saved).not.toContain("private second line");
+  });
+
   it("records sanitized failed credit attempts without sensitive error text", async () => {
     const { ctx, tables } = createMockCtx({
       extra_usage_purchases: [

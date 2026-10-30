@@ -28,8 +28,7 @@ const MAX_PURCHASE_ERROR_LENGTH = 500;
 const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
 const AUTO_RELOAD_OPERATION_LEASE_MS = 2 * 60_000;
 const sanitizePurchaseError = (error: string): string =>
-  redactSensitiveErrorMessage(error)
-    .split("\n", 1)[0]
+  redactSensitiveErrorMessage(error.split("\n", 1)[0])
     .trim()
     .slice(0, MAX_PURCHASE_ERROR_LENGTH);
 
