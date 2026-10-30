@@ -39,6 +39,7 @@ describe("phLogger", () => {
     "client_secret=FAKE_CREDENTIAL",
     "refreshToken=FAKE_CREDENTIAL",
     "Authorization: Bearer FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
     'token="prefix\\"FAKE_CREDENTIAL"',
     JSON.stringify({ message: 'client_secret="prefix FAKE_CREDENTIAL"' }),
     "access_token:\nFAKE_CREDENTIAL",

@@ -149,7 +149,10 @@ async function callRecordPurchaseCreated(ctx: any) {
   });
 }
 
-async function callRecordPurchaseFailed(ctx: any) {
+async function callRecordPurchaseFailed(
+  ctx: any,
+  lastError = "serviceKey: secret-value\nsecond line",
+) {
   const { recordPurchaseFailed } = await import("../extraUsage");
   return (recordPurchaseFailed as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
@@ -159,7 +162,7 @@ async function callRecordPurchaseFailed(ctx: any) {
     stripePaymentIntentId: "pi_test",
     stripeInvoiceId: "in_test",
     route: "webhook",
-    lastError: "serviceKey: secret-value\nsecond line",
+    lastError,
   });
 }
 
@@ -371,6 +374,27 @@ describe("extra usage purchase ledger", () => {
     expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "access_token=FAKE_CREDENTIAL",
+    "Authorization: Basic FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
+    'client_secret="prefix\\"FAKE_CREDENTIAL"',
+  ])("redacts %s before persisting a failed purchase", async (credential) => {
+    const { ctx, tables } = createMockCtx();
+    await callRecordPurchaseFailed(
+      ctx,
+      `  HTTP 503 ${credential} request_id=req_fixture ${"x".repeat(600)}\nprivate second line`,
+    );
+    const saved = tables.extra_usage_purchases[0];
+    expect(saved.status).toBe("failed");
+    expect(saved.last_error).not.toContain("FAKE_CREDENTIAL");
+    expect(saved.last_error).not.toContain("private second line");
+    expect(saved.last_error).toMatch(/^HTTP 503/);
+    expect(saved.last_error).toContain("request_id=req_fixture");
+    expect(saved.last_error).toHaveLength(500);
+    expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
+  });
+
   it("records sanitized failed credit attempts without sensitive error text", async () => {
     const { ctx, tables } = createMockCtx({
       extra_usage_purchases: [
@@ -394,7 +418,7 @@ describe("extra usage purchase ledger", () => {
       last_result: "failed",
       stripe_payment_intent_id: "pi_test",
       stripe_invoice_id: "in_test",
-      last_error: "serviceKey: [redacted]",
+      last_error: 'serviceKey: "[Redacted]"',
       updated_at: 1_000_000,
     });
   });

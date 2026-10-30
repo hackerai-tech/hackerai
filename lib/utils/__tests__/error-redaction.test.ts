@@ -21,6 +21,7 @@ describe("error redaction", () => {
     "Authorization: Bearer FAKE_CREDENTIAL",
     "authorization=Basic FAKE_CREDENTIAL",
     "Provider rejected Bearer FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
     'token="prefix\\"FAKE_CREDENTIAL"',
     "password='prefix\\'FAKE_CREDENTIAL'",
     'CLIENT_SECRET="prefix\\"FAKE_CREDENTIAL"',
