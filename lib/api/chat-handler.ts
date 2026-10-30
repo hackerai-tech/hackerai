@@ -93,6 +93,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
+import { resolveCloudExecutionRegion } from "@/lib/api/cloud-execution-region";
 import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
@@ -407,8 +408,13 @@ export const createChatHandler = () => {
         releaseFreeRunLock = lock.release;
       }
       const userLocation = geolocation(req);
-      const { triggerRegion: executionRegion, requestRegionClass } =
+      const { triggerRegion: requestRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
+      const executionRegion = await resolveCloudExecutionRegion({
+        userId,
+        sandboxPreference,
+        requestRegion,
+      });
 
       // Add user context to logger (only region, not full location for privacy)
       chatLogger.setUser({

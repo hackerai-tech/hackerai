@@ -34,6 +34,7 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
+import { resolveCloudExecutionRegion } from "@/lib/api/cloud-execution-region";
 import {
   coerceAgentPermissionMode,
   coerceSelectedModel,
@@ -599,8 +600,13 @@ export const createAgentTriggerPost =
         surface: "agent",
       });
       const userLocation = geolocation(req);
-      const { triggerRegion, requestRegionClass } =
+      const { triggerRegion: requestRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
+      const triggerRegion = await resolveCloudExecutionRegion({
+        userId,
+        sandboxPreference,
+        requestRegion,
+      });
       const genericDelegationEnabled = true;
 
       assertFreeAgentGates({
