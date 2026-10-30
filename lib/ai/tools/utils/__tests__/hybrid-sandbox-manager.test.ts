@@ -114,6 +114,53 @@ describe("filterConnectionsByPresence", () => {
 });
 
 describe("stable environment acquisition", () => {
+  it("does not expose an unusable Desktop or switch to Cloud, and retries after reconnect", async () => {
+    const oldWs = process.env.CENTRIFUGO_WS_URL;
+    const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+    const failure = new Error("Update HackerAI Desktop before retrying");
+    const probe = jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(undefined);
+    const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+    const selected = jest.fn();
+    const manager = new HybridSandboxManager(
+      "user-1",
+      selected,
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+    jest.spyOn(manager, "listConnections").mockResolvedValue([
+      makeConnection({
+        isDesktop: true,
+        capabilities: {
+          commands: true,
+          files: false,
+          operationChannels: true,
+        },
+      }),
+    ]);
+    try {
+      await expect(manager.getSandbox()).rejects.toBe(failure);
+      expect(selected).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      await expect(manager.getSandbox()).resolves.toHaveProperty("sandbox");
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(probe).toHaveBeenCalledTimes(2);
+    } finally {
+      probe.mockRestore();
+      close.mockRestore();
+      if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+      else process.env.CENTRIFUGO_WS_URL = oldWs;
+      if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+      else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+    }
+  });
+
   it.each([false, true])(
     "shares local acquisition when concurrent connection lists differ=%s",
     async (different) => {

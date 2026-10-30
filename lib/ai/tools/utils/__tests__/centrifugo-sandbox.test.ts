@@ -1073,7 +1073,7 @@ describe("CentrifugoSandbox", () => {
       );
 
     async function dispatchProbe(sandbox: CentrifugoSandbox) {
-      const pending = sandbox.confirmNativeFileRelay();
+      const pending = sandbox.confirmNativeFileRelay().catch((error) => error);
       await jest.advanceTimersByTimeAsync(0);
       const reply = mockSubscriptions[0];
       reply.emit("subscribed");
@@ -1149,7 +1149,7 @@ describe("CentrifugoSandbox", () => {
             },
           });
         else await jest.advanceTimersByTimeAsync(3000);
-        await pending;
+        expect(await pending).toBeInstanceOf(Error);
         reply.emit("publication", {
           data: {
             type: "file_stat_result",
@@ -1162,9 +1162,59 @@ describe("CentrifugoSandbox", () => {
         await expect(
           sandbox.files.write("result.txt", "unsafe"),
         ).rejects.toThrow("require the native file bridge");
-        await sandbox.confirmNativeFileRelay();
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toThrow(
+          "Desktop file access could not be verified",
+        );
         expect(mockClients).toHaveLength(1);
         expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("identifies an old bridge's HTTP transport failure before executing commands", async () => {
+      const sandbox = unavailableDesktop();
+      const { pending, reply } = await dispatchProbe(sandbox);
+      reply.emit("publication", {
+        data: {
+          type: "file_error",
+          requestId: FIXED_UUID,
+          message:
+            "Desktop file bridge transport failed (legacy_http, file_stat). Reconnect the Desktop app.",
+        },
+      });
+      expect(await pending).toMatchObject({
+        message: expect.stringContaining("Update HackerAI Desktop"),
+      });
+      expect(sandbox.supportsNativeFileRelay()).toBe(false);
+      expect(sandbox.supportsCommandStdin()).toBe(false);
+      expect(mockClients).toHaveLength(1);
+    });
+
+    it.each(["native_ipc_denied", "PRIVATE_UNKNOWN_CODE"])(
+      "logs only allowlisted file failure evidence: %s",
+      async (fileFailure) => {
+        const info = jest.spyOn(console, "info").mockImplementation(() => {});
+        try {
+          const sandbox = unavailableDesktop();
+          const { pending, reply } = await dispatchProbe(sandbox);
+          reply.emit("publication", {
+            data: {
+              type: "file_error",
+              requestId: FIXED_UUID,
+              message: "PRIVATE_PATH_AND_CONTENT",
+              fileFailure,
+            },
+          });
+          expect(await pending).toBeInstanceOf(Error);
+          const logs = JSON.stringify(info.mock.calls);
+          expect(logs).not.toContain("PRIVATE");
+          expect(logs).toContain(
+            fileFailure === "native_ipc_denied"
+              ? "native_ipc_denied"
+              : "unknown",
+          );
+        } finally {
+          info.mockRestore();
+        }
       },
     );
 

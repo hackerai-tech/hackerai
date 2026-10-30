@@ -892,7 +892,14 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
-    await sandbox.confirmNativeFileRelay();
+    try {
+      await sandbox.confirmNativeFileRelay();
+    } catch (error) {
+      // Never expose a Desktop that cannot persist output, or silently select a
+      // different computer. The caller can retry acquisition after reconnecting.
+      await sandbox.close();
+      throw error;
+    }
     if (generation !== this.localAcquisitionGeneration) {
       // Close only this unpublished instance, never a newer selected sandbox.
       await sandbox.close();
