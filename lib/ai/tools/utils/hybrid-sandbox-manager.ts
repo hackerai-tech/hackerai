@@ -1035,8 +1035,9 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get expected sandbox context for the system prompt based on preference
-   * without initializing the sandbox. Returns null for E2B (uses default prompt).
+   * Get expected sandbox context for the system prompt based on preference.
+   * Confirm missing Desktop file support before model work. Cloud uses the
+   * default prompt and does not initialize a sandbox here.
    */
   async getSandboxContextForPrompt(): Promise<string | null> {
     if (this.sandboxPreference === "e2b") {
