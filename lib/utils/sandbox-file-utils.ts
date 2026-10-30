@@ -87,8 +87,15 @@ type LocalCopyFailureReason =
   | "disk_full"
   | "unclassified";
 
+// Combined fallback errors retain both messages for existing reporting, but
+// terminal copy diagnostics describe the last attempt only.
+const finalLocalCopyReasons = new WeakMap<Error, LocalCopyFailureReason>();
+
 // Diagnostic only: do not change retries or forward local paths/stderr.
 const classifyLocalCopyFailure = (error: unknown): LocalCopyFailureReason => {
+  const finalReason =
+    error instanceof Error ? finalLocalCopyReasons.get(error) : undefined;
+  if (finalReason) return finalReason;
   const message = errorMessage(error);
   if (
     /permission denied|operation not permitted|access is denied|read-only file system/i.test(
@@ -1159,12 +1166,19 @@ const stageSandboxFile = async (
         fallbackError instanceof Error
           ? fallbackError.message
           : String(fallbackError);
-      throw Object.assign(
+      const combinedError = Object.assign(
         new Error(
           `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
         ),
         { exitCode: extractCommandExitCode(fallbackError) },
       );
+      if (file.kind === "localPath") {
+        finalLocalCopyReasons.set(
+          combinedError,
+          classifyLocalCopyFailure(fallbackError),
+        );
+      }
+      throw combinedError;
     }
 
     recordOutcome("recovered");

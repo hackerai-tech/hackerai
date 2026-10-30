@@ -486,7 +486,9 @@ describe("desktop-local sandbox file helpers", () => {
       )
       .mockRejectedValueOnce(
         Object.assign(
-          new Error("Failed to prepare local file: source missing"),
+          new Error(
+            "Failed to prepare local file: No such file or directory /private/report.pdf",
+          ),
           { exitCode: 2 },
         ),
       );
@@ -518,6 +520,10 @@ describe("desktop-local sandbox file helpers", () => {
       ).toMatchObject({
         event: "sandbox_attachment_staging_failed",
         failure_exit_code: 2,
+        local_copy_failure_reason: "path_missing",
+      });
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_local_copy_reason: "path_missing",
       });
       expect(JSON.stringify(consoleErrorSpy.mock.calls)).not.toContain(
         "report.pdf",
