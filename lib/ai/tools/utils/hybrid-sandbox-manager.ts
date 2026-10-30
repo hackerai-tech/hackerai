@@ -898,6 +898,13 @@ export class HybridSandboxManager implements SandboxManager {
       await sandbox.close();
       this.assertLocalAcquisitionCurrent(generation);
     }
+    if (connection.isDesktop && !sandbox.supportsNativeFileRelay()) {
+      await sandbox.close();
+      throw new ChatSDKError(
+        "bad_request:sandbox",
+        "Desktop file access is unavailable. Update and restart the HackerAI Desktop app, reconnect this computer, then retry. Agent mode needs the native file bridge to save terminal output safely.",
+      );
+    }
     this.sandbox = sandbox;
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -1044,6 +1051,17 @@ export class HybridSandboxManager implements SandboxManager {
     );
 
     if (preferredConnection) {
+      if (
+        preferredConnection.isDesktop &&
+        preferredConnection.capabilities?.files !== true
+      ) {
+        // Resolve missing Desktop file support before starting model work, not
+        // after the first terminal command has already lost its checkpoint.
+        const { sandbox } = await this.getSandbox();
+        if (isCentrifugoSandbox(sandbox)) {
+          return this.buildSandboxContext(sandbox.getConnectionInfo());
+        }
+      }
       // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
       this.currentConnectionName = preferredConnection.name;
       return this.buildSandboxContext(preferredConnection);
