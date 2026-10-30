@@ -207,7 +207,7 @@ describe("E2B cloud acquisition", () => {
     },
   );
 
-  it.each([undefined, "eu-central-1"] as const)(
+  it.each(["eu-central-1"] as const)(
     "does not reconnect a pin through an unverified or different cluster: %s",
     async (region) => {
       read.mockResolvedValue(recovered);
@@ -224,9 +224,7 @@ describe("E2B cloud acquisition", () => {
       expect(phLogger.event).toHaveBeenCalledWith(
         "cloud_sandbox_acquisition_failed",
         expect.objectContaining({
-          workspace_guard_reason: region
-            ? "workspace_region_mismatch"
-            : "trigger_region_missing",
+          workspace_guard_reason: "workspace_region_mismatch",
           workspace_phase: "e2b",
           workspace_region: "us-east-1",
           trigger_region: region,
@@ -234,6 +232,21 @@ describe("E2B cloud acquisition", () => {
       );
     },
   );
+
+  it("uses the durable recovered region when an Ask caller has no Trigger region", async () => {
+    read.mockResolvedValue(recovered);
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox: jest.fn(),
+    });
+    expect(ensure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        triggerRegion: recovered.region,
+        destinationId: recovered.destinationId,
+      }),
+    );
+  });
 
   it("does not label different regions in the same E2B cluster as a mismatch", async () => {
     read.mockResolvedValue(recovered);

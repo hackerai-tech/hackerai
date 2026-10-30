@@ -1,3 +1,7 @@
+import {
+  activityKeyFor,
+  cloudRecoveryConsentKey,
+} from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
@@ -7,8 +11,7 @@ import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 export const RECOVERY_FLAG = "cloud-workspace-customer-recovery";
 export const failureKey = (userId: string) =>
   `cloud_resume_failures:v1:${userId}`;
-export const consentKey = (userId: string) =>
-  `cloud_recovery_consent:v1:${userId}`;
+export const consentKey = cloudRecoveryConsentKey;
 export const failureSchema = z.object({
   sandboxId: z.string().min(1),
   region: z.enum(["us-east-1", "us-west-2", "eu-central-1"]),
@@ -128,9 +131,26 @@ export async function decideConsent(
     `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end
      local current = cjson.decode(raw)
      if current.token ~= ARGV[1] or current.status ~= 'offered' or current.issuedAt ~= tonumber(ARGV[3]) then return 0 end
+     if ARGV[4] == '1' then
+       if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+       local workspaceRaw = redis.call('GET', KEYS[3])
+       if workspaceRaw then
+         local ok, workspace = pcall(cjson.decode, workspaceRaw)
+         if not ok or type(workspace) ~= 'table' or workspace.phase ~= 'e2b' then return 0 end
+       end
+     end
      redis.call('SET', KEYS[1], ARGV[2]); return 1`,
-    [consentKey(userId)],
-    [consent.token, JSON.stringify(next), String(consent.issuedAt)],
+    [
+      consentKey(userId),
+      activityKeyFor(userId),
+      `cloud_workspace_migration:v1:${userId}`,
+    ],
+    [
+      consent.token,
+      JSON.stringify(next),
+      String(consent.issuedAt),
+      confirmed ? "1" : "0",
+    ],
   );
   return changed === 1;
 }

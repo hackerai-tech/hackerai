@@ -1,3 +1,4 @@
+import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
 import {
   readCloudWorkspaceState,
   assertCloudWorkspaceAvailable,
@@ -580,10 +581,7 @@ export const createAgentTriggerPost =
       });
       // Serialize cloud Agent admission with recovery before a run is queued.
       // The same activity/fence CAS protects acquisition and cached clients.
-      if (
-        process.env.CLOUD_DISK_RECOVERY_TARGETS &&
-        (!sandboxPreference || sandboxPreference === "e2b")
-      ) {
+      if (!sandboxPreference || sandboxPreference === "e2b") {
         const workspace = await readCloudWorkspaceState(userId);
         await assertCloudWorkspaceAvailable(
           userId,
@@ -599,7 +597,7 @@ export const createAgentTriggerPost =
         surface: "agent",
       });
       const userLocation = geolocation(req);
-      const { triggerRegion, requestRegionClass } =
+      const { triggerRegion: requestTriggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
       const genericDelegationEnabled = true;
 
@@ -608,6 +606,16 @@ export const createAgentTriggerPost =
         subscription,
         sandboxPreference,
       });
+
+      stage = "workspace_routing";
+      const triggerRegion =
+        !sandboxPreference || sandboxPreference === "e2b"
+          ? await resolveCloudWorkspaceRegion({
+              userId,
+              preferredRegion: requestTriggerRegion,
+              signal: req.signal,
+            })
+          : requestTriggerRegion;
 
       const requestMessages = Array.isArray(messages) ? messages : [];
       if (!regenerate && !isAutoContinue && requestMessages.length === 0) {

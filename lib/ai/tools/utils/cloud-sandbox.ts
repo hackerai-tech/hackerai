@@ -1,3 +1,5 @@
+import { resolveCloudWorkspaceRegion } from "./cloud-workspace-routing";
+import { DEFAULT_TRIGGER_RUN_REGION } from "@/lib/api/trigger-region";
 import { readFailures } from "@/lib/cloud-recovery/store";
 import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
@@ -97,21 +99,34 @@ export async function ensureCloudSandboxConnection(options: {
     options.reportStage?.("workspace_lookup");
     const state = await readCloudWorkspaceState(options.userId);
     options.signal?.throwIfAborted();
+    if (state && state.phase !== "e2b") {
+      workspaceGuardDiagnostics = {
+        workspace_guard_reason: "workspace_phase_unavailable",
+        workspace_phase: state.phase,
+      };
+      throw new CloudWorkspaceUnavailableError();
+    }
+    const workspaceRegion = await resolveCloudWorkspaceRegion({
+      userId: options.userId,
+      preferredRegion:
+        options.context?.triggerRegion ??
+        state?.region ??
+        DEFAULT_TRIGGER_RUN_REGION,
+      signal: options.signal,
+    });
+    if (
+      options.context?.triggerRunId &&
+      options.context.triggerRegion !== workspaceRegion
+    )
+      throw new CloudWorkspaceUnavailableError();
+    options.signal?.throwIfAborted();
     if (state) {
       if (
-        state.phase !== "e2b" ||
-        !options.context?.triggerRegion ||
         getE2BClusterRouting(state.region).createCluster.cluster !==
-          getE2BClusterRouting(options.context.triggerRegion).createCluster
-            .cluster
+        getE2BClusterRouting(workspaceRegion).createCluster.cluster
       ) {
         workspaceGuardDiagnostics = {
-          workspace_guard_reason:
-            state.phase !== "e2b"
-              ? "workspace_phase_unavailable"
-              : !options.context?.triggerRegion
-                ? "trigger_region_missing"
-                : "workspace_region_mismatch",
+          workspace_guard_reason: "workspace_region_mismatch",
           workspace_phase: state.phase,
           ...(state.phase === "e2b" ? { workspace_region: state.region } : {}),
         };
@@ -126,10 +141,8 @@ export async function ensureCloudSandboxConnection(options: {
       state?.phase === "e2b" ? state.destinationId : failed?.sandboxId;
     if (
       failed &&
-      (!options.context?.triggerRegion ||
-        getE2BClusterRouting(failed.region).createCluster.cluster !==
-          getE2BClusterRouting(options.context.triggerRegion).createCluster
-            .cluster ||
+      (getE2BClusterRouting(failed.region).createCluster.cluster !==
+        getE2BClusterRouting(workspaceRegion).createCluster.cluster ||
         (state?.phase === "e2b" && state.destinationId !== failed.sandboxId))
     )
       throw new CloudWorkspaceUnavailableError();
@@ -156,7 +169,7 @@ export async function ensureCloudSandboxConnection(options: {
           options.initialSandbox && isE2BSandbox(options.initialSandbox)
             ? options.initialSandbox
             : null,
-        triggerRegion: options.context?.triggerRegion,
+        triggerRegion: workspaceRegion,
         acquisitionId,
         triggerRunId: options.context?.triggerRunId,
         destinationId,

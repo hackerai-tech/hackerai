@@ -20,10 +20,12 @@ import {
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import {
   readCloudWorkspaceState,
+  activityKeyFor,
   readE2BDiskRecoveryResult,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import {
   recoverE2BDiskOnly,
+  DiskRecoveryError,
   validateDiskRecoveryAuthorization,
   type DiskRecoveryAuthorization,
 } from "@/lib/ai/tools/utils/e2b-disk-recovery";
@@ -160,11 +162,41 @@ function sameTarget(a: ResumeFailures, b: ResumeFailures) {
     a.sandboxVersion === b.sandboxVersion
   );
 }
+type RecoveryStage =
+  | "consent_age"
+  | "manifest"
+  | "failure_evidence"
+  | "idle_window"
+  | "workspace_state"
+  | "activity"
+  | "active_runs"
+  | "provider_identity"
+  | "provider_inventory"
+  | "entitlement"
+  | "suspension"
+  | "disk_recovery";
+const diskRecoveryStages = new Set([
+  "authorization",
+  "identity",
+  "readiness",
+  "reboot",
+  "inventory",
+  "backup",
+  "pause",
+  "normal_resume",
+  "final_pause",
+  "reconnect",
+  "release",
+]);
+
 async function assertEligible(
   userId: string,
   consent: RecoveryConsent,
+  reportStage: (stage: RecoveryStage) => void = () => {},
 ): Promise<DiskRecoveryAuthorization> {
+  reportStage("manifest");
   const auth = targetAuthorization(userId, consent);
+  reportStage("failure_evidence");
   const failures = await readFailures(userId);
   if (
     !failures ||
@@ -177,8 +209,10 @@ async function assertEligible(
   // A connection deadline is not evidence that the provider stopped. Drain the
   // full idle window and then independently inspect paused identity. The single
   // reboot request must be refused by E2B if a conflicting start is in flight.
+  reportStage("idle_window");
   if (failures.uncertain && Date.now() - failures.lastFailedAt < 15 * 60000)
     throw new RecoveryBusy();
+  reportStage("workspace_state");
   const workspace = await readCloudWorkspaceState(userId);
   if (
     workspace &&
@@ -199,9 +233,12 @@ async function assertEligible(
       ))
   )
     throw new RecoveryUnavailable();
-  if (await recoveryRedis().exists(`cloud_workspace_activity:v1:${userId}`))
+  reportStage("activity");
+  if (await recoveryRedis().exists(activityKeyFor(userId)))
     throw new RecoveryBusy();
+  reportStage("active_runs");
   await assertNoActiveWork(userId);
+  reportStage("provider_identity");
   const cluster = getE2BClusterRouting(auth.region).createCluster;
   const info = await Sandbox.getInfo(auth.sandboxId, {
     ...cluster.connectionOptions,
@@ -228,6 +265,7 @@ async function assertEligible(
     )
   )
     throw new RecoveryUnavailable();
+  reportStage("provider_inventory");
   // Inventory is read-only: an extra regional workspace is an ownership ambiguity.
   const list = Sandbox.list({
     ...cluster.connectionOptions,
@@ -395,11 +433,15 @@ export async function executeCustomerRecovery(
     consent.target.region !== region
   )
     throw new RecoveryUnavailable();
+  let stage: RecoveryStage = "consent_age";
   try {
     // A delayed dispatch is not permission to reboot hours after confirmation.
     if (Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000)
       throw new RecoveryUnavailable();
-    const auth = await assertEligible(userId, consent);
+    const auth = await assertEligible(userId, consent, (next) => {
+      stage = next;
+    });
+    stage = "entitlement";
     // Bind billing authority to the authenticated session that granted consent.
     // Legacy receipts without that binding cannot authorize provider work.
     if (!consent.organizationId) throw new RecoveryUnavailable();
@@ -408,7 +450,9 @@ export async function executeCustomerRecovery(
       organizationId: consent.organizationId,
     });
     if (entitlement.subscription === "free") throw new RecoveryUnavailable();
+    stage = "suspension";
     await assertUserCanMakeCostIncurringRequest(userId);
+    stage = "disk_recovery";
     await recoverE2BDiskOnly(auth, {
       consentKey: consentKey(userId),
       assertIdle: () => assertNoActiveWork(userId),
@@ -417,11 +461,22 @@ export async function executeCustomerRecovery(
       userId,
       outcome: "verified",
     });
-  } catch {
+  } catch (error) {
     await failConsent(userId, token).catch(() => {});
     phLogger.event("cloud_workspace_customer_recovery_completed", {
       userId,
       outcome: "support_required",
+      recovery_stage: stage,
+      recovery_reason:
+        error instanceof RecoveryBusy
+          ? "busy"
+          : error instanceof RecoveryUnavailable
+            ? "ineligible"
+            : "operation_failed",
+      ...(error instanceof DiskRecoveryError &&
+      diskRecoveryStages.has(error.stage)
+        ? { disk_recovery_stage: error.stage }
+        : {}),
     });
     // No provider error messages, snapshots, workspace ids or authorization in task output.
     throw new RecoveryUnavailable("Recovery requires support reconciliation");
