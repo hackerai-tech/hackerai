@@ -6,6 +6,65 @@ import {
 
 describe("error redaction", () => {
   it.each([
+    "access_token=FAKE_CREDENTIAL",
+    "client_secret: FAKE_CREDENTIAL",
+    "refreshToken=FAKE_CREDENTIAL",
+    "X-Auth-Token: FAKE_CREDENTIAL",
+    "x-api-key: FAKE_CREDENTIAL",
+    '{"clientSecret":"FAKE_CREDENTIAL"}',
+    "Authorization: Bearer FAKE_CREDENTIAL",
+    "authorization=Basic FAKE_CREDENTIAL",
+    "Provider rejected Bearer FAKE_CREDENTIAL",
+    'token="prefix\\"FAKE_CREDENTIAL"',
+    "password='prefix\\'FAKE_CREDENTIAL'",
+    'CLIENT_SECRET="prefix\\"FAKE_CREDENTIAL"',
+    'access_token="FAKE_CREDENTIAL',
+    "https://example.test/error?access_token=FAKE_CREDENTIAL&status=401",
+    "token:\nFAKE_CREDENTIAL",
+    "serviceKey\n=FAKE_CREDENTIAL",
+    "TOKEN_KEY:\nFAKE_CREDENTIAL",
+    "password=prefix&FAKE_CREDENTIAL",
+    "password=prefix'FAKE_CREDENTIAL",
+    "password=prefix]FAKE_CREDENTIAL",
+    "Cookie: session=first;refresh=FAKE_CREDENTIAL",
+    JSON.stringify({ message: 'token="prefix FAKE_CREDENTIAL"' }),
+  ])("redacts credentials in %s", (message) => {
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).not.toContain("FAKE_CREDENTIAL");
+    expect(redacted).toContain("[Redacted]");
+    expect(redactSensitiveErrorMessage(redacted)).toBe(redacted);
+  });
+
+  it("preserves retry classification, correlation and usage diagnostics", () => {
+    const diagnostic =
+      "HTTP 503 WorkerOverloaded ECONNRESET Request ID: req_123 max_tokens=4096 tokenCount=42 secretLength=12 retry_after=2 https://example.test/status";
+    expect(redactSensitiveErrorMessage(diagnostic)).toBe(diagnostic);
+  });
+
+  it("redacts nested serialized credentials without losing safe fields", () => {
+    const value = {
+      status: 401,
+      nested: {
+        client_secret: 'prefix"FAKE_CREDENTIAL',
+        refreshToken: "FAKE_REFRESH",
+      },
+    };
+    const redacted = stringifyRedactedError(value);
+    expect(JSON.parse(redacted)).toEqual({
+      status: 401,
+      nested: { client_secret: "[Redacted]", refreshToken: "[Redacted]" },
+    });
+  });
+
+  it("handles long diagnostic text and credential values", () => {
+    const prefix = "x".repeat(100_000);
+    const message = `${prefix} access_token="${"s".repeat(100_000)}" status=401`;
+    expect(redactSensitiveErrorMessage(message)).toBe(
+      `${prefix} access_token="[Redacted]" status=401`,
+    );
+  });
+
+  it.each([
     undefined,
     () => "private-function-body",
     Symbol("private-symbol"),
