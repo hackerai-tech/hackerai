@@ -1220,8 +1220,6 @@ describe("CentrifugoSandbox", () => {
 
     it.each([
       { isDesktop: false, files: false, operationChannels: true },
-      { isDesktop: true, files: undefined, operationChannels: true },
-      { isDesktop: true, files: false, operationChannels: false },
       { isDesktop: true, files: true, operationChannels: true },
     ])(
       "does not probe compatible or unsupported clients: %j",
@@ -1240,6 +1238,43 @@ describe("CentrifugoSandbox", () => {
         expect(sandbox.supportsCommandStdin()).toBe(false);
       },
     );
+
+    it("recovers a legacy Desktop with no file advertisement on its connection channel", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true },
+        },
+        defaultConfig,
+      );
+      const pending = sandbox.confirmNativeFileRelay();
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(reply.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_stat",
+          path: ".",
+          targetConnectionId: "conn-1",
+        }),
+      );
+      reply.emit("publication", {
+        data: {
+          type: "file_stat_result",
+          requestId: FIXED_UUID,
+          kind: "not_file",
+          path: ".",
+        },
+      });
+      await pending;
+      expect(sandbox.supportsNativeFileRelay()).toBe(true);
+      expect(sandbox.supportsCommandStdin()).toBe(false);
+      expect(mockClients[0].disconnect).toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 
   it("uses an isolated file reply channel and never republishes a write after reconnect", async () => {

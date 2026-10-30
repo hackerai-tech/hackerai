@@ -376,8 +376,7 @@ export class CentrifugoSandbox extends EventEmitter {
   confirmNativeFileRelay(): Promise<void> {
     if (
       this.connectionInfo.isDesktop !== true ||
-      this.connectionInfo.capabilities?.files !== false ||
-      !this.supportsOperationChannels()
+      this.connectionInfo.capabilities?.files === true
     )
       return Promise.resolve();
     return (this.nativeFileRelayConfirmation ??= this.probeNativeFileRelay());

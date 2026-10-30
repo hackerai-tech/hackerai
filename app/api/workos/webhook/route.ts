@@ -137,16 +137,60 @@ export async function POST(req: NextRequest) {
 
   after(() => phLogger.flush());
 
-  try {
-    await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
+  // Finalization is idempotent. Retry only this marker, never the handler or
+  // arbitrary mutations: a reset can arrive after Convex committed the write.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let outcome: "recovered" | "exhausted" | "not_retryable";
+    let transportCode: string | undefined;
+    try {
+      await getConvexClient().mutation(
+        api.extraUsage.finalizeWebhookProcessing,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          eventId: event.id,
+        },
+      );
+      if (attempt === 1) break;
+      outcome = "recovered";
+    } catch (error) {
+      let cause: unknown = error;
+      for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (
+          typeof code === "string" &&
+          [
+            "ECONNRESET",
+            "ECONNREFUSED",
+            "ETIMEDOUT",
+            "EAI_AGAIN",
+            "UND_ERR_CONNECT_TIMEOUT",
+            "UND_ERR_HEADERS_TIMEOUT",
+            "UND_ERR_BODY_TIMEOUT",
+            "UND_ERR_SOCKET",
+          ].includes(code)
+        ) {
+          transportCode = code;
+          break;
+        }
+        cause = cause.cause;
+      }
+      if (transportCode && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+        continue;
+      }
+      outcome = transportCode ? "exhausted" : "not_retryable";
+    }
+    logger.warn("WorkOS webhook finalization outcome", {
+      event: "workos.webhook_finalization",
+      workos_event_id: event.id,
+      request_id: req.headers.get("x-vercel-id") ?? "unknown",
+      service: "hackerai-web",
+      route: "/api/workos/webhook",
+      attempts: attempt,
+      outcome,
+      ...(transportCode ? { transport_code: transportCode } : {}),
     });
-  } catch (error) {
-    console.error(
-      `[WorkOS Webhook] Failed to finalize event ${event.id}:`,
-      error,
-    );
+    break;
   }
 
   return NextResponse.json({ received: true });

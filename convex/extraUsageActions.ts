@@ -8,6 +8,7 @@ import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
 import { BILLING_ERRORS } from "../lib/billing/billing-errors";
+import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -201,21 +202,6 @@ async function getDefaultPaymentMethodId(
   const pm = invoiceSettings?.default_payment_method;
   return typeof pm === "string" ? pm : pm?.id || null;
 }
-
-const REDACTED_VALUE = "[Redacted]";
-const SENSITIVE_FIELD_PATTERN =
-  /(["']?\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
-const ENV_SECRET_PATTERN =
-  /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
-
-const redactSensitiveErrorMessage = (message: string): string =>
-  message
-    .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
-      return `${key}${separator}"${REDACTED_VALUE}"`;
-    })
-    .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
-      return `${key}${separator}"${REDACTED_VALUE}"`;
-    });
 
 const serializeErrorForLog = (error: unknown) => {
   const name = error instanceof Error ? error.name : "UnknownError";
