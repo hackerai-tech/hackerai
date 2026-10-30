@@ -47,9 +47,61 @@ jest.mock("@/lib/posthog/server", () => ({
 describe("POST /api/workos/webhook", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockMutation.mockReset();
     process.env.WORKOS_WEBHOOK_SECRET = "test-webhook-secret";
     process.env.CONVEX_SERVICE_ROLE_KEY = "test-service-role-key";
   });
+
+  afterEach(() => jest.useRealTimers());
+
+  it.each([
+    ["recovers a reset", "ECONNRESET", 1, 2, "recovered"],
+    ["bounds persistent resets", "ECONNRESET", 3, 3, "exhausted"],
+    ["does not retry application failures", "FORBIDDEN", 1, 1, "not_retryable"],
+  ])(
+    "%s without repeating the event handler",
+    async (_name, code, failures, attempts, outcome) => {
+      jest.useFakeTimers();
+      mockConstructEvent.mockResolvedValue({
+        id: "event-retry",
+        event: "authentication.email_verification_succeeded",
+        createdAt: "2026-10-30T00:00:00Z",
+        data: { userId: "user-test" },
+      });
+      mockMutation.mockResolvedValueOnce({ state: "acquired" });
+      for (let i = 0; i < Number(failures); i++) {
+        mockMutation.mockRejectedValueOnce(
+          new TypeError("private error contents", {
+            cause: Object.assign(new Error("private socket details"), { code }),
+          }),
+        );
+      }
+      mockMutation.mockResolvedValue(undefined);
+      const { POST } = await import("../route");
+      const pending = POST({
+        headers: { get: () => "signature" },
+        json: async () => ({}),
+      } as any);
+      await jest.runAllTimersAsync();
+      expect((await pending).status).toBe(200);
+      expect(mockMutation).toHaveBeenCalledTimes(1 + Number(attempts));
+      expect(mockCaptureUserEmailVerified).toHaveBeenCalledTimes(1);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        "WorkOS webhook finalization outcome",
+        expect.objectContaining({
+          event: "workos.webhook_finalization",
+          attempts,
+          outcome,
+        }),
+      );
+      expect(JSON.stringify(mockLoggerWarn.mock.calls)).not.toContain(
+        "private",
+      );
+      expect(JSON.stringify(mockLoggerWarn.mock.calls)).not.toContain(
+        "test-service-role-key",
+      );
+    },
+  );
 
   it("treats a missing signature as a warning-level client rejection", async () => {
     const { POST } = await import("../route");

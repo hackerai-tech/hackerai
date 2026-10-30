@@ -79,12 +79,42 @@ type SandboxCommandResult = {
   error?: string;
 };
 
+type LocalCopyFailureReason =
+  | "permission_denied"
+  | "path_missing"
+  | "same_file"
+  | "destination_invalid"
+  | "disk_full"
+  | "unclassified";
+
+// Diagnostic only: do not change retries or forward local paths/stderr.
+const classifyLocalCopyFailure = (error: unknown): LocalCopyFailureReason => {
+  const message = errorMessage(error);
+  if (
+    /permission denied|operation not permitted|access is denied|read-only file system/i.test(
+      message,
+    )
+  )
+    return "permission_denied";
+  if (/are identical|are the same file/i.test(message)) return "same_file";
+  if (/no space left on device|disk quota exceeded/i.test(message))
+    return "disk_full";
+  if (/not a directory|is a directory/i.test(message))
+    return "destination_invalid";
+  if (
+    /no such file or directory|cannot stat|cannot find the file/i.test(message)
+  )
+    return "path_missing";
+  return "unclassified";
+};
+
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
   phase?: "acquisition" | "readiness" | "transfer";
   error: string;
   exitCode: number | null;
   reason: SandboxUploadFailureReason;
+  localCopyFailureReason?: LocalCopyFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxReadinessFailureReason;
@@ -1215,6 +1245,10 @@ const summarizeSandboxUploadFailure = (
       error,
       sandboxReadinessReason,
     ),
+    ...(file.kind === "localPath" &&
+      phase === "transfer" && {
+        localCopyFailureReason: classifyLocalCopyFailure(error),
+      }),
     transientSandboxCommand: isTransientSandboxCommandError(error),
     sandboxReadinessReason,
     // Probe attribution is diagnostic only; acquisition and retry policy keep
@@ -1389,6 +1423,8 @@ const uploadSandboxFilesOnce = async (
         failure_phase: readinessFailed ? "readiness" : "transfer",
         failure_reason: primaryFailure.reason,
         failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
@@ -1425,6 +1461,8 @@ const uploadSandboxFilesOnce = async (
           ? { source_path: "[redacted-local-path]" }
           : {}),
         failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
@@ -1462,6 +1500,8 @@ const uploadSandboxFilesOnce = async (
         failure_reason_counts: failureReasonCounts,
         failure_kind: primaryFailure.kind,
         failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
@@ -1521,6 +1561,9 @@ export const getSandboxUploadFailureMetadata = (
       ? { upload_failure_readiness_probe_reason: failure.readinessProbeReason }
       : {}),
     ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
+    ...(failure?.localCopyFailureReason
+      ? { upload_failure_local_copy_reason: failure.localCopyFailureReason }
+      : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined
       ? {

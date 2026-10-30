@@ -1,3 +1,7 @@
+import {
+  prepareMiosaRetirement,
+  RETIRE_MIOSA_LUA,
+} from "./lib/retire-miosa-workspace.mjs";
 // Exercise the actual production Lua against isolated Redis, including both
 // serializations of confirmation racing admission. No provider calls or credentials.
 import assert from "node:assert/strict";
@@ -96,7 +100,12 @@ const recovery = {
 const set = (key, value) => command("SET", key, JSON.stringify(value));
 const get = (key) => {
   const value = command("GET", key);
-  return value === null ? null : JSON.parse(value);
+  if (value === null) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 };
 const evalLua = (lua, selectedKeys, args) =>
   command("EVAL", lua, selectedKeys.length, ...selectedKeys, ...args);
@@ -277,6 +286,119 @@ try {
     admit(),
     1,
     "a completed recovery receipt must not strand a later authorized fresh workspace",
+  );
+  const legacy = {
+    version: 1,
+    phase: "cleanup",
+    token: "old-owner",
+    recovery: {
+      operation: "miosa-to-e2b",
+      e2bId: "old-files",
+      phase: "destination_staged",
+    },
+  };
+  const retirementId = "12345678-1234-1234-1234-123456789abc";
+  const retirementInput = {
+    userId: "user_retirement",
+    expectedRaw: JSON.stringify(legacy),
+    sandboxInfo: {
+      sandboxId: "fresh-files",
+      state: "paused",
+      lifecycle: { onTimeout: "pause" },
+      metadata: { userID: "user_retirement", miosaRetirementId: retirementId },
+    },
+    region: "us-east-1",
+    retirementId,
+    providerRetirementAuthorized: true,
+  };
+  const plan = prepareMiosaRetirement(retirementInput);
+  const retire = () => evalLua(RETIRE_MIOSA_LUA, plan.keys, plan.args);
+  const resetRetirement = () => {
+    command("DEL", ...plan.keys);
+    set(plan.keys[0], legacy);
+  };
+  resetRetirement();
+  assert.equal(retire(), "retired");
+  assert.deepEqual(
+    get(plan.keys[5]),
+    legacy,
+    "exact original fence is archived",
+  );
+  assert.equal(get(plan.keys[0]).destinationId, "fresh-files");
+  assert.equal(get(plan.keys[4]), "us-east-1");
+  assert.equal(
+    retire(),
+    "state_changed",
+    "repeated retirement cannot replace the new workspace",
+  );
+  for (const index of [1, 2, 3]) {
+    resetRetirement();
+    set(plan.keys[index], { active: true });
+    assert.equal(retire(), "busy");
+    assert.deepEqual(get(plan.keys[0]), legacy);
+    assert.equal(get(plan.keys[5]), null);
+  }
+  resetRetirement();
+  set(plan.keys[6], { sandboxId: "other" });
+  assert.equal(retire(), "recovery_changed");
+  resetRetirement();
+  set(plan.keys[4], "eu-central-1");
+  assert.equal(retire(), "region_conflict");
+  resetRetirement();
+  set(plan.keys[0], { ...legacy, phase: "deleted" });
+  assert.equal(retire(), "state_changed");
+  for (const invalid of [
+    { ...legacy, phase: "deleted" },
+    { ...legacy, recovery: { operation: "e2b-disk-recovery" } },
+    { ...legacy, phase: "recovery" },
+  ])
+    assert.throws(() =>
+      prepareMiosaRetirement({
+        ...retirementInput,
+        expectedRaw: JSON.stringify(invalid),
+      }),
+    );
+  assert.throws(() =>
+    prepareMiosaRetirement({
+      ...retirementInput,
+      providerRetirementAuthorized: false,
+    }),
+  );
+  assert.throws(() =>
+    prepareMiosaRetirement({
+      ...retirementInput,
+      sandboxInfo: {
+        ...retirementInput.sandboxInfo,
+        metadata: { userID: "user_other" },
+      },
+    }),
+  );
+  const existing = { ...restored, recoveryPending: legacy };
+  const existingInput = {
+    ...retirementInput,
+    expectedRaw: JSON.stringify(existing),
+    sandboxInfo: {
+      ...retirementInput.sandboxInfo,
+      sandboxId: restored.destinationId,
+    },
+  };
+  const existingPlan = prepareMiosaRetirement(existingInput);
+  command("DEL", ...existingPlan.keys);
+  set(existingPlan.keys[0], existing);
+  assert.equal(
+    evalLua(RETIRE_MIOSA_LUA, existingPlan.keys, existingPlan.args),
+    "retired",
+  );
+  assert.deepEqual(
+    get(existingPlan.keys[0]),
+    restored,
+    "existing E2B identity is unchanged",
+  );
+  assert.throws(() =>
+    prepareMiosaRetirement({ ...existingInput, region: "eu-central-1" }),
+  );
+  console.log(
+    "PASS Miosa retirement archives fences, preserves current E2B, and rejects active recovery or concurrent changes",
   );
   console.log(
     "PASS confirmation/admission race in both orders, recovery claim/reconnect, cleanup fencing, and durable routing reset",
