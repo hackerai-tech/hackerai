@@ -148,7 +148,7 @@ describe("stable environment acquisition", () => {
           type: "bad_request",
           surface: "sandbox",
           message: expect.stringContaining(
-            "Desktop file access is unavailable",
+            "Desktop file access could not be verified",
           ),
         });
         expect(setSandbox).not.toHaveBeenCalled();

@@ -1,3 +1,11 @@
+import {
+  DesktopFileBridgeError,
+  desktopFileUnavailableMessage,
+  getDesktopFileFailure,
+  parseDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { persistenceCommandError } from "./persistence-failure";
 import {
@@ -381,6 +389,7 @@ export class CentrifugoSandbox extends EventEmitter {
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 3000);
     let failure: string | undefined;
+    let fileFailure: DesktopFileFailure | undefined;
     try {
       await this.dispatchFileRequest<FileStatResultMessage>(
         { type: "file_stat", path: "." },
@@ -393,6 +402,8 @@ export class CentrifugoSandbox extends EventEmitter {
       failure = controller.signal.aborted
         ? "timeout"
         : getLocalFileRequestFailure(error);
+      fileFailure =
+        error instanceof LocalFileRequestError ? error.fileFailure : undefined;
     } finally {
       clearTimeout(deadline);
     }
@@ -404,8 +415,15 @@ export class CentrifugoSandbox extends EventEmitter {
         connection_id: this.connectionInfo.connectionId,
         outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
         failure,
+        file_failure: fileFailure,
       }),
     );
+    if (!this.nativeFileRelayConfirmed) {
+      throw new DesktopFileBridgeError(
+        fileFailure ?? "unknown",
+        desktopFileUnavailableMessage(fileFailure ?? "unknown"),
+      );
+    }
   }
 
   supportsOperationChannels(): boolean {
@@ -647,7 +665,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           finished = true;
           cleanup();
           if (message.type === "file_error")
-            reject(new LocalFileRequestError("native_error", message.message));
+            reject(
+              new LocalFileRequestError(
+                "native_error",
+                message.message,
+                parseDesktopFileFailure(message.fileFailure) ??
+                  getDesktopFileFailure(new Error(message.message)),
+              ),
+            );
           else resolve(message as T);
         };
         if (timeoutId) clearTimeout(timeoutId);

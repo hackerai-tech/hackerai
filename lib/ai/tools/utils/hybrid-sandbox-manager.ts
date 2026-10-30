@@ -1,3 +1,4 @@
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import { ChatSDKError } from "@/lib/errors";
@@ -892,7 +893,17 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
-    await sandbox.confirmNativeFileRelay();
+    try {
+      await sandbox.confirmNativeFileRelay();
+    } catch (error) {
+      // Never expose a Desktop that cannot persist output, or silently select a
+      // different computer. The caller can retry acquisition after reconnecting.
+      await sandbox.close();
+      if (error instanceof DesktopFileBridgeError) {
+        throw new ChatSDKError("bad_request:sandbox", error.message);
+      }
+      throw error;
+    }
     if (generation !== this.localAcquisitionGeneration) {
       // Close only this unpublished instance, never a newer selected sandbox.
       await sandbox.close();

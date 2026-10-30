@@ -453,6 +453,49 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("preserves the unavailable native API and failed HTTP causes on a same-connection probe", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request")
+        throw new Error("Command desktop_file_request not found");
+      if (cmd === "get_cmd_server_info")
+        return { port: 49152, token: "PRIVATE_TOKEN" };
+      return original(cmd, args);
+    };
+    global.fetch = jest.fn().mockRejectedValue(new TypeError("Load failed"));
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "desktop_file_bridge_probe_failed",
+      expect.objectContaining({
+        native_failure: "native_ipc_unavailable",
+        file_failure: "legacy_http_transport",
+      }),
+    );
+    getPublicationHandler()({
+      data: {
+        type: "file_stat",
+        requestId: "broken-probe",
+        path: ".",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await waitFor(() =>
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_error",
+          requestId: "broken-probe",
+          fileFailure: "legacy_http_transport",
+          message: expect.stringContaining("Update and fully reopen"),
+        }),
+      ),
+    );
+    expect(
+      JSON.stringify((captureAuthenticatedEvent as jest.Mock).mock.calls),
+    ).not.toContain("PRIVATE_TOKEN");
+    await bridge.stop();
+  });
+
   it("recovers a transient startup file probe before advertising missing capability", async () => {
     const original = mockInvokeHandler;
     let probes = 0;
@@ -1671,7 +1714,7 @@ describe("native desktop file relay", () => {
     });
   });
 
-  it("falls back when native file IPC is blocked by an older Tauri ACL", async () => {
+  it("does not bypass a native ACL denial through loopback HTTP", async () => {
     const bridge = new DesktopSandboxBridge(buildConfig());
     await bridge.start();
     const handler = getPublicationHandler();
@@ -1706,20 +1749,76 @@ describe("native desktop file relay", () => {
     });
     await publicationPublished;
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:49152/files/write",
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockSubscription.publish).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: JSON.stringify({
-          path: "C:\\repo\\transcript.json",
-          content: "compatible",
-          is_base64: false,
-        }),
+        type: "file_error",
+        requestId: "file-acl-fallback-1",
+        fileFailure: "native_ipc_denied",
+        message: expect.stringContaining("Update and fully reopen"),
       }),
     );
-    expect(mockSubscription.publish).toHaveBeenCalledWith({
-      type: "file_ok",
-      requestId: "file-acl-fallback-1",
+  });
+
+  it.each(["file_write", "file_append"])(
+    "refuses %s scoped writes on legacy handlers that may ignore allowedRoot",
+    async (type) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      mockInvokeHandler = async () => {
+        throw new Error("Command desktop_file_request not found");
+      };
+      global.fetch = jest.fn();
+      getPublicationHandler()({
+        data: {
+          type,
+          requestId: "scoped-legacy",
+          path: "/project/output.txt",
+          allowedRoot: "/project",
+          content: "private",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await waitFor(() =>
+        expect(mockSubscription.publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "file_error",
+            requestId: "scoped-legacy",
+            fileFailure: "scoped_write_requires_native",
+          }),
+        ),
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+      await bridge.stop();
+    },
+  );
+
+  it("does not interpret a filesystem path as a missing IPC command", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockInvokeHandler = async () => {
+      throw new Error("Open error: /private/desktop_file_request/not found");
+    };
+    global.fetch = jest.fn();
+    getPublicationHandler()({
+      data: {
+        type: "file_stat",
+        requestId: "path-error",
+        path: "/private",
+        targetConnectionId: "conn-123",
+      },
     });
+    await waitFor(() =>
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_error",
+          requestId: "path-error",
+          fileFailure: "filesystem",
+        }),
+      ),
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    await bridge.stop();
   });
 
   it("does not fall back when native IPC reports a real file error", async () => {
@@ -1751,6 +1850,7 @@ describe("native desktop file relay", () => {
       type: "file_error",
       requestId: "file-denied-1",
       message: "Write error: Permission denied",
+      fileFailure: "filesystem",
     });
   });
 });
