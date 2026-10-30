@@ -5,7 +5,7 @@ const REDACTED_VALUE = "[Redacted]";
 // avoids retrying the variable-length key match at every character of long text.
 // Quoted values include escapes; unquoted values retain punctuation in secrets.
 const SENSITIVE_FIELD_PATTERN =
-  /(?<![\w-])(["']?\b[\w-]*(?:service[_-]?key|api[_-]?key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:Bearer|Basic)[ \t]+[^\s,}]+|[^\s,}]+)/gi;
+  /(?<![\w-])(["']?\b[\w-]*(?:service[_-]?(?:role[_-]?)?key|api[_-]?key|secret[_-]?key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:Bearer|Basic)[ \t]+[^\s,}]+|[^\s,}]+)/gi;
 
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/-]+=*/gi;
