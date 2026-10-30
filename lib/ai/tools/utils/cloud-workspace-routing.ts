@@ -8,14 +8,10 @@ import {
 } from "./cloud-workspace-guard";
 import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
 
-function storedRegion(value: unknown): TriggerRunRegion {
-  if (
-    value !== "us-east-1" &&
-    value !== "us-west-2" &&
-    value !== "eu-central-1"
-  )
-    throw new CloudWorkspaceUnavailableError();
-  return value;
+function isStoredRegion(value: unknown): value is TriggerRunRegion {
+  return (
+    value === "us-east-1" || value === "us-west-2" || value === "eu-central-1"
+  );
 }
 
 /** Geolocation chooses initial placement only. Never migrate or wake a workspace. */
@@ -28,16 +24,46 @@ export async function resolveCloudWorkspaceRegion({
   preferredRegion: TriggerRunRegion;
   signal?: AbortSignal;
 }): Promise<TriggerRunRegion> {
+  let reportedFailure = false;
+  const unavailable = (
+    reason:
+      | "store_unavailable"
+      | "workspace_blocked"
+      | "recovery_evidence_conflict"
+      | "stored_region_invalid"
+      | "stored_region_conflict"
+      | "inventory_unconfigured"
+      | "inventory_owner_mismatch"
+      | "inventory_incomplete"
+      | "inventory_multiple_clusters"
+      | "claimed_region_invalid"
+      | "claimed_region_conflict",
+  ): CloudWorkspaceUnavailableError => {
+    // Parallel inventory checks share one bounded, content-free diagnostic.
+    if (!reportedFailure) {
+      reportedFailure = true;
+      try {
+        console.warn("Cloud workspace routing unavailable", {
+          event: "cloud_workspace_routing_unavailable",
+          reason,
+          user_id: userId.slice(0, 128),
+        });
+      } catch {
+        // Diagnostics must never change the workspace protection decision.
+      }
+    }
+    return new CloudWorkspaceUnavailableError();
+  };
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
-      throw new CloudWorkspaceUnavailableError();
+      throw unavailable("store_unavailable");
     return preferredRegion;
   }
   signal?.throwIfAborted();
   const workspace = await readCloudWorkspaceState(userId);
   if (workspace && workspace.phase !== "e2b")
-    throw new CloudWorkspaceUnavailableError();
+    throw unavailable("workspace_blocked");
   const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
     ? await readFailures(userId)
     : null;
@@ -47,14 +73,15 @@ export async function resolveCloudWorkspaceRegion({
     (workspace.region !== failed.region ||
       workspace.destinationId !== failed.sandboxId)
   )
-    throw new CloudWorkspaceUnavailableError();
+    throw unavailable("recovery_evidence_conflict");
   const authoritative = workspace?.region ?? failed?.region;
   const key = cloudWorkspaceRegionKey(userId);
   const saved = await redis.get(key);
   if (saved !== null) {
-    const region = storedRegion(saved);
+    if (!isStoredRegion(saved)) throw unavailable("stored_region_invalid");
+    const region = saved;
     if (authoritative && authoritative !== region)
-      throw new CloudWorkspaceUnavailableError();
+      throw unavailable("stored_region_conflict");
     signal?.throwIfAborted();
     return region;
   }
@@ -65,7 +92,7 @@ export async function resolveCloudWorkspaceRegion({
     // Bootstrap legacy accounts from existing inventory, never the current IP.
     // A failed regional read cannot establish that no files exist there.
     const clusters = getConfiguredE2BClustersForCleanup();
-    if (!clusters.length) throw new CloudWorkspaceUnavailableError();
+    if (!clusters.length) throw unavailable("inventory_unconfigured");
     const { Sandbox } = await import("@e2b/code-interpreter");
     const occupied = await Promise.all(
       clusters.map(async (cluster) => {
@@ -77,15 +104,15 @@ export async function resolveCloudWorkspaceRegion({
         });
         const items = await list.nextItems({ signal });
         if (items.some((item) => item.metadata?.userID !== userId))
-          throw new CloudWorkspaceUnavailableError();
+          throw unavailable("inventory_owner_mismatch");
         if (!items.length && list.hasNext)
-          throw new CloudWorkspaceUnavailableError();
+          throw unavailable("inventory_incomplete");
         return items.length ? cluster.cluster : null;
       }),
     );
     const regions = occupied.filter((region) => region !== null);
     // There is no honest automatic choice between two existing file stores.
-    if (regions.length > 1) throw new CloudWorkspaceUnavailableError();
+    if (regions.length > 1) throw unavailable("inventory_multiple_clusters");
     existingCluster = regions[0] ?? undefined;
     selected =
       regions[0] === "eu"
@@ -100,13 +127,14 @@ export async function resolveCloudWorkspaceRegion({
   // First admission wins even when simultaneous requests arrive from two regions.
   // No TTL: expiration must never send a returning user to another file store.
   await redis.set(key, selected, { nx: true });
-  const region = storedRegion(await redis.get(key));
+  const region = await redis.get(key);
+  if (!isStoredRegion(region)) throw unavailable("claimed_region_invalid");
   if (
     (authoritative && authoritative !== region) ||
     (existingCluster &&
       existingCluster !== (region === "eu-central-1" ? "eu" : "us"))
   )
-    throw new CloudWorkspaceUnavailableError();
+    throw unavailable("claimed_region_conflict");
   signal?.throwIfAborted();
   return region;
 }
