@@ -38,6 +38,9 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
+import { buildUserMessageContext } from "@/lib/chat/summarization/user-message-context";
+import { buildRuntimeContext } from "@/lib/chat/summarization/runtime-context";
+import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import {
   projectMessagesToTokenBudget,
   projectRetainedTailFromMessages,
@@ -1457,7 +1460,7 @@ export async function updateChatTitle({
 /**
  * Rehydrate persisted history within the request's context budget. Paginated
  * regeneration excludes new client messages. Empty paginated
- * projections retain the caller's fallback behavior and emit bounded diagnostics.
+ * projections can retain a bounded Agent tail without changing stored records.
  */
 export async function getMessagesByChatId({
   chatId,
@@ -1610,7 +1613,7 @@ export async function getMessagesByChatId({
             mode,
             agentModelContextEnabled,
           );
-          const truncatedMessages = truncateMessagesToTokenLimit(
+          let truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
             maxTokens,
@@ -1646,7 +1649,74 @@ export async function getMessagesByChatId({
             },
           );
 
-          const hitBudget = truncatedMessages.length < candidate.length;
+          let hitBudget = truncatedMessages.length < candidate.length;
+          if (
+            truncatedMessages.length === 0 &&
+            mode === "agent" &&
+            !regenerate &&
+            !latestSummary &&
+            candidate.at(-1)?.role === "assistant"
+          ) {
+            const userContext = buildUserMessageContext(candidate);
+            if (userContext) {
+              const notice: UIMessage = {
+                id: uuidv4(),
+                role: "user",
+                parts: [
+                  {
+                    type: "text",
+                    text:
+                      "<context_summary>\nOnly a bounded tail of saved history is included. Earlier instructions and operation outcomes may be missing. Retrieve the original conversation or saved transcript before resolving missing scope or permissions, or repeating an operation whose outcome is not retained.\n</context_summary>" +
+                      userContext +
+                      buildRuntimeContext(candidate) +
+                      buildTodoContext(chat?.todos ?? []),
+                  },
+                ],
+              };
+              const noticeTokens = countMessagesTokens([notice]);
+              // Repair before counting: interrupted-tool error parts can be
+              // larger than their stored incomplete representation.
+              const projectable = candidate.map((message) =>
+                message.role === "assistant"
+                  ? {
+                      ...message,
+                      parts: fixIncompleteMessageParts(message.parts),
+                    }
+                  : message,
+              );
+              const tail = projectMessagesToTokenBudget(projectable, {
+                budgetTokens: maxTokens - noticeTokens,
+                fileTokens: fileTokensFromLoop,
+                preserveStepStarts: true,
+              });
+              if (hasVisibleAssistantContent(tail)) {
+                truncatedMessages = [notice, ...tail];
+                try {
+                  console.info(
+                    JSON.stringify({
+                      level: "info",
+                      event: "chat_history_projection_bounded_tail",
+                      service: "chat-handler",
+                      timestamp: new Date().toISOString(),
+                      chat_id: chatId,
+                      user_id: userId,
+                      mode,
+                      pages_fetched: pagesFetched,
+                      projected_messages_count: truncatedMessages.length,
+                      projection_notice_tokens: noticeTokens,
+                      ...emptyProjectionDiagnostics,
+                    }),
+                  );
+                } catch {
+                  // Optional diagnostics cannot discard usable context.
+                }
+              }
+            } else {
+              // An assistant-only page cannot establish user scope. Keep
+              // backfilling within the existing page cap before giving up.
+              hitBudget = false;
+            }
+          }
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
 
           if (hitBudget || reachedLimit) {
