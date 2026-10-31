@@ -242,7 +242,9 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
         if let Some(pid) = child.id() {
             // Killing only bash/cmd can leave its native descendants writing
             // files after the caller releases update admission.
-            let _ = cancel_process_tree(pid).await;
+            if !cancel_process_tree(pid).await {
+                crate::update_safety::UPDATE_GATE.block_for_unconfirmed_command();
+            }
         }
         let _ = child.kill().await;
     }

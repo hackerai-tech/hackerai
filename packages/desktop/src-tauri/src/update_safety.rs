@@ -29,16 +29,27 @@ impl Drop for CheckGuard {
 struct Activity {
     operations: usize,
     installing: bool,
+    unconfirmed_command: bool,
 }
 #[derive(Default)]
 pub(crate) struct UpdateGate(Mutex<Activity>);
 pub(crate) static UPDATE_GATE: UpdateGate = UpdateGate(Mutex::new(Activity {
     operations: 0,
     installing: false,
+    unconfirmed_command: false,
 }));
 pub(crate) struct Operation<'a>(&'a UpdateGate);
 pub(crate) struct Installation<'a>(&'a UpdateGate);
 impl UpdateGate {
+    /// Failed tree termination may leave descendants writing after their shell
+    /// exits. Keep updates fenced for this session without blocking user work.
+    #[cfg(any(not(unix), test))]
+    pub(crate) fn block_for_unconfirmed_command(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unconfirmed_command = true;
+    }
     pub(crate) fn operation(&self) -> Result<Operation<'_>, String> {
         let mut state = self
             .0
@@ -57,6 +68,9 @@ impl UpdateGate {
             .map_err(|_| "Desktop update state unavailable")?;
         if state.installing {
             return Err("An update is already being installed.".into());
+        }
+        if state.unconfirmed_command {
+            return Err("Desktop could not confirm a command stopped. Updates are blocked for this session. Finish or close any remaining commands, then close and reopen Desktop before updating.".into());
         }
         if state.operations != 0 {
             return Err("Desktop will not install while commands, terminal sessions, or file operations are active. Your current work has not been stopped. To finish it first, choose Later, then Help > Check for Updates.".into());
@@ -258,6 +272,24 @@ mod tests {
         assert!(gate.install().is_err());
         drop(file_write);
         assert!(gate.install().is_ok());
+    }
+    #[test]
+    fn unconfirmed_command_blocks_installer_after_operation_returns() {
+        let gate = UpdateGate::default();
+        let command = gate.operation().unwrap();
+        gate.block_for_unconfirmed_command();
+        drop(command);
+        let dir = std::env::temp_dir().join(format!("update-unknown-{}", uuid::Uuid::new_v4()));
+        assert!(
+            install_after_approval(&gate, &dir, "1.0.0", "1.0.1", true, || {
+                panic!("unconfirmed cancellation must not install")
+            })
+            .is_err()
+        );
+        assert!(!dir.exists());
+        // Other work is usable, but completing it cannot clear the safety fence.
+        drop(gate.operation().unwrap());
+        assert!(gate.install().is_err());
     }
     #[test]
     fn install_blocks_new_work_and_failure_reopens_admission() {
