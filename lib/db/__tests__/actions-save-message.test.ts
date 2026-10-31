@@ -1269,6 +1269,180 @@ describe("saveMessage", () => {
 });
 
 describe("getMessagesByChatId", () => {
+  it.each(["ask", "agent"] as const)(
+    "regenerates %s from the saved user turn when discarded answers exceed the history budget",
+    async (mode) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const history = [
+        {
+          id: "old-user",
+          role: "user",
+          parts: [{ type: "text", text: "Earlier question" }],
+        },
+        {
+          id: "old-answer",
+          role: "assistant",
+          parts: [{ type: "text", text: "Earlier answer" }],
+        },
+        {
+          id: "retry-user",
+          role: "user",
+          parts: [{ type: "text", text: "Reply OK" }],
+        },
+      ];
+      const discardedAnswers = [
+        {
+          id: "draft",
+          role: "assistant",
+          parts: [{ type: "text", text: "Discard this draft" }],
+        },
+        {
+          id: "oversized-answer",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-test",
+              toolCallId: "test-call",
+              state: "output-available",
+              input: {},
+              output: { text: "\u0001".repeat(70_001) },
+            },
+          ],
+        },
+      ];
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [...history, ...discardedAnswers].reverse(),
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "free",
+        mode,
+        regenerate: true,
+        newMessages: [
+          {
+            id: "untrusted-client-turn",
+            role: "user",
+            parts: [{ type: "text", text: "Must not replace saved history" }],
+          },
+        ],
+      });
+      expect(result.truncatedMessages).toEqual(history);
+    },
+  );
+
+  it("backfills the user turn when the first regeneration page contains only discarded answers", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const user = {
+      id: "retry-user",
+      role: "user",
+      parts: [{ type: "text", text: "Reply OK" }],
+    };
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [
+          {
+            id: "oversized-answer",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-test",
+                toolCallId: "test-call",
+                state: "output-available",
+                input: {},
+                output: { text: "\u0001".repeat(70_001) },
+              },
+            ],
+          },
+        ],
+        isDone: false,
+        continueCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        page: [user],
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      mode: "agent",
+      regenerate: true,
+      newMessages: [],
+    });
+    expect(result.truncatedMessages).toEqual([user]);
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(mockQuery.mock.calls[2]?.[1]).toMatchObject({
+      paginationOpts: { numItems: 24, cursor: "next-page" },
+    });
+  });
+
+  it("keeps the history budget for an oversized user turn during regeneration", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [
+          {
+            id: "answer",
+            role: "assistant",
+            parts: [{ type: "text", text: "Replace me" }],
+          },
+          {
+            id: "oversized-user",
+            role: "user",
+            parts: [{ type: "text", text: "\u0001".repeat(200_000) }],
+          },
+        ],
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      mode: "agent",
+      regenerate: true,
+      newMessages: [],
+    });
+    expect(result.truncatedMessages).toEqual([]);
+  });
+
+  it("keeps the four-page cap when regeneration backfills through discarded answers", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" });
+    for (let page = 0; page < 4; page++) {
+      mockQuery.mockResolvedValueOnce({
+        page: [
+          {
+            id: `answer-${page}`,
+            role: "assistant",
+            parts: [{ type: "text", text: "Discard me" }],
+          },
+        ],
+        isDone: false,
+        continueCursor: `page-${page + 1}`,
+      });
+    }
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      mode: "agent",
+      regenerate: true,
+      newMessages: [],
+    });
+    expect(result.truncatedMessages).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(5);
+  });
+
   const oversizedHistory = (): UIMessage[] => {
     const parts: UIMessage["parts"] = [];
     for (let index = 0; index < 56; index++) {
@@ -1630,7 +1804,7 @@ describe("getMessagesByChatId", () => {
         },
       ],
       fileTokens: [],
-      before: 1,
+      before: 0,
       reason: "regenerate_removed_all",
     },
     {

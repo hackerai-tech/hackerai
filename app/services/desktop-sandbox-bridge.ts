@@ -6,6 +6,11 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  DesktopFileBridgeError,
+  getDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   isDesktopAckStopSource,
@@ -308,6 +313,7 @@ export class DesktopSandboxBridge {
   private publishQueue: CentrifugoPublishQueue | null = null;
   private operationRouter: OperationChannelRouter<Subscription> | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
+  private nativeFileIpcFailure: DesktopFileFailure | undefined;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -538,6 +544,7 @@ export class DesktopSandboxBridge {
     this.isStoppingOrStopped = false;
     this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
+    this.nativeFileIpcFailure = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -1478,22 +1485,31 @@ export class DesktopSandboxBridge {
     error: unknown,
     reply: (message: SandboxMessage) => Promise<void>,
   ): Promise<void> {
+    const fileFailure = getDesktopFileFailure(error);
     await reply({
       type: "file_error",
       requestId,
       message: this.getErrorMessage(error),
+      ...(fileFailure !== "unknown" ? { fileFailure } : {}),
     });
   }
 
-  private isUnavailableNativeFileCommandError(error: unknown): boolean {
-    const message = this.getErrorMessage(error).toLowerCase();
-    return (
-      message.includes("desktop_file_request") &&
-      (message.includes("not found") ||
-        message.includes("unknown command") ||
-        message.includes("not registered") ||
-        message.includes("not allowed by acl"))
-    );
+  private unavailableNativeFileCommand(
+    error: unknown,
+  ): DesktopFileFailure | undefined {
+    const message = this.getErrorMessage(error);
+    if (
+      /^(?:command )?desktop_file_request not allowed by acl\b/i.test(message)
+    )
+      return "native_ipc_denied";
+    if (
+      /^(?:command )?desktop_file_request (?:not found|not registered)$/i.test(
+        message,
+      ) ||
+      /^unknown command:? ['"]?desktop_file_request['"]?$/i.test(message)
+    )
+      return "native_ipc_unavailable";
+    return undefined;
   }
 
   private async callLegacyLocalFileServer<T>(
@@ -1505,7 +1521,10 @@ export class DesktopSandboxBridge {
       "get_cmd_server_info",
     );
     if (!info.port || !info.token) {
-      throw new Error("Desktop file server is not ready");
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
+        "Desktop file server is not ready. Fully reopen HackerAI Desktop and reconnect.",
+      );
     }
 
     const response = await fetch(`http://127.0.0.1:${info.port}${route}`, {
@@ -1518,7 +1537,8 @@ export class DesktopSandboxBridge {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
         typeof payload?.error === "string"
           ? payload.error
           : `Desktop file server request failed: ${response.status}`,
@@ -1563,7 +1583,10 @@ export class DesktopSandboxBridge {
         payload.kind !== "not_file" ||
         typeof payload.path !== "string"
       ) {
-        throw new Error("Invalid desktop file probe response");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Invalid desktop file probe response",
+        );
       }
       return true;
     } catch (error) {
@@ -1578,6 +1601,8 @@ export class DesktopSandboxBridge {
         transport:
           this.nativeFileIpcAvailable === false ? "legacy_http" : "native_ipc",
         reason: permissionDenied ? "permission_denied" : "unavailable",
+        native_failure: this.nativeFileIpcFailure,
+        file_failure: getDesktopFileFailure(error),
       });
       return permissionDenied;
     } finally {
@@ -1603,13 +1628,22 @@ export class DesktopSandboxBridge {
           request: { ...body, type: requestType },
         });
         this.nativeFileIpcAvailable = true;
+        this.nativeFileIpcFailure = undefined;
         return payload;
       } catch (error) {
-        if (!this.isUnavailableNativeFileCommandError(error)) {
+        const unavailable = this.unavailableNativeFileCommand(error);
+        if (!unavailable) {
           if (isFileTransportError(error)) {
             throw this.fileTransportFailure(requestType, "native_ipc");
           }
           throw error;
+        }
+        this.nativeFileIpcFailure = unavailable;
+        if (unavailable === "native_ipc_denied") {
+          throw new DesktopFileBridgeError(
+            unavailable,
+            "Desktop native file access is denied by the app permissions. Update and fully reopen HackerAI Desktop, then reconnect.",
+          );
         }
         this.nativeFileIpcAvailable = false;
         console.warn(
@@ -1618,6 +1652,18 @@ export class DesktopSandboxBridge {
       }
     }
 
+    // Binaries predating IPC may silently ignore allowed_root. Never send a
+    // scoped mutation to a handler whose containment support is unverified.
+    if (
+      (requestType === "file_write" || requestType === "file_append") &&
+      typeof body.allowed_root === "string" &&
+      body.allowed_root.trim()
+    ) {
+      throw new DesktopFileBridgeError(
+        "scoped_write_requires_native",
+        "Project-folder writes require the native file API. Update HackerAI Desktop, fully reopen it and reconnect before retrying. No file write was sent.",
+      );
+    }
     try {
       return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
     } catch (error) {
@@ -1637,9 +1683,13 @@ export class DesktopSandboxBridge {
       connectionId: this.connectionId,
       operation,
       transport,
+      native_failure: this.nativeFileIpcFailure,
     });
-    return new Error(
-      `Desktop file bridge transport failed (${transport}, ${operation}). Reconnect the Desktop app and retry after it is ready. A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+    return new DesktopFileBridgeError(
+      transport === "legacy_http"
+        ? "legacy_http_transport"
+        : "native_ipc_transport",
+      `Desktop file bridge transport failed (${transport}, ${operation}). ${transport === "legacy_http" ? "Update and fully reopen HackerAI Desktop, then reconnect." : "Reconnect the Desktop app and retry after it is ready."}${["file_write", "file_append", "file_remove"].includes(operation) ? " A file change may have completed; verify the file before retrying a mutation." : ""} This is not a file-permission diagnosis.`,
     );
   }
 
@@ -1725,10 +1775,16 @@ export class DesktopSandboxBridge {
           payload.kind !== "not_file" &&
           payload.kind !== "missing")
       ) {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
       if (payload.kind === "file" && typeof payload.sizeBytes !== "number") {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
       await reply({
         type: "file_stat_result",

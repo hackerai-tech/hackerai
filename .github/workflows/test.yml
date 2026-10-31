@@ -47,12 +47,13 @@ jobs:
           rustc --edition 2021 --test packages/desktop/src-tauri/src/child_environment.rs -o "$RUNNER_TEMP/appimage-child-environment-tests"
           "$RUNNER_TEMP/appimage-child-environment-tests"
 
-      - name: Verify paid usage transactions against Redis
+      - name: Verify usage and Cloud recovery transactions against Redis
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y redis-server
           node scripts/verify-paid-usage-ledger.mjs
           node scripts/verify-free-agent-daily-budget.mjs
+          node scripts/verify-cloud-recovery-admission.mjs
 
       - name: Run tests with coverage
         run: pnpm test:ci

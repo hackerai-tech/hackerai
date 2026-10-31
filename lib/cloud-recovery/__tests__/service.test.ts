@@ -21,7 +21,10 @@ import {
   readCloudWorkspaceState,
   readE2BDiskRecoveryResult,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
-import { recoverE2BDiskOnly } from "@/lib/ai/tools/utils/e2b-disk-recovery";
+import {
+  recoverE2BDiskOnly,
+  DiskRecoveryError,
+} from "@/lib/ai/tools/utils/e2b-disk-recovery";
 import {
   readConsent,
   readFailures,
@@ -59,6 +62,7 @@ jest.mock("@/lib/suspensions", () => ({
   assertUserCanMakeCostIncurringRequest: jest.fn(),
 }));
 jest.mock("@/lib/ai/tools/utils/cloud-workspace-guard", () => ({
+  ...jest.requireActual("@/lib/ai/tools/utils/cloud-workspace-guard"),
   readCloudWorkspaceState: jest.fn(),
   readE2BDiskRecoveryResult: jest.fn(),
 }));
@@ -888,6 +892,109 @@ it.each([undefined, "v11", "v14"])(
       .mockResolvedValue({ ...target, sandboxVersion: version } as never);
     expect(await recoveryView("owner")).toMatchObject({ status: "support" });
     expect(offerConsent).not.toHaveBeenCalled();
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["activity", "active_runs"])(
+  "records the precise pre-reboot %s blocker without provider work",
+  async (stage) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    if (stage === "activity") exists.mockResolvedValue(1);
+    else
+      jest.mocked(getActiveTriggerRunsForUser).mockResolvedValue({
+        runs: [{ chatId: "private-chat", triggerRunId: "private-run" }],
+        hasMore: false,
+      });
+    await expect(
+      executeCustomerRecovery("owner", token, "us-east-1"),
+    ).rejects.toThrow("support reconciliation");
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_workspace_customer_recovery_completed",
+      {
+        userId: "owner",
+        outcome: "support_required",
+        recovery_stage: stage,
+        recovery_reason: "busy",
+      },
+    );
+    expect(failConsent).toHaveBeenCalledWith("owner", token);
+  },
+);
+it.each(["reboot", "capability", "preservation", "private-stage"])(
+  "only emits allowlisted recovery diagnostics for %s",
+  async (stage) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    jest.mocked(recoverE2BDiskOnly).mockRejectedValueOnce(
+      new DiskRecoveryError(stage, "private-provider-message", {
+        authorization: "private-auth",
+        sandboxId: "private-workspace",
+      }),
+    );
+    await expect(
+      executeCustomerRecovery("owner", token, "us-east-1"),
+    ).rejects.toThrow("support reconciliation");
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_workspace_customer_recovery_completed",
+      {
+        userId: "owner",
+        outcome: "support_required",
+        recovery_stage: "disk_recovery",
+        recovery_reason: "operation_failed",
+        ...(stage !== "private-stage" ? { disk_recovery_stage: stage } : {}),
+      },
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
+      /private-|original-files/,
+    );
+  },
+);
+
+it.each(["disabled", "lookup-error", "wrong-region"])(
+  "settles confirmed consent when dispatch is %s, before provider work",
+  async (condition) => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...consent, status: "confirmed" });
+    if (condition === "disabled")
+      jest
+        .mocked(getPostHogBooleanFlagDecisionForUser)
+        .mockResolvedValue(false);
+    if (condition === "lookup-error")
+      jest
+        .mocked(getPostHogBooleanFlagDecisionForUser)
+        .mockRejectedValueOnce(new Error("private-flag-error"));
+    await expect(
+      executeCustomerRecovery(
+        "owner",
+        token,
+        condition === "wrong-region" ? "eu-central-1" : "us-east-1",
+      ),
+    ).rejects.toThrow("support reconciliation");
+    expect(failConsent).toHaveBeenCalledWith("owner", token);
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_workspace_customer_recovery_completed",
+      expect.objectContaining({
+        outcome: "support_required",
+        recovery_stage: "dispatch",
+      }),
+    );
+  },
+);
+it.each(["offered", "executing", "failed"] as const)(
+  "does not settle a %s receipt when a duplicate worker arrives",
+  async (status) => {
+    jest.mocked(readConsent).mockResolvedValue({ ...consent, status });
+    await expect(
+      executeCustomerRecovery("owner", token, "us-east-1"),
+    ).rejects.toThrow();
+    expect(failConsent).not.toHaveBeenCalled();
     expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
   },
 );
