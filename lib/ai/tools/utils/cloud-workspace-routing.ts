@@ -54,6 +54,56 @@ export async function resolveCloudWorkspaceRegion({
     }
     return new CloudWorkspaceUnavailableError();
   };
+  const reportOperationFailure = (
+    phase:
+      | "workspace_state_read"
+      | "recovery_evidence_read"
+      | "region_binding_read"
+      | "inventory_sdk_load"
+      | "inventory_list"
+      | "region_binding_claim"
+      | "region_binding_confirm",
+    error: unknown,
+    inventoryCluster?: "us" | "eu",
+  ): void => {
+    // Only the first failed operation owns attribution, including parallel lists.
+    if (!reportedFailure) {
+      reportedFailure = true;
+      try {
+        const errorName =
+          error instanceof Error ||
+          (typeof DOMException !== "undefined" && error instanceof DOMException)
+            ? error.name
+            : undefined;
+        console.warn("Cloud workspace routing operation failed", {
+          event: "cloud_workspace_routing_operation_failed",
+          phase,
+          ...(inventoryCluster ? { inventory_cluster: inventoryCluster } : {}),
+          error_kind:
+            errorName === "TimeoutError"
+              ? "timeout"
+              : errorName === "AbortError"
+                ? "abort"
+                : "other",
+          request_aborted: signal?.aborted === true,
+          user_id: userId.slice(0, 128),
+        });
+      } catch {
+        // Preserve the original exception even if diagnostic output fails.
+      }
+    }
+  };
+  const observeOperation = async <T>(
+    phase: Parameters<typeof reportOperationFailure>[0],
+    operation: () => T | Promise<T>,
+  ): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      reportOperationFailure(phase, error);
+      throw error;
+    }
+  };
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
@@ -61,11 +111,15 @@ export async function resolveCloudWorkspaceRegion({
     return preferredRegion;
   }
   signal?.throwIfAborted();
-  const workspace = await readCloudWorkspaceState(userId);
+  const workspace = await observeOperation("workspace_state_read", () =>
+    readCloudWorkspaceState(userId),
+  );
   if (workspace && workspace.phase !== "e2b")
     throw unavailable("workspace_blocked");
   const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
-    ? await readFailures(userId)
+    ? await observeOperation("recovery_evidence_read", () =>
+        readFailures(userId),
+      )
     : null;
   if (
     workspace &&
@@ -76,7 +130,9 @@ export async function resolveCloudWorkspaceRegion({
     throw unavailable("recovery_evidence_conflict");
   const authoritative = workspace?.region ?? failed?.region;
   const key = cloudWorkspaceRegionKey(userId);
-  const saved = await redis.get(key);
+  const saved = await observeOperation("region_binding_read", () =>
+    redis.get(key),
+  );
   if (saved !== null) {
     if (!isStoredRegion(saved)) throw unavailable("stored_region_invalid");
     const region = saved;
@@ -93,7 +149,10 @@ export async function resolveCloudWorkspaceRegion({
     // A failed regional read cannot establish that no files exist there.
     const clusters = getConfiguredE2BClustersForCleanup();
     if (!clusters.length) throw unavailable("inventory_unconfigured");
-    const { Sandbox } = await import("@e2b/code-interpreter");
+    const { Sandbox } = await observeOperation(
+      "inventory_sdk_load",
+      () => import("@e2b/code-interpreter"),
+    );
     const occupied = await Promise.all(
       clusters.map(async (cluster) => {
         try {
@@ -113,8 +172,8 @@ export async function resolveCloudWorkspaceRegion({
             throw unavailable("inventory_incomplete");
           return items.length ? cluster.cluster : null;
         } catch (error) {
-          // A slower sibling must not attribute an already failed discovery.
-          reportedFailure = true;
+          // Report here before a sibling can classify a later inventory result.
+          reportOperationFailure("inventory_list", error, cluster.cluster);
           throw error;
         }
       }),
@@ -135,8 +194,12 @@ export async function resolveCloudWorkspaceRegion({
   signal?.throwIfAborted();
   // First admission wins even when simultaneous requests arrive from two regions.
   // No TTL: expiration must never send a returning user to another file store.
-  await redis.set(key, selected, { nx: true });
-  const region = await redis.get(key);
+  await observeOperation("region_binding_claim", () =>
+    redis.set(key, selected, { nx: true }),
+  );
+  const region = await observeOperation("region_binding_confirm", () =>
+    redis.get(key),
+  );
   if (!isStoredRegion(region)) throw unavailable("claimed_region_invalid");
   if (
     (authoritative && authoritative !== region) ||
