@@ -1,6 +1,11 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { resolveCloudWorkspaceRegion } from "../cloud-workspace-routing";
 import { CloudWorkspaceUnavailableError } from "../cloud-workspace-guard";
+import {
+  CloudAcquisitionBudget,
+  CloudAcquisitionTimeoutError,
+  CLOUD_ACQUISITION_DEADLINE_MS,
+} from "../cloud-acquisition-budget";
 
 jest.mock("@e2b/code-interpreter", () => ({ Sandbox: { list: jest.fn() } }));
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
@@ -196,7 +201,17 @@ it("does not save late discovery after cancellation", async () => {
   } as never);
   await expect(resolve("us-east-1", controller.signal)).rejects.toThrow();
   expect(mockSet).not.toHaveBeenCalled();
-  expect(warning).not.toHaveBeenCalled();
+  expect(warning).toHaveBeenCalledTimes(1);
+  expect(warning).toHaveBeenCalledWith(
+    "Cloud workspace routing operation failed",
+    {
+      event: "cloud_workspace_routing_operation_failed",
+      phase: "inventory_list",
+      error_kind: "abort",
+      request_aborted: true,
+      user_id: "owner",
+    },
+  );
 });
 
 it("preserves an inventory exception without logging its private message", async () => {
@@ -375,7 +390,6 @@ it("distinguishes an inventory cancellation from a timeout without retrying", as
     {
       event: "cloud_workspace_routing_operation_failed",
       phase: "inventory_list",
-      inventory_cluster: "us",
       error_kind: "abort",
       request_aborted: true,
       user_id: "owner",
@@ -399,4 +413,120 @@ it("preserves a provider exception when operation diagnostics fail", async () =>
   await expect(resolve("us-east-1")).rejects.toBe(failure);
   expect(warning).toHaveBeenCalledTimes(1);
   expect(mockSet).not.toHaveBeenCalled();
+});
+
+it("classifies an acquisition-budget error returned by inventory as a timeout", async () => {
+  const failure = new CloudAcquisitionTimeoutError("routing");
+  jest.mocked(Sandbox.list).mockReturnValue({
+    hasNext: false,
+    nextItems: async () => {
+      throw failure;
+    },
+  } as never);
+  await expect(resolve("us-east-1")).rejects.toBe(failure);
+  expect(warning).toHaveBeenCalledWith(
+    "Cloud workspace routing operation failed",
+    expect.objectContaining({
+      phase: "inventory_list",
+      inventory_cluster: "us",
+      error_kind: "timeout",
+      request_aborted: false,
+    }),
+  );
+  expect(mockSet).not.toHaveBeenCalled();
+});
+
+it.each(["TimeoutError", "AbortError"])(
+  "keeps only the closed %s category when a state read is fenced",
+  async (name) => {
+    const failure = new DOMException("private-state-read-detail", name);
+    mockGet.mockRejectedValue(failure);
+    const caught = await resolve("us-east-1").catch((error) => error);
+    expect(caught).toBeInstanceOf(CloudWorkspaceUnavailableError);
+    expect(Object.keys(caught)).toEqual(["name"]);
+    expect(caught.cause).toBeUndefined();
+    expect(warning).toHaveBeenCalledWith(
+      "Cloud workspace routing operation failed",
+      {
+        event: "cloud_workspace_routing_operation_failed",
+        phase: "workspace_state_read",
+        error_kind: name === "TimeoutError" ? "timeout" : "abort",
+        request_aborted: false,
+        user_id: "owner",
+      },
+    );
+    expect(JSON.stringify([caught, warning.mock.calls])).not.toContain(
+      "private-state-read-detail",
+    );
+    expect(mockSet).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["region_binding_read", "region_binding_claim"])(
+  "reports a pending %s when the existing acquisition deadline wins",
+  async (phase) => {
+    jest.useFakeTimers();
+    try {
+      let finish!: (value?: unknown) => void;
+      if (phase === "region_binding_read") {
+        mockGet.mockImplementation(async (key: string) =>
+          key === regionKey
+            ? new Promise((complete) => {
+                finish = complete;
+              })
+            : (mockData.get(key) ?? null),
+        );
+      } else {
+        mockSet.mockImplementation(
+          () =>
+            new Promise((complete) => {
+              finish = complete;
+            }),
+        );
+      }
+      const result = new CloudAcquisitionBudget()
+        .run(
+          async (signal, reportStage) => {
+            reportStage("routing");
+            return resolve("us-east-1", signal);
+          },
+          { userId: "owner" },
+        )
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(CLOUD_ACQUISITION_DEADLINE_MS);
+      expect(await result).toBeInstanceOf(CloudAcquisitionTimeoutError);
+      expect(await result).toMatchObject({ acquisitionStage: "routing" });
+      expect(warning).toHaveBeenCalledWith(
+        "Cloud workspace routing operation failed",
+        {
+          event: "cloud_workspace_routing_operation_failed",
+          phase,
+          error_kind: "timeout",
+          request_aborted: true,
+          user_id: "owner",
+        },
+      );
+      const operationWarnings = () =>
+        warning.mock.calls.filter(
+          ([message]) => message === "Cloud workspace routing operation failed",
+        );
+      expect(operationWarnings()).toHaveLength(1);
+      mockData.set(regionKey, "us-east-1");
+      finish("us-east-1");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(operationWarnings()).toHaveLength(1);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+it("removes phase observers after successful routing", async () => {
+  const controller = new AbortController();
+  await expect(resolve("us-east-1", controller.signal)).resolves.toBe(
+    "us-east-1",
+  );
+  controller.abort(new DOMException("later abort", "AbortError"));
+  expect(warning).not.toHaveBeenCalled();
 });

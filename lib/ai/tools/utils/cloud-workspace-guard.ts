@@ -44,11 +44,16 @@ const cleanupClaimFailureReasons = [
   "store_error",
 ] as const;
 type CleanupClaimFailureReason = (typeof cleanupClaimFailureReasons)[number];
+type DiagnosticErrorKind = "timeout" | "abort" | "other";
 
 export class CloudWorkspaceUnavailableError extends Error {
   #cleanupClaimFailureReason: CleanupClaimFailureReason;
+  #diagnosticErrorKind: DiagnosticErrorKind = "other";
 
-  constructor(reason: CleanupClaimFailureReason = "unknown") {
+  constructor(
+    reason: CleanupClaimFailureReason = "unknown",
+    diagnosticCause?: unknown,
+  ) {
     super(
       "Cloud workspace needs recovery. Please retry later. Your existing workspace has been preserved.",
     );
@@ -59,6 +64,9 @@ export class CloudWorkspaceUnavailableError extends Error {
     )
       ? reason
       : "unknown";
+    // Retain only the closed category, never the original error or its contents.
+    this.#diagnosticErrorKind =
+      CloudWorkspaceUnavailableError.getDiagnosticErrorKind(diagnosticCause);
   }
 
   get cleanupClaimFailureReason(): CleanupClaimFailureReason {
@@ -74,6 +82,31 @@ export class CloudWorkspaceUnavailableError extends Error {
       #cleanupClaimFailureReason in error
       ? error.#cleanupClaimFailureReason
       : "unknown";
+  }
+
+  static getDiagnosticErrorKind(error: unknown): DiagnosticErrorKind {
+    try {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        #diagnosticErrorKind in error
+      )
+        return error.#diagnosticErrorKind;
+      if (
+        error instanceof Error ||
+        (typeof DOMException !== "undefined" && error instanceof DOMException)
+      ) {
+        if (
+          error.name === "TimeoutError" ||
+          error.name === "CloudAcquisitionTimeoutError"
+        )
+          return "timeout";
+        if (error.name === "AbortError") return "abort";
+      }
+    } catch {
+      // Untrusted error getters must not affect the workspace protection decision.
+    }
+    return "other";
   }
 }
 
@@ -188,14 +221,14 @@ export async function readCloudWorkspaceState(
     }
     // Unknown legacy provider records and malformed records stay fenced.
     throw new CloudWorkspaceUnavailableError();
-  } catch {
+  } catch (error) {
     logWorkspaceGuardFailure(
       userId,
       "read_state",
       readCompleted ? "state_invalid" : "state_read_failed",
     );
     // A failed read and an invalid persisted record both remain fenced.
-    throw new CloudWorkspaceUnavailableError("state_unavailable");
+    throw new CloudWorkspaceUnavailableError("state_unavailable", error);
   }
 }
 

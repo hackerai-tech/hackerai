@@ -70,21 +70,12 @@ export async function resolveCloudWorkspaceRegion({
     if (!reportedFailure) {
       reportedFailure = true;
       try {
-        const errorName =
-          error instanceof Error ||
-          (typeof DOMException !== "undefined" && error instanceof DOMException)
-            ? error.name
-            : undefined;
         console.warn("Cloud workspace routing operation failed", {
           event: "cloud_workspace_routing_operation_failed",
           phase,
           ...(inventoryCluster ? { inventory_cluster: inventoryCluster } : {}),
           error_kind:
-            errorName === "TimeoutError"
-              ? "timeout"
-              : errorName === "AbortError"
-                ? "abort"
-                : "other",
+            CloudWorkspaceUnavailableError.getDiagnosticErrorKind(error),
           request_aborted: signal?.aborted === true,
           user_id: userId.slice(0, 128),
         });
@@ -93,15 +84,37 @@ export async function resolveCloudWorkspaceRegion({
       }
     }
   };
+  const observeCancellation = (
+    phase: Parameters<typeof reportOperationFailure>[0],
+  ) => {
+    // A shared cancellation identifies the active phase, not one regional provider.
+    const onAbort = () => reportOperationFailure(phase, signal?.reason);
+    try {
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    } catch {
+      // Optional diagnostics must not affect cancellation or the operation itself.
+    }
+    return () => {
+      try {
+        signal?.removeEventListener("abort", onAbort);
+      } catch {
+        /* Diagnostics only. */
+      }
+    };
+  };
   const observeOperation = async <T>(
     phase: Parameters<typeof reportOperationFailure>[0],
     operation: () => T | Promise<T>,
   ): Promise<T> => {
+    const stopObserving = observeCancellation(phase);
     try {
       return await operation();
     } catch (error) {
       reportOperationFailure(phase, error);
       throw error;
+    } finally {
+      stopObserving();
     }
   };
   const redis = createRedisClient();
@@ -155,6 +168,7 @@ export async function resolveCloudWorkspaceRegion({
     );
     const occupied = await Promise.all(
       clusters.map(async (cluster) => {
+        const stopObserving = observeCancellation("inventory_list");
         try {
           const list = Sandbox.list({
             ...cluster.connectionOptions,
@@ -175,6 +189,8 @@ export async function resolveCloudWorkspaceRegion({
           // Report here before a sibling can classify a later inventory result.
           reportOperationFailure("inventory_list", error, cluster.cluster);
           throw error;
+        } finally {
+          stopObserving();
         }
       }),
     );
