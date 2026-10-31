@@ -10,6 +10,7 @@ import {
   type ReportCloudAcquisitionStage,
 } from "./cloud-acquisition-budget";
 import { Sandbox, Template } from "@e2b/code-interpreter";
+import { createHash } from "node:crypto";
 import {
   CURRENT_E2B_SANDBOX_VERSION,
   isRecoverableE2BSandboxVersion,
@@ -27,6 +28,7 @@ import { retryWithBackoff } from "./retry-with-backoff";
 import {
   E2BRegionUnavailableError,
   getE2BClusterRouting,
+  type E2BCluster,
   type E2BClusterConfig,
 } from "./e2b-cluster";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
@@ -130,6 +132,8 @@ export const ensureSandboxConnection = async (
   let connectState: "running" | "paused" | null = null;
   let connectSelectionSource: "pinned" | "inventory" | null = null;
   let connectRequestTimeoutMs: number | null = null;
+  let connectSandboxId: string | null = null;
+  let connectCluster: E2BCluster | null = null;
   let createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -186,6 +190,8 @@ export const ensureSandboxConnection = async (
           sandboxVersion: info.metadata.sandboxVersion,
         };
       const resumingPausedWorkspace = info.state === "paused";
+      connectSandboxId = options.destinationId;
+      connectCluster = createCluster.cluster;
       connectState = resumingPausedWorkspace ? "paused" : "running";
       connectSelectionSource = "pinned";
       connectRequestTimeoutMs = resumingPausedWorkspace
@@ -326,6 +332,8 @@ export const ensureSandboxConnection = async (
       try {
         phase = "connect";
         const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
+        connectSandboxId = existingSandboxInfo.sandboxId;
+        connectCluster = existingCluster.cluster;
         connectState = resumingPausedWorkspace
           ? "paused"
           : existingSandboxInfo.state === "running"
@@ -508,6 +516,22 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
+    let connectTargetFingerprint: string | null = null;
+    if (
+      phase === "connect" &&
+      connectCluster &&
+      typeof connectSandboxId === "string" &&
+      /^[a-z0-9][a-z0-9-]{0,127}$/i.test(connectSandboxId)
+    ) {
+      try {
+        // Correlate provider-selected identities without logging their raw IDs.
+        connectTargetFingerprint = createHash("sha256")
+          .update(`e2b-connect:v1:${connectCluster}:${connectSandboxId}`)
+          .digest("hex");
+      } catch {
+        // Diagnostic enrichment must not replace the acquisition failure.
+      }
+    }
     console.error(
       JSON.stringify({
         timestamp: new Date().toISOString(),
@@ -527,6 +551,8 @@ export const ensureSandboxConnection = async (
         // Null means the SDK default was used, not a measured timeout of zero.
         e2b_connect_request_timeout_ms:
           phase === "connect" ? connectRequestTimeoutMs : null,
+        e2b_connect_target_fingerprint: connectTargetFingerprint,
+        e2b_connect_cluster: phase === "connect" ? connectCluster : null,
         duration_ms: Math.round(performance.now() - startedAt),
       }),
     );
