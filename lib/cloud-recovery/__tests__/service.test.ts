@@ -1032,7 +1032,7 @@ describe("fresh consent after a verified pre-reboot failure", () => {
   });
   it("requires current failure evidence and never fabricates a new failure timestamp", async () => {
     jest.mocked(readFailures).mockResolvedValue(null);
-    expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+    expect(await recoveryView("owner")).toMatchObject({ status: "hidden" });
     expect(retryPreflightConsent).not.toHaveBeenCalled();
   });
   it("does not transfer failed approval to a different workspace", async () => {

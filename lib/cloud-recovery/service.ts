@@ -332,7 +332,7 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
       const failures = await readFailures(userId);
       // Expired incident evidence is not a permanent failed approval. Normal
       // acquisition can establish fresh failures; never manufacture timestamps.
-      if (!failures) return { status: "waiting" };
+      if (!failures) return { status: "hidden" };
       if (!sameTarget(failures, consent.target)) return { status: "support" };
       try {
         await assertEligible(userId, consent);
