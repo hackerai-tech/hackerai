@@ -261,6 +261,19 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
+      - name: Sign Debian updater packages
+        if: startsWith(matrix.platform, 'ubuntu')
+        working-directory: packages/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          packages=(src-tauri/target/"$TARGET"/release/bundle/deb/*.deb)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          pnpm tauri signer sign "${packages[0]}"
+
       - name: Notarize macOS DMG
         if: matrix.platform == 'macos-latest'
         env:
@@ -534,188 +547,21 @@ jobs:
         with:
           path: artifacts
 
-      - name: Display structure of downloaded files
-        run: ls -R artifacts
-
-      - name: Prepare release files
+      - name: Install updater signature verifier
         run: |
-          mkdir -p release-files
+          sudo apt-get update
+          sudo apt-get install --yes minisign
 
-          find artifacts -name "*.dmg" -exec cp {} release-files/ \;
-          find artifacts -name "*.app.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.app.tar.gz.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.nsis.zip" -exec cp {} release-files/ \;
-          find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.exe" -exec cp {} release-files/ \;
-          find artifacts -name "*.deb" -exec cp {} release-files/ \;
-
-          echo "Files in release-files before creating aliases:"
-          ls -la release-files/ | grep -E "(AppImage|exe|deb)" || echo "No AppImage, exe, or deb files found"
-
-          # Create fixed-name aliases for download page (no version in filename)
-          # Linux x64 AppImage
-          LINUX_X64_APPIMAGE=$(ls release-files/*_amd64.AppImage 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux x64 AppImage: pattern '*_amd64.AppImage'"
-          echo "Found: $LINUX_X64_APPIMAGE"
-          if [ -n "$LINUX_X64_APPIMAGE" ] && [ -f "$LINUX_X64_APPIMAGE" ]; then
-            cp "$LINUX_X64_APPIMAGE" release-files/HackerAI-linux-x64.AppImage
-            echo "Created alias: HackerAI-linux-x64.AppImage from $(basename "$LINUX_X64_APPIMAGE")"
-          else
-            echo "WARNING: Linux x64 AppImage not found for alias creation"
-          fi
-
-          # Linux ARM64 AppImage
-          LINUX_ARM64_APPIMAGE=$(ls release-files/*_aarch64.AppImage 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux ARM64 AppImage: pattern '*_aarch64.AppImage'"
-          echo "Found: $LINUX_ARM64_APPIMAGE"
-          if [ -n "$LINUX_ARM64_APPIMAGE" ] && [ -f "$LINUX_ARM64_APPIMAGE" ]; then
-            cp "$LINUX_ARM64_APPIMAGE" release-files/HackerAI-linux-arm64.AppImage
-            echo "Created alias: HackerAI-linux-arm64.AppImage from $(basename "$LINUX_ARM64_APPIMAGE")"
-          else
-            echo "WARNING: Linux ARM64 AppImage not found for alias creation"
-          fi
-
-          # Linux x64 deb
-          LINUX_X64_DEB=$(ls release-files/*_amd64.deb 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux x64 deb: pattern '*_amd64.deb'"
-          echo "Found: $LINUX_X64_DEB"
-          if [ -n "$LINUX_X64_DEB" ] && [ -f "$LINUX_X64_DEB" ]; then
-            cp "$LINUX_X64_DEB" release-files/HackerAI-linux-x64.deb
-            echo "Created alias: HackerAI-linux-x64.deb from $(basename "$LINUX_X64_DEB")"
-          else
-            echo "WARNING: Linux x64 deb not found for alias creation"
-          fi
-
-          # Linux ARM64 deb
-          LINUX_ARM64_DEB=$(ls release-files/*_arm64.deb 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux ARM64 deb: pattern '*_arm64.deb'"
-          echo "Found: $LINUX_ARM64_DEB"
-          if [ -n "$LINUX_ARM64_DEB" ] && [ -f "$LINUX_ARM64_DEB" ]; then
-            cp "$LINUX_ARM64_DEB" release-files/HackerAI-linux-arm64.deb
-            echo "Created alias: HackerAI-linux-arm64.deb from $(basename "$LINUX_ARM64_DEB")"
-          else
-            echo "WARNING: Linux ARM64 deb not found for alias creation"
-          fi
-
-          # Windows exe
-          WIN_EXE=$(ls release-files/*_x64-setup.exe 2>/dev/null | head -1 || echo "")
-          echo "Looking for Windows exe: pattern '*_x64-setup.exe'"
-          echo "Found: $WIN_EXE"
-          if [ -n "$WIN_EXE" ] && [ -f "$WIN_EXE" ]; then
-            cp "$WIN_EXE" release-files/HackerAI-windows-x64.exe
-            echo "Created alias: HackerAI-windows-x64.exe from $(basename "$WIN_EXE")"
-          else
-            echo "WARNING: Windows exe not found for alias creation"
-          fi
-
-          echo "Release files:"
-          ls -la release-files/
-          
-          # Verify fixed-name aliases exist
-          echo "Verifying fixed-name aliases..."
-          if [ ! -f "release-files/HackerAI-linux-x64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-x64.AppImage alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-arm64.AppImage" ]; then
-            echo "ERROR: HackerAI-linux-arm64.AppImage alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
-            echo "ERROR: HackerAI-windows-x64.exe alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-x64.deb" ]; then
-            echo "ERROR: HackerAI-linux-x64.deb alias not created!"
-            exit 1
-          fi
-          if [ ! -f "release-files/HackerAI-linux-arm64.deb" ]; then
-            echo "ERROR: HackerAI-linux-arm64.deb alias not created!"
-            exit 1
-          fi
-          echo "All fixed-name aliases verified successfully!"
-
-      - name: Generate latest.json for updater
+      - name: Prepare verified release files and manifest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
           GH_REPO: ${{ github.repository }}
         run: |
-          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          cat > release-files/latest.json << EOF
-          {
-            "version": "$VERSION",
-            "notes": "See release notes on GitHub",
-            "pub_date": "$DATE",
-            "platforms": {}
-          }
-          EOF
-
-          PLATFORMS='{}'
-
-          MACOS_FILE=$(ls release-files/*aarch64*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$MACOS_FILE" ]; then
-            MACOS_FILE=$(ls release-files/*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          fi
-          if [ -n "$MACOS_FILE" ] && [ -f "$MACOS_FILE" ]; then
-            MACOS_BASENAME=$(basename "$MACOS_FILE")
-            SIG=$(cat "${MACOS_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${MACOS_BASENAME}" --arg sig "$SIG" '. + {"darwin-aarch64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          MACOS_X64_FILE=$(ls release-files/*x86_64*.app.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$MACOS_X64_FILE" ]; then
-            MACOS_X64_FILE="$MACOS_FILE"
-          fi
-          if [ -n "$MACOS_X64_FILE" ] && [ -f "$MACOS_X64_FILE" ]; then
-            MACOS_X64_BASENAME=$(basename "$MACOS_X64_FILE")
-            SIG=$(cat "${MACOS_X64_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${MACOS_X64_BASENAME}" --arg sig "$SIG" '. + {"darwin-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          LINUX_FILE=$(ls release-files/*_amd64.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -z "$LINUX_FILE" ]; then
-            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | { grep -v aarch64 || true; } | head -1 || echo "")
-          fi
-          if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
-            LINUX_BASENAME=$(basename "$LINUX_FILE")
-            SIG=$(cat "${LINUX_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_BASENAME}" --arg sig "$SIG" '. + {"linux-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          LINUX_ARM_FILE=$(ls release-files/*aarch64*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
-          if [ -n "$LINUX_ARM_FILE" ] && [ -f "$LINUX_ARM_FILE" ]; then
-            LINUX_ARM_BASENAME=$(basename "$LINUX_ARM_FILE")
-            SIG=$(cat "${LINUX_ARM_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_ARM_BASENAME}" --arg sig "$SIG" '. + {"linux-aarch64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          WIN_FILE=$(ls release-files/*.nsis.zip 2>/dev/null | head -1 || echo "")
-          if [ -n "$WIN_FILE" ] && [ -f "$WIN_FILE" ]; then
-            WIN_BASENAME=$(basename "$WIN_FILE")
-            SIG=$(cat "${WIN_FILE}.sig" 2>/dev/null || echo "")
-            if [ -n "$SIG" ]; then
-              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${WIN_BASENAME}" --arg sig "$SIG" '. + {"windows-x86_64": {"url": $url, "signature": $sig}}')
-            fi
-          fi
-
-          jq --argjson platforms "$PLATFORMS" '.platforms = $platforms' release-files/latest.json > release-files/latest.json.tmp
-          mv release-files/latest.json.tmp release-files/latest.json
-
-          echo "Generated latest.json:"
-          cat release-files/latest.json
+          set -euo pipefail
+          MINISIGN_PUBLIC_KEY="$(jq -r '.plugins.updater.pubkey' packages/desktop/src-tauri/tauri.conf.json | base64 --decode | sed -n '2p')" \
+            bash .github/scripts/prepare-desktop-release.sh \
+              artifacts release-files "$VERSION" "$TAG_NAME" "$GH_REPO"
 
       - name: Create Release
         env:
