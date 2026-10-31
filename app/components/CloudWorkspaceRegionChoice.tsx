@@ -53,6 +53,8 @@ export function CloudWorkspaceRegionChoice({
   const [notSaved, setNotSaved] = useState(false);
   const busyRef = useRef(false);
   const controller = useRef<AbortController | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const focusAfterAction = useRef(false);
   const retryRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const abort = new AbortController();
@@ -67,8 +69,19 @@ export function CloudWorkspaceRegionChoice({
     return () => abort.abort();
   }, []);
   useEffect(() => {
-    if (view.status === "selected") retryRef.current?.focus();
-  }, [view.status]);
+    if (!busy && focusAfterAction.current) {
+      focusAfterAction.current = false;
+      if (
+        document.activeElement === document.body ||
+        cardRef.current?.contains(document.activeElement)
+      ) {
+        (view.status === "selected"
+          ? retryRef.current
+          : cardRef.current
+        )?.focus();
+      }
+    }
+  }, [view, busy]);
 
   async function act(region?: WorkspaceRegionChoice) {
     if (
@@ -106,31 +119,51 @@ export function CloudWorkspaceRegionChoice({
       if (!active.signal.aborted) setView({ status: "unconfirmed" });
     } finally {
       busyRef.current = false;
-      if (!active.signal.aborted) setBusy(false);
+      if (!active.signal.aborted) {
+        focusAfterAction.current = true;
+        setBusy(false);
+      }
     }
   }
   return (
     <div
+      ref={cardRef}
+      tabIndex={-1}
       role="group"
       aria-labelledby={titleId}
       className="w-full rounded-lg border p-3 text-sm"
     >
       <p id={titleId} className="font-medium">
-        Choose your cloud workspace
+        {view.status === "selection_required"
+          ? "Choose your cloud workspace"
+          : "Cloud workspace"}
       </p>
-      <p className="mt-1 text-muted-foreground">
-        You have workspaces in the US and Europe. Choose the one you used most
-        recently. Nothing is moved or deleted. Future tasks will use your
-        choice; files in the other workspace stay there.
-      </p>
-      <p className="mt-1 text-muted-foreground">
-        If you need files from the other workspace or are unsure which to
-        choose,{" "}
-        <a href="mailto:contact@hackerai.co" className="underline">
-          contact support
-        </a>
-        .
-      </p>
+      {view.status === "selection_required" ? (
+        <>
+          <p className="mt-1 text-muted-foreground">
+            You have workspaces in the US and Europe. Choose the one you used
+            most recently. Nothing is moved or deleted. Future tasks will use
+            your choice; files in the other workspace stay there.
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            Changing this choice later requires support. If you are unsure which
+            to choose,{" "}
+            <a href="mailto:contact@hackerai.co" className="underline">
+              contact support
+            </a>{" "}
+            first.
+          </p>
+        </>
+      ) : (
+        <p className="mt-1 text-muted-foreground">
+          Files in both workspaces are kept. To access files in the other
+          workspace,{" "}
+          <a href="mailto:contact@hackerai.co" className="underline">
+            contact support
+          </a>
+          .
+        </p>
+      )}
       <div role="status">
         {busy || view.status === "loading" ? (
           <p className="mt-2">Checking workspace selection…</p>
@@ -158,6 +191,7 @@ export function CloudWorkspaceRegionChoice({
             <Button
               key={region}
               size="sm"
+              className="min-h-11"
               variant="outline"
               disabled={busy}
               onClick={() => void act(region)}

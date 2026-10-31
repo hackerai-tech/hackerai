@@ -94,3 +94,24 @@ it("checks saved routing after reload without making another choice", async () =
   expect(fetchMock.mock.calls.every(([, o]) => !o.method)).toBe(true);
   expect(retry).not.toHaveBeenCalled();
 });
+
+it("does not steal composer focus when a background status read finds a saved choice", async () => {
+  let finish!: (value: ReturnType<typeof response>) => void;
+  fetchMock.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <>
+      <input aria-label="Message" />
+      <CloudWorkspaceRegionChoice onRetry={jest.fn()} />
+    </>,
+  );
+  const composer = screen.getByRole("textbox", { name: "Message" });
+  composer.focus();
+  finish(response({ status: "selected", region: "eu-central-1" }));
+  await screen.findByRole("button", { name: "Retry" });
+  expect(composer).toHaveFocus();
+});
