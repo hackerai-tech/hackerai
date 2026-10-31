@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 #[path = "../src/update_safety.rs"]
 mod update_safety;
-use std::{error::Error, fs, path::Path, time::Duration};
+use std::{error::Error, fs, io::Write, path::Path, process::Stdio, time::Duration};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -11,6 +11,23 @@ use tauri_plugin_updater::UpdaterExt;
 async fn main() -> Result<(), Box<dyn Error>> {
     let version = option_env!("HACKERAI_UPGRADE_FIXTURE_VERSION").unwrap_or("0.0.0");
     let args: Vec<_> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "detached-job" {
+        let state = Path::new(&args[2]);
+        let mut output = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(state.join("job-output.txt"))?;
+        // Bounded even if the test driver fails before requesting cleanup.
+        for sequence in 0..1800 {
+            if state.join("stop-job").exists() {
+                break;
+            }
+            writeln!(output, "{sequence}")?;
+            output.flush()?;
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        return Ok(());
+    }
     if args.len() == 1 {
         println!("{version}");
         return Ok(());
@@ -49,6 +66,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?
         .ok_or("expected newer version")?;
     let bytes = update.download(|_, _| {}, || {}).await?;
+    if args[1] == "install" {
+        // Model a user tool outside the installation directory. Running a
+        // second copy of the installed app would instead lock the exe being replaced.
+        let worker = state.join("detached-job.exe");
+        fs::copy(std::env::current_exe()?, &worker)?;
+        let mut command = std::process::Command::new(worker);
+        command
+            .args(["detached-job", &args[4]])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Match Desktop's native command process creation flags.
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let child = command.spawn()?;
+        fs::write(state.join("job-pid"), child.id().to_string())?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let before = fs::read(state.join("job-output.txt")).unwrap_or_default();
+            if !before.is_empty() {
+                fs::write(state.join("job-before-update.txt"), before)?;
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("detached job did not start".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
     update_safety::install_after_approval(
         &update_safety::UpdateGate::default(),
         state,

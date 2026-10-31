@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Disposable CI: actual NSIS N-to-N+1 handoff, auto-relaunch and receipt readback."""
 import functools
+import ctypes
 import http.server
 import json
 import os
@@ -76,6 +77,14 @@ def main():
         sentinel.write_bytes(b"preserve user bytes\x00\n")
         executable = installed / (NAME + ".exe")
         report = state / "result.json"
+        # Keep a handle to the exact child, so cleanup never trusts a recycled PID.
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        job_handle = None
         try:
             run([str(assets["1.0.0"]), "/S", "/D=" + str(installed)])
             assert run([str(executable)], capture_output=True).stdout.strip() == "1.0.0"
@@ -84,6 +93,8 @@ def main():
             assert json.loads(report.read_text()) == {"version": "1.0.0", "outcome": "Declined"}
             report.unlink()
             run([str(executable), "install", *arguments])
+            job_handle = kernel.OpenProcess(0x00100000, False, int((state / "job-pid").read_text()))
+            assert job_handle, "Detached job must survive updater handoff"
             deadline = time.monotonic() + 120
             while not report.exists() and time.monotonic() < deadline:
                 time.sleep(0.25)
@@ -92,14 +103,36 @@ def main():
             assert run([str(executable)], capture_output=True).stdout.strip() == "1.0.1"
             assert not (state / "pending-desktop-update.json").exists()
             assert sentinel.read_bytes() == b"preserve user bytes\x00\n"
-            print("PASS: declined install preserves N; approved NSIS install relaunches N+1; receipt consumed and files unchanged")
+            assert kernel.WaitForSingleObject(job_handle, 0) == 258, "Detached job exited during upgrade"
+            output = state / "job-output.txt"
+            before = (state / "job-before-update.txt").read_bytes()
+            at_restart = output.read_bytes()
+            deadline = time.monotonic() + 10
+            while output.stat().st_size <= len(at_restart) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            after = output.read_bytes()
+            assert after.startswith(before) and after.startswith(at_restart)
+            assert len(after) > len(at_restart), "Detached job must keep writing after restart"
+            complete_lines = after.split(b"\n")[:-1]
+            assert [int(line) for line in complete_lines] == list(range(len(complete_lines)))
+            print("PASS: declined install preserves N; approved NSIS install relaunches N+1; receipt consumed; sentinel unchanged; detached job keeps writing intact output")
         finally:
+            (state / "stop-job").touch()
+            if not job_handle and (state / "job-pid").exists():
+                job_handle = kernel.OpenProcess(0x00100000, False, int((state / "job-pid").read_text()))
+            job_stopped = True
+            if job_handle:
+                try:
+                    job_stopped = kernel.WaitForSingleObject(job_handle, 10000) == 0
+                finally:
+                    kernel.CloseHandle(job_handle)
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
             uninstaller = installed / "uninstall.exe"
             if uninstaller.exists():
                 run([str(uninstaller), "/S"])
+            assert job_stopped, "Test job did not stop"
 
 
 if __name__ == "__main__":
