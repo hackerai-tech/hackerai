@@ -33,6 +33,7 @@ import {
   decideConsent,
   failConsent,
   renewConsent,
+  retryPreflightConsent,
 } from "../store";
 import {
   recoveryView,
@@ -79,6 +80,7 @@ jest.mock("../store", () => ({
   decideConsent: jest.fn(),
   failConsent: jest.fn(),
   renewConsent: jest.fn(),
+  retryPreflightConsent: jest.fn(),
 }));
 const token = "7ad19af5-4d14-4d4b-aab7-90734610a6da";
 const target = {
@@ -998,3 +1000,58 @@ it.each(["offered", "executing", "failed"] as const)(
     expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
   },
 );
+
+describe("fresh consent after a verified pre-reboot failure", () => {
+  const failed = {
+    ...consent,
+    status: "failed" as const,
+    failurePhase: "before_reboot" as const,
+  };
+  beforeEach(() => {
+    jest.mocked(readConsent).mockResolvedValue(failed);
+    jest.mocked(retryPreflightConsent).mockResolvedValue({
+      ...consent,
+      token: "6ad19af5-4d14-4d4b-aab7-90734610a6da",
+    });
+  });
+  it("offers a new approval without dispatching recovery or reusing the old token", async () => {
+    const view = await recoveryView("owner");
+    expect(view).toMatchObject({
+      status: "offered",
+      token: "6ad19af5-4d14-4d4b-aab7-90734610a6da",
+    });
+    expect(retryPreflightConsent).toHaveBeenCalledWith("owner", failed, target);
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+    expect(await confirmRecovery("owner", token, true, "org-owner")).toBeNull();
+    expect(decideConsent).not.toHaveBeenCalled();
+  });
+  it("waits for idle work before renewing approval", async () => {
+    exists.mockResolvedValue(1);
+    expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+    expect(retryPreflightConsent).not.toHaveBeenCalled();
+  });
+  it("requires current failure evidence and never fabricates a new failure timestamp", async () => {
+    jest.mocked(readFailures).mockResolvedValue(null);
+    expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+    expect(retryPreflightConsent).not.toHaveBeenCalled();
+  });
+  it("does not transfer failed approval to a different workspace", async () => {
+    jest
+      .mocked(readFailures)
+      .mockResolvedValue({ ...target, sandboxId: "other" });
+    expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+    expect(retryPreflightConsent).not.toHaveBeenCalled();
+  });
+  it("keeps a reboot or unknown outcome support-only", async () => {
+    jest
+      .mocked(readConsent)
+      .mockResolvedValue({ ...failed, failurePhase: "reboot_or_unknown" });
+    expect(await recoveryView("owner")).toMatchObject({ status: "support" });
+    expect(retryPreflightConsent).not.toHaveBeenCalled();
+  });
+  it("does not offer approval after a concurrent recovery claim wins", async () => {
+    jest.mocked(retryPreflightConsent).mockResolvedValue(null);
+    expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  });
+});

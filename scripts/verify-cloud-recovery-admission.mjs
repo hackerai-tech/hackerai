@@ -25,7 +25,13 @@ const scripts = (source, name) =>
   ].map((match) => match[1]);
 const [admitLua] = scripts(guard, "assertCloudWorkspaceAvailable");
 const [confirmLua] = scripts(store, "decideConsent");
-const [claimLua, , finishLua] = scripts(guard, "claimE2BDiskRecovery");
+const [failLua] = scripts(store, "failConsent");
+const [retryLua] = scripts(store, "retryPreflightConsent");
+const [reconcileLua] = scripts(store, "reconcileLegacyPreflightFailure");
+const [claimLua, updateLua, finishLua, cancelLua] = scripts(
+  guard,
+  "claimE2BDiskRecovery",
+);
 const [cleanupLua, cleanupFinishLua] = scripts(
   guard,
   "claimCloudWorkspaceCleanup",
@@ -287,6 +293,225 @@ try {
     1,
     "a completed recovery receipt must not strand a later authorized fresh workspace",
   );
+  const fail = () =>
+    evalLua(
+      failLua,
+      [keys.consent, keys.workspace, keys.result],
+      [offered.token],
+    );
+  const retry = () =>
+    evalLua(
+      retryLua,
+      [
+        keys.consent,
+        keys.workspace,
+        keys.result,
+        keys.activity,
+        "attempt-archive",
+      ],
+      [
+        offered.token,
+        JSON.stringify({ ...offered, token: "fresh-consent", issuedAt: 200 }),
+      ],
+    );
+  const claimRecovery = () =>
+    evalLua(
+      claimLua,
+      [keys.workspace, keys.activity, keys.result, keys.consent],
+      [
+        "",
+        JSON.stringify(recovery),
+        offered.token,
+        offered.token,
+        target.sandboxId,
+        target.region,
+      ],
+    );
+  reset();
+  assert.equal(confirm(), 1);
+  assert.equal(fail(), 1);
+  assert.equal(get(keys.consent).failurePhase, "before_reboot");
+  const failedReceipt = get(keys.consent);
+  assert.equal(
+    claimRecovery(),
+    0,
+    "a late dispatch cannot use failed approval",
+  );
+  assert.equal(retry(), 1);
+  assert.deepEqual(get("attempt-archive"), failedReceipt);
+  assert.equal(get(keys.consent).token, "fresh-consent");
+  assert.equal(get(keys.consent).status, "offered");
+  assert.equal(get(keys.consent).confirmedAt, undefined);
+  assert.equal(
+    claimRecovery(),
+    0,
+    "old worker cannot consume fresh unapproved offer",
+  );
+  assert.equal(retry(), 0, "concurrent status reads rotate only once");
+  assert.equal(fail(), 0, "late failure cannot poison a newer approval");
+  assert.equal(get(keys.consent).status, "offered");
+
+  reset();
+  assert.equal(confirm(), 1);
+  assert.equal(claimRecovery(), 1);
+  assert.equal(fail(), 1);
+  assert.equal(get(keys.consent).failurePhase, "reboot_or_unknown");
+  assert.equal(
+    retry(),
+    0,
+    "claim winning before failure must never enable another reboot",
+  );
+  assert.deepEqual(get(keys.workspace), recovery);
+  for (const blocker of [
+    keys.workspace,
+    keys.result,
+    keys.activity,
+    "attempt-archive",
+  ]) {
+    reset();
+    set(keys.consent, failedReceipt);
+    set(blocker, { owner: "other" });
+    assert.equal(retry(), 0, `preserve ${blocker} before renewal`);
+    assert.deepEqual(get(keys.consent), failedReceipt);
+  }
+  for (const phase of [undefined, "reboot_or_unknown"]) {
+    reset();
+    set(keys.consent, { ...failedReceipt, failurePhase: phase });
+    assert.equal(
+      retry(),
+      0,
+      "historical and uncertain failures require review",
+    );
+  }
+  reset();
+  set(keys.consent, {
+    ...failedReceipt,
+    target: { ...target, sandboxId: "other" },
+  });
+  assert.equal(retry(), 0, "retry must retain exact target");
+
+  for (const previous of [null, restored]) {
+    reset();
+    set(keys.consent, { ...offered, status: "executing" });
+    set(keys.workspace, recovery);
+    const cancel = () =>
+      evalLua(
+        cancelLua,
+        [keys.workspace, keys.consent],
+        [
+          JSON.stringify(recovery),
+          offered.token,
+          previous ? JSON.stringify(previous) : "",
+        ],
+      );
+    assert.equal(
+      cancel(),
+      1,
+      "pre-reboot owner can restore the prior routing record",
+    );
+    assert.deepEqual(get(keys.workspace), previous);
+    assert.equal(get(keys.consent).failurePhase, "before_reboot");
+    assert.equal(
+      retry(),
+      1,
+      "pre-reboot failure can request fresh approval with or without existing routing",
+    );
+    assert.equal(claimRecovery(), 0);
+  }
+  reset();
+  set(keys.consent, { ...offered, status: "executing" });
+  set(keys.workspace, recovery);
+  const marker = { ...recovery, step: "reboot_requested" };
+  assert.equal(
+    evalLua(
+      updateLua,
+      [keys.workspace],
+      [JSON.stringify(recovery), JSON.stringify(marker)],
+    ),
+    1,
+  );
+  assert.equal(
+    evalLua(
+      cancelLua,
+      [keys.workspace, keys.consent],
+      [JSON.stringify(marker), offered.token, ""],
+    ),
+    0,
+    "even the matching owner cannot undo the durable reboot boundary",
+  );
+  assert.equal(get(keys.consent).status, "executing");
+  assert.deepEqual(get(keys.workspace), marker);
+  reset();
+  set(keys.consent, { ...offered, status: "confirmed" });
+  set(keys.workspace, restored);
+  set(keys.result, {
+    ...target,
+    token: "previous-completed-attempt",
+    status: "verified_ready",
+  });
+  assert.equal(fail(), 1);
+  assert.equal(get(keys.consent).failurePhase, "before_reboot");
+  assert.equal(
+    retry(),
+    1,
+    "a prior completed recovery does not prevent a new preflight retry",
+  );
+  assert.deepEqual(get(keys.workspace), restored);
+
+  const historical = { ...offered, status: "failed" };
+  const historicalRaw = JSON.stringify(historical);
+  const reconcile = () =>
+    evalLua(
+      reconcileLua,
+      [
+        keys.consent,
+        keys.workspace,
+        keys.result,
+        keys.activity,
+        "review-archive",
+      ],
+      [
+        historicalRaw,
+        JSON.stringify({
+          receipt: historical,
+          evidence: "synthetic verified review",
+        }),
+      ],
+    );
+  reset();
+  set(keys.consent, historical);
+  assert.equal(reconcile(), 1);
+  assert.equal(get(keys.consent).failurePhase, "before_reboot");
+  assert.equal(
+    get(keys.consent).token,
+    historical.token,
+    "review never grants or dispatches consent",
+  );
+  assert.deepEqual(get("review-archive").receipt, historical);
+  assert.equal(reconcile(), 0);
+  for (const blocker of [
+    keys.workspace,
+    keys.result,
+    keys.activity,
+    "review-archive",
+  ]) {
+    reset();
+    set(keys.consent, historical);
+    set(blocker, { owner: "other" });
+    assert.equal(reconcile(), 0);
+    assert.deepEqual(get(keys.consent), historical);
+  }
+  reset();
+  set(keys.consent, { ...historical, token: "changed" });
+  assert.equal(
+    reconcile(),
+    0,
+    "operator reconciliation must compare the complete receipt",
+  );
+  console.log(
+    "PASS preflight failure renewal, obsolete workers, ambiguous outcomes and audited legacy reconciliation",
+  );
+
   const legacy = {
     version: 1,
     phase: "cleanup",

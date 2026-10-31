@@ -120,7 +120,7 @@ export const cloudRecoveryConsentKey = (userId: string) =>
   `cloud_recovery_consent:v1:${userId}`;
 export const cloudWorkspaceRegionKey = (userId: string) =>
   `cloud_workspace_region:v1:${userId}`;
-const recoveryResultKeyFor = (userId: string) =>
+export const recoveryResultKeyFor = (userId: string) =>
   `cloud_workspace_recovery_result:v1:${userId}`;
 const ACTIVITY_TTL_SECONDS = 15 * 60;
 const e2bUsers = new WeakMap<Sandbox, string>();
@@ -254,6 +254,7 @@ export async function claimE2BDiskRecovery(args: {
     >,
   ) => Promise<void>;
   finish: (result: string) => Promise<void>;
+  cancelBeforeReboot: () => Promise<boolean>;
 }> {
   const redis = createRedisClient();
   if (!redis) throw new CloudWorkspaceUnavailableError();
@@ -373,6 +374,25 @@ export async function claimE2BDiskRecovery(args: {
         ],
       );
       if (finished !== 1) throw new CloudWorkspaceUnavailableError();
+    },
+    cancelBeforeReboot: async () => {
+      if (!args.customerConsent) return false;
+      const canceled = await redis.eval(
+        `local raw = redis.call('GET', KEYS[1])
+         if raw ~= ARGV[1] then return 0 end
+         local state = cjson.decode(raw)
+         if state.phase ~= 'recovery' or state.token ~= ARGV[2] or state.step ~= nil then return 0 end
+         local consentRaw = redis.call('GET', KEYS[2])
+         local ok, consent = pcall(cjson.decode, consentRaw or '')
+         if not ok or consent.token ~= ARGV[2] or consent.status ~= 'executing' then return 0 end
+         consent.status = 'failed'; consent.failurePhase = 'before_reboot'
+         redis.call('SET', KEYS[2], cjson.encode(consent))
+         if ARGV[3] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[3]) end
+         return 1`,
+        [cloudWorkspaceStateKey(args.userId), args.customerConsent.key],
+        [serialized, args.token, previous ? JSON.stringify(previous) : ""],
+      );
+      return canceled === 1;
     },
   };
 }
