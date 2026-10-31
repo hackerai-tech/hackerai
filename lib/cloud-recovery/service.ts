@@ -39,6 +39,7 @@ import {
   decideConsent,
   failConsent,
   renewConsent,
+  retryPreflightConsent,
   type RecoveryConsent,
   type ResumeFailures,
 } from "./store";
@@ -324,7 +325,25 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
     }
     // Turning off a rollout prevents new action, but must not hide an incident
     // that already consumed consent or strand the customer without support.
-    if (!active || consent.status === "failed") return { status: "support" };
+    if (!active) return { status: "support" };
+    if (consent.status === "failed") {
+      if (consent.failurePhase !== "before_reboot")
+        return { status: "support" };
+      const failures = await readFailures(userId);
+      // Expired incident evidence is not a permanent failed approval. Normal
+      // acquisition can establish fresh failures; never manufacture timestamps.
+      if (!failures) return { status: "hidden" };
+      if (!sameTarget(failures, consent.target)) return { status: "support" };
+      try {
+        await assertEligible(userId, consent);
+      } catch (error) {
+        return { status: eligibilityFailureStatus(error) };
+      }
+      const renewed = await retryPreflightConsent(userId, consent, failures);
+      return renewed
+        ? { status: "offered", token: renewed.token }
+        : { status: "waiting" };
+    }
     if (
       workspace?.phase === "recovery" ||
       ["confirmed", "executing"].includes(consent.status)

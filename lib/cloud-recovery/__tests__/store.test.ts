@@ -1,5 +1,10 @@
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
-import { decideConsent, recordResumeFailure, renewConsent } from "../store";
+import {
+  decideConsent,
+  recordResumeFailure,
+  renewConsent,
+  reconcileLegacyPreflightFailure,
+} from "../store";
 jest.mock("@/lib/posthog/server", () => ({
   getPostHogBooleanFlagDecisionForUser: jest.fn(),
 }));
@@ -70,3 +75,26 @@ it("persists the new server-selected target when an unconsumed warning is reboun
   const saved = JSON.parse(mockEval.mock.calls[0][2][1]);
   expect(saved).toMatchObject({ target: nextTarget, status: "offered" });
 });
+
+it.each([
+  { taskTerminal: false, providerConfirmedNoReboot: true, reference: "review" },
+  { taskTerminal: true, providerConfirmedNoReboot: false, reference: "review" },
+  { taskTerminal: true, providerConfirmedNoReboot: true, reference: "" },
+])(
+  "refuses legacy reconciliation without complete evidence: %j",
+  async (evidence) => {
+    await expect(
+      reconcileLegacyPreflightFailure(
+        "owner",
+        JSON.stringify({
+          token,
+          target,
+          status: "failed",
+          issuedAt: Date.now(),
+        }),
+        evidence,
+      ),
+    ).rejects.toThrow("independent pre-reboot evidence");
+    expect(mockEval).not.toHaveBeenCalled();
+  },
+);

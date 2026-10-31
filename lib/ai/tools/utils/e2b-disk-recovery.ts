@@ -289,6 +289,9 @@ export async function recoverE2BDiskOnly(
     if (customer) await customer.assertIdle();
     stage = "reboot";
     const connectStartedAt = Date.now();
+    // Persist the irreversible boundary before sending the provider request.
+    // An uncertain marker write remains fenced even if no request was sent.
+    await claim.update({ step: "reboot_requested" });
     rebootRequested = true;
     const sandbox = await Sandbox.connect(auth.sandboxId, {
       ...connectionOptions,
@@ -466,6 +469,19 @@ export async function recoverE2BDiskOnly(
     await claim.finish(JSON.stringify(result));
     return result;
   } catch (error) {
+    if (
+      customer &&
+      !rebootRequested &&
+      (await claim.cancelBeforeReboot().catch(() => false))
+    ) {
+      throw new DiskRecoveryError(
+        stage,
+        "Recovery stopped before reboot; fresh approval is required",
+        {
+          originalMemoryPreservation: "not_changed_by_this_attempt",
+        },
+      );
+    }
     if (customer)
       await claim.update({ step: "support_required" }).catch(() => {});
     // This fence intentionally has no TTL. A timed-out SDK call can still

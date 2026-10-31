@@ -31,6 +31,7 @@ const claim = jest.mocked(claimE2BDiskRecovery);
 const state = jest.mocked(readCloudWorkspaceState);
 const result = jest.mocked(readE2BDiskRecoveryResult);
 const finish = jest.fn();
+const cancelBeforeReboot = jest.fn();
 const update = jest.fn();
 const pause = jest.fn();
 const snapshot = jest.fn();
@@ -97,8 +98,14 @@ beforeEach(() => {
       }) as never,
   );
   jest.mocked(Sandbox.getMetrics).mockResolvedValue([]);
-  claim.mockResolvedValue({ state: {} as never, finish, update } as never);
+  claim.mockResolvedValue({
+    state: {} as never,
+    finish,
+    update,
+    cancelBeforeReboot,
+  } as never);
   finish.mockResolvedValue(undefined);
+  cancelBeforeReboot.mockResolvedValue(false);
   update.mockResolvedValue(undefined);
   pause.mockResolvedValue(true);
   snapshot.mockResolvedValue({ snapshotId: "backup-1" });
@@ -508,6 +515,38 @@ describe("customer recovery verification", () => {
       hasNext: false,
       nextItems: async () => [{ snapshotId: "backup-1" }],
     } as never);
+  });
+  it("settles an owned pre-reboot idle failure without calling E2B connect", async () => {
+    idle
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("active task"));
+    cancelBeforeReboot.mockResolvedValueOnce(true);
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "identity",
+    });
+    expect(cancelBeforeReboot).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalledWith({ step: "support_required" });
+  });
+  it("keeps an uncertain reboot-marker write fenced and sends no reboot", async () => {
+    update.mockRejectedValueOnce(new Error("write outcome unknown"));
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reboot",
+    });
+    expect(cancelBeforeReboot).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({ step: "support_required" });
+  });
+  it("persists the reboot boundary before sending the irreversible request", async () => {
+    connect.mockImplementationOnce(async () => {
+      expect(update).toHaveBeenCalledWith({ step: "reboot_requested" });
+      throw new Error("request outcome unknown");
+    });
+    await expect(recoverE2BDiskOnly(auth, customer)).rejects.toMatchObject({
+      stage: "reboot",
+    });
+    expect(cancelBeforeReboot).not.toHaveBeenCalled();
+    expect(connect).toHaveBeenCalledTimes(1);
   });
   it("requires a known pause lifecycle, even when auto-resume is enabled", async () => {
     getInfo.mockResolvedValueOnce({

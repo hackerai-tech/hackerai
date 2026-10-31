@@ -119,6 +119,7 @@ it("treats an uncertain dispatch as support-only and does not retry", async () =
   jest
     .mocked(tasks.trigger)
     .mockRejectedValueOnce(new Error("request timed out"));
+  jest.mocked(recoveryView).mockResolvedValue({ status: "support" });
   const response = await POST(request({ token, confirmed: true }));
   expect(await response.json()).toEqual({ status: "support" });
   expect(failConsent).toHaveBeenCalledWith("session-owner", token);
@@ -131,4 +132,22 @@ it("reopens a deferred warning without dispatching provider work", async () => {
   expect(reopenRecovery).toHaveBeenCalledWith("session-owner", token);
   expect(confirmRecovery).not.toHaveBeenCalled();
   expect(tasks.trigger).not.toHaveBeenCalled();
+});
+
+it("returns a fresh warning after dispatch failed before the worker claimed consent", async () => {
+  const nextToken = "6ad19af5-4d14-4d4b-aab7-90734610a6da";
+  jest
+    .mocked(confirmRecovery)
+    .mockResolvedValue({ token, target: { region: "us-east-1" } } as never);
+  jest
+    .mocked(tasks.trigger)
+    .mockRejectedValueOnce(new Error("dispatch failed"));
+  jest.mocked(recoveryView).mockImplementation(async () => {
+    expect(failConsent).toHaveBeenCalledWith("session-owner", token);
+    return { status: "offered", token: nextToken };
+  });
+  expect(
+    await (await POST(request({ token, confirmed: true }))).json(),
+  ).toEqual({ status: "offered", token: nextToken });
+  expect(tasks.trigger).toHaveBeenCalledTimes(1);
 });
