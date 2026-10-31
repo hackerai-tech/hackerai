@@ -1,4 +1,9 @@
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
+const mockWatchLocalRunConnection = jest.fn(() => jest.fn());
+jest.mock("@/lib/centrifugo/watch-local-run-connection", () => ({
+  watchLocalRunConnection: (...args: unknown[]) =>
+    (mockWatchLocalRunConnection as jest.Mock)(...args),
+}));
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {
     static list = jest.fn();
@@ -1430,5 +1435,82 @@ describe("HybridSandboxManager reset cleanup", () => {
         process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
       }
     }
+  });
+});
+
+describe("Agent connection interruption", () => {
+  it("pins the session before model/tool execution and refuses a replacement until a new run", async () => {
+    const manager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "environment:machine",
+      "key",
+      null,
+      "pro",
+    );
+    const onLost = jest.fn();
+    const dispose = manager.stopOnLocalDisconnect(onLost);
+    const list = jest
+      .spyOn(manager, "listConnections")
+      .mockResolvedValue([
+        makeConnection({ connectionId: "first", environmentId: "machine" }),
+      ]);
+    await manager.getSandboxContextForPrompt();
+    expect(mockWatchLocalRunConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connectionId: "first" }),
+    );
+    list.mockResolvedValue([
+      makeConnection({ connectionId: "replacement", environmentId: "machine" }),
+    ]);
+    await expect(manager.getSandbox()).rejects.toThrow(
+      "local connection was lost",
+    );
+    expect(onLost).toHaveBeenCalledTimes(1);
+    await expect(
+      manager.recoverLocalConnection("first", "command_relay_unsubscribed"),
+    ).rejects.toThrow("local connection was lost");
+    expect(onLost).toHaveBeenCalledTimes(1);
+    dispose();
+    await expect(manager.getSandbox()).rejects.toThrow(
+      "local connection was lost",
+    );
+    const resumedManager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "environment:machine",
+      "key",
+      null,
+      "pro",
+    );
+    jest.spyOn(resumedManager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "replacement",
+        environmentId: "machine",
+      }),
+    ]);
+    const stop = resumedManager.stopOnLocalDisconnect(jest.fn());
+    await resumedManager.getSandboxContextForPrompt();
+    expect(mockWatchLocalRunConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connectionId: "replacement" }),
+    );
+    stop();
+  });
+
+  it("does not watch or stop a Cloud run", async () => {
+    const manager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "e2b",
+      "key",
+      null,
+      "pro",
+    );
+    const previousCalls = mockWatchLocalRunConnection.mock.calls.length;
+    const onLost = jest.fn();
+    const stop = manager.stopOnLocalDisconnect(onLost);
+    expect(await manager.getSandboxContextForPrompt()).toBeNull();
+    expect(mockWatchLocalRunConnection.mock.calls.length).toBe(previousCalls);
+    expect(onLost).not.toHaveBeenCalled();
+    stop();
   });
 });

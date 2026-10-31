@@ -746,3 +746,29 @@ describe("Messages virtualized row invalidation", () => {
     });
   });
 });
+
+test("offers Resume when the local connection is lost before an assistant message exists", () => {
+  const onContinue = jest.fn();
+  render(
+    <DataStreamProvider>
+      <Messages
+        chatId="stopped-during-setup"
+        messages={[messages[0]]}
+        setMessages={jest.fn()}
+        onRegenerate={jest.fn()}
+        onRetry={jest.fn()}
+        onContinue={onContinue}
+        onEditMessage={jest.fn()}
+        status="ready"
+        error={null}
+        scrollRef={createRef<HTMLElement>()}
+        contentRef={createRef<HTMLElement>()}
+        finishReason="local-connection-lost"
+        mode="agent"
+      />
+    </DataStreamProvider>,
+  );
+  expect(onContinue).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(onContinue).toHaveBeenCalledTimes(1);
+});

@@ -388,3 +388,14 @@ describe("elapsedTimeExceeds", () => {
     expect(onFired).toHaveBeenCalledTimes(1);
   });
 });
+
+test("local disconnection overrides every automatic continuation flag", () => {
+  expect(
+    getAgentAutoContinueStopSource({
+      finishReason: "local-connection-lost",
+      stoppedDueToTokenExhaustion: true,
+      stoppedDueToElapsedTimeout: true,
+      stoppedDueToPostSummarizationIncomplete: true,
+    }),
+  ).toBeNull();
+});

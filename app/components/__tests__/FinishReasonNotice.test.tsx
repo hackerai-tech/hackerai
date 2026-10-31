@@ -85,6 +85,8 @@ function DataStreamSetter({
 
 interface RenderNoticeProps {
   finishReason?: string;
+  continueDisabledReason?: string;
+  status?: import("@/types").ChatStatus;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (selectedModelOverride?: SelectedModel) => void;
@@ -434,4 +436,44 @@ it("keeps recovery available after a rejected continuation and prevents double c
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
   );
+});
+
+describe("local connection Resume", () => {
+  it("requires an explicit click and retains Resume if admission rejects the attempt", async () => {
+    const onContinue = jest.fn().mockRejectedValue(new Error("offline"));
+    renderNotice({
+      finishReason: "local-connection-lost",
+      mode: "agent",
+      onContinue,
+    });
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Resume" })).toBeVisible(),
+    );
+  });
+  it("keeps Resume disabled while disconnected and shows the recovery instruction", () => {
+    const onContinue = jest.fn();
+    renderNotice({
+      finishReason: "local-connection-lost",
+      mode: "agent",
+      onContinue,
+      continueDisabledReason: "Reconnect your computer.",
+    });
+    expect(screen.getByText("Reconnect your computer.")).toBeVisible();
+    const button = screen.getByRole("button", { name: "Resume" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+  it("prevents duplicate submissions", () => {
+    renderNotice({
+      finishReason: "local-connection-lost",
+      mode: "agent",
+      onContinue: jest.fn(),
+      status: "submitted",
+    });
+    expect(screen.getByRole("button", { name: "Resuming…" })).toBeDisabled();
+  });
 });

@@ -45,6 +45,7 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
     const release = jest.fn(async () => {});
     const refund = jest.fn(async () => {});
     const deps = {
+      localConnectionLost: () => false,
       userStopSignal,
       triggerSignal: new AbortController().signal,
       agentLongDurationExceeded: false,

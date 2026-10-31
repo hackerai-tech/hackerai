@@ -1,3 +1,5 @@
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "./local-connection-stop";
+
 export const ABORTED_TOOL_ERROR_TEXT =
   "Stopped by user before the tool completed.";
 
@@ -11,11 +13,13 @@ export const getIncompleteToolErrorText = (
   finishReason: string | undefined,
   userInitiated = false,
 ): string =>
-  userInitiated
-    ? ABORTED_TOOL_ERROR_TEXT
-    : finishReason === "length"
-      ? OUTPUT_LIMIT_TOOL_ERROR_TEXT
-      : INTERRUPTED_TOOL_ERROR_TEXT;
+  finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
+    ? "Stopped after the local connection was lost. The command outcome is unknown; inspect its state before retrying."
+    : userInitiated
+      ? ABORTED_TOOL_ERROR_TEXT
+      : finishReason === "length"
+        ? OUTPUT_LIMIT_TOOL_ERROR_TEXT
+        : INTERRUPTED_TOOL_ERROR_TEXT;
 
 export const isUserStoppedToolError = (errorText: unknown): boolean =>
   typeof errorText === "string" &&

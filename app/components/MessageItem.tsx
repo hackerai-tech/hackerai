@@ -66,6 +66,7 @@ interface MessageItemProps {
   feedbackInputMessageId: string | null;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
+  continueDisabledReason?: string;
   mode?: ChatMode;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
@@ -116,6 +117,7 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.lastUserMessageIndex !== next.lastUserMessageIndex) return false;
   if (prev.finishReason !== next.finishReason) return false;
+  if (prev.continueDisabledReason !== next.continueDisabledReason) return false;
   if (prev.mode !== next.mode) return false;
   if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
     return false;
@@ -182,6 +184,7 @@ export const MessageItem = memo(function MessageItem({
   feedbackInputMessageId,
   tempChatFileDetails,
   finishReason,
+  continueDisabledReason,
   mode,
   branchedFromChatId,
   branchedFromChatTitle,
@@ -687,6 +690,8 @@ export const MessageItem = memo(function MessageItem({
           status !== "streaming" && (
             <FinishReasonNotice
               finishReason={finishReason}
+              continueDisabledReason={continueDisabledReason}
+              status={status}
               mode={mode}
               agentRunSpendCapPremiumContinuationAllowed={
                 agentRunSpendCapWarning?.premiumContinuationAllowed

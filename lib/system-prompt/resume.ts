@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 import {
   OUTPUT_LIMIT_FINISH_REASON,
   STEP_LIMIT_FINISH_REASON,
@@ -6,6 +7,14 @@ import {
 } from "@/lib/chat/stop-conditions";
 
 export const getResumeSection = (finishReason?: string): string => {
+  if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
+    return `<resume_context>
+The previous Agent run stopped because its local computer connection was lost.
+The user has now explicitly resumed from saved conversation progress. Do not restart completed work.
+A command that was running when the connection disappeared may have completed or may still be running.
+Inspect its saved output and current state before taking further action. Never replay an uncertain mutation automatically.
+</resume_context>`;
+  }
   if (
     finishReason === STEP_LIMIT_FINISH_REASON ||
     finishReason === "tool-calls"

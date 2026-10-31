@@ -1,4 +1,5 @@
 type DirectStopSource =
+  | "local_connection_lost"
   | "browser_ownership_lost"
   | "trigger_platform"
   | "active_runtime_budget"
