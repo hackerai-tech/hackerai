@@ -258,9 +258,63 @@ describe("get_terminal_files", () => {
       failure_phase_counts: { file_metadata: 1, transfer: 1 },
       metadata_failure_diagnostic_version: 1,
       metadata_failure_reason_counts: { native_file_missing: 1 },
+      transfer_failure_diagnostic_version: 1,
+      transfer_failure_reason_counts: { unknown: 1 },
     });
     expect(JSON.stringify(fields)).not.toMatch(
       /private-target|signed-upload|missing\.txt|failed-upload\.txt|recovered\.txt/,
+    );
+  });
+
+  it("counts terminal transfer reasons once per requested entry and rejects private reason values", async () => {
+    const privateText = "private-path-signed-url";
+    mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+      args.onPhase?.(
+        args.fullPath.endsWith("metadata.txt") ? "file_metadata" : "transfer",
+      );
+      if (args.fullPath === "/home/user/recovered.txt") {
+        throw new LocalFileRequestError("timeout", privateText);
+      }
+      if (args.fullPath === "recovered.txt") {
+        return {
+          fileId: "stored" as never,
+          name: "recovered.txt",
+          mediaType: "text/plain",
+          sizeBytes: 1,
+          url: "https://files.example/private",
+          tokens: 0,
+        };
+      }
+      if (args.fullPath.endsWith("invalid.txt")) {
+        throw new LocalFileRequestError(privateText as never, privateText);
+      }
+      throw new LocalFileRequestError("readiness_timeout", privateText);
+    });
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["recovered.txt", "timeout.txt", "invalid.txt", "metadata.txt"],
+    });
+    expect(result).toMatchObject({
+      files: [{ path: "recovered.txt" }],
+      failedFiles: [
+        { path: "timeout.txt" },
+        { path: "invalid.txt" },
+        { path: "metadata.txt" },
+      ],
+    });
+    const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
+    expect(fields).toMatchObject({
+      delivered_file_count: 1,
+      failed_file_count: 3,
+      failure_phase_counts: { transfer: 2, file_metadata: 1 },
+      transfer_failure_diagnostic_version: 1,
+      transfer_failure_reason_counts: { readiness_timeout: 1, unknown: 1 },
+    });
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private-path|signed-url|recovered\.txt|timeout\.txt|invalid\.txt|metadata\.txt/,
     );
   });
 
