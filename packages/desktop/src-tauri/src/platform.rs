@@ -213,7 +213,7 @@ pub fn build_command(
 /// Gracefully kill a child process.
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
-/// On Windows: calls kill() directly (which is always immediate).
+/// On Windows: stops the process tree before killing/reaping the shell.
 /// Always reaps the process with wait() afterward.
 pub async fn graceful_kill(child: &mut tokio::process::Child) {
     #[cfg(unix)]
@@ -239,6 +239,11 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
 
     #[cfg(not(unix))]
     {
+        if let Some(pid) = child.id() {
+            // Killing only bash/cmd can leave its native descendants writing
+            // files after the caller releases update admission.
+            let _ = cancel_process_tree(pid).await;
+        }
         let _ = child.kill().await;
     }
 

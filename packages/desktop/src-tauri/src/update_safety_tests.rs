@@ -153,7 +153,13 @@ impl tokio::io::AsyncWrite for FailedHeaders {
 async fn header_failure_reaps_command_before_update_admission() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let executable = std::env::current_exe().unwrap();
-    let command = format!("\"{}\" --exact update_safety_tests::native_adapters_preserve_files_and_terminals_during_installation", executable.display());
+    let mut command = format!("\"{}\" --exact update_safety_tests::native_adapters_preserve_files_and_terminals_during_installation", executable.display());
+    // Keep the shell alive so this covers descendants, not exec replacement.
+    command.push_str(if platform::get_shell_config().is_cmd {
+        " & exit /b 0"
+    } else {
+        " ; exit 0"
+    });
     let body = serde_json::json!({"command":command,"timeout_ms":5000,"env":{"HACKERAI_HEADER_TEST_PORT":listener.local_addr().unwrap().port().to_string()}}).to_string();
     let (ready, started) = tokio::sync::oneshot::channel();
     let mut transport = FailedHeaders(started);
@@ -173,10 +179,17 @@ async fn header_failure_reaps_command_before_update_admission() {
     assert!(result.unwrap_err().contains("test peer disconnected"));
     assert!(update_safety::UPDATE_GATE.install().is_ok());
     let mut byte = [0];
-    let stopped = matches!(
-        tokio::time::timeout(Duration::from_millis(500), child_connection.read(&mut byte)).await,
-        Ok(Ok(0))
-    );
+    let closed =
+        tokio::time::timeout(Duration::from_millis(500), child_connection.read(&mut byte)).await;
+    let stopped = match &closed {
+        Ok(Ok(0)) => true,
+        // TerminateProcess can close a Windows socket with RST instead of FIN.
+        Ok(Err(error)) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+        ),
+        _ => false,
+    };
     if !stopped {
         // Avoid leaking the regression fixture even when the assertion fails.
         let _ = child_connection.write_all(&[1]).await;
@@ -185,6 +198,6 @@ async fn header_failure_reaps_command_before_update_admission() {
     }
     assert!(
         stopped,
-        "header failure released update admission while the native command was still running"
+        "header failure released update admission before the child connection closed: {closed:?}"
     );
 }
