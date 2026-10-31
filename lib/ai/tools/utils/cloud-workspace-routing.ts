@@ -1,3 +1,4 @@
+import { CloudWorkspaceSelectionRequiredError } from "./cloud-workspace-selection-error";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { readFailures } from "@/lib/cloud-recovery/store";
 import { createRedisClient } from "@/lib/rate-limit/redis";
@@ -196,7 +197,10 @@ export async function resolveCloudWorkspaceRegion({
     );
     const regions = occupied.filter((region) => region !== null);
     // There is no honest automatic choice between two existing file stores.
-    if (regions.length > 1) throw unavailable("inventory_multiple_clusters");
+    if (regions.length > 1) {
+      unavailable("inventory_multiple_clusters");
+      throw new CloudWorkspaceSelectionRequiredError();
+    }
     existingCluster = regions[0] ?? undefined;
     selected =
       regions[0] === "eu"

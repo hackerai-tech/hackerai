@@ -23,6 +23,15 @@ const scripts = (source, name) =>
       .slice(source.indexOf(`export async function ${name}(`))
       .matchAll(/\.eval\(\s*`([\s\S]*?)`/g),
   ].map((match) => match[1]);
+const selection = readFileSync(
+  new URL(
+    "../lib/ai/tools/utils/cloud-workspace-selection.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const [selectionLua] = scripts(selection, "selectWorkspaceRegion");
+assert.ok(selectionLua);
 const [admitLua] = scripts(guard, "assertCloudWorkspaceAvailable");
 const [confirmLua] = scripts(store, "decideConsent");
 const [claimLua, , finishLua] = scripts(guard, "claimE2BDiskRecovery");
@@ -152,6 +161,36 @@ try {
     if (i === 99) throw new Error("Local Redis failed to start");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  // Execute the real selection CAS: a second tab and concurrent preservation
+  // fences must never replace the winning workspace binding.
+  const selectionKeys = [
+    "selection-region",
+    "selection-migration",
+    "selection-failures",
+    "selection-consent",
+    "selection-result",
+  ];
+  const selectRegion = (region) =>
+    command(
+      "EVAL",
+      selectionLua,
+      selectionKeys.length,
+      ...selectionKeys,
+      region,
+    );
+  command("DEL", ...selectionKeys);
+  assert.equal(selectRegion("eu-central-1"), 1);
+  assert.equal(selectRegion("us-east-1"), 0);
+  assert.equal(command("GET", selectionKeys[0]), "eu-central-1");
+  assert.equal(command("TTL", selectionKeys[0]), -1);
+  for (const fence of selectionKeys.slice(1)) {
+    command("DEL", ...selectionKeys);
+    command("SET", fence, "preserved");
+    assert.equal(selectRegion("us-east-1"), 0);
+    assert.equal(command("GET", selectionKeys[0]), null);
+    assert.equal(command("GET", fence), "preserved");
+  }
+  command("DEL", ...selectionKeys);
   reset();
   assert.equal(confirm(), 1);
   assert.equal(

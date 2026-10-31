@@ -234,6 +234,26 @@ describe("web request correlation at Agent dispatch", () => {
       }
     },
   );
+  it.each(["/api/agent", "/api/agent-long"] as const)(
+    "returns an actionable workspace choice from %s without dispatch",
+    async (endpoint) => {
+      const {
+        CloudWorkspaceSelectionRequiredError,
+      } = require("@/lib/ai/tools/utils/cloud-workspace-selection-error");
+      mockResolveWorkspaceRegion.mockRejectedValue(
+        new CloudWorkspaceSelectionRequiredError(),
+      );
+      const response = await start(endpoint, "full_access", requestId, {
+        sandboxPreference: "e2b",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        metadata: { cloud_workspace_region_selection_required: true },
+      });
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
   it("does not route Desktop requests through the Cloud binding", async () => {
     mockResolveWorkspaceRegion.mockRejectedValue(
       new Error("must not discover cloud"),
