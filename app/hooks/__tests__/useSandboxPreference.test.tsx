@@ -1,6 +1,7 @@
 import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 
 const mockResolvedPreferences = new Map<string, string>();
 jest.mock("convex/react", () => ({
@@ -10,9 +11,15 @@ jest.mock("convex/react", () => ({
 }));
 
 const mockIsTauriEnvironment = jest.fn(() => true);
+const mockOpenInBrowser = jest
+  .fn<() => Promise<boolean>>()
+  .mockResolvedValue(true);
 
 jest.mock("@/app/hooks/useTauri", () => ({
   isTauriEnvironment: mockIsTauriEnvironment,
+  DESKTOP_UPDATE_URL:
+    "https://github.com/hackerai-tech/hackerai/releases/latest",
+  openInBrowser: mockOpenInBrowser,
 }));
 
 jest.mock("@/app/services/desktop-sandbox-bridge", () => ({
@@ -28,6 +35,7 @@ jest.mock("@/lib/analytics/client", () => ({
 jest.mock("sonner", () => ({
   toast: { error: jest.fn() },
 }));
+const { toast } = require("sonner") as typeof import("sonner");
 
 const { DesktopSandboxBridge } =
   require("@/app/services/desktop-sandbox-bridge") as typeof import("@/app/services/desktop-sandbox-bridge");
@@ -549,91 +557,112 @@ describe("useSandboxPreference", () => {
     },
   );
 
-  it.each(["manual retry", "fresh sign-in"])(
-    "stops unauthorized startup retries until %s",
-    async (recovery) => {
-      const instances: Array<{ start: jest.Mock; stop: jest.Mock }> = [];
-      const unauthorized = Object.assign(new Error("Registration rejected"), {
-        data: { code: "UNAUTHORIZED" },
+  it.each([
+    ["unauthorized", "manual retry"],
+    ["unauthorized", "fresh sign-in"],
+    ["native ACL", "manual retry"],
+    ["native ACL", "fresh sign-in"],
+  ])("stops %s startup retries until %s", async (failure, recovery) => {
+    const instances: Array<{ start: jest.Mock; stop: jest.Mock }> = [];
+    const unauthorized =
+      failure === "native ACL"
+        ? new DesktopFileBridgeError(
+            "native_ipc_denied",
+            "Native file access denied",
+          )
+        : Object.assign(new Error("Registration rejected"), {
+            data: { code: "UNAUTHORIZED" },
+          });
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(() => {
+      const index = instances.length;
+      const instance = {
+        start: jest
+          .fn()
+          .mockImplementation(() =>
+            index === 0
+              ? Promise.reject(unauthorized)
+              : Promise.resolve("new-connection"),
+          ),
+        stop: jest.fn().mockResolvedValue(undefined),
+        getConnectionId: jest
+          .fn()
+          .mockReturnValue(index === 0 ? null : "new-connection"),
+      };
+      instances.push(instance);
+      return instance;
+    });
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.useFakeTimers();
+    const { result, rerender } = renderHook(
+      ({ authenticated }) => useSandboxPreference(authenticated),
+      { initialProps: { authenticated: true } },
+    );
+    try {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
       });
-      (DesktopSandboxBridge as jest.Mock).mockImplementation(() => {
-        const index = instances.length;
-        const instance = {
-          start: jest
-            .fn()
-            .mockImplementation(() =>
-              index === 0
-                ? Promise.reject(unauthorized)
-                : Promise.resolve("new-connection"),
-            ),
-          stop: jest.fn().mockResolvedValue(undefined),
-          getConnectionId: jest
-            .fn()
-            .mockReturnValue(index === 0 ? null : "new-connection"),
-        };
-        instances.push(instance);
-        return instance;
-      });
-      const errorSpy = jest
-        .spyOn(console, "error")
-        .mockImplementation(() => {});
-      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      jest.useFakeTimers();
-      const { result, rerender } = renderHook(
-        ({ authenticated }) => useSandboxPreference(authenticated),
-        { initialProps: { authenticated: true } },
-      );
-      try {
-        await act(async () => {
-          await jest.advanceTimersByTimeAsync(0);
-        });
-        expect(result.current.desktopBridgeStatus).toBe("failed");
-        expect(result.current.desktopBridgeActive).toBe(false);
-        expect(instances[0].stop).toHaveBeenCalledTimes(1);
-
-        await act(async () => {
-          await jest.advanceTimersByTimeAsync(120_000);
-          window.dispatchEvent(new Event("online"));
-          window.dispatchEvent(new Event("focus"));
-          document.dispatchEvent(new Event("visibilitychange"));
-          await jest.advanceTimersByTimeAsync(120_000);
-        });
-        expect(instances).toHaveLength(1);
-        expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
-          "desktop_bridge_recovery_scheduled",
-          expect.anything(),
+      expect(result.current.desktopBridgeStatus).toBe("failed");
+      expect(result.current.desktopBridgeActive).toBe(false);
+      expect(instances[0].stop).toHaveBeenCalledTimes(1);
+      if (failure === "native ACL") {
+        expect(toast.error).toHaveBeenCalledWith(
+          "HackerAI Desktop can't access files",
+          expect.objectContaining({
+            action: expect.objectContaining({ label: "Download update" }),
+          }),
         );
-        expect(result.current.desktopBridgeStatus).toBe("failed");
+        const action = (toast.error as jest.Mock).mock.calls[0][1] as {
+          action: { onClick: () => void };
+        };
+        await act(async () => action.action.onClick());
+        expect(mockOpenInBrowser).toHaveBeenCalledWith(
+          "https://github.com/hackerai-tech/hackerai/releases/latest",
+        );
+      }
 
-        if (recovery === "manual retry") {
-          await act(async () => {
-            result.current.retryDesktopBridge();
-          });
-        } else {
-          act(() => rerender({ authenticated: false }));
-          await act(async () => {
-            await jest.advanceTimersByTimeAsync(0);
-          });
-          expect(result.current.desktopBridgeStatus).toBe("idle");
-          await act(async () => rerender({ authenticated: true }));
-        }
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(120_000);
+        window.dispatchEvent(new Event("online"));
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        await jest.advanceTimersByTimeAsync(120_000);
+      });
+      expect(instances).toHaveLength(1);
+      expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+        "desktop_bridge_recovery_scheduled",
+        expect.anything(),
+      );
+      expect(result.current.desktopBridgeStatus).toBe("failed");
+
+      if (recovery === "manual retry") {
         await act(async () => {
-          await jest.advanceTimersByTimeAsync(0);
+          result.current.retryDesktopBridge();
         });
-        expect(instances).toHaveLength(2);
-        expect(result.current.desktopBridgeStatus).toBe("connected");
-        expect(result.current.desktopBridgeActive).toBe(true);
-      } finally {
+      } else {
         act(() => rerender({ authenticated: false }));
         await act(async () => {
           await jest.advanceTimersByTimeAsync(0);
         });
-        jest.useRealTimers();
-        errorSpy.mockRestore();
-        warnSpy.mockRestore();
+        expect(result.current.desktopBridgeStatus).toBe("idle");
+        await act(async () => rerender({ authenticated: true }));
       }
-    },
-  );
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(instances).toHaveLength(2);
+      expect(result.current.desktopBridgeStatus).toBe("connected");
+      expect(result.current.desktopBridgeActive).toBe(true);
+    } finally {
+      act(() => rerender({ authenticated: false }));
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      jest.useRealTimers();
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 
   it.each(["before outage", "during backoff", "during reconnect"])(
     "recovers on the current mount after remounting %s",

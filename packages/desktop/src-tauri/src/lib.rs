@@ -5,6 +5,8 @@ mod file_save;
 mod pty;
 #[cfg(test)]
 mod updater_tests;
+#[cfg(test)]
+mod file_acl_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -2264,6 +2266,10 @@ mod tests {
     }
 }
 
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2390,7 +2396,7 @@ pub fn run() {
             log::info!("HackerAI Desktop initialized");
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {

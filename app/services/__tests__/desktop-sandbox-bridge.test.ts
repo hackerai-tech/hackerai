@@ -541,6 +541,67 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("refuses to register an ACL-denied Desktop, records its native version, and recovers after reopening", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "plugin:app|version") return "0.0.59";
+      if (cmd === "desktop_file_request")
+        throw new Error("Command desktop_file_request not allowed by ACL");
+      return original(cmd, args);
+    };
+    global.fetch = jest.fn();
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await expect(bridge.start()).rejects.toMatchObject({
+      fileFailure: "native_ipc_denied",
+    });
+    expect(config.connectDesktop).not.toHaveBeenCalled();
+    expect(mockClient.connect).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "desktop_file_bridge_probe_failed",
+      expect.objectContaining({
+        native_app_version: "0.0.59",
+        native_platform: "darwin",
+        file_failure: "native_ipc_denied",
+      }),
+    );
+    await bridge.stop();
+    mockInvokeHandler = original;
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({ files: true }),
+      }),
+    );
+    await bridge.stop();
+  });
+
+  it.each(["PRIVATE_TOKEN /private/customer/file", undefined])(
+    "does not trust invalid native version diagnostics (%s)",
+    async (version) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "plugin:app|version") return version;
+        if (cmd === "desktop_file_request")
+          throw new Error("Command desktop_file_request not allowed by ACL");
+        return original(cmd, args);
+      };
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await expect(bridge.start()).rejects.toMatchObject({
+        fileFailure: "native_ipc_denied",
+      });
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_file_bridge_probe_failed",
+        expect.objectContaining({ native_app_version: "unknown" }),
+      );
+      expect(
+        JSON.stringify((captureAuthenticatedEvent as jest.Mock).mock.calls),
+      ).not.toContain("PRIVATE_TOKEN");
+      await bridge.stop();
+    },
+  );
+
   it("allows a slow successful probe its original startup budget", async () => {
     jest.useFakeTimers();
     const original = mockInvokeHandler;

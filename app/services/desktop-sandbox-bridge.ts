@@ -314,6 +314,8 @@ export class DesktopSandboxBridge {
   private operationRouter: OperationChannelRouter<Subscription> | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
   private nativeFileIpcFailure: DesktopFileFailure | undefined;
+  private nativeAppVersion = "unknown";
+  private nativePlatform = "unknown";
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -567,8 +569,17 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    const osInfo = await this.getOsInfo();
+    const [osInfo, nativeAppVersion] = await Promise.all([
+      this.getOsInfo(),
+      this.getNativeAppVersion(),
+    ]);
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    this.nativeAppVersion = nativeAppVersion;
+    this.nativePlatform = ["darwin", "linux", "windows"].includes(
+      osInfo?.platform ?? "",
+    )
+      ? osInfo!.platform
+      : "unknown";
     const files = await this.probeFileBridge();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
@@ -936,6 +947,29 @@ export class DesktopSandboxBridge {
       throw new Error("JWT missing 'sub' claim");
     }
     return payload.sub;
+  }
+
+  private async getNativeAppVersion(): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const version = await Promise.race([
+        invoke<unknown>("plugin:app|version"),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 500);
+        }),
+      ]);
+      // Only the native package version, never the fixed browser user agent or
+      // arbitrary error text. Diagnostics must not delay or prevent recovery.
+      return typeof version === "string" &&
+        /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)
+        ? version
+        : "unknown";
+    } catch {
+      return "unknown";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async getOsInfo(): Promise<
@@ -1603,7 +1637,13 @@ export class DesktopSandboxBridge {
         reason: permissionDenied ? "permission_denied" : "unavailable",
         native_failure: this.nativeFileIpcFailure,
         file_failure: getDesktopFileFailure(error),
+        native_app_version: this.nativeAppVersion,
+        native_platform: this.nativePlatform,
       });
+      // A native ACL rejection cannot recover through relay retries. Do not
+      // register a connected computer that every subsequent Agent will reject,
+      // or bypass the denial through the HTTP/command adapters.
+      if (getDesktopFileFailure(error) === "native_ipc_denied") throw error;
       return permissionDenied;
     } finally {
       if (timer) clearTimeout(timer);
