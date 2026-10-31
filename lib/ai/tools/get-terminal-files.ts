@@ -70,6 +70,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | null = "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      type TransferFailureReason = ReturnType<
+        typeof getLocalFileRequestFailure
+      >;
+      const transferFailureReasonCounts: Partial<
+        Record<TransferFailureReason, number>
+      > = {};
       type MetadataFailureReason =
         `native_${NativeStatFailureReason}` | "unclassified";
       let currentMetadataFailureReason: MetadataFailureReason = "unclassified";
@@ -121,6 +127,8 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             failed_file_count: failed,
             file_delivery_diagnostic_version: 1,
             failure_phase_counts: failurePhaseCounts,
+            transfer_failure_diagnostic_version: 1,
+            transfer_failure_reason_counts: transferFailureReasonCounts,
             metadata_failure_diagnostic_version: 1,
             metadata_failure_reason_counts: {
               ...nativeMetadataFailureCounts,
@@ -278,6 +286,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           let fileProcessed = false;
           let lastError: string | null = null;
           let lastFailurePhase: FailurePhase = "unknown";
+          let lastTransferFailureReason: TransferFailureReason = "unknown";
           let lastMetadataFailureReason: MetadataFailureReason = "unclassified";
 
           for (const filePath of pathsToTry) {
@@ -367,10 +376,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
+              // Upload observers update the phase across async callbacks.
               lastFailurePhase = abortSignal?.aborted
                 ? "unknown"
-                : currentPhase;
+                : (currentPhase as FailurePhase);
               lastMetadataFailureReason = currentMetadataFailureReason;
+              lastTransferFailureReason = "unknown";
+              if (lastFailurePhase === "transfer") {
+                try {
+                  lastTransferFailureReason =
+                    isLocalCommandRelayUnsubscribedError(e)
+                      ? "relay_unsubscribed"
+                      : getLocalFileRequestFailure(e);
+                } catch {
+                  // Optional classification must preserve the original failure.
+                }
+              }
               if (abortSignal?.aborted) break;
               // Continue to try next path
             }
@@ -382,6 +403,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             // candidate paths/recovery. Successful alternate paths add no failure.
             countFailure(lastFailurePhase);
             countMetadataFailure(lastFailurePhase, lastMetadataFailureReason);
+            if (lastFailurePhase === "transfer") {
+              // Match the terminal phase count, not candidate paths or retries.
+              transferFailureReasonCounts[lastTransferFailureReason] =
+                (transferFailureReasonCounts[lastTransferFailureReason] ?? 0) +
+                1;
+            }
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,
