@@ -51,7 +51,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "updater".into(),
         serde_json::json!({
             "dangerousInsecureTransportProtocol": true, "endpoints": [endpoint],
-            "pubkey": fs::read_to_string(&args[3])?.trim(), "windows": {"installMode":"quiet"}
+            // Use the same default passive Windows install mode as Desktop.
+            "pubkey": fs::read_to_string(&args[3])?.trim()
         }),
     );
     let app = mock_builder()
