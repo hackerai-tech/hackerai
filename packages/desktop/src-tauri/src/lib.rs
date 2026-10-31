@@ -833,7 +833,7 @@ async fn handle_execute(body: &str) -> Result<String, String> {
 ///   {"type":"error","message":"..."}
 async fn handle_execute_stream(
     body: &str,
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> Result<(), String> {
     let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: ExecRequest =
@@ -856,10 +856,12 @@ async fn handle_execute_stream(
 
     // Send chunked response headers
     let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
-    stream
-        .write_all(headers.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    if let Err(error) = stream.write_all(headers.as_bytes()).await {
+        // The command has already started. Keep update admission blocked until
+        // it is stopped and reaped, even if the HTTP client disconnected.
+        platform::graceful_kill(&mut child).await;
+        return Err(error.to_string());
+    }
 
     let timeout = Duration::from_millis(req.timeout_ms);
     let mut stdout = child.stdout.take().unwrap();
@@ -936,7 +938,7 @@ async fn handle_execute_stream(
 }
 
 /// Write a single HTTP chunked-transfer chunk
-async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
+async fn write_chunk(stream: &mut (impl tokio::io::AsyncWrite + Unpin), data: &str) {
     let payload = if data.is_empty() {
         "0\r\n\r\n".to_string()
     } else {
