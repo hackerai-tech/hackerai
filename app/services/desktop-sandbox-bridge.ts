@@ -575,10 +575,12 @@ export class DesktopSandboxBridge {
     ]);
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     this.nativeAppVersion = nativeAppVersion;
+    const platform =
+      osInfo?.platform === "win32" ? "windows" : osInfo?.platform;
     this.nativePlatform = ["darwin", "linux", "windows"].includes(
-      osInfo?.platform ?? "",
+      platform ?? "",
     )
-      ? osInfo!.platform
+      ? platform!
       : "unknown";
     const files = await this.probeFileBridge();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
@@ -1533,7 +1535,9 @@ export class DesktopSandboxBridge {
   ): DesktopFileFailure | undefined {
     const message = this.getErrorMessage(error);
     if (
-      /^(?:command )?desktop_file_request not allowed by acl\b/i.test(message)
+      /^(?:command )?desktop_file_request not allowed(?: by acl)?\b/i.test(
+        message,
+      )
     )
       return "native_ipc_denied";
     if (
