@@ -4,6 +4,27 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::Path, sync::Mutex};
 
+static CHECK_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) struct CheckGuard;
+impl CheckGuard {
+    pub(crate) fn acquire() -> Option<Self> {
+        CHECK_RUNNING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| Self)
+    }
+}
+impl Drop for CheckGuard {
+    fn drop(&mut self) {
+        CHECK_RUNNING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 #[derive(Default)]
 struct Activity {
     operations: usize,
@@ -38,7 +59,7 @@ impl UpdateGate {
             return Err("An update is already being installed.".into());
         }
         if state.operations != 0 {
-            return Err("Finish running commands, close terminal sessions, and let file operations complete before installing. Your current work has not been stopped.".into());
+            return Err("Desktop will not install while commands, terminal sessions, or file operations are active. Your current work has not been stopped. To finish it first, choose Later, then Help > Check for Updates.".into());
         }
         state.installing = true;
         Ok(Installation(self))
@@ -165,6 +186,13 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manual_and_scheduled_checks_cannot_overlap_but_can_retry() {
+        let checking = CheckGuard::acquire().unwrap();
+        assert!(CheckGuard::acquire().is_none());
+        drop(checking);
+        assert!(CheckGuard::acquire().is_some());
+    }
     #[test]
     fn installer_handoff_requires_approval_idle_work_and_durable_receipt() {
         let dir = std::env::temp_dir().join(format!("update-handoff-{}", uuid::Uuid::new_v4()));

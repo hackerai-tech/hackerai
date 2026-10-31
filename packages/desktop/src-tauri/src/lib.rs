@@ -1875,8 +1875,24 @@ async fn check_update(
     Ok(update)
 }
 
+// Attach updater prompts to the app window. Parentless macOS alerts use a
+// separate system notification surface and can leave the app awaiting an
+// approval that is not visible in its window.
+fn update_dialog(
+    app: &tauri::AppHandle,
+    message: impl Into<String>,
+) -> tauri_plugin_dialog::MessageDialogBuilder<tauri::Wry> {
+    use tauri_plugin_dialog::DialogExt;
+    let dialog = app.dialog().message(message);
+    match app.get_webview_window("main") {
+        Some(window) => dialog.parent(&window),
+        None => dialog,
+    }
+}
+
 async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let Some(_check) = update_safety::CheckGuard::acquire() else { return; };
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
 
     match check_update(
         app.updater_builder(),
@@ -1889,10 +1905,8 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
             let version = update.version.clone();
             log::info!("Update available: {}", version);
 
-            let should_update = app
-                .dialog()
-                .message(format!(
-                    "Version {} is available. Download the update? You will be asked before installation and restart.",
+            let should_update = update_dialog(&app, format!(
+                    "Version {} is available. Download the update? You will be asked before anything is installed.",
                     version
                 ))
                 .title("Update Available")
@@ -1903,16 +1917,16 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
             if should_update {
                 let bytes = match update.download(|_, _| {}, || {}).await {
                     Ok(bytes) => bytes,
-                    Err(_) => {
-                        app.dialog().message("The update could not be downloaded or verified. Your current app has not been changed. Reopen the app to try again.")
+                    Err(error) => {
+                        log::warn!("Desktop update download or signature verification failed: {error}");
+                        update_dialog(&app, "The update could not be downloaded or verified. Your current app has not been changed. Choose Help > Check for Updates to try again.")
                             .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
                         return;
                     }
                 };
                 // Windows exits inside install(), so this is the final consent
                 // on every platform. Never put restart approval after install.
-                let approved = app.dialog()
-                    .message(format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. Installation waits until local commands and file operations finish. If Desktop does not reopen, open it yourself to confirm the version.", version))
+                let approved = update_dialog(&app, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
                     .title("Ready to install")
                     .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
                     .blocking_show();
@@ -1922,13 +1936,13 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 let directory = match app.path().app_data_dir() {
                     Ok(directory) => directory,
                     Err(_) => {
-                        app.dialog()
-                            .message(
-                                "The update could not be prepared. No installation was started.",
-                            )
-                            .title("Update not started")
-                            .kind(MessageDialogKind::Error)
-                            .blocking_show();
+                        update_dialog(
+                            &app,
+                            "The update could not be prepared. No installation was started.",
+                        )
+                        .title("Update not started")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
                         return;
                     }
                 };
@@ -1944,7 +1958,10 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                             let bytes = download
                                 .take()
                                 .expect("verified download available before installation");
-                            update.install(bytes).map_err(|_| "Installation did not finish. Reopen HackerAI Desktop to check its version before trying again.".to_string())?;
+                            update.install(bytes).map_err(|error| {
+                                log::error!("Desktop update installation failed: {error}");
+                                "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
+                            })?;
                             app.restart();
                         },
                     );
@@ -1952,20 +1969,18 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                         Err(message) if download.is_some() => {
                             // A busy gate or receipt failure never handed bytes to
                             // the installer. Keep the verified download for retry.
-                            let retry = app.dialog()
-                                .message(format!("{}\n\nChoose Try again when ready to install and close Desktop.", message))
+                            let retry = update_dialog(&app, format!("{}\n\nChoose Install now to try again. Desktop will close.", message))
                                 .title("Update not started")
-                                .buttons(MessageDialogButtons::OkCancelCustom("Try again".into(), "Later".into()))
+                                .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
                                 .blocking_show();
                             if !retry {
                                 return;
                             }
                         }
                         Err(message) => {
-                            app.dialog()
-                                .message(message)
+                            update_dialog(&app, message)
                                 .title("Update did not finish")
-                                .kind(MessageDialogKind::Warning)
+                                .kind(MessageDialogKind::Error)
                                 .blocking_show();
                             return;
                         }
@@ -1979,9 +1994,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::info!("No updates available (auto-check)");
             } else {
                 log::info!("No updates available");
-                let _ = app
-                    .dialog()
-                    .message("You're running the latest version.")
+                let _ = update_dialog(&app, "You're running the latest version.")
                     .kind(MessageDialogKind::Info)
                     .title("No Updates")
                     .blocking_show();
@@ -1992,9 +2005,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::warn!("Auto-update check failed: {}", e);
             } else {
                 log::error!("Failed to check for updates: {}", e);
-                let _ = app
-                    .dialog()
-                    .message(format!("Failed to check for updates: {}", e))
+                let _ = update_dialog(&app, format!("Failed to check for updates: {}", e))
                     .kind(MessageDialogKind::Error)
                     .title("Update Error")
                     .blocking_show();
@@ -2331,6 +2342,18 @@ fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .menu(|app| {
+            let menu = tauri::menu::Menu::default(app)?;
+            if let Some(tauri::menu::MenuItemKind::Submenu(help)) = menu.get(tauri::menu::HELP_SUBMENU_ID) {
+                help.append(&tauri::menu::MenuItem::with_id(app, "check-for-updates", "Check for Updates…", true, None::<&str>)?)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "check-for-updates" {
+                tauri::async_runtime::spawn(check_for_updates(app.clone(), false));
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             environment_identity::get_environment_id,
             get_dev_auth_port,
@@ -2436,14 +2459,14 @@ pub fn run() {
             // Check for updates on every launch
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                use tauri_plugin_dialog::MessageDialogKind;
                 if let Ok(directory) = handle.path().app_data_dir() {
                     match update_safety::Receipt::take(&directory, &handle.package_info().version.to_string()) {
                         Ok(Some((receipt, update_safety::RestartResult::Applied))) => {
                             log::info!("Desktop update verified after restart: {}", receipt.target);
                         }
                         Ok(Some((receipt, update_safety::RestartResult::NotApplied))) => {
-                            handle.dialog().message(format!("The update to {} did not finish. This app is still version {}. You can try the update again.", receipt.target, receipt.from))
+                            update_dialog(&handle, format!("The update to {} did not finish. This app is still version {}. You can try the update again.", receipt.target, receipt.from))
                                 .title("Update needs another attempt").kind(MessageDialogKind::Warning).blocking_show();
                         }
                         Ok(_) => {},

@@ -46,6 +46,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
+      HACKERAI_TEST_MANIFEST: "1"
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
