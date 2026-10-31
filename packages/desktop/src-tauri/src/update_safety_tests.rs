@@ -8,6 +8,11 @@ fn native_adapters_preserve_files_and_terminals_during_installation() {
     // the parent is only a cleanup escape for the red-before-fix case.
     if let Ok(port) = std::env::var("HACKERAI_HEADER_TEST_PORT") {
         use std::io::Read;
+        #[cfg(unix)]
+        unsafe {
+            // The shell exits on TERM, but this descendant must require KILL.
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
         let mut connection = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
         let _ = connection.read_exact(&mut [0u8]);
         return;

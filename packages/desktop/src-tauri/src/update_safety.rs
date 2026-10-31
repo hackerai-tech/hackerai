@@ -43,7 +43,6 @@ pub(crate) struct Installation<'a>(&'a UpdateGate);
 impl UpdateGate {
     /// Failed tree termination may leave descendants writing after their shell
     /// exits. Keep updates fenced for this session without blocking user work.
-    #[cfg(any(not(unix), test))]
     pub(crate) fn block_for_unconfirmed_command(&self) {
         self.0
             .lock()
