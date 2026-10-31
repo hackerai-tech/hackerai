@@ -530,3 +530,14 @@ it("removes phase observers after successful routing", async () => {
   controller.abort(new DOMException("later abort", "AbortError"));
   expect(warning).not.toHaveBeenCalled();
 });
+
+it("offers an explicit workspace choice instead of a generic startup failure for two existing regions", async () => {
+  inventory(["us", "eu"]);
+  const error = await resolve("us-east-1").catch((error) => error);
+  expect(error).toMatchObject({
+    type: "bad_request",
+    surface: "sandbox",
+    metadata: { cloud_workspace_region_selection_required: true },
+  });
+  expect(mockSet).not.toHaveBeenCalled();
+});

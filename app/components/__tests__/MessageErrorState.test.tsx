@@ -83,6 +83,41 @@ describe("MessageErrorState", () => {
     jest.restoreAllMocks();
   });
 
+  it("renders a serialized region conflict as an explicit choice without replaying the prompt", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "selection_required",
+        token: "a".repeat(64),
+        choices: ["us-east-1", "eu-central-1"],
+      }),
+    }) as typeof fetch;
+    const onRetry = jest.fn();
+    try {
+      const error = new ChatSDKError(
+        "bad_request:sandbox",
+        "Choose your workspace",
+        { cloud_workspace_region_selection_required: true },
+      );
+      render(
+        <MessageErrorState
+          error={new Error(serializeChatSDKErrorForStream(error))}
+          onRetry={onRetry}
+          onReconnect={jest.fn()}
+        />,
+      );
+      expect(
+        await screen.findByRole("button", { name: "Europe workspace" }),
+      ).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: "Retry" }),
+      ).not.toBeInTheDocument();
+      expect(onRetry).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
   it("does not offer same-payload retry for provider content blocks", () => {
     const error = new ChatSDKError(
       "forbidden:stream",
