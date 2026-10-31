@@ -60,6 +60,12 @@ function createArtifacts(root, version) {
   ]) {
     writeArtifact(root, "desktop-Linux-x64", filename);
   }
+  writeArtifact(
+    root,
+    "desktop-Linux-x64",
+    `HackerAI_${version}_amd64.deb.sig`,
+    signatureFor(`HackerAI_${version}_amd64.deb`),
+  );
   const linuxX64Updater = `HackerAI_${version}_amd64.AppImage.tar.gz`;
   writeArtifact(
     root,
@@ -75,6 +81,12 @@ function createArtifacts(root, version) {
   ]) {
     writeArtifact(root, "desktop-Linux-arm64", filename);
   }
+  writeArtifact(
+    root,
+    "desktop-Linux-arm64",
+    `HackerAI_${version}_arm64.deb.sig`,
+    signatureFor(`HackerAI_${version}_arm64.deb`),
+  );
   const linuxArmUpdater = `HackerAI_${version}_aarch64.AppImage.tar.gz`;
   writeArtifact(
     root,
@@ -186,6 +198,21 @@ describe("prepare-desktop-release", () => {
         url: "https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI-x86_64.app.tar.gz",
         signature: signatureFor("mac-x64-updater"),
       });
+      for (const [arch, debArch, imageArch] of [
+        ["x86_64", "amd64", "amd64"],
+        ["aarch64", "arm64", "aarch64"],
+      ]) {
+        expect(latest.platforms[`linux-${arch}-deb`]).toEqual({
+          url: `https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI_0.0.57_${debArch}.deb`,
+          signature: signatureFor(`HackerAI_0.0.57_${debArch}.deb`),
+        });
+        expect(latest.platforms[`linux-${arch}-appimage`]).toEqual(
+          latest.platforms[`linux-${arch}`],
+        );
+        expect(latest.platforms[`linux-${arch}`].url).toBe(
+          `https://github.com/hackerai-tech/hackerai/releases/download/desktop-v0.0.57/HackerAI_0.0.57_${imageArch}.AppImage.tar.gz`,
+        );
+      }
       expect(latest.platforms["windows-x86_64"].signature).toBe(
         signatureFor("HackerAI_0.0.57_x64-setup.nsis.zip"),
       );
@@ -228,6 +255,40 @@ describe("prepare-desktop-release", () => {
       rmSync(fixture.workspace, { recursive: true, force: true });
     }
   });
+
+  test.each(["missing", "tampered"])(
+    "rejects %s Debian updater signatures",
+    (failure) => {
+      const fixture = runPreparation({
+        mutateArtifacts(artifacts) {
+          if (failure === "missing")
+            rmSync(
+              path.join(
+                artifacts,
+                "desktop-Linux-x64",
+                "bundle",
+                "HackerAI_0.0.57_amd64.deb.sig",
+              ),
+            );
+          else
+            writeArtifact(
+              artifacts,
+              "desktop-Linux-x64",
+              "HackerAI_0.0.57_amd64.deb",
+              "tampered-deb",
+            );
+        },
+      });
+      try {
+        expect(fixture.result.status).toBe(1);
+        expect(existsSync(path.join(fixture.release, "latest.json"))).toBe(
+          false,
+        );
+      } finally {
+        rmSync(fixture.workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("rejects versions with leading-zero components", () => {
     const fixture = runPreparation({
