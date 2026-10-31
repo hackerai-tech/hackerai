@@ -1,4 +1,10 @@
 jest.mock("server-only", () => ({}));
+jest.mock("ai", () => ({
+  ...jest.requireActual("ai"),
+  generateText: jest.fn(),
+}));
+
+import { generateText } from "ai";
 
 import {
   AUXILIARY_VISION_SLUG,
@@ -18,6 +24,7 @@ import {
 
 describe("auxiliary vision", () => {
   beforeEach(() => {
+    jest.mocked(generateText).mockReset();
     jest.spyOn(console, "info").mockImplementation(() => {});
     jest.spyOn(console, "warn").mockImplementation(() => {});
   });
@@ -73,6 +80,7 @@ describe("auxiliary vision", () => {
       if (expectedStatus !== undefined)
         expect(warnings[0].provider_status_code).toBe(expectedStatus);
       else expect(warnings[0]).not.toHaveProperty("provider_status_code");
+      expect(warnings[0]).not.toHaveProperty("response_finish_reason");
       expect(JSON.stringify(warnings)).not.toMatch(/PRIVATE|private\.invalid/);
     },
   );
@@ -782,20 +790,82 @@ describe("auxiliary vision", () => {
     });
   });
 
-  it("accounts for a billed response even when its description is empty", async () => {
-    const onCost = jest.fn();
+  it.each([
+    ["stop", "stop"],
+    ["length", "length"],
+    ["content-filter", "content-filter"],
+    ["tool-calls", "tool-calls"],
+    ["error", "error"],
+    ["other", "other"],
+    [undefined, null],
+    ["PRIVATE_RAW_FINISH_REASON", null],
+    [{ private: "PRIVATE_PROVIDER_BODY" }, null],
+  ])(
+    "diagnoses a billed empty response with bounded finish reason %p",
+    async (finishReason, expectedFinishReason) => {
+      const onCost = jest.fn();
+      const modelRunner = jest.fn(async () => ({
+        text: "   ",
+        finishReason,
+        usage: { raw: { cost: 0.004 } },
+      }));
+      await expect(
+        describeImageWithAuxiliaryVision({
+          image: "data:image/png;base64,aW1hZ2U=",
+          mediaType: "image/png",
+          source: "attachment",
+          onCost,
+          modelRunner,
+        }),
+      ).rejects.toThrow("empty description");
+      expect(onCost).toHaveBeenCalledTimes(1);
+      expect(onCost).toHaveBeenCalledWith(0.004);
+      expect(modelRunner).toHaveBeenCalledTimes(1);
+      const warnings = (console.warn as jest.Mock).mock.calls.map(([line]) =>
+        JSON.parse(String(line)),
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        event: "auxiliary_vision_description_failed",
+        failure_reason: "empty_description",
+        response_finish_reason: expectedFinishReason,
+        attempt: 1,
+        will_retry: false,
+      });
+      expect(JSON.stringify(warnings)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("preserves the SDK unified finish reason for an empty response without logging raw provider metadata", async () => {
+    jest.mocked(generateText).mockResolvedValue({
+      text: " ",
+      finishReason: "length",
+      rawFinishReason: "PRIVATE_RAW_REASON",
+      usage: {},
+      response: { modelId: "PRIVATE_MODEL", body: "PRIVATE_BODY" },
+      providerMetadata: { private: "PRIVATE_METADATA" },
+    } as never);
     await expect(
       describeImageWithAuxiliaryVision({
-        image: "data:image/png;base64,aW1hZ2U=",
+        image: "PRIVATE_IMAGE",
+        filename: "PRIVATE_FILENAME",
         mediaType: "image/png",
         source: "attachment",
-        onCost,
-        modelRunner: async () => ({
-          text: "   ",
-          usage: { raw: { cost: 0.004 } },
-        }),
       }),
-    ).rejects.toThrow("empty description");
-    expect(onCost).toHaveBeenCalledWith(0.004);
+    ).rejects.toThrow("Auxiliary vision model returned an empty description");
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(generateText).toHaveBeenCalledWith(
+      expect.objectContaining({ maxRetries: 0 }),
+    );
+    const warnings = (console.warn as jest.Mock).mock.calls.map(([line]) =>
+      JSON.parse(String(line)),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      failure_reason: "empty_description",
+      response_finish_reason: "length",
+      will_retry: false,
+    });
+    expect(JSON.stringify(warnings)).not.toContain("PRIVATE");
   });
 });
