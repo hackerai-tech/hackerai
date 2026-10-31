@@ -1649,7 +1649,7 @@ export async function getMessagesByChatId({
             },
           );
 
-          const hitBudget = truncatedMessages.length < candidate.length;
+          let hitBudget = truncatedMessages.length < candidate.length;
           if (
             truncatedMessages.length === 0 &&
             mode === "agent" &&
@@ -1711,6 +1711,10 @@ export async function getMessagesByChatId({
                   // Optional diagnostics cannot discard usable context.
                 }
               }
+            } else {
+              // An assistant-only page cannot establish user scope. Keep
+              // backfilling within the existing page cap before giving up.
+              hitBudget = false;
             }
           }
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;

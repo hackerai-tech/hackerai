@@ -1685,6 +1685,71 @@ describe("getMessagesByChatId", () => {
     expect(mockQuery).toHaveBeenCalledTimes(2);
   });
 
+  it("backfills source user instructions before recovering an oversized assistant tail", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const source = oversizedHistory();
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [
+          source.at(-1),
+          {
+            id: "automatic-continue",
+            role: "user",
+            metadata: { isAutoContinue: true },
+            parts: [{ type: "text", text: "Continue automatically." }],
+          },
+        ],
+        isDone: false,
+        continueCursor: "source-page",
+      })
+      .mockResolvedValueOnce({
+        page: source.slice(0, -1).reverse(),
+        isDone: true,
+        continueCursor: null,
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages.length).toBeGreaterThan(1);
+    expect(JSON.stringify(result.truncatedMessages[0])).toContain(
+      "Inspect example.invalid only. Do not change data.",
+    );
+    expect(JSON.stringify(result.truncatedMessages[0])).toContain(
+      "Report findings; keep the earlier restrictions.",
+    );
+    expect(mockQuery.mock.calls[2]?.[1]).toMatchObject({
+      paginationOpts: { numItems: 24, cursor: "source-page" },
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the four-page cap when oversized history has no source user instructions", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const assistant = oversizedHistory().at(-1)!;
+    mockQuery.mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" });
+    for (let page = 0; page < 4; page++) {
+      mockQuery.mockResolvedValueOnce({
+        page: [{ ...assistant, id: `assistant-page-${page}` }],
+        isDone: false,
+        continueCursor: `older-page-${page + 1}`,
+      });
+    }
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "free",
+      newMessages: [],
+      mode: "agent",
+    });
+    expect(result.truncatedMessages).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(5);
+  });
+
   it("does not resume an oversized assistant without source user instructions", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     mockQuery
