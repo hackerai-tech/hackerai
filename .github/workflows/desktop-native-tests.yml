@@ -5,11 +5,13 @@ on:
     paths:
       - "packages/desktop/src-tauri/**"
       - ".github/workflows/desktop-native-tests.yml"
+      - ".github/scripts/test-windows-packaged-upgrade.py"
   push:
     branches: [main]
     paths:
       - "packages/desktop/src-tauri/**"
       - ".github/workflows/desktop-native-tests.yml"
+      - ".github/scripts/test-windows-packaged-upgrade.py"
 
 permissions:
   contents: read
@@ -39,3 +41,38 @@ jobs:
       - name: Test Linux native cancellation and command handling
         working-directory: packages/desktop/src-tauri
         run: cargo test --locked --lib
+
+  windows-update-safety:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      HACKERAI_TEST_MANIFEST: "1"
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          cache: false
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+      - name: Test Windows installer handoff, native activity fence and restart receipts
+        working-directory: packages/desktop/src-tauri
+        run: cargo test --locked --lib update_safety
+      - name: Test signed Windows downloads, deadlines and retry
+        working-directory: packages/desktop/src-tauri
+        run: cargo test --locked --lib updater_tests
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.4
+      - name: Install desktop packaging tools
+        working-directory: packages/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Upgrade signed NSIS package and verify automatic restart
+        run: python .github/scripts/test-windows-packaged-upgrade.py

@@ -41,6 +41,7 @@ impl Write for CancellableWriter {
 }
 
 struct PtySession {
+    _operation: crate::update_safety::Operation<'static>,
     master: Box<dyn MasterPty + Send>,
     writer: PtyWriter,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -73,6 +74,7 @@ impl PtyManager {
         env: Option<HashMap<String, String>>,
         on_data: Channel<String>,
     ) -> Result<PtyCreateResult, String> {
+        let operation = crate::update_safety::UPDATE_GATE.operation()?;
         let mut sessions = self
             .sessions
             .lock()
@@ -184,6 +186,7 @@ impl PtyManager {
             .map_err(|e| format!("Failed to spawn command: {}", e))?;
         let pid = child.process_id();
         let session = PtySession {
+            _operation: operation,
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
             reader_shutdown: shutdown_flag.clone(),
