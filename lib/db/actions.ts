@@ -1583,6 +1583,12 @@ export async function getMessagesByChatId({
           }
 
           const existingChrono = [...fetchedDesc].reverse();
+          // The answer being replaced must not consume the regeneration budget
+          // or hide the saved user turn when its deletion has not propagated.
+          if (regenerate) {
+            while (existingChrono.at(-1)?.role === "assistant")
+              existingChrono.pop();
+          }
           const candidate = regenerate
             ? existingChrono
             : appendNewClientMessages(existingChrono);
@@ -1794,7 +1800,12 @@ export async function getMessagesByChatId({
                   pages_fetched: pagesFetched,
                   ...emptyProjectionDiagnostics,
                   projection_reason:
-                    projectedMessageCountBeforeRegenerate > 0
+                    projectedMessageCountBeforeRegenerate > 0 ||
+                    (regenerate &&
+                      fetchedDesc.length > 0 &&
+                      fetchedDesc.every(
+                        (message) => message.role === "assistant",
+                      ))
                       ? "regenerate_removed_all"
                       : fetchedDesc.length === 0 &&
                           (regenerate || newMessages.length === 0)
