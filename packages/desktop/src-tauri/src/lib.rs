@@ -1,4 +1,7 @@
 mod platform;
+mod update_safety;
+#[cfg(test)]
+mod update_safety_tests;
 mod child_environment;
 mod environment_identity;
 mod file_save;
@@ -105,6 +108,7 @@ async fn save_file_with_dialog(
     use tauri_plugin_dialog::DialogExt;
 
     tokio::task::spawn_blocking(move || {
+        let _operation = update_safety::UPDATE_GATE.operation()?;
         let suggested_name = Path::new(&filename)
             .file_name()
             .and_then(|name| name.to_str())
@@ -287,6 +291,7 @@ fn write_generated_text_attachment(
     file_name: String,
     content: String,
 ) -> Result<LocalFileMetadata, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
     fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
     get_local_file_metadata(path.to_string_lossy().to_string())
@@ -318,6 +323,7 @@ fn remove_generated_text_attachment(
     attachment_id: String,
     file_name: String,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -776,6 +782,7 @@ async fn handle_cmd_request(
 }
 
 async fn handle_execute(body: &str) -> Result<String, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: ExecRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -828,6 +835,7 @@ async fn handle_execute_stream(
     body: &str,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: ExecRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -1057,6 +1065,7 @@ fn write_desktop_file(
     bytes: &[u8],
     append: bool,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let allowed_root = allowed_root.filter(|root| !root.trim().is_empty());
     if let Some(allowed_root) = allowed_root {
         let mut file = open_scoped_mutation_file(path, allowed_root, append)?;
@@ -1253,6 +1262,7 @@ async fn handle_file_append(body: &str) -> Result<String, String> {
 }
 
 async fn handle_file_remove(body: &str) -> Result<String, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: FileRemoveRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
     let path = std::path::Path::new(&req.path);
@@ -1395,6 +1405,7 @@ async fn execute_command(
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
 ) -> Result<ExecResponse, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
@@ -1438,6 +1449,7 @@ async fn execute_stream_command(
     timeout_ms: Option<u64>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let Some(mut child) = spawn_stream_command(&state, &command_id, &mut cmd)? else {
         let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
@@ -1880,38 +1892,84 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
             let should_update = app
                 .dialog()
                 .message(format!(
-                    "A new version ({}) is available. Would you like to update now?",
+                    "Version {} is available. Download the update? You will be asked before installation and restart.",
                     version
                 ))
                 .title("Update Available")
                 .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancel)
+                .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
                 .blocking_show();
 
             if should_update {
-                log::info!("User accepted update to version {}", version);
-                if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-                    log::error!("Failed to install update: {}", e);
-                    let _ = app
-                        .dialog()
-                        .message(format!("Failed to install update: {}", e))
-                        .kind(MessageDialogKind::Error)
-                        .title("Update Error")
-                        .blocking_show();
-                } else {
-                    log::info!("Update installed successfully");
-                    let restart_now = app
-                        .dialog()
-                        .message("Update installed successfully. Restart now to apply changes?")
-                        .kind(MessageDialogKind::Info)
-                        .title("Update Complete")
-                        .buttons(MessageDialogButtons::OkCancelCustom(
-                            "Restart Now".into(),
-                            "Later".into(),
-                        ))
-                        .blocking_show();
-                    if restart_now {
-                        app.restart();
+                let bytes = match update.download(|_, _| {}, || {}).await {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        app.dialog().message("The update could not be downloaded or verified. Your current app has not been changed. Reopen the app to try again.")
+                            .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
+                        return;
+                    }
+                };
+                // Windows exits inside install(), so this is the final consent
+                // on every platform. Never put restart approval after install.
+                let approved = app.dialog()
+                    .message(format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. Installation waits until local commands and file operations finish. If Desktop does not reopen, open it yourself to confirm the version.", version))
+                    .title("Ready to install")
+                    .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
+                    .blocking_show();
+                if !approved {
+                    return;
+                }
+                let directory = match app.path().app_data_dir() {
+                    Ok(directory) => directory,
+                    Err(_) => {
+                        app.dialog()
+                            .message(
+                                "The update could not be prepared. No installation was started.",
+                            )
+                            .title("Update not started")
+                            .kind(MessageDialogKind::Error)
+                            .blocking_show();
+                        return;
+                    }
+                };
+                let mut download = Some(bytes);
+                loop {
+                    let result = update_safety::install_after_approval(
+                        &update_safety::UPDATE_GATE,
+                        &directory,
+                        &app.package_info().version.to_string(),
+                        &version,
+                        approved,
+                        || {
+                            let bytes = download
+                                .take()
+                                .expect("verified download available before installation");
+                            update.install(bytes).map_err(|_| "Installation did not finish. Reopen HackerAI Desktop to check its version before trying again.".to_string())?;
+                            app.restart();
+                        },
+                    );
+                    match result {
+                        Err(message) if download.is_some() => {
+                            // A busy gate or receipt failure never handed bytes to
+                            // the installer. Keep the verified download for retry.
+                            let retry = app.dialog()
+                                .message(format!("{}\n\nChoose Try again when ready to install and close Desktop.", message))
+                                .title("Update not started")
+                                .buttons(MessageDialogButtons::OkCancelCustom("Try again".into(), "Later".into()))
+                                .blocking_show();
+                            if !retry {
+                                return;
+                            }
+                        }
+                        Err(message) => {
+                            app.dialog()
+                                .message(message)
+                                .title("Update did not finish")
+                                .kind(MessageDialogKind::Warning)
+                                .blocking_show();
+                            return;
+                        }
+                        Ok(()) => return,
                     }
                 }
             }
@@ -2378,6 +2436,20 @@ pub fn run() {
             // Check for updates on every launch
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                if let Ok(directory) = handle.path().app_data_dir() {
+                    match update_safety::Receipt::take(&directory, &handle.package_info().version.to_string()) {
+                        Ok(Some((receipt, update_safety::RestartResult::Applied))) => {
+                            log::info!("Desktop update verified after restart: {}", receipt.target);
+                        }
+                        Ok(Some((receipt, update_safety::RestartResult::NotApplied))) => {
+                            handle.dialog().message(format!("The update to {} did not finish. This app is still version {}. You can try the update again.", receipt.target, receipt.from))
+                                .title("Update needs another attempt").kind(MessageDialogKind::Warning).blocking_show();
+                        }
+                        Ok(_) => {},
+                        Err(_) => log::warn!("Desktop update verification unavailable; continuing startup"),
+                    }
+                }
                 log::info!("Running update check on launch");
                 save_update_check_timestamp(&handle);
                 check_for_updates(handle.clone(), true).await;
