@@ -1,4 +1,83 @@
-/** Numeric diagnostics only: never return a URL, signing material or error text. */
+// S3's bounded Code is useful; its Message and canonical request can contain
+// object keys, credentials and signing material and must never leave the host.
+const STORAGE_ERROR_CODES = [
+  "AccessDenied",
+  "SignatureDoesNotMatch",
+  "ExpiredToken",
+  "InvalidToken",
+  "InvalidAccessKeyId",
+  "RequestTimeTooSkewed",
+  "AuthorizationHeaderMalformed",
+  "AuthorizationQueryParametersError",
+  "BadDigest",
+  "InvalidDigest",
+  "EntityTooLarge",
+  "SlowDown",
+  "InternalError",
+  "ServiceUnavailable",
+] as const;
+type StorageErrorCode = (typeof STORAGE_ERROR_CODES)[number];
+const STORAGE_ERROR_MARKER = "__HACKERAI_UPLOAD_STORAGE_CODE__:";
+const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+
+/** POSIX curl PUT with a private, transient response file. Never print its body.
+ * If diagnostic tools/storage are unavailable, preserve the ordinary upload.
+ */
+export function buildPosixCurlUploadCommand(
+  path: string,
+  url: string,
+  contentType: string,
+): string {
+  const request = `-X PUT -H ${quote(`Content-Type: ${contentType}`)} --data-binary @${quote(path)} ${quote(url)}`;
+  const ordinaryUpload = `curl -fsSL ${request} -o /dev/null`;
+  // FD 4 streams the response through a bounded, best-effort file sink. Always
+  // drain the rest so a failed diagnostic write cannot cause curl's EPIPE/23.
+  // FD 3 returns HTTP status and curl exit status independently of that sink.
+  return `(
+case "$(command -v curl)" in
+  */snap/bin/curl)
+    ${ordinaryUpload}
+    exit $?
+    ;;
+esac
+if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1 || ! command -v rm >/dev/null 2>&1; then
+  ${ordinaryUpload}
+  exit $?
+fi
+response_file=
+trap 'if [ -n "$response_file" ]; then rm -f -- "$response_file"; fi' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+response_file=$(umask 077; mktemp "\${TMPDIR:-/tmp}/hackerai-upload-response.XXXXXXXX" 2>/dev/null) || {
+  ${ordinaryUpload}
+  exit $?
+}
+curl_result=$(
+  {
+    {
+      curl_exit=0
+      http_status=$(curl -sSL -o /dev/fd/4 -w '%{http_code}' ${request}) || curl_exit=$?
+      printf '%s %s' "$http_status" "$curl_exit" >&3
+    } 4>&1 |
+    { head -c 8192 > "$response_file" || :; cat >/dev/null; } 2>/dev/null
+  } 3>&1
+)
+http_status=\${curl_result% *}
+curl_exit=\${curl_result##* }
+if [ "$curl_exit" -ne 0 ]; then exit "$curl_exit"; fi
+case "$http_status" in
+  [45][0-9][0-9])
+    storage_code=$(LC_ALL=C head -c 8192 "$response_file" 2>/dev/null | LC_ALL=C sed -nE 's@.*<Code>(${STORAGE_ERROR_CODES.join("|")})</Code>.*@\\1@p' | head -n 1)
+    printf 'curl: (22) The requested URL returned error: %s\\n' "$http_status" >&2
+    printf '${STORAGE_ERROR_MARKER}%s\\n' "\${storage_code:-Unknown}" >&2
+    exit 22
+    ;;
+esac
+)`;
+}
+
+/** Bounded diagnostics only: never return a URL, signing material or error text. */
 export function getUploadFailureDiagnostics(
   uploadUrl: string,
   error: unknown,
@@ -6,11 +85,15 @@ export function getUploadFailureDiagnostics(
 ) {
   const fields: {
     upload_reported_http_status: number | null;
+    upload_reported_storage_code: StorageErrorCode | null;
+    upload_storage_diagnostic_present: boolean;
     upload_signature_age_ms: number | null;
     upload_signature_ttl_ms: number | null;
     upload_signature_remaining_ms: number | null;
   } = {
     upload_reported_http_status: null,
+    upload_reported_storage_code: null,
+    upload_storage_diagnostic_present: false,
     upload_signature_age_ms: null,
     upload_signature_ttl_ms: null,
     upload_signature_remaining_ms: null,
@@ -25,9 +108,16 @@ export function getUploadFailureDiagnostics(
           ? error.message
           : "";
     const status = text.match(
-      /^(?:Failed to upload file: )?curl: \(22\) The requested URL returned error: ([45]\d{2})(?:\r?\n)?$/,
+      new RegExp(
+        `^(?:Failed to upload file: )?curl: \\(22\\) The requested URL returned error: ([45]\\d{2})(?:\\r?\\n${STORAGE_ERROR_MARKER}(${STORAGE_ERROR_CODES.join("|")}|Unknown))?(?:\\r?\\n)?$`,
+      ),
     );
-    if (status) fields.upload_reported_http_status = Number(status[1]);
+    if (status) {
+      fields.upload_reported_http_status = Number(status[1]);
+      fields.upload_storage_diagnostic_present = status[2] !== undefined;
+      if (status[2] && status[2] !== "Unknown")
+        fields.upload_reported_storage_code = status[2] as StorageErrorCode;
+    }
   } catch {
     // Diagnostics must preserve even an unusual original error.
   }

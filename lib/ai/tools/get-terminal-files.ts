@@ -59,12 +59,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         failure: GeneratedFileTransferAttemptFailure,
       ) => {
         // A native failure can precede a successful command fallback. These
-        // numeric attempt observations are separate from final delivery counts.
+        // bounded attempt observations are separate from final delivery counts.
         phLogger.event("agent_file_transfer_attempt_failed", {
           userId: context.userID,
           chat_id: context.chatId,
           trigger_run_id: context.triggerRunId ?? null,
-          transfer_attempt_diagnostic_version: 1,
+          transfer_attempt_diagnostic_version: 2,
           ...failure,
         });
       };

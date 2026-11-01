@@ -4995,6 +4995,7 @@ describe("CentrifugoSandbox", () => {
       { client: "curl", exitCode: Infinity, desktop: false, platform: "posix" },
       { client: "curl", exitCode: 26, desktop: false, platform: "posix" },
       { client: "curl", exitCode: 35, desktop: true, platform: "posix" },
+      { client: "curl", exitCode: 22, desktop: true, platform: "posix" },
     ])(
       "records bounded $client upload failure diagnostics without transfer details",
       async ({ client, exitCode, desktop, platform }) => {
@@ -5019,7 +5020,10 @@ describe("CentrifugoSandbox", () => {
             ? { stdout: "GNU Wget", stderr: "", exitCode: 0 }
             : {
                 stdout: `private stdout ${url}`,
-                stderr: `private stderr ${path} ${url}`,
+                stderr:
+                  exitCode === 22
+                    ? "curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:SignatureDoesNotMatch\n"
+                    : `private stderr ${path} ${url}`,
                 exitCode,
               },
         );
@@ -5037,9 +5041,20 @@ describe("CentrifugoSandbox", () => {
             sandbox_type: desktop ? "desktop" : "local",
             platform,
             http_client: client,
+            ...(platform === "posix" && client === "curl"
+              ? {
+                  upload_reported_http_status: exitCode === 22 ? 403 : null,
+                  upload_reported_storage_code:
+                    exitCode === 22 ? "SignatureDoesNotMatch" : null,
+                  upload_storage_diagnostic_present: exitCode === 22,
+                  upload_signature_age_ms: null,
+                  upload_signature_ttl_ms: null,
+                  upload_signature_remaining_ms: null,
+                }
+              : {}),
             exit_code: Number.isSafeInteger(exitCode) ? exitCode : null,
           });
-          expect(serialized.length).toBeLessThan(220);
+          expect(serialized.length).toBeLessThan(500);
           for (const sensitive of [
             path,
             url,

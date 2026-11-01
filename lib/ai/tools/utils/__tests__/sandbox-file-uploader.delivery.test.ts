@@ -243,16 +243,39 @@ posixDescribe(
         fullPath: path,
       });
       expect(accepted[0]).toEqual(readFileSync(path));
-      const { uploadUrl } = await generateS3UploadUrl(
-        "file",
-        "text/plain",
-        "fixture",
-        1,
-      );
+      const mismatched = adapter();
+      jest.mocked(mismatched.files.stat).mockResolvedValueOnce({
+        type: "file_stat_result",
+        requestId: "fixture",
+        path,
+        kind: "file",
+        sizeBytes: 1,
+      });
+      const failures: unknown[] = [];
       await expect(
-        adapter().files.uploadToUrl(path, uploadUrl, "text/plain"),
+        uploadSandboxFileToConvex({
+          sandbox: mismatched,
+          userId: "fixture",
+          fullPath: path,
+          onTransferAttemptFailure: (failure) => {
+            failures.push(failure);
+          },
+        }),
       ).rejects.toThrow("403");
-      expect(statuses).toEqual([200, 403]);
+      // Preserve the existing native + command fallback; neither may claim
+      // that an HTTP rejection delivered the file.
+      expect(statuses).toEqual([200, 403, 403]);
+      expect(failures).toEqual(
+        ["native", "command"].map((kind) =>
+          expect.objectContaining({
+            transfer_attempt_kind: kind,
+            upload_reported_http_status: 403,
+            upload_reported_storage_code: "SignatureDoesNotMatch",
+            upload_storage_diagnostic_present: true,
+          }),
+        ),
+      );
+      expect(getConvexClient().action).toHaveBeenCalledTimes(1);
     });
 
     it.each(["copy", "write"])(

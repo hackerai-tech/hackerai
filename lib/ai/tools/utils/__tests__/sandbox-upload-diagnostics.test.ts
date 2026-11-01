@@ -14,6 +14,8 @@ test("reports a curl HTTP failure and signing timing without signing material", 
   );
   expect(result).toEqual({
     upload_reported_http_status: 403,
+    upload_reported_storage_code: null,
+    upload_storage_diagnostic_present: false,
     upload_signature_age_ms: 9_000,
     upload_signature_ttl_ms: 60_000,
     upload_signature_remaining_ms: 51_000,
@@ -55,6 +57,8 @@ test.each([
     ),
   ).toEqual({
     upload_reported_http_status: 500,
+    upload_reported_storage_code: null,
+    upload_storage_diagnostic_present: false,
     upload_signature_age_ms: null,
     upload_signature_ttl_ms: null,
     upload_signature_remaining_ms: null,
@@ -69,6 +73,8 @@ test.each([
   "curl: (22) The requested URL returned error: 403-private-data",
   "curl: (22) The requested URL returned error: 403 https://private.example",
   "curl: (35) SSL connection failed",
+  "curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:private-data",
+  "curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:AccessDenied\nprivate-data",
 ])("does not guess an HTTP status from arbitrary error text (%s)", (error) => {
   expect(
     getUploadFailureDiagnostics(signedUrl, error, now)

@@ -692,6 +692,8 @@ describe("uploadSandboxFileToConvex", () => {
           sandbox_type: nativeWindows ? "desktop" : "cloud",
           transfer_exit_code: nativeWindows ? null : 22,
           upload_reported_http_status: 403,
+          upload_reported_storage_code: null,
+          upload_storage_diagnostic_present: false,
           upload_signature_age_ms: 9_000,
           upload_signature_ttl_ms: 60_000,
           upload_signature_remaining_ms: 51_000,
