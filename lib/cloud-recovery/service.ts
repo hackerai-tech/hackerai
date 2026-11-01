@@ -236,6 +236,7 @@ async function assertEligible(
             "sourceId",
             "destinationId",
             "region",
+            "origin",
           ].includes(key),
       ))
   )

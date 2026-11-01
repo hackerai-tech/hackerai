@@ -1,4 +1,15 @@
 import {
+  finishWorkspaceCreation,
+  listWorkspaceInventory,
+  startWorkspaceCreation,
+} from "./cloud-workspace-identity";
+import {
+  CloudWorkspaceUnavailableError,
+  readCloudWorkspaceState,
+  type ProvisioningWorkspace,
+  type RecoveredWorkspace,
+} from "./cloud-workspace-guard";
+import {
   recordResumeFailure,
   clearResumeFailures,
 } from "@/lib/cloud-recovery/store";
@@ -18,7 +29,6 @@ import {
 } from "./e2b-sandbox-version";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
-  NotFoundError,
   SandboxError,
   TimeoutError,
   classifyE2BError,
@@ -78,9 +88,6 @@ export class E2BAcquisitionError extends Error {
   }
 }
 
-// Retry config for E2B 429 rate limits
-const RATE_LIMIT_COOLDOWN_MS = 1_000;
-const MAX_CREATE_RETRIES = 3;
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
 
@@ -114,17 +121,19 @@ export const ensureSandboxConnection = async (
     acquisitionId?: string;
     triggerRunId?: string;
     destinationId?: string;
+    reservation?: ProvisioningWorkspace;
+    workspaceOrigin?: RecoveredWorkspace["origin"];
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
-  const { initialSandbox, triggerRegion, signal } = options;
+  const { initialSandbox, triggerRegion = "us-east-1", signal } = options;
   signal?.throwIfAborted();
   // The SDK aborts fetch with this shared deadline signal. Paused restores use
   // a longer SDK timeout as well; the total acquisition deadline remains authoritative.
   const requestOptions = { signal };
 
   // Return existing sandbox if already connected
-  if (initialSandbox && !options.destinationId) {
+  if (initialSandbox && !options.destinationId && !options.reservation) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -134,7 +143,7 @@ export const ensureSandboxConnection = async (
   let connectRequestTimeoutMs: number | null = null;
   let connectSandboxId: string | null = null;
   let connectCluster: E2BCluster | null = null;
-  let createPath: SandboxReadyPath = "create_fresh";
+  const createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
       path,
@@ -162,7 +171,7 @@ export const ensureSandboxConnection = async (
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
     if (options.destinationId) {
-      // A recovered workspace is pinned to one verified sandbox. Never let
+      // The workspace is pinned to one verified sandbox. Never let
       // discovery choose an older copy or create an empty replacement.
       phase = "connect";
       options.reportStage?.("workspace_identity");
@@ -172,11 +181,17 @@ export const ensureSandboxConnection = async (
         requestTimeoutMs: 10_000,
       });
       if (
+        info.sandboxId !== options.destinationId ||
         !["running", "paused"].includes(info.state) ||
         info.metadata?.userID !== userID ||
         info.metadata?.template !== createCluster.template ||
-        info.metadata?.e2bCluster !== createCluster.cluster ||
-        !isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion)
+        (!options.workspaceOrigin &&
+          !isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion)) ||
+        (info.metadata?.e2bCluster !== createCluster.cluster &&
+          !(
+            createCluster.cluster === "us" &&
+            info.metadata?.e2bCluster === undefined
+          ))
       )
         throw new Error("Pinned E2B workspace identity mismatch");
       if (
@@ -292,6 +307,7 @@ export const ensureSandboxConnection = async (
     // An old version can still contain files. Reconnect without destructive
     // replacement.
     if (existingSandboxInfo?.sandboxId && existingCluster) {
+      if (options.reservation) throw new CloudWorkspaceUnavailableError();
       if (hasVersionMismatch) {
         console.warn(
           JSON.stringify({
@@ -329,7 +345,7 @@ export const ensureSandboxConnection = async (
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
-      try {
+      {
         phase = "connect";
         const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
         connectSandboxId = existingSandboxInfo.sandboxId;
@@ -371,31 +387,10 @@ export const ensureSandboxConnection = async (
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
-      } catch (e) {
-        signal?.throwIfAborted();
-        // Handle specific error cases
-        if (
-          existingSandboxInfo.state !== "paused" &&
-          (e instanceof NotFoundError ||
-            (e instanceof Error && e.message?.includes("not found")))
-        ) {
-          console.error(
-            `[${userID}] Sandbox ${existingSandboxInfo.sandboxId} expired/deleted, creating new one`,
-          );
-          createPath = "create_after_expired";
-        } else {
-          // The listed state can become stale while connect is pending. Never
-          // destroy a shared user sandbox here: another run may have resumed
-          // it by the time this failure is observed. The attachment path owns
-          // bounded provider recovery after the E2B reconnect retries are
-          // exhausted.
-          throw e;
-        }
       }
     }
 
-    // Step 5: Create new sandbox with retry on E2B 429 rate limits
-    let lastError: unknown;
+    // Create only after a durable, exclusive first-workspace reservation.
     phase = "create";
     options.reportStage?.("create");
     // Select an explicitly tagged image so deploying app code before the new
@@ -422,51 +417,48 @@ export const ensureSandboxConnection = async (
       selectedBuild === versionBuild ? SANDBOX_VERSION : "v12";
     // Pin the resolved build, not a mutable tag that could change before create.
     const createTemplate = `${templateName}:${selectedBuild}`;
-    for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
-      signal?.throwIfAborted();
-      if (attempt > 0) {
-        console.warn(
-          `[${userID}] E2B rate limit — retrying sandbox creation (${attempt + 1}/${MAX_CREATE_RETRIES}) after ${RATE_LIMIT_COOLDOWN_MS}ms`,
-        );
-        await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN_MS));
-      }
-
-      signal?.throwIfAborted();
-      try {
-        const networkSettings = await readNetworkSettings(userID);
-        const sandbox = await Sandbox.create(createTemplate, {
-          network: e2bNetwork(
-            networkSettings?.policy ?? DEFAULT_NETWORK_POLICY,
-          ),
-          ...createCluster.connectionOptions,
-          ...requestOptions,
-          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-          lifecycle: { onTimeout: "pause", autoResume: true },
-          secure: true,
-          metadata: {
-            userID,
-            template: createCluster.template,
-            secure: "true",
-            sandboxVersion: createVersion,
-            e2bCluster: createCluster.cluster,
-          },
-        });
-
-        signal?.throwIfAborted();
-        rememberE2BSandboxVersion(sandbox, createVersion);
-        setSandbox(sandbox);
-        reportBoot(createPath, attempt + 1);
-        return { sandbox };
-      } catch (createError) {
-        lastError = createError;
-        const isRateLimit =
-          createError instanceof Error &&
-          (createError.message?.includes("429") ||
-            createError.message?.includes("Rate limit"));
-        if (!isRateLimit) throw createError;
-      }
-    }
-    throw lastError;
+    const networkSettings = await readNetworkSettings(userID);
+    const reservation =
+      options.reservation ?? (await readCloudWorkspaceState(userID));
+    if (
+      !reservation ||
+      reservation.phase !== "provisioning" ||
+      reservation.step !== "reserved" ||
+      reservation.region !== triggerRegion
+    )
+      throw new CloudWorkspaceUnavailableError();
+    // Recheck every configured cluster immediately before the exclusive create.
+    // This also catches workspaces left by an older worker since routing ran.
+    if ((await listWorkspaceInventory(userID, signal)).length)
+      throw new CloudWorkspaceUnavailableError();
+    signal?.throwIfAborted();
+    const creating = await startWorkspaceCreation(userID, reservation);
+    // No automatic HTTP/application retry: a failed response can hide a successful
+    // provider create. A future request reconciles this token from inventory.
+    const sandbox = await Sandbox.create(createTemplate, {
+      network: e2bNetwork(networkSettings?.policy ?? DEFAULT_NETWORK_POLICY),
+      ...createCluster.connectionOptions,
+      ...requestOptions,
+      retries: 0,
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+      lifecycle: { onTimeout: "pause", autoResume: true },
+      secure: true,
+      metadata: {
+        userID,
+        template: createCluster.template,
+        secure: "true",
+        sandboxVersion: createVersion,
+        e2bCluster: createCluster.cluster,
+        workspaceCreationToken: creating.token,
+      },
+    });
+    // Persist before observing abort: late success still owns these files.
+    await finishWorkspaceCreation(userID, creating, sandbox.sandboxId);
+    signal?.throwIfAborted();
+    rememberE2BSandboxVersion(sandbox, createVersion);
+    setSandbox(sandbox);
+    reportBoot(createPath, 1);
+    return { sandbox };
   } catch (error) {
     if (failedTarget && options.acquisitionId && options.triggerRegion) {
       const status =

@@ -5,7 +5,11 @@ import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
 import { listActiveSubagentsForUser } from "@/lib/db/subagents";
 import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
 import { isRecoverableE2BSandboxVersion } from "./e2b-sandbox-version";
-import { cloudWorkspaceRegionKey } from "./cloud-workspace-guard";
+import {
+  cloudWorkspaceRegionKey,
+  readCloudWorkspaceState,
+} from "./cloud-workspace-guard";
+import { workspaceBinding } from "./cloud-workspace-identity";
 
 export type WorkspaceRegionChoice = "us-east-1" | "eu-central-1";
 export type WorkspaceRegionView =
@@ -30,21 +34,29 @@ async function inspectSelection(userId: string) {
   const secret = process.env.CONVEX_SERVICE_ROLE_KEY;
   if (!redis || !secret) throw new WorkspaceSelectionUnavailable();
   const keys = guardKeys(userId);
-  const [saved, ...guards] = await redis.mget<unknown[]>(
+  const [saved, existing, ...guards] = await redis.mget<unknown[]>(
     cloudWorkspaceRegionKey(userId),
     ...keys,
   );
   if (guards.some((value) => value !== null))
     throw new WorkspaceSelectionUnavailable();
-  if (saved !== null) {
-    if (!["us-east-1", "us-west-2", "eu-central-1"].includes(String(saved)))
+  if (existing !== null) {
+    const binding = await readCloudWorkspaceState(userId);
+    if (
+      !binding ||
+      binding.phase !== "e2b" ||
+      binding.recoveryPending !== undefined ||
+      (saved !== null && saved !== binding.region)
+    )
       throw new WorkspaceSelectionUnavailable();
     return {
       redis,
       keys,
-      view: { status: "selected", region: String(saved) } as const,
+      candidates: [],
+      view: { status: "selected", region: binding.region } as const,
     };
   }
+  if (saved !== null) throw new WorkspaceSelectionUnavailable();
   const [parents, children] = await Promise.all([
     getActiveTriggerRunsForUser({ userId }),
     listActiveSubagentsForUser(userId),
@@ -108,6 +120,7 @@ async function inspectSelection(userId: string) {
   return {
     redis,
     keys,
+    candidates,
     view: {
       status: "selection_required",
       token,
@@ -127,7 +140,7 @@ export async function selectWorkspaceRegion(
   region: WorkspaceRegionChoice,
   token: string,
 ) {
-  const { redis, keys, view } = await inspectSelection(userId);
+  const { redis, keys, view, candidates } = await inspectSelection(userId);
   // An uncertain POST can be reconciled with GET; it must never move an existing binding.
   if (
     view.status !== "selection_required" ||
@@ -135,16 +148,27 @@ export async function selectWorkspaceRegion(
     !view.choices.includes(region)
   )
     throw new WorkspaceSelectionUnavailable();
+  const candidate = candidates.find((candidate) => candidate.region === region);
+  if (!candidate) throw new WorkspaceSelectionUnavailable();
+  const binding = workspaceBinding(candidate.id, region, "selected");
   const selected = await redis.eval(
     `for i = 2, #KEYS do if redis.call('EXISTS', KEYS[i]) == 1 then return 0 end end
      if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
      redis.call('SET', KEYS[1], ARGV[1], 'NX')
+     redis.call('SET', KEYS[2], ARGV[2])
      return 1`,
     [cloudWorkspaceRegionKey(userId), ...keys],
-    [region],
+    [region, JSON.stringify(binding)],
   );
   if (selected !== 1) throw new WorkspaceSelectionUnavailable();
   const saved = await redis.get(cloudWorkspaceRegionKey(userId));
-  if (saved !== region) throw new WorkspaceSelectionUnavailable();
+  const pinned = await readCloudWorkspaceState(userId);
+  if (
+    saved !== region ||
+    pinned?.phase !== "e2b" ||
+    pinned.destinationId !== candidate.id ||
+    pinned.region !== region
+  )
+    throw new WorkspaceSelectionUnavailable();
   return { status: "selected" as const, region };
 }

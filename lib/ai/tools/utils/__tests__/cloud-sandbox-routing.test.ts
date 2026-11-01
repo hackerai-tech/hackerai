@@ -57,7 +57,13 @@ describe("E2B cloud acquisition", () => {
     process.env = { ...originalEnv };
     delete process.env.E2B_EU_API_KEY;
     delete process.env.E2B_EU_DOMAIN;
-    read.mockResolvedValue(null);
+    read.mockResolvedValue({
+      version: 1,
+      phase: "provisioning",
+      step: "reserved",
+      token: "creation",
+      region: "us-east-1",
+    });
     available.mockResolvedValue(undefined);
     ensure.mockResolvedValue({ sandbox: { sandboxId: "new-e2b" } as Sandbox });
     jest.spyOn(console, "info").mockImplementation(() => {});
@@ -348,7 +354,12 @@ describe("E2B cloud acquisition", () => {
 it("pins ordinary retries to a failed workspace even if discovery would return empty", async () => {
   const original = process.env.CLOUD_DISK_RECOVERY_TARGETS;
   process.env.CLOUD_DISK_RECOVERY_TARGETS = "configured";
-  read.mockResolvedValue(null);
+  read.mockResolvedValue({
+    ...recovered,
+    sourceId: "failed-existing",
+    destinationId: "failed-existing",
+    origin: "adopted",
+  });
   available.mockResolvedValue(undefined);
   jest.mocked(readFailures).mockResolvedValue({
     sandboxId: "failed-existing",

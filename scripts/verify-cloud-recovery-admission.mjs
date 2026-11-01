@@ -183,12 +183,26 @@ try {
       selectionKeys.length,
       ...selectionKeys,
       region,
+      JSON.stringify({
+        version: 1,
+        phase: "e2b",
+        token: "selected",
+        sourceId: "chosen",
+        destinationId: "chosen",
+        region,
+        origin: "selected",
+      }),
     );
   command("DEL", ...selectionKeys);
   assert.equal(selectRegion("eu-central-1"), 1);
   assert.equal(selectRegion("us-east-1"), 0);
   assert.equal(command("GET", selectionKeys[0]), "eu-central-1");
   assert.equal(command("TTL", selectionKeys[0]), -1);
+  assert.equal(
+    JSON.parse(command("GET", selectionKeys[1])).destinationId,
+    "chosen",
+  );
+  assert.equal(command("TTL", selectionKeys[1]), -1);
   for (const fence of selectionKeys.slice(1)) {
     command("DEL", ...selectionKeys);
     command("SET", fence, "preserved");

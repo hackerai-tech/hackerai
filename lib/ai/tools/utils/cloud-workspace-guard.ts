@@ -3,7 +3,7 @@ import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { Sandbox } from "@e2b/code-interpreter";
 
-type RecoveredWorkspace = {
+export type RecoveredWorkspace = {
   version: 1;
   phase: "e2b";
   token: string;
@@ -11,6 +11,14 @@ type RecoveredWorkspace = {
   destinationId: string;
   region: TriggerRunRegion;
   recoveryPending?: unknown;
+  origin?: "adopted" | "created" | "selected";
+};
+export type ProvisioningWorkspace = {
+  version: 1;
+  phase: "provisioning";
+  step: "reserved" | "creating";
+  token: string;
+  region: TriggerRunRegion;
 };
 type CleanupState = {
   version: 1;
@@ -32,7 +40,8 @@ export type RecoveryState = {
   entryCount?: number;
   metadataHmacSha256?: string;
 };
-type WorkspaceState = RecoveredWorkspace | CleanupState | RecoveryState;
+type WorkspaceState =
+  RecoveredWorkspace | CleanupState | RecoveryState | ProvisioningWorkspace;
 
 const cleanupClaimFailureReasons = [
   "unknown",
@@ -137,7 +146,9 @@ function isRecoveredWorkspace(value: unknown): value is RecoveredWorkspace {
     !!state.sourceId &&
     typeof state.destinationId === "string" &&
     !!state.destinationId &&
-    ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region)
+    ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region) &&
+    (state.origin === undefined ||
+      ["adopted", "created", "selected"].includes(state.origin))
   );
 }
 
@@ -209,6 +220,18 @@ export async function readCloudWorkspaceState(
     if (isRecoveredWorkspace(value)) return value;
     if (isRecoveryState(value)) return value;
     if (value && typeof value === "object") {
+      const state = value as ProvisioningWorkspace;
+      if (
+        state.version === 1 &&
+        state.phase === "provisioning" &&
+        ["reserved", "creating"].includes(state.step) &&
+        typeof state.token === "string" &&
+        !!state.token &&
+        ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region)
+      )
+        return state;
+    }
+    if (value && typeof value === "object") {
       const state = value as CleanupState;
       if (
         state.version === 1 &&
@@ -275,6 +298,7 @@ export async function claimE2BDiskRecovery(args: {
               "sourceId",
               "destinationId",
               "region",
+              "origin",
             ].includes(key),
         )))
   )
@@ -445,7 +469,13 @@ export async function assertCloudWorkspaceAvailable(
           if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or (consent.target.region ~= 'us-east-1' and consent.target.region ~= 'us-west-2' and consent.target.region ~= 'eu-central-1') or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
         elseif consent.status ~= 'offered' and consent.status ~= 'declined' and consent.status ~= 'failed' then return 0 end
       end
-      local raw = redis.call('GET', KEYS[1]); if raw then local ok, state = pcall(cjson.decode, raw); if not ok or type(state) ~= 'table' or state.version ~= 1 or state.phase ~= 'e2b' or type(state.token) ~= 'string' or state.token == '' or type(state.sourceId) ~= 'string' or state.sourceId == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
+      local raw = redis.call('GET', KEYS[1]); if raw then
+        local ok, state = pcall(cjson.decode, raw)
+        if not ok or type(state) ~= 'table' or state.version ~= 1 or type(state.token) ~= 'string' or state.token == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') then return 0 end
+        if state.phase == 'provisioning' then
+          if state.step ~= 'reserved' or ARGV[2] ~= '' then return 0 end
+        elseif state.phase ~= 'e2b' or type(state.sourceId) ~= 'string' or state.sourceId == '' or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end
+      end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
       [
         cloudWorkspaceStateKey(userId),
         activityKeyFor(userId),
@@ -477,6 +507,7 @@ export async function claimCloudWorkspaceCleanup(
   if (
     observed &&
     observed.phase !== "e2b" &&
+    !(observed.phase === "provisioning" && observed.step === "reserved") &&
     !(permanent && observed.phase === "deleted")
   )
     throw new CloudWorkspaceUnavailableError("cleanup_blocked");

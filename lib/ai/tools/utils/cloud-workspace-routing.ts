@@ -1,3 +1,8 @@
+import {
+  isOwnedWorkspace,
+  reconcileWorkspaceCreation,
+  reserveWorkspace,
+} from "./cloud-workspace-identity";
 import { CloudWorkspaceSelectionRequiredError } from "./cloud-workspace-selection-error";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { readFailures } from "@/lib/cloud-recovery/store";
@@ -125,16 +130,21 @@ export async function resolveCloudWorkspaceRegion({
     return preferredRegion;
   }
   signal?.throwIfAborted();
-  const workspace = await observeOperation("workspace_state_read", () =>
+  let workspace = await observeOperation("workspace_state_read", () =>
     readCloudWorkspaceState(userId),
   );
+  if (workspace?.phase === "provisioning") {
+    if (workspace.step === "reserved") return workspace.region;
+    const creating = workspace;
+    workspace = await observeOperation("workspace_state_read", () =>
+      reconcileWorkspaceCreation(userId, creating, signal),
+    );
+  }
   if (workspace && workspace.phase !== "e2b")
     throw unavailable("workspace_blocked");
-  const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
-    ? await observeOperation("recovery_evidence_read", () =>
-        readFailures(userId),
-      )
-    : null;
+  const failed = await observeOperation("recovery_evidence_read", () =>
+    readFailures(userId),
+  );
   if (
     workspace &&
     failed &&
@@ -152,17 +162,20 @@ export async function resolveCloudWorkspaceRegion({
     const region = saved;
     if (authoritative && authoritative !== region)
       throw unavailable("stored_region_conflict");
-    signal?.throwIfAborted();
-    return region;
+    if (workspace) {
+      signal?.throwIfAborted();
+      return region;
+    }
   }
 
+  let sandboxId = workspace?.destinationId ?? failed?.sandboxId;
   let selected = authoritative;
   let existingCluster: "us" | "eu" | undefined;
   if (!selected) {
     // Bootstrap legacy accounts from existing inventory, never the current IP.
     // A failed regional read cannot establish that no files exist there.
     const clusters = getConfiguredE2BClustersForCleanup();
-    if (!clusters.length) throw unavailable("inventory_unconfigured");
+    if (clusters.length !== 2) throw unavailable("inventory_unconfigured");
     const { Sandbox } = await observeOperation(
       "inventory_sdk_load",
       () => import("@e2b/code-interpreter"),
@@ -183,9 +196,10 @@ export async function resolveCloudWorkspaceRegion({
           const items = await list.nextItems({ signal });
           if (items.some((item) => item.metadata?.userID !== userId))
             throw unavailable("inventory_owner_mismatch");
-          if (!items.length && list.hasNext)
-            throw unavailable("inventory_incomplete");
-          return items.length ? cluster.cluster : null;
+          if (list.hasNext) throw unavailable("inventory_incomplete");
+          if (items.some((item) => !isOwnedWorkspace(item, cluster, userId)))
+            throw unavailable("inventory_owner_mismatch");
+          return items.map((item) => ({ item, cluster }));
         } catch (error) {
           // Report here before a sibling can classify a later inventory result.
           reportOperationFailure("inventory_list", error, cluster.cluster);
@@ -195,38 +209,59 @@ export async function resolveCloudWorkspaceRegion({
         }
       }),
     );
-    const regions = occupied.filter((region) => region !== null);
-    // There is no honest automatic choice between two existing file stores.
-    if (regions.length > 1) {
+    const inventory = occupied.flat();
+    // A prior region choice identifies a workspace only when that region has
+    // exactly one candidate. Never use inventory order or the current IP.
+    const preferred =
+      saved === null
+        ? []
+        : inventory.filter(
+            ({ cluster }) =>
+              cluster.cluster === (saved === "eu-central-1" ? "eu" : "us"),
+          );
+    const candidates = preferred.length ? preferred : inventory;
+    if (candidates.length > 1) {
       unavailable("inventory_multiple_clusters");
       throw new CloudWorkspaceSelectionRequiredError();
     }
-    existingCluster = regions[0] ?? undefined;
+    const candidate = candidates[0];
+    if (!candidate && saved !== null) {
+      // A legacy placement with missing inventory is not proof of a new account.
+      throw unavailable("inventory_incomplete");
+    }
+    existingCluster = candidate?.cluster.cluster;
+    sandboxId = candidate?.item.sandboxId;
     selected =
-      regions[0] === "eu"
+      existingCluster === "eu"
         ? "eu-central-1"
-        : regions[0] === "us"
-          ? preferredRegion === "us-west-2"
+        : existingCluster === "us"
+          ? saved === "us-west-2" || preferredRegion === "us-west-2"
             ? "us-west-2"
             : "us-east-1"
           : preferredRegion;
   }
   signal?.throwIfAborted();
-  // First admission wins even when simultaneous requests arrive from two regions.
-  // No TTL: expiration must never send a returning user to another file store.
+  if (!workspace) {
+    const binding = await observeOperation("region_binding_claim", () =>
+      reserveWorkspace({
+        userId,
+        region: selected!,
+        expectedRegion: saved as string | null,
+        sandboxId,
+      }),
+    );
+    signal?.throwIfAborted();
+    return binding.region;
+  }
+  // Older recovered bindings may predate the separate routing key.
   await observeOperation("region_binding_claim", () =>
-    redis.set(key, selected, { nx: true }),
+    redis.set(key, workspace.region, { nx: true }),
   );
   const region = await observeOperation("region_binding_confirm", () =>
     redis.get(key),
   );
   if (!isStoredRegion(region)) throw unavailable("claimed_region_invalid");
-  if (
-    (authoritative && authoritative !== region) ||
-    (existingCluster &&
-      existingCluster !== (region === "eu-central-1" ? "eu" : "us"))
-  )
-    throw unavailable("claimed_region_conflict");
+  if (region !== workspace.region) throw unavailable("claimed_region_conflict");
   signal?.throwIfAborted();
   return region;
 }

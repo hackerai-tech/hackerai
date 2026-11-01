@@ -86,6 +86,7 @@ beforeEach(() => {
     async (_script, keys: string[], args: string[]) => {
       if (keys.some((k) => mockData.has(k))) return 0;
       mockData.set(keys[0], args[0]);
+      mockData.set(keys[1], JSON.parse(args[1]));
       return 1;
     },
   );
@@ -108,7 +109,12 @@ it("lets the owner choose an existing region and keeps it across readback withou
     status: "selected",
     region: "eu-central-1",
   });
-  expect([...mockData.entries()]).toEqual([[regionKey, "eu-central-1"]]);
+  expect(mockData.get(regionKey)).toBe("eu-central-1");
+  expect(mockData.get("cloud_workspace_migration:v1:owner")).toMatchObject({
+    destinationId: "eu-original",
+    region: "eu-central-1",
+    origin: "selected",
+  });
   expect(Sandbox.connect).not.toHaveBeenCalled();
   expect(Sandbox.create).not.toHaveBeenCalled();
   expect(Sandbox.kill).not.toHaveBeenCalled();
