@@ -9,6 +9,14 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
  */
 
 import { EventEmitter } from "events";
+import { win32 } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
 import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
@@ -1056,6 +1064,77 @@ describe("CentrifugoSandbox", () => {
   );
 
   describe("Desktop capability recovery before first use", () => {
+    const windowsTest = process.platform === "win32" ? it : it.skip;
+    windowsTest(
+      "finds a real Windows file through native /tmp metadata",
+      async () => {
+        mkdirSync("C:\\temp", { recursive: true });
+        const directory = mkdtempSync("C:\\temp\\hackerai-metadata-");
+        const expected = win32.join(directory, "report.txt");
+        writeFileSync(expected, "fixture");
+        try {
+          const sandbox = createDesktopSandbox();
+          const path = `/tmp/${win32.basename(directory)}/report.txt`;
+          const pending = sandbox.files.stat(path);
+          await jest.advanceTimersByTimeAsync(0);
+          const sub = mockSubscriptions[0];
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          const request = sub.publish.mock.calls.find(
+            ([value]) => value.type === "file_stat",
+          )![0];
+          sub.emit("publication", {
+            data: {
+              type: "file_stat_result",
+              requestId: FIXED_UUID,
+              kind: existsSync(request.path) ? "file" : "missing",
+              path: request.path,
+              sizeBytes: 7,
+            },
+          });
+          await expect(pending).resolves.toMatchObject({
+            kind: "file",
+            path: expected,
+          });
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.each([
+      ["/tmp/report.txt", "C:\\temp\\report.txt"],
+      ["/c/temp/report.txt", "C:\\temp\\report.txt"],
+      ["C:/temp/report.txt", "C:\\temp\\report.txt"],
+    ])(
+      "stats the same Windows file used by shell transfers: %s",
+      async (input, expected) => {
+        const sandbox = createDesktopSandbox();
+        const pending = sandbox.files.stat(input);
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        const request = sub.publish.mock.calls.find(
+          ([value]) => value.type === "file_stat",
+        )![0];
+        sub.emit("publication", {
+          data: {
+            type: "file_stat_result",
+            requestId: FIXED_UUID,
+            kind:
+              win32.normalize(request.path) === expected ? "file" : "missing",
+            path: request.path,
+            sizeBytes: 7,
+          },
+        });
+        await expect(pending).resolves.toMatchObject({
+          kind: "file",
+          sizeBytes: 7,
+        });
+      },
+    );
+
     const unavailableDesktop = () =>
       new CentrifugoSandbox(
         "user-1",

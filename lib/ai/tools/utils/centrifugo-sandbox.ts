@@ -752,11 +752,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           const request = {
             ...input,
             ...(isolated ? { fileResponseAck: true } : {}),
-            path: this.resolveWorkingPath(input.path),
+            // Native metadata and mutations must name the same file as shell
+            // transfers, including Windows /tmp and Git Bash drive paths.
+            path: this.toNativePath(this.resolveWorkingPath(input.path)),
             requestId,
             ...(this.workingDirectory &&
             (input.type === "file_write" || input.type === "file_append")
-              ? { allowedRoot: this.workingDirectory }
+              ? { allowedRoot: this.toNativePath(this.workingDirectory) }
               : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
@@ -1721,9 +1723,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       /^[A-Za-z]:[\\/]/.test(path);
     if (isAbsolute) return path;
 
-    const separator = this.workingDirectory.includes("\\") ? "\\" : "/";
-    const base = this.workingDirectory.replace(/[\\/]+$/, "");
-    const relative = path.replace(/^[\\/]+/, "");
+    const windows = this.isWindows();
+    const separator =
+      windows && this.workingDirectory.includes("\\") ? "\\" : "/";
+    const base = this.workingDirectory.replace(
+      windows ? /[\\/]+$/ : /\/+$/,
+      "",
+    );
+    const relative = path.replace(windows ? /^[\\/]+/ : /^\/+/, "");
     return `${base}${separator}${relative}`;
   }
 
@@ -1739,9 +1746,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   // `echo `, redirect operator, and file path — keep data under 7000 chars.
   private static readonly MAX_CMD_CHUNK_SIZE = 7000;
 
-  /** Extract parent directory from a path, handling both `/` and `\` separators. */
-  private static parentDir(path: string): string {
-    const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  /** Backslashes are filename characters on POSIX, separators on Windows. */
+  private parentDir(path: string): string {
+    const lastSep = this.isWindows()
+      ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+      : path.lastIndexOf("/");
     return lastSep > 0 ? path.substring(0, lastSep) : "";
   }
 
@@ -1764,8 +1773,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    */
   private toNativePath(path: string): string {
     if (!this.isWindows()) return path;
-    if (path.startsWith("/tmp/")) {
+    if (path === "/tmp" || path.startsWith("/tmp/")) {
       return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
+    }
+    const bashDrive = path.match(/^\/([A-Za-z])(?:\/(.*))?$/);
+    if (bashDrive) {
+      return `${bashDrive[1].toUpperCase()}:\\${(bashDrive[2] ?? "").replace(/\//g, "\\")}`;
     }
     // Translate any remaining absolute Unix paths to Windows-style
     return path.replace(/\//g, "\\");
@@ -1892,9 +1905,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     signal?.throwIfAborted();
     const useBash = shell === "bash";
     const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
-    const path = useBash
-      ? CentrifugoSandbox.toBashPath(nativePath)
-      : nativePath;
+    const path =
+      useBash && this.isWindows()
+        ? CentrifugoSandbox.toBashPath(nativePath)
+        : nativePath;
     const escapePath = useBash
       ? (v: string) => CentrifugoSandbox.escapePath(v)
       : (v: string) => this.escapeForTarget(v);
@@ -2462,7 +2476,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       // Ensure parent directory exists. Pass the native (unconverted) dir
       // so ensureDirectory re-applies its own shell-aware path handling.
-      const dir = CentrifugoSandbox.parentDir(this.toNativePath(rawPath));
+      const dir = this.parentDir(this.toNativePath(rawPath));
       if (dir) {
         await this.ensureDirectory(dir, signal);
       }
@@ -2602,7 +2616,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
       const destCtx = await this.shellContext(destRawPath, options?.signal);
       const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
-      const dir = CentrifugoSandbox.parentDir(destCtx.path);
+      const dir = this.parentDir(destCtx.path);
 
       const mkdirPart = !dir
         ? ""
@@ -2709,7 +2723,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
       const httpClient = await this.detectHttpClient(signal);
-      const dir = CentrifugoSandbox.parentDir(path);
+      const dir = this.parentDir(path);
       const fileName = path.split(/[/\\]/).pop() || "file";
 
       const escapedPath = escapePath(path);
