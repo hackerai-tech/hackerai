@@ -156,7 +156,7 @@ export function CloudWorkspaceRegionChoice({
         </>
       ) : (
         <p className="mt-1 text-muted-foreground">
-          Files in both workspaces are kept. To access files in the other
+          Files in your workspaces are kept. To access files in another
           workspace,{" "}
           <a href="mailto:contact@hackerai.co" className="underline">
             contact support
@@ -181,8 +181,8 @@ export function CloudWorkspaceRegionChoice({
       )}
       {view.status === "unconfirmed" && !busy && (
         <p role="alert" className="mt-2 text-destructive">
-          We couldn’t confirm your workspace selection. Wait for running tasks
-          to finish, then check status. Contact support if this continues.
+          We couldn’t confirm your workspace selection. Check status to try
+          again. If this continues, contact support.
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
