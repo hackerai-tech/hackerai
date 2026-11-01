@@ -34,6 +34,11 @@ native changes. The runner does not install dependencies, build, provision
 Convex, start a worker/relay, or copy credentials. Follow the runbook for those
 operations only when needed.
 
+Use the [safe local diagnostics](../../../docs/safe-local-diagnostics.md) for
+additional process health or browser login state. Do not dump process arguments,
+environments, or full authentication pages. Browser diagnostics do not establish
+native WebView authentication.
+
 Record the tested source revision and binary hash. Independently establish the
 backend account/project/deployment and matching worker environment/branch before
 using external test services. Configured identity and TCP reachability are not

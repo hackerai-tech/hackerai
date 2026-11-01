@@ -26,10 +26,10 @@
     "format:check": "prettier --check .",
     "setup": "pnpm install && npx tsx scripts/setup.ts",
     "test": "jest",
-    "test:changed": "jest --onlyChanged --runInBand --passWithNoTests && pnpm test:user-research-runner && pnpm test:desktop-qa",
+    "test:changed": "jest --onlyChanged --runInBand --passWithNoTests && pnpm test:user-research-runner && pnpm test:desktop-qa && pnpm test:diagnostics",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner && pnpm test:desktop-qa",
+    "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner && pnpm test:desktop-qa && pnpm test:diagnostics",
     "test:user-research-runner": "node --test .agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
     "skills:sync:strix": "node scripts/sync-strix-skills.mjs",
     "skills:sync:strix:check": "node scripts/sync-strix-skills.mjs --check",
@@ -64,7 +64,9 @@
     "docker:build:push": "docker buildx build --platform linux/amd64,linux/arm64 --push -t hackerai/sandbox:latest -f docker/Dockerfile docker/",
     "sandbox:deploy:dev": "pnpm docker:build:push && pnpm e2b:build:dev",
     "sandbox:deploy:prod": "pnpm docker:build:push && pnpm e2b:build:prod",
-    "sandbox:deploy": "pnpm docker:build:push && pnpm e2b:build:dev && pnpm e2b:build:prod"
+    "sandbox:deploy": "pnpm docker:build:push && pnpm e2b:build:dev && pnpm e2b:build:prod",
+    "diagnostics:process": "node scripts/diagnostics/process-status.mjs",
+    "test:diagnostics": "node --test scripts/diagnostics/*.test.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "3.0.130",
