@@ -24,6 +24,7 @@ import JSZip from "jszip";
 import { toast } from "sonner";
 import { isTauriEnvironment, openDownloadsFolder } from "@/app/hooks/useTauri";
 import { formatTaskTitle } from "@/app/utils/task-ui-copy";
+import { startBlobDownload } from "@/lib/utils/file-download";
 
 interface AllFilesDialogProps {
   open: boolean;
@@ -46,6 +47,8 @@ interface FileItemProps {
   selectionMode: boolean;
   onToggle: () => void;
   fileUrl: string | null;
+  onDownload: () => void;
+  downloading: boolean;
 }
 
 const FileItem = ({
@@ -54,45 +57,17 @@ const FileItem = ({
   selectionMode,
   onToggle,
   fileUrl,
+  onDownload,
+  downloading,
 }: FileItemProps) => {
   const fileName = file.part.name || file.part.filename || "Unknown file";
-
-  const handleDownload = async () => {
-    if (!fileUrl) return;
-
-    try {
-      const response = await fetch(fileUrl);
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
-
-      if (isTauriEnvironment()) {
-        toast.success(`Downloaded ${fileName}`, {
-          description: "Saved to Downloads folder",
-          action: {
-            label: "Show in folder",
-            onClick: () => openDownloadsFolder(),
-          },
-        });
-      }
-    } catch (error) {
-      console.error("Error downloading file:", error);
-      toast.error("Failed to download file");
-    }
-  };
 
   return (
     <div
       className={`group flex items-center gap-3 px-3 py-2.5 hover:bg-secondary transition-colors rounded-lg ${
         selectionMode ? "cursor-pointer" : ""
       }`}
-      onClick={selectionMode ? onToggle : undefined}
+      onClick={selectionMode && !downloading ? onToggle : undefined}
     >
       {selectionMode && (
         <Button
@@ -105,6 +80,7 @@ const FileItem = ({
           className="h-5 w-5 p-0 hover:opacity-85"
           type="button"
           aria-label={`${isSelected ? "Deselect" : "Select"} file`}
+          disabled={downloading}
         >
           {isSelected ? (
             <CircleCheck className="w-5 h-5" />
@@ -135,7 +111,8 @@ const FileItem = ({
 
       {!selectionMode && fileUrl && (
         <Button
-          onClick={handleDownload}
+          onClick={onDownload}
+          disabled={downloading}
           variant="ghost"
           size="icon"
           className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -162,7 +139,9 @@ const AllFilesDialog = ({
     const scope = new AbortController();
     authScopeRef.current = scope;
     return () => scope.abort();
-  }, [authReady]);
+  }, [authReady, open]);
+  const downloadInProgress = useRef(false);
+  const [downloading, setDownloading] = useState(false);
   const getFileUrlsBatchAction = useAction(
     api.s3Actions.getFileUrlsBatchAction,
   );
@@ -195,12 +174,8 @@ const AllFilesDialog = ({
       >();
 
       for (const { file, index } of items) {
-        if (file.part.url) {
-          urlMap.set(index, file.part.url);
-          continue;
-        }
-
         if (!file.part.fileId) {
+          if (file.part.url) urlMap.set(index, file.part.url);
           continue;
         }
 
@@ -260,6 +235,7 @@ const AllFilesDialog = ({
 
   const handleOpenChange = (newOpen: boolean) => {
     if (!newOpen) {
+      authScopeRef.current.abort();
       setFileUrls(new Map());
       setIsLoadingUrls(false);
       setSelectionMode(false);
@@ -328,106 +304,118 @@ const AllFilesDialog = ({
     setSelectedFiles(newSelected);
   };
 
-  const handleBatchDownload = async () => {
-    if (!authReady) return;
-    const filesToDownload = files
+  const handleDownload = async (singleIndex?: number) => {
+    if (!authReady || !open || downloadInProgress.current) return;
+    const items = files
       .map((file, index) => ({ file, index }))
-      .filter(({ index }) => selectedFiles.has(index.toString()));
-
-    if (filesToDownload.length === 0) return;
-
+      .filter(({ index }) =>
+        singleIndex === undefined
+          ? selectedFiles.has(index.toString())
+          : index === singleIndex,
+      );
+    if (items.length === 0) return;
+    const scope = authScopeRef.current;
+    downloadInProgress.current = true;
+    setDownloading(true);
     try {
-      const zip = new JSZip();
-      let downloadUrls = new Map(fileUrls);
-      const missingUrlFiles = filesToDownload.filter(({ file, index }) => {
-        return !downloadUrls.get(index) && !file.part.url;
-      });
-
-      if (missingUrlFiles.length > 0) {
-        const resolvedUrls = await resolveFileUrls(missingUrlFiles);
-        downloadUrls = new Map(downloadUrls);
-        for (const [index, url] of resolvedUrls.entries()) {
-          downloadUrls.set(index, url);
-        }
-        setFileUrls((current) => {
-          const next = new Map(current);
-          for (const [index, url] of resolvedUrls.entries()) {
-            next.set(index, url);
-          }
-          return next;
-        });
-      }
-
-      // Use already fetched URLs or fetch missing ones
-      await Promise.all(
-        filesToDownload.map(async ({ file, index }) => {
-          try {
-            let url: string | null | undefined =
-              downloadUrls.get(index) || file.part.url;
-
-            if (url) {
-              const response = await fetch(url);
-              const blob = await response.blob();
-              const fileName =
-                file.part.name ||
-                file.part.filename ||
-                `file-${file.partIndex}`;
-              zip.file(fileName, blob);
-            }
-          } catch (error) {
-            console.error(`Error adding ${file.part.name} to ZIP:`, error);
-          }
+      // Consult the expiring cache again at click time, not the dialog's snapshot.
+      const urls = await resolveFileUrls(items);
+      if (scope.signal.aborted) return;
+      const results = await Promise.allSettled(
+        items.map(async ({ index }) => {
+          const url = urls.get(index);
+          if (!url) throw new Error("File URL unavailable");
+          const response = await fetch(url, { signal: scope.signal });
+          if (!response.ok) throw new Error("File download request failed");
+          return response.blob();
         }),
       );
-
-      // Generate the ZIP file
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-
-      // Download the ZIP file
-      const blobUrl = URL.createObjectURL(zipBlob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-
-      // Create filename from chat title or use fallback
-      let fileName = "task-files";
-      if (chatTitle) {
-        // Sanitize the title for use in filename
-        fileName = formatTaskTitle(chatTitle)
-          .replace(/[^a-zA-Z0-9-_ ]/g, "") // Remove invalid characters
-          .replace(/\s+/g, "-") // Replace spaces with hyphens
-          .substring(0, 50); // Limit length
-      }
-      if (!fileName || fileName === "") {
-        const timestamp = new Date().toISOString().split("T")[0];
-        fileName = `task-files-${timestamp}`;
-      }
-
-      link.download = `${fileName}.zip`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
-
-      if (isTauriEnvironment()) {
-        toast.success(`Downloaded ${filesToDownload.length} files`, {
-          description: `Saved as ${fileName}.zip to Downloads folder`,
-          action: {
-            label: "Show in folder",
-            onClick: () => openDownloadsFolder(),
+      if (scope.signal.aborted) return;
+      const failed = items.filter(
+        (_, index) => results[index].status === "rejected",
+      );
+      if (failed.length > 0) {
+        toast.error(
+          singleIndex === undefined
+            ? "Could not download all selected files"
+            : "Failed to download file",
+          {
+            description: `${failed.length} of ${items.length} unavailable: ${failed
+              .slice(0, 3)
+              .map(
+                ({ file }) =>
+                  file.part.name || file.part.filename || "Unknown file",
+              )
+              .join(
+                ", ",
+              )}${failed.length > 3 ? "…" : ""}. Try again or deselect these files.`,
           },
-        });
-      } else {
-        toast.success(
-          `Downloaded ${filesToDownload.length} files as ${fileName}.zip`,
         );
+        return;
       }
-    } catch (error) {
-      console.error("Error creating ZIP file:", error);
-      toast.error("Failed to create ZIP file");
+      const blobs = results.map(
+        (result) => (result as PromiseFulfilledResult<Blob>).value,
+      );
+      let blob: Blob;
+      let filename: string;
+      if (singleIndex !== undefined) {
+        blob = blobs[0];
+        filename =
+          items[0].file.part.name ||
+          items[0].file.part.filename ||
+          "Unknown file";
+      } else {
+        const zip = new JSZip();
+        const usedNames = new Set<string>();
+        items.forEach(({ file }, index) => {
+          // A ZIP maps names to entries: preserve colliding files instead of overwriting.
+          const original = (
+            file.part.name ||
+            file.part.filename ||
+            `file-${file.partIndex}`
+          ).replace(/[\\/]/g, "_");
+          const name =
+            original === "." || original === ".." ? `file-${index}` : original;
+          const dot = name.lastIndexOf(".");
+          const stem = dot > 0 ? name.slice(0, dot) : name;
+          const extension = dot > 0 ? name.slice(dot) : "";
+          let unique = name;
+          let suffix = 2;
+          while (usedNames.has(unique.toLowerCase()))
+            unique = `${stem} (${suffix++})${extension}`;
+          usedNames.add(unique.toLowerCase());
+          zip.file(unique, blobs[index]);
+        });
+        blob = await zip.generateAsync({ type: "blob" });
+        const title = chatTitle
+          ? formatTaskTitle(chatTitle)
+              .replace(/[^a-zA-Z0-9-_ ]/g, "")
+              .replace(/\s+/g, "-")
+              .substring(0, 50)
+          : "task-files";
+        filename = `${title || `task-files-${new Date().toISOString().split("T")[0]}`}.zip`;
+      }
+      if (scope.signal.aborted) return;
+      startBlobDownload(blob, filename);
+      toast.success(
+        `Download started: ${filename}`,
+        isTauriEnvironment()
+          ? {
+              action: {
+                label: "Open Downloads",
+                onClick: () => openDownloadsFolder(),
+              },
+            }
+          : undefined,
+      );
+      if (singleIndex === undefined) handleCancelSelection();
+    } catch {
+      if (!scope.signal.aborted)
+        toast.error("Failed to download files. Try again.");
+    } finally {
+      downloadInProgress.current = false;
+      setDownloading(false);
     }
-
-    // Exit selection mode after download
-    handleCancelSelection();
   };
 
   return (
@@ -445,6 +433,7 @@ const AllFilesDialog = ({
           <header className="flex items-center justify-between pt-6 pr-6 pl-6 pb-2.5">
             <Button
               onClick={handleToggleAll}
+              disabled={downloading}
               variant="ghost"
               className="flex items-center gap-2.5 text-sm text-muted-foreground hover:opacity-85 h-auto p-0"
               type="button"
@@ -458,6 +447,7 @@ const AllFilesDialog = ({
             </Button>
             <Button
               onClick={handleCancelSelection}
+              disabled={downloading}
               variant="ghost"
               className="text-muted-foreground hover:opacity-85 text-sm h-auto p-0"
               type="button"
@@ -510,7 +500,9 @@ const AllFilesDialog = ({
                 const fileId = index.toString();
                 const isSelected = selectedFiles.has(fileId);
                 const fileUrl = authReady
-                  ? fileUrls.get(index) || file.part.url || null
+                  ? fileUrls.get(index) ||
+                    (!file.part.fileId ? file.part.url : null) ||
+                    null
                   : null;
 
                 return (
@@ -521,6 +513,8 @@ const AllFilesDialog = ({
                     selectionMode={selectionMode}
                     onToggle={() => handleToggleFile(fileId)}
                     fileUrl={fileUrl}
+                    downloading={downloading}
+                    onDownload={() => void handleDownload(index)}
                   />
                 );
               })
@@ -531,10 +525,10 @@ const AllFilesDialog = ({
         {selectionMode && (
           <footer className="px-5 py-4 border-t border-border flex justify-end">
             <Button
-              onClick={handleBatchDownload}
+              onClick={() => void handleDownload()}
               variant="outline"
               className="h-9 px-3 rounded-full"
-              disabled={selectedFiles.size === 0}
+              disabled={!authReady || downloading || selectedFiles.size === 0}
               type="button"
             >
               <Download className="w-[18px] h-[18px] text-muted-foreground" />
