@@ -81,9 +81,11 @@ export async function diagnoseLogin(
     return { origin: null, state: "unavailable" };
   }
   let timer;
+  let finished = false;
   const inspect = async () => {
     try {
       const before = await tab.url();
+      if (finished) return { origin: null, state: "unavailable" };
       const url = new URL(before);
       if (url.username || url.password || !allowed.has(url.origin))
         return { origin: null, state: "unsupported-origin" };
@@ -92,6 +94,7 @@ export async function diagnoseLogin(
         undefined,
         { timeoutMs },
       );
+      if (finished) return { origin: null, state: "unavailable" };
       if (before !== (await tab.url()))
         return { origin: null, state: "page-changed" };
       return { origin: url.origin, state: classifyLoginSignals(signals) };
@@ -111,6 +114,8 @@ export async function diagnoseLogin(
       }),
     ]);
   } finally {
+    // In-flight reads cannot be cancelled, but may not start another phase.
+    finished = true;
     clearTimeout(timer);
   }
 }
