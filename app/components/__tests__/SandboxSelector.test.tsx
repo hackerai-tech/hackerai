@@ -44,6 +44,27 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
+  it("opens cloud workspace management without changing the selected computer", async () => {
+    mockGlobalState.subscription = "pro";
+    const onChange = jest.fn();
+    render(<SandboxSelector value="environment:remote" onChange={onChange} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /Selected computer unavailable/ }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Manage workspaces" }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "Cloud workspaces" }),
+    ).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/sandbox/workspaces?manage=1",
+        expect.any(Object),
+      ),
+    );
+  });
   it.each([true, false])(
     "closes the menu when the mobile layout changes from %s",
     async (mobile) => {

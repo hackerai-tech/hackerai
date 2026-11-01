@@ -105,7 +105,7 @@ describe("cloud workspace guard", () => {
         "cloud_recovery_consent:v1:user-1",
         "cloud_workspace_recovery_result:v1:user-1",
       ],
-      ["900", "verified-destination"],
+      ["900", "verified-destination", ""],
     );
   });
 

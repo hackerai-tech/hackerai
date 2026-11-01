@@ -89,6 +89,7 @@ const keys = {
   consent: "consent",
   result: "result",
   region: "region",
+  selectionHistory: "selection-history",
 };
 const target = { sandboxId: "original-files", region: "us-east-1" };
 const offered = {
@@ -128,7 +129,7 @@ const admit = (id = "") =>
   evalLua(
     admitLua,
     [keys.workspace, keys.activity, keys.consent, keys.result],
-    [900, id],
+    [900, id, ""],
   );
 const confirm = (yes = true) =>
   evalLua(
@@ -151,8 +152,8 @@ const claimCleanup = (previous = "") =>
 const finishCleanup = (success, previous = "") =>
   evalLua(
     cleanupFinishLua,
-    [keys.workspace, keys.region],
-    [JSON.stringify(cleanup), previous, success ? "1" : "0"],
+    [keys.workspace, keys.region, keys.selectionHistory],
+    [JSON.stringify(cleanup), previous, success ? "1" : "0", "0"],
   );
 const reset = () => {
   command("FLUSHDB");

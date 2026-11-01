@@ -103,6 +103,10 @@ import {
   assertCloudWorkspaceAvailable,
 } from "../../lib/ai/tools/utils/cloud-workspace-guard";
 import { workspaceBinding } from "../../lib/ai/tools/utils/cloud-workspace-identity";
+import {
+  workspaceOptions,
+  chooseWorkspace,
+} from "../../lib/ai/tools/utils/cloud-workspace-options";
 
 const owner = "synthetic-owner";
 type Item = {
@@ -451,3 +455,310 @@ it.each(["E2B_API_KEY", "E2B_EU_API_KEY"])(
     expect(await state()).toBeNull();
   },
 );
+
+async function options() {
+  const view = await workspaceOptions(owner, true);
+  if (view.status !== "selection_required")
+    throw new Error(`Expected options: ${view.status}`);
+  return view;
+}
+
+it("lets an owner select among same-region copies, switch back, and retain all files and prior bindings", async () => {
+  inventory = [
+    item("one", "us", false),
+    item("two", "us"),
+    item("three", "eu"),
+  ];
+  inventory[0].metadata.sandboxVersion = "v10";
+  mockCommand("SET", cloudWorkspaceRegionKey(owner), "eu-central-1");
+  const first = await options();
+  expect(first.choices.map((x) => x.id).sort()).toEqual([
+    "one",
+    "three",
+    "two",
+  ]);
+  await chooseWorkspace(owner, "two", first.token);
+  const previous = await state();
+  expect(await workspaceOptions(owner)).toMatchObject({
+    status: "selected",
+    id: "two",
+    region: "us-east-1",
+  });
+  const next = await options();
+  await chooseWorkspace(owner, "one", next.token);
+  expect(await state()).toMatchObject({
+    destinationId: "one",
+    origin: "selected",
+  });
+  expect(
+    mockDecode(
+      mockCommand(
+        "HGET",
+        `cloud_workspace_selection_history:v1:${owner}`,
+        previous!.token,
+      ),
+    ),
+  ).toEqual(previous);
+  expect(inventory.map((x) => x.files)).toEqual([
+    "retained-one",
+    "retained-two",
+    "retained-three",
+  ]);
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+
+it("rejects stale choices after another tab saves an exact identity", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  const before = await options();
+  await chooseWorkspace(owner, "one", before.token);
+  await expect(chooseWorkspace(owner, "two", before.token)).rejects.toThrow();
+  expect(await state()).toMatchObject({ destinationId: "one" });
+});
+
+it.each([
+  "active-tasks",
+  "activity",
+  "running",
+  "recovery",
+  "cleanup",
+  "provisioning",
+  "foreign-id",
+  "inventory-change",
+])(
+  "preserves identity and every copy when selection becomes unsafe: %s",
+  async (reason) => {
+    inventory = [item("one", "us"), item("two", "eu")];
+    const before = await options();
+    if (reason === "active-tasks")
+      jest
+        .mocked(listActiveSubagentsForUser)
+        .mockResolvedValue({ runs: [], hasMore: true } as never);
+    if (reason === "activity")
+      mockCommand(
+        "SET",
+        `cloud_workspace_activity:v1:${owner}`,
+        "active",
+        "EX",
+        900,
+      );
+    if (reason === "running") inventory[0].state = "running";
+    if (reason === "recovery")
+      mockCommand("SET", `cloud_recovery_consent:v1:${owner}`, {
+        status: "executing",
+      });
+    if (reason === "cleanup")
+      mockCommand("SET", cloudWorkspaceStateKey(owner), {
+        version: 1,
+        phase: "cleanup",
+        token: "cleanup",
+      });
+    if (reason === "provisioning")
+      mockCommand("SET", cloudWorkspaceStateKey(owner), {
+        version: 1,
+        phase: "provisioning",
+        step: "creating",
+        token: "creating",
+        region: "us-east-1",
+      });
+    if (reason === "inventory-change") inventory.push(item("new", "us"));
+    const prior = mockCommand("GET", cloudWorkspaceStateKey(owner));
+    await expect(
+      chooseWorkspace(
+        owner,
+        reason === "foreign-id" ? "someone-elses-id" : "one",
+        before.token,
+      ),
+    ).rejects.toThrow();
+    expect(mockCommand("GET", cloudWorkspaceStateKey(owner))).toEqual(prior);
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);
+
+it("makes admission and workspace switching mutually exclusive even after inventory was inspected", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  let before = await options();
+  await chooseWorkspace(owner, "one", before.token);
+  before = await options();
+  const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+  jest.mocked(Sandbox.list).mockImplementation((args: any) => {
+    const pager = list(args);
+    return {
+      ...pager,
+      nextItems: async (...p: any[]) => {
+        const items = await pager.nextItems(p[0]);
+        // Admission wins during the provider read, before selection's atomic CAS.
+        await assertCloudWorkspaceAvailable(owner, "one", "us-east-1");
+        return items;
+      },
+    } as never;
+  });
+  await expect(chooseWorkspace(owner, "two", before.token)).rejects.toThrow();
+  expect(await state()).toMatchObject({ destinationId: "one" });
+});
+
+it("rejects an already-resolved old worker region if selection wins before admission", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  let view = await options();
+  await chooseWorkspace(owner, "one", view.token);
+  const oldRegion = await resolveCloudWorkspaceRegion({
+    userId: owner,
+    preferredRegion: "eu-central-1",
+  });
+  view = await options();
+  await chooseWorkspace(owner, "two", view.token);
+  await expect(
+    assertCloudWorkspaceAvailable(owner, "two", oldRegion),
+  ).rejects.toThrow();
+  await expect(
+    assertCloudWorkspaceAvailable(owner, "two", "eu-central-1"),
+  ).resolves.toBeUndefined();
+  expect(await workspaceOptions(owner, true)).toEqual({
+    status: "waiting",
+    reason: "recent_activity",
+  });
+});
+
+it("does not report empty or write a choice after an incomplete regional read", async () => {
+  const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+  jest.mocked(Sandbox.list).mockImplementation((args: any) =>
+    args.domain
+      ? ({
+          hasNext: false,
+          nextItems: async () => {
+            throw new Error("provider offline");
+          },
+        } as never)
+      : list(args),
+  );
+  await expect(workspaceOptions(owner)).rejects.toThrow();
+  expect(await state()).toBeNull();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+});
+
+it.each([
+  "cloud_resume_failures",
+  "cloud_recovery_consent",
+  "cloud_workspace_recovery_result",
+])(
+  "preserves a concurrent %s record inserted after the preflight read",
+  async (prefix) => {
+    inventory = [item("one", "us"), item("two", "eu")];
+    const view = await options();
+    const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+    jest.mocked(Sandbox.list).mockImplementation((args: any) => {
+      const pager = list(args);
+      return {
+        ...pager,
+        nextItems: async (...params: any[]) => {
+          const entries = await pager.nextItems(params[0]);
+          mockCommand("SET", `${prefix}:v1:${owner}`, { protected: true });
+          return entries;
+        },
+      } as never;
+    });
+    await expect(chooseWorkspace(owner, "two", view.token)).rejects.toThrow();
+    expect(await state()).toBeNull();
+    expect(mockDecode(mockCommand("GET", `${prefix}:v1:${owner}`))).toEqual({
+      protected: true,
+    });
+  },
+);
+
+it("compares the complete prior binding by value and retains a formatted recovered receipt", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  const previous = {
+    ...workspaceBinding("one", "us-east-1", "adopted"),
+    sourceId: "original-snapshot",
+  };
+  mockCommand(
+    "SET",
+    cloudWorkspaceStateKey(owner),
+    JSON.stringify(previous, null, 2),
+  );
+  mockCommand("SET", cloudWorkspaceRegionKey(owner), previous.region);
+  const view = await options();
+  await chooseWorkspace(owner, "two", view.token);
+  expect(
+    mockDecode(
+      mockCommand(
+        "HGET",
+        `cloud_workspace_selection_history:v1:${owner}`,
+        previous.token,
+      ),
+    ),
+  ).toEqual(previous);
+  expect(await state()).toMatchObject({ destinationId: "two" });
+});
+
+it("does not lose recovery metadata added to the same binding during the inventory read", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  const original = workspaceBinding("one", "us-east-1", "adopted");
+  mockCommand("SET", cloudWorkspaceStateKey(owner), original);
+  mockCommand("SET", cloudWorkspaceRegionKey(owner), original.region);
+  const view = await options();
+  const protectedBinding = {
+    ...original,
+    recoveryPending: { backup: "retained" },
+  };
+  const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+  jest.mocked(Sandbox.list).mockImplementation((args: any) => {
+    const pager = list(args);
+    return {
+      ...pager,
+      nextItems: async (...params: any[]) => {
+        const entries = await pager.nextItems(params[0]);
+        mockCommand("SET", cloudWorkspaceStateKey(owner), protectedBinding);
+        return entries;
+      },
+    } as never;
+  });
+  await expect(chooseWorkspace(owner, "two", view.token)).rejects.toThrow();
+  expect(await state()).toEqual(protectedBinding);
+});
+
+it("only purges archived selection receipts after successful permanent account cleanup", async () => {
+  inventory = [item("one", "us"), item("two", "eu")];
+  let view = await options();
+  await chooseWorkspace(owner, "one", view.token);
+  view = await options();
+  await chooseWorkspace(owner, "two", view.token);
+  const history = `cloud_workspace_selection_history:v1:${owner}`;
+  const cleanup = await claimCloudWorkspaceCleanup(owner, false);
+  await cleanup.finish(false);
+  expect(mockCommand("EXISTS", history)).toBe(1);
+  const permanent = await claimCloudWorkspaceCleanup(owner, true);
+  await permanent.finish(true);
+  expect(mockCommand("EXISTS", history)).toBe(0);
+  expect(await state()).toMatchObject({ phase: "deleted" });
+});
+
+it("reads every inventory page before offering an exact-ID choice", async () => {
+  const entries = [
+    item("first", "us"),
+    item("second", "us"),
+    item("europe", "eu"),
+  ];
+  jest.mocked(Sandbox.list).mockImplementation((args: any) => {
+    const pages = args.domain ? [[entries[2]]] : [[entries[0]], [entries[1]]];
+    const pager = {
+      hasNext: true,
+      nextItems: async () => {
+        const page = pages.shift()!;
+        pager.hasNext = pages.length > 0;
+        return page;
+      },
+    };
+    return pager as never;
+  });
+  const view = await options();
+  expect(view.choices.map((x) => x.id).sort()).toEqual([
+    "europe",
+    "first",
+    "second",
+  ]);
+  expect(Sandbox.create).not.toHaveBeenCalled();
+});

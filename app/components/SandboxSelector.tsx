@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
+  Settings2,
 } from "lucide-react";
 import {
   Popover,
@@ -16,7 +17,15 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { useState, useEffect, useMemo } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { CloudWorkspaceRegionChoice } from "./CloudWorkspaceRegionChoice";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useTauri } from "@/app/hooks/useTauri";
@@ -60,6 +69,8 @@ export function SandboxSelector({
   menuAlign = "start",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [connectHovered, setConnectHovered] = useState(false);
   const isMobile = useIsMobile();
   useEffect(() => {
@@ -341,6 +352,7 @@ export function SandboxSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          ref={triggerRef}
           type="button"
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
@@ -405,6 +417,20 @@ export function SandboxSelector({
               value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />
             )}
           </button>
+
+          {!isFreeUser && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setManageOpen(true);
+              }}
+              className="flex min-h-11 w-full items-center gap-2.5 rounded-md p-2 text-left text-sm transition-colors hover:bg-muted"
+            >
+              <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+              Manage workspaces
+            </button>
+          )}
 
           {desktopOptions.map((option) => {
             const OptionIcon = option.icon;
@@ -534,6 +560,24 @@ export function SandboxSelector({
           </div>
         </div>
       </PopoverContent>
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent
+          data-chat-input-agent-menu
+          className="max-h-[85dvh] overflow-y-auto p-4 sm:p-6 [&>[data-slot=dialog-close]]:top-1 [&>[data-slot=dialog-close]]:right-1 [&>[data-slot=dialog-close]]:flex [&>[data-slot=dialog-close]]:size-11 [&>[data-slot=dialog-close]]:items-center [&>[data-slot=dialog-close]]:justify-center"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            triggerRef.current?.focus();
+          }}
+        >
+          <DialogHeader className="pr-8 text-left">
+            <DialogTitle>Cloud workspaces</DialogTitle>
+            <DialogDescription>
+              Choose which saved workspace future cloud tasks use.
+            </DialogDescription>
+          </DialogHeader>
+          <CloudWorkspaceRegionChoice manage />
+        </DialogContent>
+      </Dialog>
     </Popover>
   );
 }

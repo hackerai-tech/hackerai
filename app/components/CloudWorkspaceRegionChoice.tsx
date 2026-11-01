@@ -1,21 +1,37 @@
 "use client";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type {
-  WorkspaceRegionChoice,
-  WorkspaceRegionView,
-} from "@/lib/ai/tools/utils/cloud-workspace-selection";
+  CloudWorkspaceOption,
+  CloudWorkspaceOptions,
+} from "@/lib/ai/tools/utils/cloud-workspace-options";
 
-type View = WorkspaceRegionView | { status: "loading" | "unconfirmed" };
-const label = (region: string) =>
+type View = CloudWorkspaceOptions | { status: "loading" | "unavailable" };
+const endpoint = "/api/sandbox/workspaces";
+const changedEvent = "hackerai:cloud-workspace-selected";
+const regionLabel = (region: string) =>
   region === "eu-central-1" ? "Europe workspace" : "US workspace";
-const endpoint = "/api/sandbox/workspace-region";
-
+const validId = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
+const validRegion = (value: unknown) =>
+  ["us-east-1", "us-west-2", "eu-central-1"].includes(String(value));
+function validChoice(choice: CloudWorkspaceOption) {
+  return (
+    choice &&
+    validId(choice.id) &&
+    validRegion(choice.region) &&
+    (choice.lastStartedAt === null ||
+      (typeof choice.lastStartedAt === "string" &&
+        Number.isFinite(Date.parse(choice.lastStartedAt))))
+  );
+}
 async function request(
   signal: AbortSignal,
+  manage: boolean,
   init?: RequestInit,
-): Promise<WorkspaceRegionView> {
-  const response = await fetch(endpoint, {
+): Promise<CloudWorkspaceOptions> {
+  const response = await fetch(endpoint + (manage ? "?manage=1" : ""), {
     cache: "no-store",
     ...init,
     signal,
@@ -24,7 +40,8 @@ async function request(
   const view = await response.json();
   if (
     view.status === "selected" &&
-    ["us-east-1", "us-west-2", "eu-central-1"].includes(view.region)
+    validId(view.id) &&
+    validRegion(view.region)
   )
     return view;
   if (
@@ -32,186 +49,468 @@ async function request(
     typeof view.token === "string" &&
     /^[a-f0-9]{64}$/.test(view.token) &&
     Array.isArray(view.choices) &&
-    view.choices.length === 2 &&
-    new Set(view.choices).size === 2 &&
-    view.choices.every(
-      (region: unknown) => region === "us-east-1" || region === "eu-central-1",
+    view.choices.length > 0 &&
+    view.choices.length <= 100 &&
+    view.choices.every(validChoice) &&
+    new Set(view.choices.map((choice: CloudWorkspaceOption) => choice.id))
+      .size === view.choices.length &&
+    (view.currentId === undefined ||
+      view.choices.some(
+        (choice: CloudWorkspaceOption) => choice.id === view.currentId,
+      ))
+  )
+    return view;
+  if (
+    view.status === "waiting" &&
+    ["active_tasks", "recent_activity", "running_workspace"].includes(
+      view.reason,
     )
   )
     return view;
+  if (
+    view.status === "protected" &&
+    ["recovery", "provisioning", "cleanup", "identity"].includes(view.reason)
+  )
+    return view;
+  if (view.status === "empty") return view;
   throw new Error("Workspace selection unavailable");
+}
+function shortId(id: string, choices: CloudWorkspaceOption[]) {
+  let length = 6;
+  while (
+    length < id.length &&
+    choices.some(
+      (choice) =>
+        choice.id !== id && choice.id.slice(-length) === id.slice(-length),
+    )
+  )
+    length++;
+  return id.slice(-length);
+}
+function started(value: string | null) {
+  return value
+    ? `Last started ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))}`
+    : "Last-started time unavailable";
 }
 
 export function CloudWorkspaceRegionChoice({
   onRetry,
+  manage = false,
 }: {
-  onRetry: () => void;
+  onRetry?: () => void;
+  manage?: boolean;
 }) {
   const titleId = useId();
   const [view, setView] = useState<View>({ status: "loading" });
+  const viewRef = useRef<View>(view);
+  const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notSaved, setNotSaved] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [browsing, setBrowsing] = useState(manage);
+  const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
+  const refreshPending = useRef(false);
   const controller = useRef<AbortController | null>(null);
+  const generation = useRef(0);
+  const autoChecks = useRef(0);
+  const managing = useRef(manage);
   const cardRef = useRef<HTMLDivElement>(null);
-  const focusAfterAction = useRef(false);
   const retryRef = useRef<HTMLButtonElement>(null);
+  const focusAfterAction = useRef(false);
+  const exposed = useRef<string | null>(null);
+  const apply = useCallback((next: View) => {
+    viewRef.current = next;
+    setView(next);
+    setDraft(
+      next.status === "selection_required" ? (next.currentId ?? null) : null,
+    );
+  }, []);
+  const act = useCallback(
+    async (id?: string, showChoices = managing.current, automatic = false) => {
+      const active = controller.current;
+      if (busyRef.current || !active || active.signal.aborted) return;
+      const previous = viewRef.current;
+      if (id && previous.status !== "selection_required") return;
+      managing.current = id ? false : showChoices;
+      setBrowsing(managing.current);
+      busyRef.current = true;
+      setChecking(true);
+      if (!automatic) setBusy(true);
+      setNotice(null);
+      if (!automatic) autoChecks.current = 0;
+      const current = ++generation.current;
+      const signal = () =>
+        AbortSignal.any([active.signal, AbortSignal.timeout(20_000)]);
+      let optionsReadyWithFocus = false;
+      try {
+        let next: CloudWorkspaceOptions;
+        if (id && previous.status === "selection_required") {
+          try {
+            next = await request(signal(), false, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ workspaceId: id, token: previous.token }),
+            });
+          } catch {
+            if (active.signal.aborted) return;
+            // A lost write response is reconciled with a read, never another POST.
+            next = await request(signal(), false);
+          }
+          if (next.status !== "selected" || next.id !== id) {
+            setNotice(
+              next.status === "selected"
+                ? "A different workspace is currently selected. Check the saved workspace below before retrying."
+                : "Your choice wasn’t confirmed. Check the current options before choosing again.",
+            );
+          } else {
+            captureAuthenticatedEvent("cloud_workspace_choice_saved", {
+              surface: manage ? "workspace_dialog" : "workspace_error",
+              changed_existing: previous.currentId !== undefined,
+            });
+            window.dispatchEvent(
+              new CustomEvent(changedEvent, { detail: titleId }),
+            );
+          }
+        } else next = await request(signal(), showChoices);
+        if (!active.signal.aborted && current === generation.current) {
+          optionsReadyWithFocus =
+            automatic &&
+            previous.status === "waiting" &&
+            (next.status === "selection_required" ||
+              next.status === "selected") &&
+            !!cardRef.current?.contains(document.activeElement);
+          apply(next);
+        }
+      } catch {
+        if (!active.signal.aborted && current === generation.current) {
+          apply({ status: "unavailable" });
+          if (id)
+            setNotice(
+              "We couldn’t confirm whether your choice was saved. Check status before choosing again.",
+            );
+        }
+      } finally {
+        busyRef.current = false;
+        if (!active.signal.aborted && current === generation.current) {
+          focusAfterAction.current = !automatic || optionsReadyWithFocus;
+          setBusy(false);
+          setChecking(false);
+          if (refreshPending.current) {
+            refreshPending.current = false;
+            void act(undefined, false);
+          }
+        }
+      }
+    },
+    [apply, manage, titleId],
+  );
   useEffect(() => {
-    const abort = new AbortController();
-    controller.current = abort;
-    void request(AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]))
+    const active = new AbortController();
+    controller.current = active;
+    managing.current = manage;
+    const current = ++generation.current;
+    void request(
+      AbortSignal.any([active.signal, AbortSignal.timeout(20_000)]),
+      manage,
+    )
       .then((next) => {
-        if (!abort.signal.aborted) setView(next);
+        if (!active.signal.aborted && current === generation.current)
+          apply(next);
       })
       .catch(() => {
-        if (!abort.signal.aborted) setView({ status: "unconfirmed" });
+        if (!active.signal.aborted && current === generation.current)
+          apply({ status: "unavailable" });
       });
-    return () => abort.abort();
-  }, []);
+    return () => {
+      active.abort();
+      refreshPending.current = false;
+    };
+  }, [apply, manage]);
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      if (event instanceof CustomEvent && event.detail === titleId) return;
+      if (busyRef.current) {
+        refreshPending.current = true;
+        return;
+      }
+      void act(undefined, false);
+    };
+    window.addEventListener(changedEvent, refresh);
+    return () => window.removeEventListener(changedEvent, refresh);
+  }, [act, titleId]);
+  useEffect(() => {
+    if (view.status === "loading") return;
+    const reason =
+      view.status === "waiting" || view.status === "protected"
+        ? view.reason
+        : undefined;
+    const count =
+      view.status === "selection_required" ? view.choices.length : 0;
+    const key = `${view.status}:${reason ?? ""}:${count}`;
+    if (exposed.current === key) return;
+    exposed.current = key;
+    captureAuthenticatedEvent("cloud_workspace_options_viewed", {
+      surface: manage ? "workspace_dialog" : "workspace_error",
+      status: view.status,
+      ...(reason ? { reason } : {}),
+      choice_count: count,
+    });
+  }, [manage, view]);
+  useEffect(() => {
+    if (view.status !== "waiting" || autoChecks.current >= 30) return;
+    let due = false;
+    const check = () => {
+      if (!due || document.visibilityState === "hidden") return;
+      due = false;
+      autoChecks.current++;
+      void act(undefined, undefined, true);
+    };
+    const timer = setTimeout(() => {
+      due = true;
+      check();
+    }, 30_000);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [act, view]);
   useEffect(() => {
     if (!busy && focusAfterAction.current) {
       focusAfterAction.current = false;
       if (
         document.activeElement === document.body ||
         cardRef.current?.contains(document.activeElement)
-      ) {
+      )
         (view.status === "selected"
-          ? retryRef.current
+          ? (retryRef.current ?? cardRef.current)
           : cardRef.current
         )?.focus();
-      }
     }
-  }, [view, busy]);
-
-  async function act(region?: WorkspaceRegionChoice) {
-    if (
-      busyRef.current ||
-      !controller.current ||
-      controller.current.signal.aborted
-    )
-      return;
-    if (region && view.status !== "selection_required") return;
-    busyRef.current = true;
-    setBusy(true);
-    setNotSaved(false);
-    const active = controller.current;
-    const signal = () =>
-      AbortSignal.any([active.signal, AbortSignal.timeout(20_000)]);
-    try {
-      let next: WorkspaceRegionView;
-      if (region && view.status === "selection_required") {
-        try {
-          next = await request(signal(), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ region, token: view.token }),
-          });
-        } catch {
-          // Unknown outcomes are reconciled by one read, never a repeated POST.
-          if (active.signal.aborted) return;
-          next = await request(signal());
-          if (!active.signal.aborted && next.status === "selection_required")
-            setNotSaved(true);
-        }
-      } else next = await request(signal());
-      if (!active.signal.aborted) setView(next);
-    } catch {
-      if (!active.signal.aborted) setView({ status: "unconfirmed" });
-    } finally {
-      busyRef.current = false;
-      if (!active.signal.aborted) {
-        focusAfterAction.current = true;
-        setBusy(false);
-      }
-    }
-  }
+  }, [busy, view]);
+  const choices =
+    view.status === "selection_required"
+      ? [...view.choices].sort(
+          (a, b) =>
+            Number(b.id === view.currentId) - Number(a.id === view.currentId) ||
+            (Date.parse(b.lastStartedAt ?? "") || 0) -
+              (Date.parse(a.lastStartedAt ?? "") || 0) ||
+            a.id.localeCompare(b.id),
+        )
+      : [];
+  const waitingText =
+    view.status === "waiting"
+      ? {
+          active_tasks:
+            "A task is still running. You can switch workspaces after it finishes or you stop it in chat.",
+          recent_activity:
+            "Your workspace was active recently. Switching becomes available after 15 minutes without workspace activity.",
+          running_workspace:
+            "A workspace is still running. You can switch after it pauses automatically.",
+        }[view.reason]
+      : null;
   return (
     <div
       ref={cardRef}
       tabIndex={-1}
       role="group"
-      aria-labelledby={titleId}
-      className="w-full rounded-lg border p-3 text-sm"
+      aria-busy={checking || view.status === "loading"}
+      aria-labelledby={manage ? undefined : titleId}
+      aria-label={manage ? "Cloud workspace status" : undefined}
+      className={
+        manage ? "mt-4 w-full text-sm" : "w-full rounded-lg border p-3 text-sm"
+      }
     >
-      <p id={titleId} className="font-medium">
-        {view.status === "selection_required"
-          ? "Choose your cloud workspace"
-          : "Cloud workspace"}
-      </p>
-      {view.status === "selection_required" ? (
+      {!manage && (
+        <p id={titleId} className="font-medium">
+          {view.status === "selection_required"
+            ? "Choose your cloud workspace"
+            : "Cloud workspace"}
+        </p>
+      )}
+      {view.status === "selection_required" && (
         <>
           <p className="mt-1 text-muted-foreground">
-            You have workspaces in the US and Europe. Choose the one you used
-            most recently. Nothing is moved or deleted. Future tasks will use
-            your choice; files in the other workspace stay there.
+            {!manage && "Choose which workspace future cloud tasks use. "}You
+            can switch again when your tasks and connections have finished.
           </p>
-          <p className="mt-1 text-muted-foreground">
-            Changing this choice later requires support. If you are unsure which
-            to choose,{" "}
-            <a href="mailto:contact@hackerai.co" className="underline">
-              contact support
-            </a>{" "}
-            first.
+          <fieldset
+            disabled={busy}
+            className="mt-3 max-h-72 space-y-2 overflow-y-auto p-0.5"
+          >
+            <legend className="sr-only">Saved cloud workspaces</legend>
+            {choices.map((choice) => (
+              <label
+                key={choice.id}
+                className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border p-3 has-[:checked]:border-foreground has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+              >
+                <input
+                  type="radio"
+                  name={titleId}
+                  value={choice.id}
+                  checked={draft === choice.id}
+                  onChange={() => setDraft(choice.id)}
+                  className="mt-1 accent-current"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2 font-medium">
+                    {regionLabel(choice.region)}
+                    {choice.id === view.currentId && (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-normal">
+                        Current
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    className="block break-words text-xs text-muted-foreground"
+                    title={choice.id}
+                  >
+                    ID {shortId(choice.id, choices)} ·{" "}
+                    {started(choice.lastStartedAt)}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+          <p className="mt-2 text-xs text-muted-foreground">
+            The last-started time doesn’t tell you which workspace has your
+            files.
           </p>
         </>
-      ) : (
-        <p className="mt-1 text-muted-foreground">
-          Files in your workspaces are kept. To access files in another
-          workspace,{" "}
+      )}
+      <div role="status">
+        {!busy && view.status === "selection_required" && (
+          <span className="sr-only">Workspace choices are ready.</span>
+        )}
+        {(busy || view.status === "loading") && (
+          <p className="mt-2">Checking your workspaces…</p>
+        )}
+        {!busy && view.status === "selected" && (
+          <p className="mt-2">
+            Using your {regionLabel(view.region)} · {view.id.slice(-6)}.{" "}
+            {onRetry
+              ? "Retry when you’re ready."
+              : "Future cloud tasks will use this workspace."}
+          </p>
+        )}
+        {!busy && waitingText && (
+          <p className="mt-2">
+            {waitingText}{" "}
+            {autoChecks.current < 30 || checking ? (
+              "We’ll check again while this stays open."
+            ) : (
+              <>
+                Use Check status to check again. If this continues,{" "}
+                <a href="mailto:contact@hackerai.co" className="underline">
+                  contact support
+                </a>
+                .
+              </>
+            )}
+          </p>
+        )}
+        {!busy && view.status === "empty" && (
+          <p className="mt-2">
+            No saved cloud workspaces were found. Your next cloud task will
+            create your first workspace.
+          </p>
+        )}
+        {!busy && view.status === "protected" && (
+          <p className="mt-2">
+            {view.reason === "provisioning"
+              ? "An earlier workspace setup hasn’t been confirmed yet."
+              : view.reason === "recovery"
+                ? "Your workspace is protected while its recovery status is checked. Select Cloud in chat to review recovery options."
+                : view.reason === "cleanup"
+                  ? "Workspace cleanup status must be verified before another workspace can be selected."
+                  : "Your workspace identity needs verification before it can be changed."}{" "}
+            Check status to try again. If this continues,{" "}
+            <a href="mailto:contact@hackerai.co" className="underline">
+              contact support
+            </a>
+            .
+          </p>
+        )}
+      </div>
+      {!busy && view.status === "unavailable" && (
+        <p role="alert" className="mt-2 text-destructive">
+          {notice ??
+            "We couldn’t check your saved workspaces. Your selection hasn’t been changed by this check. Try again in a few minutes."}{" "}
+          If this continues,{" "}
           <a href="mailto:contact@hackerai.co" className="underline">
             contact support
           </a>
           .
         </p>
       )}
-      <div role="status">
-        {busy || view.status === "loading" ? (
-          <p className="mt-2">Checking workspace selection…</p>
-        ) : view.status === "selected" ? (
-          <p className="mt-2">
-            Using your {label(view.region)}. Retry when you’re ready.
-          </p>
-        ) : null}
-      </div>
-      {notSaved && !busy && (
+      {!busy && notice && view.status !== "unavailable" && (
         <p role="alert" className="mt-2 text-destructive">
-          Your choice was not saved. Check the options below before choosing
-          again.
+          {notice}
         </p>
       )}
-      {view.status === "unconfirmed" && !busy && (
-        <p role="alert" className="mt-2 text-destructive">
-          We couldn’t confirm your workspace selection. Check status to try
-          again. If this continues, contact support.
+      {view.status !== "empty" && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          All saved workspaces and files stay where they are. Switching does not
+          move, merge, or delete files.
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
-        {view.status === "selection_required" &&
-          view.choices.map((region) => (
+        {onRetry &&
+          browsing &&
+          view.status !== "selected" &&
+          view.status !== "loading" && (
             <Button
-              key={region}
               size="sm"
-              className="min-h-11"
               variant="outline"
-              disabled={busy}
-              onClick={() => void act(region)}
+              className="min-h-11"
+              disabled={checking}
+              onClick={() => void act(undefined, false)}
             >
-              {label(region)}
+              Keep current workspace
             </Button>
-          ))}
-        {view.status === "unconfirmed" && (
+          )}
+        {view.status === "selection_required" && (
           <Button
             size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => void act()}
+            className="min-h-11"
+            disabled={busy || !draft || draft === view.currentId}
+            onClick={() => void act(draft!)}
           >
-            Check status
+            Use this workspace
+          </Button>
+        )}
+        {onRetry && (view.status === "selected" || view.status === "empty") && (
+          <Button
+            ref={retryRef}
+            size="sm"
+            className="min-h-11"
+            disabled={busy}
+            onClick={onRetry}
+          >
+            Retry
           </Button>
         )}
         {view.status === "selected" && (
-          <Button ref={retryRef} size="sm" onClick={onRetry}>
-            Retry
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-h-11"
+            disabled={busy}
+            onClick={() => void act(undefined, true)}
+          >
+            Choose another workspace
+          </Button>
+        )}
+        {["waiting", "unavailable", "protected"].includes(view.status) && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-h-11"
+            aria-disabled={checking}
+            aria-busy={checking}
+            onClick={() => void act()}
+          >
+            {checking ? "Checking status…" : "Check status"}
           </Button>
         )}
       </div>
