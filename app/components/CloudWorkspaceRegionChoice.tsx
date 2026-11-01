@@ -230,13 +230,22 @@ export function CloudWorkspaceRegionChoice({
   }, [manage, view]);
   useEffect(() => {
     if (view.status !== "waiting" || autoChecks.current >= 30) return;
+    let due = false;
+    const check = () => {
+      if (!due || document.visibilityState === "hidden") return;
+      due = false;
+      autoChecks.current++;
+      void act(undefined, undefined, true);
+    };
     const timer = setTimeout(() => {
-      if (document.visibilityState !== "hidden") {
-        autoChecks.current++;
-        void act(undefined, undefined, true);
-      }
+      due = true;
+      check();
     }, 30_000);
-    return () => clearTimeout(timer);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+    };
   }, [act, view]);
   useEffect(() => {
     if (!busy && focusAfterAction.current) {

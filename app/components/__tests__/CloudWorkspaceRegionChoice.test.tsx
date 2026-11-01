@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { CloudWorkspaceRegionChoice } from "../CloudWorkspaceRegionChoice";
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
@@ -21,6 +27,41 @@ const response = (body: unknown) => ({ ok: true, json: async () => body });
 beforeEach(() => {
   jest.resetAllMocks();
   global.fetch = fetchMock;
+});
+
+it("resumes a due status check after returning to a hidden tab without replaying work", async () => {
+  jest.useFakeTimers();
+  const visibility = jest
+    .spyOn(document, "visibilityState", "get")
+    .mockReturnValue("hidden");
+  const retry = jest.fn();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ status: "waiting", reason: "active_tasks" }),
+      )
+      .mockResolvedValueOnce(
+        response({ status: "selected", id: "us-one", region: "us-east-1" }),
+      );
+    render(<CloudWorkspaceRegionChoice onRetry={retry} />);
+    await screen.findByText(/A task is still running/);
+    await act(async () => {
+      jest.advanceTimersByTime(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    visibility.mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await screen.findByRole("button", { name: "Retry" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+    expect(retry).not.toHaveBeenCalled();
+  } finally {
+    visibility.mockRestore();
+    jest.useRealTimers();
+  }
 });
 
 it("lets an owner choose a particular same-region copy without starting work from the manager", async () => {
@@ -58,7 +99,9 @@ it("refreshes a stale inline card after a choice is saved elsewhere without retr
   const retry = jest.fn();
   render(<CloudWorkspaceRegionChoice onRetry={retry} />);
   await screen.findByRole("button", { name: "Use this workspace" });
-  window.dispatchEvent(new Event("hackerai:cloud-workspace-selected"));
+  await act(async () => {
+    window.dispatchEvent(new Event("hackerai:cloud-workspace-selected"));
+  });
   await screen.findByRole("button", { name: "Retry" });
   expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
   expect(retry).not.toHaveBeenCalled();
