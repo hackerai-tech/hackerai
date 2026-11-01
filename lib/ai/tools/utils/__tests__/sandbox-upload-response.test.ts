@@ -211,21 +211,16 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
   );
 
   it.each([200, 403])(
-    "preserves HTTP %s when diagnostic storage becomes unwritable",
+    "preserves HTTP %s when the OS rejects diagnostic file writes",
     async (httpStatus) => {
-      const bin = path.join(directory, "bin");
-      await mkdir(bin);
-      await writeFile(
-        path.join(bin, "mktemp"),
-        '#!/bin/sh\nfile=$(/usr/bin/mktemp "$@") || exit $?\nchmod 400 "$file"\nprintf "%s\\n" "$file"\n',
-        { mode: 0o700 },
-      );
+      // RLIMIT_FSIZE also applies to privileged users, unlike chmod-based
+      // write denial. Empty mktemp files can be created but cannot grow.
       const before = (await readdir(directory)).sort();
       status = httpStatus;
       body =
         "<Error><Code>AccessDenied</Code><Message>PRIVATE body</Message></Error>";
       const result = await upload(directory, source, {
-        path: `${bin}:/usr/bin:/bin`,
+        prefix: "ulimit -f 0; ",
       });
       expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
       expect(result.stdout).toBe("");
