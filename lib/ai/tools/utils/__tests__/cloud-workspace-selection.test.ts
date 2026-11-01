@@ -35,11 +35,15 @@ let changedId = false;
 let running = false;
 let incomplete = false;
 let wrongOwner = false;
+let legacyUs = false;
+let conflictingCluster = false;
+let extraWorkspace = false;
 const originalEnv = process.env;
 beforeEach(() => {
   jest.resetAllMocks();
   mockData.clear();
   changedId = running = incomplete = wrongOwner = false;
+  legacyUs = conflictingCluster = extraWorkspace = false;
   process.env = {
     ...originalEnv,
     CONVEX_SERVICE_ROLE_KEY: "test-only-key",
@@ -62,11 +66,19 @@ beforeEach(() => {
           state: running ? "running" : "paused",
           metadata: {
             userID: wrongOwner ? "other" : "owner",
-            e2bCluster: cluster,
+            ...(legacyUs && cluster === "us"
+              ? {}
+              : {
+                  e2bCluster:
+                    conflictingCluster && cluster === "us" ? "other" : cluster,
+                }),
             template: "terminal-agent-sandbox",
             sandboxVersion: "v12",
           },
         },
+        ...(extraWorkspace && cluster === "us"
+          ? [{ sandboxId: "extra", state: "paused" }]
+          : []),
       ],
     } as never;
   });
@@ -170,5 +182,54 @@ it.each([
       condition === "wrong-token" ? "a".repeat(64) : choice,
     ),
   ).rejects.toThrow();
+  expect(mockEval).not.toHaveBeenCalled();
+});
+
+it("allows a legacy US workspace with no cluster tag and preserves both inventories", async () => {
+  legacyUs = true;
+  const choice = await token();
+  expect(await selectWorkspaceRegion("owner", "us-east-1", choice)).toEqual({
+    status: "selected",
+    region: "us-east-1",
+  });
+  expect(await workspaceRegionView("owner")).toEqual({
+    status: "selected",
+    region: "us-east-1",
+  });
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+it("rejects an explicit conflicting cluster tag on a legacy-compatible inventory", async () => {
+  const choice = await token();
+  conflictingCluster = true;
+  await expect(workspaceRegionView("owner")).rejects.toThrow();
+  await expect(
+    selectWorkspaceRegion("owner", "us-east-1", choice),
+  ).rejects.toThrow();
+  expect(mockEval).not.toHaveBeenCalled();
+});
+it("keeps multiple workspaces in one region with support instead of selecting a file store", async () => {
+  legacyUs = true;
+  extraWorkspace = true;
+  await expect(workspaceRegionView("owner")).rejects.toThrow();
+  expect(mockEval).not.toHaveBeenCalled();
+});
+
+it("still rejects missing EU placement metadata", async () => {
+  const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+  jest.mocked(Sandbox.list).mockImplementation((options) => {
+    const pager = list(options);
+    if (!options?.domain) return pager;
+    return {
+      ...pager,
+      nextItems: async () =>
+        (await pager.nextItems()).map((item) => ({
+          ...item,
+          metadata: { ...item.metadata, e2bCluster: undefined },
+        })),
+    } as never;
+  });
+  await expect(workspaceRegionView("owner")).rejects.toThrow();
   expect(mockEval).not.toHaveBeenCalled();
 });
