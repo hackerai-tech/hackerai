@@ -127,6 +127,53 @@ it("lets an owner choose a particular same-region copy without starting work fro
   ).not.toBeInTheDocument();
 });
 
+it("shows the manual fallback only after the final automatic read settles and stops polling", async () => {
+  jest.useFakeTimers();
+  let finish!: (value: ReturnType<typeof response>) => void;
+  const waiting = { status: "waiting", reason: "recent_activity" };
+  try {
+    fetchMock.mockImplementation(() =>
+      fetchMock.mock.calls.length === 31
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(response({ ...waiting })),
+    );
+    render(<CloudWorkspaceRegionChoice manage />);
+    await screen.findByRole("button", { name: "Check status" });
+    for (let check = 0; check < 30; check++) {
+      await act(async () => {
+        jest.advanceTimersByTime(30_000);
+      });
+    }
+    expect(
+      screen.getByRole("button", { name: "Checking status…" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByText(/Use Check status to check again/),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      finish(response(waiting));
+    });
+    expect(screen.getByText(/Use Check status to check again/)).toBeVisible();
+    await act(async () => {
+      jest.advanceTimersByTime(90_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(31);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/Use Check status to check again/),
+      ).not.toBeInTheDocument(),
+    );
+    expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("refreshes a stale inline card after a choice is saved elsewhere without retrying the task", async () => {
   fetchMock
     .mockResolvedValueOnce(response(options))

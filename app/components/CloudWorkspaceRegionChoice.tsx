@@ -223,6 +223,7 @@ export function CloudWorkspaceRegionChoice({
       });
     return () => {
       active.abort();
+      refreshPending.current = false;
     };
   }, [apply, manage]);
   useEffect(() => {
@@ -395,7 +396,7 @@ export function CloudWorkspaceRegionChoice({
         {!busy && waitingText && (
           <p className="mt-2">
             {waitingText}{" "}
-            {autoChecks.current < 30 ? (
+            {autoChecks.current < 30 || checking ? (
               "We’ll check again while this stays open."
             ) : (
               <>
