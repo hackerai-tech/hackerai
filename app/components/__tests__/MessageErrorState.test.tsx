@@ -92,7 +92,10 @@ describe("MessageErrorState", () => {
         json: async () => ({
           status: "selection_required",
           token: "a".repeat(64),
-          choices: ["us-east-1", "eu-central-1"],
+          choices: [
+            { id: "us-existing", region: "us-east-1", lastStartedAt: null },
+            { id: "eu-existing", region: "eu-central-1", lastStartedAt: null },
+          ],
         }),
       }) as typeof fetch;
       const onRetry = jest.fn();
@@ -114,7 +117,7 @@ describe("MessageErrorState", () => {
           />,
         );
         expect(
-          await screen.findByRole("button", { name: "Europe workspace" }),
+          await screen.findByRole("radio", { name: /Europe workspace/ }),
         ).toBeEnabled();
         expect(
           screen.queryByRole("button", { name: "Retry" }),

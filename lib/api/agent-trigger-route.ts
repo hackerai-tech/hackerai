@@ -615,6 +615,7 @@ export const createAgentTriggerPost =
         await assertCloudWorkspaceAvailable(
           userId,
           workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+          triggerRegion,
         );
       }
 
