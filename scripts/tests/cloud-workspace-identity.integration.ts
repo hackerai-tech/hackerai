@@ -441,3 +441,13 @@ it("rejects two workspaces claiming one uncertain creation token", async () => {
     step: "creating",
   });
 });
+
+it.each(["E2B_API_KEY", "E2B_EU_API_KEY"])(
+  "blocks discovery when %s is missing rather than assuming that region is empty",
+  async (key) => {
+    delete process.env[key];
+    await expect(acquire()).rejects.toThrow();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(await state()).toBeNull();
+  },
+);

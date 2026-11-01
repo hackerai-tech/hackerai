@@ -60,7 +60,8 @@ export async function listWorkspaceInventory(
   signal?: AbortSignal,
 ) {
   const clusters = getConfiguredE2BClustersForCleanup();
-  if (!clusters.length) throw new CloudWorkspaceUnavailableError();
+  // Missing credentials are an unknown inventory, never evidence of no files.
+  if (clusters.length !== 2) throw new CloudWorkspaceUnavailableError();
   return (
     await Promise.all(
       clusters.map(async (cluster) => {

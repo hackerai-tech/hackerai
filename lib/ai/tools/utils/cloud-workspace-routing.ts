@@ -175,7 +175,7 @@ export async function resolveCloudWorkspaceRegion({
     // Bootstrap legacy accounts from existing inventory, never the current IP.
     // A failed regional read cannot establish that no files exist there.
     const clusters = getConfiguredE2BClustersForCleanup();
-    if (!clusters.length) throw unavailable("inventory_unconfigured");
+    if (clusters.length !== 2) throw unavailable("inventory_unconfigured");
     const { Sandbox } = await observeOperation(
       "inventory_sdk_load",
       () => import("@e2b/code-interpreter"),
