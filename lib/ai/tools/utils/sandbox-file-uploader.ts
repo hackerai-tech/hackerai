@@ -19,7 +19,10 @@ import {
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 import { getLocalFileRequestFailure } from "./local-sandbox-errors";
-import { getUploadFailureDiagnostics } from "./sandbox-upload-diagnostics";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 const MAX_GENERATED_FILE_SIZE_MB =
@@ -491,7 +494,11 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   }
 
   let result: SandboxCommandResult;
-  const uploadCommand = `curl -fsSL -X PUT -H ${shellQuote(`Content-Type: ${mediaType}`)} --data-binary @${shellQuote(fullPath)} ${shellQuote(uploadUrl)}`;
+  const uploadCommand = buildPosixCurlUploadCommand(
+    fullPath,
+    uploadUrl,
+    mediaType,
+  );
   try {
     result = await sandbox.commands.run(
       `${uploadCommand}; status=$?; printf '\\n${SANDBOX_UPLOAD_STATUS_MARKER}%s\\n' "$status"; exit 0`,

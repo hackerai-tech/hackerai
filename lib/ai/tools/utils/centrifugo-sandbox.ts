@@ -51,6 +51,7 @@ import {
 } from "@/packages/local/src/centrifugo-transport";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
+import { buildPosixCurlUploadCommand } from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
 import {
   LocalCommandRelayUnsubscribedError,
@@ -2929,7 +2930,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       let command: string;
       let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
-        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+        command = this.isWindows()
+          ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+          : buildPosixCurlUploadCommand(path, uploadUrl, contentType);
       } else if (httpClient === "wget") {
         command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
       } else {
