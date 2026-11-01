@@ -2412,8 +2412,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat &&
     !hasResolvedInitialPresentation &&
     !canResolveApprovalPresentation;
-  const showBottomChatInput =
-    (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const isComposerCentered = !hasMessages && !isExistingChat && !isMobile;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
@@ -2534,11 +2533,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             )}
 
             {/* Chat interface */}
-            <div className="bg-background flex flex-col flex-1 relative min-h-0">
+            <div
+              className={`bg-background flex flex-col flex-1 relative min-h-0 ${
+                !showChatLayout && !isChatNotFound
+                  ? "justify-center-safe overflow-y-auto"
+                  : ""
+              }`}
+            >
               {/* Messages area */}
               {isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                  <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="w-full max-w-full sm:max-w-[768px] flex flex-col items-center space-y-8">
                     <div className="text-center">
                       <h1 className="text-2xl font-bold text-foreground mb-2">
                         Task Not Found
@@ -2609,49 +2614,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   )}
                 </div>
               ) : (
-                <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
-                      <div className="text-center">
-                        <HackingSuggestions />
-                      </div>
-
-                      {/* Centered input (desktop only) */}
-                      {!isMobile && (
-                        <div className="w-full">
-                          <ChatInput
-                            onSubmit={handleSubmit}
-                            onStop={handleStop}
-                            onReconnect={resumeStream}
-                            onSendNow={handleSendNow}
-                            status={status}
-                            hideStop={isAgentRunUiTerminal}
-                            isCentered={true}
-                            hasMessages={hasMessages}
-                            isNewChat={!isExistingChat}
-                            chatId={chatId}
-                            rateLimitWarning={
-                              rateLimitWarning ? rateLimitWarning : undefined
-                            }
-                            onDismissRateLimitWarning={
-                              handleDismissRateLimitWarning
-                            }
-                            storedApprovalRequest={storedAgentApprovalRequest}
-                          />
-                        </div>
-                      )}
+                <div
+                  className={`flex flex-col min-h-0 ${isMobile ? "flex-1" : "shrink-0"}`}
+                >
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-4 min-h-0">
+                    <div className="w-full max-w-[768px] flex flex-col items-center">
+                      <HackingSuggestions />
                     </div>
-                  </div>
-
-                  {/* Footer - only show when user is not logged in */}
-                  <div className="flex-shrink-0">
-                    <Footer />
                   </div>
                 </div>
               )}
 
-              {/* Chat Input - Bottom placement (also for mobile new chats) */}
-              {showBottomChatInput ? (
+              {/* Keep one composer mounted across folding and the first message.
+                  Remounting can restore an older saved draft over live input. */}
+              {!isChatNotFound ? (
                 <ComposerOverlay
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
@@ -2679,6 +2655,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onSendNow={handleSendNow}
                     status={status}
                     hideStop={isAgentRunUiTerminal}
+                    isCentered={isComposerCentered}
                     hasMessages={hasMessages}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
@@ -2692,6 +2669,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   />
                 </ComposerOverlay>
               ) : null}
+              {!showChatLayout && !isChatNotFound && <Footer />}
             </div>
           </div>
 
