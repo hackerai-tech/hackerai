@@ -46,6 +46,14 @@ export type GeneratedFileUploadPhase =
 export type NativeStatFailureReason =
   "stat_failed" | "file_missing" | "not_regular_file" | "invalid_file_size";
 
+export type GeneratedFileTransferAttemptFailure = ReturnType<
+  typeof getUploadFailureDiagnostics
+> & {
+  transfer_attempt_kind: "native" | "command";
+  transfer_exit_code: number | null;
+  sandbox_type: "cloud" | "desktop" | "remote-connection";
+};
+
 /**
  * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
  * file. Presigned S3 URLs are intentionally not persisted in tool output
@@ -422,9 +430,39 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   fullPath: string;
   uploadUrl: string;
   mediaType: string;
+  onFailure?: (
+    failure: GeneratedFileTransferAttemptFailure,
+  ) => void | Promise<void>;
 }): Promise<void> {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
   const fileName = getFileNameFromPath(fullPath);
+  const reportFailure = (
+    kind: GeneratedFileTransferAttemptFailure["transfer_attempt_kind"],
+    error: unknown,
+    exitCode: number | null = null,
+  ) => {
+    if (!args.onFailure) return;
+    try {
+      void Promise.resolve(
+        args.onFailure({
+          transfer_attempt_kind: kind,
+          sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
+          transfer_exit_code:
+            typeof exitCode === "number" &&
+            Number.isInteger(exitCode) &&
+            exitCode >= 0 &&
+            exitCode <= 255
+              ? exitCode
+              : null,
+          ...getUploadFailureDiagnostics(uploadUrl, error),
+        }),
+      ).catch(() => {
+        // Optional analytics must not replace the upload's result or error.
+      });
+    } catch {
+      // Preserve frozen/native errors and the existing fallback decision.
+    }
+  };
 
   if (
     !isE2BSandbox(sandbox) &&
@@ -435,6 +473,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
       return;
     } catch (error) {
+      reportFailure("native", error);
       logger.warn("sandbox_generated_file_native_upload_failed", {
         event: "sandbox_generated_file_native_upload_failed",
         service: "chat-handler",
@@ -466,6 +505,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
     if (commandResult) {
       result = commandResult;
     } else {
+      reportFailure("command", error);
       logger.error(
         "sandbox_generated_file_upload_failed",
         error instanceof Error ? error : undefined,
@@ -487,6 +527,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   result = parseUploadResult(result);
 
   if (result.exitCode !== 0) {
+    reportFailure("command", result.stderr || result.stdout, result.exitCode);
     logger.error("sandbox_generated_file_upload_failed", undefined, {
       event: "sandbox_generated_file_upload_failed",
       service: "chat-handler",
@@ -513,6 +554,9 @@ export async function uploadSandboxFileToConvex(args: {
   onPhase?: (phase: GeneratedFileUploadPhase) => void | Promise<void>;
   onNativeStatFailure?: (
     reason: NativeStatFailureReason,
+  ) => void | Promise<void>;
+  onTransferAttemptFailure?: (
+    failure: GeneratedFileTransferAttemptFailure,
   ) => void | Promise<void>;
 }): Promise<UploadedFileInfo> {
   const recordPhase = (phase: GeneratedFileUploadPhase) => {
@@ -606,6 +650,7 @@ export async function uploadSandboxFileToConvex(args: {
       fullPath,
       uploadUrl,
       mediaType,
+      onFailure: args.onTransferAttemptFailure,
     });
   } catch (error) {
     logger.error(

@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import {
   uploadSandboxFileToConvex,
   type GeneratedFileUploadPhase,
+  type GeneratedFileTransferAttemptFailure,
   type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
 import {
@@ -53,6 +54,19 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         } catch {
           // Optional identity observation must not fail a delivery.
         }
+      };
+      const recordTransferAttemptFailure = (
+        failure: GeneratedFileTransferAttemptFailure,
+      ) => {
+        // A native failure can precede a successful command fallback. These
+        // numeric attempt observations are separate from final delivery counts.
+        phLogger.event("agent_file_transfer_attempt_failed", {
+          userId: context.userID,
+          chat_id: context.chatId,
+          trigger_run_id: context.triggerRunId ?? null,
+          transfer_attempt_diagnostic_version: 1,
+          ...failure,
+        });
       };
       type FailurePhase =
         | GeneratedFileUploadPhase
@@ -184,6 +198,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 currentPhase = phase;
               },
               onNativeStatFailure: observeNativeStatFailure,
+              onTransferAttemptFailure: recordTransferAttemptFailure,
             });
           } catch (error) {
             const nativeMetadataRelayRejected =
@@ -232,6 +247,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 currentPhase = phase;
               },
               onNativeStatFailure: observeNativeStatFailure,
+              onTransferAttemptFailure: recordTransferAttemptFailure,
             });
           }
         };
