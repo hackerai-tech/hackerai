@@ -105,6 +105,7 @@ export function CloudWorkspaceRegionChoice({
   const viewRef = useRef<View>(view);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
   const controller = useRef<AbortController | null>(null);
@@ -130,6 +131,7 @@ export function CloudWorkspaceRegionChoice({
       if (id && previous.status !== "selection_required") return;
       managing.current = id ? false : showChoices;
       busyRef.current = true;
+      setChecking(true);
       if (!automatic) setBusy(true);
       setNotice(null);
       if (!automatic) autoChecks.current = 0;
@@ -179,6 +181,7 @@ export function CloudWorkspaceRegionChoice({
         if (!active.signal.aborted && current === generation.current) {
           focusAfterAction.current = !automatic;
           setBusy(false);
+          setChecking(false);
         }
       }
     },
@@ -286,6 +289,7 @@ export function CloudWorkspaceRegionChoice({
       ref={cardRef}
       tabIndex={-1}
       role="group"
+      aria-busy={checking || view.status === "loading"}
       aria-labelledby={manage ? undefined : titleId}
       aria-label={manage ? "Cloud workspace status" : undefined}
       className={
@@ -445,10 +449,11 @@ export function CloudWorkspaceRegionChoice({
             size="sm"
             variant="outline"
             className="min-h-11"
-            disabled={busy}
+            aria-disabled={checking}
+            aria-busy={checking}
             onClick={() => void act()}
           >
-            Check status
+            {checking ? "Checking status…" : "Check status"}
           </Button>
         )}
       </div>

@@ -64,6 +64,43 @@ it("resumes a due status check after returning to a hidden tab without replaying
   }
 });
 
+it("shows background check progress without losing focus or starting an overlapping read", async () => {
+  jest.useFakeTimers();
+  let finish!: (value: ReturnType<typeof response>) => void;
+  try {
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ status: "waiting", reason: "recent_activity" }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+    render(<CloudWorkspaceRegionChoice manage />);
+    const button = await screen.findByRole("button", { name: "Check status" });
+    button.focus();
+    await act(async () => {
+      jest.advanceTimersByTime(30_000);
+    });
+    expect(button).toHaveTextContent("Checking status…");
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveFocus();
+    fireEvent.click(button);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      finish(response({ status: "waiting", reason: "recent_activity" }));
+    });
+    expect(
+      await screen.findByRole("button", { name: "Check status" }),
+    ).toHaveFocus();
+    expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("lets an owner choose a particular same-region copy without starting work from the manager", async () => {
   fetchMock
     .mockResolvedValueOnce(response({ ...options, currentId: "us-one" }))
