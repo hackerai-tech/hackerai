@@ -125,6 +125,37 @@ it("adopts legacy paused files from their actual cluster instead of the request 
     }),
   );
 });
+it("distinguishes creation reconciliation from reading persisted state", async () => {
+  mockData.set(stateKey, {
+    version: 1,
+    phase: "provisioning",
+    step: "creating",
+    token: "private-creation-token",
+    region: "us-east-1",
+  });
+  const failure = new Error("private-inventory-detail");
+  jest.mocked(Sandbox.list).mockImplementation(() => {
+    throw failure;
+  });
+
+  await expect(resolve("us-east-1")).rejects.toBe(failure);
+  expect(warning).toHaveBeenCalledTimes(1);
+  expect(warning).toHaveBeenCalledWith(
+    "Cloud workspace routing operation failed",
+    {
+      event: "cloud_workspace_routing_operation_failed",
+      phase: "workspace_creation_reconcile",
+      error_kind: "other",
+      request_aborted: false,
+      user_id: "owner",
+    },
+  );
+  expect(mockSet).not.toHaveBeenCalled();
+  expect(mockEval).not.toHaveBeenCalled();
+  expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+    /private-inventory-detail|private-creation-token/,
+  );
+});
 it("concurrent first visits converge on the stored winner", async () => {
   const results = await Promise.all([
     resolve("us-east-1"),
