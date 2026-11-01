@@ -579,15 +579,6 @@ export const createAgentTriggerPost =
         retryNetworkFailure: true,
         signal: req.signal,
       });
-      // Serialize cloud Agent admission with recovery before a run is queued.
-      // The same activity/fence CAS protects acquisition and cached clients.
-      if (!sandboxPreference || sandboxPreference === "e2b") {
-        const workspace = await readCloudWorkspaceState(userId);
-        await assertCloudWorkspaceAvailable(
-          userId,
-          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
-        );
-      }
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({
@@ -616,6 +607,16 @@ export const createAgentTriggerPost =
               signal: req.signal,
             })
           : requestTriggerRegion;
+
+      // Serialize cloud Agent admission with recovery before a run is queued.
+      // The same activity/fence CAS protects acquisition and cached clients.
+      if (!sandboxPreference || sandboxPreference === "e2b") {
+        const workspace = await readCloudWorkspaceState(userId);
+        await assertCloudWorkspaceAvailable(
+          userId,
+          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+        );
+      }
 
       const requestMessages = Array.isArray(messages) ? messages : [];
       if (!regenerate && !isAutoContinue && requestMessages.length === 0) {

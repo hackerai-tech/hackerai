@@ -1,7 +1,17 @@
+jest.mock("@/lib/cloud-recovery/store", () => ({
+  readFailures: jest.fn(async () => null),
+  clearResumeFailures: jest.fn(async () => {}),
+}));
+jest.mock("../cloud-workspace-guard", () => ({
+  ...jest.requireActual("../cloud-workspace-guard"),
+  readCloudWorkspaceState: jest.fn(async () => null),
+}));
+import { readCloudWorkspaceState } from "../cloud-workspace-guard";
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {
     static list = jest.fn();
+    static getInfo = jest.fn();
     static connect = jest.fn();
   },
 }));
@@ -10,6 +20,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 
 const sandboxApi = Sandbox as unknown as {
   list: jest.Mock;
+  getInfo: jest.Mock;
   connect: jest.Mock;
 };
 const mockConvexQuery = jest.fn();
@@ -1412,6 +1423,25 @@ describe("HybridSandboxManager reset cleanup", () => {
           metadata: { sandboxVersion: "v12" },
         },
       ]),
+    });
+    jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+      version: 1,
+      phase: "e2b",
+      token: "fixture",
+      sourceId: "sandbox-2",
+      destinationId: "sandbox-2",
+      region: "us-east-1",
+      origin: "adopted",
+    });
+    sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "sandbox-2",
+      state: "running",
+      metadata: {
+        userID: "user-1",
+        template: "terminal-agent-sandbox",
+        sandboxVersion: "v12",
+        e2bCluster: "us",
+      },
     });
     sandboxApi.connect.mockResolvedValue(replacement);
 

@@ -41,8 +41,25 @@ jest.mock("../cloud-workspace-guard", () => ({
   ...jest.requireActual("../cloud-workspace-guard"),
   assertCloudWorkspaceAvailable: jest.fn(async () => {}),
   refreshE2BWorkspaceLease: jest.fn(async () => {}),
+  readCloudWorkspaceState: jest.fn(async () => ({
+    version: 1,
+    phase: "provisioning",
+    step: "reserved",
+    token: "creation",
+    region: "us-east-1",
+  })),
 }));
 
+jest.mock("../cloud-workspace-identity", () => ({
+  ...jest.requireActual("../cloud-workspace-identity"),
+  listWorkspaceInventory: jest.fn(async () => []),
+  startWorkspaceCreation: jest.fn(async (_user, reserved) => ({
+    ...reserved,
+    step: "creating",
+  })),
+  finishWorkspaceCreation: jest.fn(async () => {}),
+}));
+import { readCloudWorkspaceState } from "../cloud-workspace-guard";
 import { readNetworkSettings } from "@/lib/cloud-network/service";
 import {
   Sandbox,
@@ -99,6 +116,13 @@ describe("E2B sandbox lease lifecycle", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+      version: 1,
+      phase: "provisioning",
+      step: "reserved",
+      token: "creation",
+      region: "us-east-1",
+    });
     (Template.getTags as jest.Mock).mockResolvedValue([
       { tag: "default", buildId: "legacy-build" },
     ]);
@@ -470,6 +494,7 @@ describe("E2B sandbox lease lifecycle", () => {
     "connects a verified %s pin without listing or replacing workspaces",
     async (version) => {
       sandboxApi.getInfo.mockResolvedValue({
+        sandboxId: "verified-e2b",
         state: "paused",
         metadata: {
           userID: "user-1",
@@ -502,6 +527,7 @@ describe("E2B sandbox lease lifecycle", () => {
 
   it("fails closed when the E2B pin belongs to a different user", async () => {
     sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "verified-e2b",
       state: "paused",
       metadata: {
         userID: "someone-else",
@@ -535,6 +561,7 @@ describe("E2B sandbox lease lifecycle", () => {
 
   it("validates a recovered pin even when the caller already holds that sandbox", async () => {
     sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "verified-e2b",
       state: "paused",
       metadata: {
         userID: "someone-else",
@@ -587,6 +614,7 @@ describe("E2B sandbox lease lifecycle", () => {
     "refuses a recovery pin with unsupported version %s",
     async (version) => {
       sandboxApi.getInfo.mockResolvedValue({
+        sandboxId: "pin",
         state: "paused",
         metadata: {
           userID: "user-1",
@@ -763,7 +791,7 @@ describe("E2B sandbox lease lifecycle", () => {
     );
   });
 
-  it.each(["fresh", "expired"])(
+  it.each(["fresh"])(
     "logs the failing E2B create phase after %s selection without connect identity or a response body",
     async (selection) => {
       const errorLog = jest
@@ -773,10 +801,6 @@ describe("E2B sandbox lease lifecycle", () => {
         nextItems: jest.fn(async () => []),
         hasNext: false,
       });
-      if (selection === "expired") {
-        listSandbox({ sandboxId: "sandbox-expired" });
-        sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
-      }
       sandboxApi.create.mockRejectedValue(
         Object.assign(new Error("private token and response body"), {
           code: "SERVICE_UNAVAILABLE",
@@ -819,6 +843,13 @@ describe("E2B sandbox lease lifecycle", () => {
   );
 
   it("creates a fresh EU sandbox for an EU Trigger run when EU is configured", async () => {
+    jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+      version: 1,
+      phase: "provisioning",
+      step: "reserved",
+      token: "creation",
+      region: "eu-central-1",
+    });
     process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
     process.env.E2B_EU_DOMAIN = "e2b-juliett.dev";
     const createdSandbox = { sandboxId: "sandbox-eu" } as unknown as Sandbox;
@@ -849,6 +880,13 @@ describe("E2B sandbox lease lifecycle", () => {
   });
 
   it("does not discover or reuse the US cluster for an EU Trigger run", async () => {
+    jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+      version: 1,
+      phase: "provisioning",
+      step: "reserved",
+      token: "creation",
+      region: "eu-central-1",
+    });
     process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
     const createdSandbox = { sandboxId: "sandbox-eu" } as unknown as Sandbox;
     sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
@@ -949,32 +987,18 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandboxApi.create).not.toHaveBeenCalled();
   });
 
-  it("creates the replacement in EU when a listed EU sandbox has expired", async () => {
+  it("preserves a listed EU workspace when connection reports it missing", async () => {
     process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
-    const createdSandbox = { sandboxId: "sandbox-eu" } as unknown as Sandbox;
     listSandbox({ sandboxId: "sandbox-expired-eu" });
     sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
-    sandboxApi.create.mockResolvedValue(createdSandbox);
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-
-    try {
-      const result = await ensureSandboxConnection(
+    await expect(
+      ensureSandboxConnection(
         { userID: "user-1", setSandbox: jest.fn() },
         { triggerRegion: "eu-central-1" },
-      );
-
-      expect(result.sandbox).toBe(createdSandbox);
-      expect(sandboxApi.create).toHaveBeenCalledWith(
-        "terminal-agent-sandbox:legacy-build",
-        expect.objectContaining({
-          apiKey: "e2b-eu-test-key",
-          domain: "e2b-juliett.dev",
-          metadata: expect.objectContaining({ e2bCluster: "eu" }),
-        }),
-      );
-    } finally {
-      errorSpy.mockRestore();
-    }
+      ),
+    ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
   it("prefers a running sandbox over a newer paused duplicate", async () => {
@@ -1601,25 +1625,14 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
-  it("creates a replacement without killing when the listed sandbox is gone", async () => {
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
-      listSandbox();
-      sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
-      sandboxApi.create.mockResolvedValue(createdSandbox);
-
-      const result = await ensureSandboxConnection({
-        userID: "user-1",
-        setSandbox: jest.fn(),
-      });
-
-      expect(result.sandbox).toBe(createdSandbox);
-      expect(sandboxApi.kill).not.toHaveBeenCalled();
-      expect(sandboxApi.create).toHaveBeenCalled();
-    } finally {
-      errorSpy.mockRestore();
-    }
+  it("never replaces a known running workspace after a not-found response", async () => {
+    listSandbox();
+    sandboxApi.connect.mockRejectedValue(new Error("sandbox not found"));
+    await expect(
+      ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
   it("manager reset forgets its client without killing the shared sandbox", async () => {

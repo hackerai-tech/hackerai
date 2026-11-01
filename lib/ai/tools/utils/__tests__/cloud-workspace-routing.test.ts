@@ -12,10 +12,12 @@ jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 const mockData = new Map<string, unknown>();
 const mockSet = jest.fn();
 const mockGet = jest.fn();
+const mockEval = jest.fn();
 jest.mock("@/lib/rate-limit/redis", () => ({
   createRedisClient: () => ({
     get: (key: string) => mockGet(key),
     set: mockSet,
+    eval: mockEval,
   }),
 }));
 const regionKey = "cloud_workspace_region:v1:owner";
@@ -50,7 +52,17 @@ const inventory = (clusters: string[]) => {
         hasNext: false,
         nextItems: async () =>
           clusters.includes(options?.domain ? "eu" : "us")
-            ? [{ sandboxId: "original-files", metadata: { userID: "owner" } }]
+            ? [
+                {
+                  sandboxId: "original-files",
+                  state: "paused",
+                  metadata: {
+                    userID: "owner",
+                    template: "terminal-agent-sandbox",
+                    e2bCluster: options?.domain ? "eu" : "us",
+                  },
+                },
+              ]
             : [],
       }) as never,
   );
@@ -71,6 +83,16 @@ beforeEach(() => {
   mockSet.mockImplementation(async (key: string, value: unknown) => {
     if (!mockData.has(key)) mockData.set(key, value);
   });
+  mockEval.mockImplementation(
+    async (_script, keys: string[], args: string[]) => {
+      if (keys.length === 4) return 1; // Admission is covered with real Redis in integration.
+      if (!mockData.has(keys[0]) && (mockData.get(keys[1]) ?? "") === args[0]) {
+        mockData.set(keys[0], JSON.parse(args[1]));
+        mockData.set(keys[1], args[2]);
+      }
+      return 1;
+    },
+  );
   inventory([]);
 });
 afterEach(() => jest.restoreAllMocks());
@@ -82,7 +104,11 @@ it("keeps the first workspace region across request-location changes and returni
   expect(await resolve("eu-central-1")).toBe("eu-central-1");
   expect(await resolve("us-east-1")).toBe("eu-central-1");
   expect(warning).not.toHaveBeenCalled();
-  expect(mockSet).toHaveBeenCalledWith(regionKey, "eu-central-1", { nx: true });
+  expect(mockData.get(stateKey)).toMatchObject({
+    phase: "provisioning",
+    step: "reserved",
+    region: "eu-central-1",
+  });
   // A returning visit reads the durable binding without depending on either provider.
   jest.mocked(Sandbox.list).mockImplementation(() => {
     throw new Error("offline");
@@ -178,17 +204,18 @@ it.each([
 );
 it("rejects a competing binding that would hide discovered files", async () => {
   inventory(["eu"]);
-  mockSet.mockImplementation(async () => {
+  mockEval.mockImplementation(async () => {
+    mockData.set(stateKey, workspace);
     mockData.set(regionKey, "us-east-1");
+    return 1;
   });
   await expect(resolve("us-east-1")).rejects.toBeInstanceOf(
     CloudWorkspaceUnavailableError,
   );
-  expect(warning).toHaveBeenCalledWith("Cloud workspace routing unavailable", {
-    event: "cloud_workspace_routing_unavailable",
-    reason: "claimed_region_conflict",
-    user_id: "owner",
-  });
+  expect(warning).toHaveBeenCalledWith(
+    "Cloud workspace routing operation failed",
+    expect.objectContaining({ phase: "region_binding_claim" }),
+  );
 });
 it("does not save late discovery after cancellation", async () => {
   const controller = new AbortController();
@@ -338,6 +365,7 @@ it.each([
   "region_binding_claim",
   "region_binding_confirm",
 ])("attributes a %s dependency failure without changing it", async (phase) => {
+  mockData.set(stateKey, workspace);
   const failure = new DOMException("private-store-detail", "TimeoutError");
   let regionReads = 0;
   mockGet.mockImplementation(async (key: string) => {
@@ -465,6 +493,7 @@ it.each(["TimeoutError", "AbortError"])(
 it.each(["region_binding_read", "region_binding_claim"])(
   "reports a pending %s when the existing acquisition deadline wins",
   async (phase) => {
+    mockData.set(stateKey, workspace);
     jest.useFakeTimers();
     try {
       let finish!: (value?: unknown) => void;

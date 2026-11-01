@@ -120,7 +120,15 @@ describe.each(["default", "hybrid"] as const)(
         hasNext: false,
       } as never);
       api.getInfo.mockResolvedValue(info as never);
-      jest.mocked(readCloudWorkspaceState).mockResolvedValue(null);
+      jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+        version: 1,
+        phase: "e2b",
+        token: "fixture",
+        sourceId: info.sandboxId,
+        destinationId: info.sandboxId,
+        region: "us-east-1",
+        origin: "adopted",
+      });
     });
     afterEach(() => {
       jest.useRealTimers();
@@ -129,7 +137,7 @@ describe.each(["default", "hybrid"] as const)(
     });
 
     it.each([false, true])(
-      "shares one slow resume and publishes only after readiness (pinned=%s)",
+      "shares one slow resume and publishes only after readiness (recovered=%s)",
       async (pinned) => {
         if (pinned)
           jest.mocked(readCloudWorkspaceState).mockResolvedValue({

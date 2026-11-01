@@ -60,7 +60,8 @@ export async function ensureCloudSandboxConnection(options: {
           | "workspace_phase_unavailable"
           | "trigger_region_missing"
           | "workspace_region_mismatch";
-        workspace_phase: "e2b" | "cleanup" | "deleted" | "recovery";
+        workspace_phase:
+          "e2b" | "cleanup" | "deleted" | "recovery" | "provisioning";
         workspace_region?: TriggerRunRegion;
       }
     | undefined;
@@ -97,9 +98,9 @@ export async function ensureCloudSandboxConnection(options: {
   try {
     options.signal?.throwIfAborted();
     options.reportStage?.("workspace_lookup");
-    const state = await readCloudWorkspaceState(options.userId);
+    let state = await readCloudWorkspaceState(options.userId);
     options.signal?.throwIfAborted();
-    if (state && state.phase !== "e2b") {
+    if (state && state.phase !== "e2b" && state.phase !== "provisioning") {
       workspaceGuardDiagnostics = {
         workspace_guard_reason: "workspace_phase_unavailable",
         workspace_phase: state.phase,
@@ -131,6 +132,10 @@ export async function ensureCloudSandboxConnection(options: {
       throw new CloudWorkspaceUnavailableError();
     }
     options.signal?.throwIfAborted();
+    // Routing may have adopted an existing ID or reserved first creation.
+    state = await readCloudWorkspaceState(options.userId);
+    if (!state || (state.phase !== "e2b" && state.phase !== "provisioning"))
+      throw new CloudWorkspaceUnavailableError();
     if (state) {
       if (
         getE2BClusterRouting(state.region).createCluster.cluster !==
@@ -143,11 +148,10 @@ export async function ensureCloudSandboxConnection(options: {
         };
         throw new CloudWorkspaceUnavailableError();
       }
-      selectionReason = "recovered_workspace";
+      if (state.phase === "e2b" && !state.origin)
+        selectionReason = "recovered_workspace";
     }
-    const failed = process.env.CLOUD_DISK_RECOVERY_TARGETS
-      ? await readFailures(options.userId)
-      : null;
+    const failed = await readFailures(options.userId);
     const destinationId =
       state?.phase === "e2b" ? state.destinationId : failed?.sandboxId;
     if (
@@ -184,6 +188,8 @@ export async function ensureCloudSandboxConnection(options: {
         acquisitionId,
         triggerRunId: options.context?.triggerRunId,
         destinationId,
+        reservation: state?.phase === "provisioning" ? state : undefined,
+        workspaceOrigin: state?.phase === "e2b" ? state.origin : undefined,
       },
     );
     options.reportStage?.("workspace_verification");

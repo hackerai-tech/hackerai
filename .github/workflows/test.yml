@@ -54,6 +54,7 @@ jobs:
           node scripts/verify-paid-usage-ledger.mjs
           node scripts/verify-free-agent-daily-budget.mjs
           node scripts/verify-cloud-recovery-admission.mjs
+          pnpm exec jest --runInBand --testMatch "**/cloud-workspace-identity.integration.ts"
 
       - name: Run tests with coverage
         run: pnpm test:ci

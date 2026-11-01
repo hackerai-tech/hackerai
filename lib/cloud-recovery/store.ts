@@ -170,7 +170,7 @@ export async function failConsent(userId: string, token: string) {
      if workspaceRaw then
        local ok, workspace = pcall(cjson.decode, workspaceRaw)
        safe = ok and type(workspace) == 'table' and workspace.version == 1 and workspace.phase == 'e2b' and workspace.destinationId == current.target.sandboxId and workspace.region == current.target.region
-       local allowed = {version=true, phase=true, token=true, sourceId=true, destinationId=true, region=true}
+       local allowed = {version=true, phase=true, token=true, sourceId=true, destinationId=true, region=true, origin=true}
        if safe then for field in pairs(workspace) do if not allowed[field] then safe = false end end end
      end
      local resultRaw = redis.call('GET', KEYS[3])
@@ -217,7 +217,7 @@ export async function retryPreflightConsent(
      if workspaceRaw then
        local ok, workspace = pcall(cjson.decode, workspaceRaw)
        safe = ok and type(workspace) == 'table' and workspace.version == 1 and workspace.phase == 'e2b' and workspace.destinationId == current.target.sandboxId and workspace.region == current.target.region
-       local allowed = {version=true, phase=true, token=true, sourceId=true, destinationId=true, region=true}
+       local allowed = {version=true, phase=true, token=true, sourceId=true, destinationId=true, region=true, origin=true}
        if safe then for field in pairs(workspace) do if not allowed[field] then safe = false end end end
      end
      local resultRaw = redis.call('GET', KEYS[3])
