@@ -7,7 +7,6 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
   useComposerInput,
-  useComposerGoalMode,
 } from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
 import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
@@ -53,11 +52,7 @@ import {
 import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
-import { GoalTargetIcon } from "@/components/icons/goal-target";
-import { GoalModeButton } from "./GoalModeButton";
-import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
@@ -65,13 +60,7 @@ import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
-  goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
-  hasActiveGoalRun?: boolean;
-  pauseGoalOnSend?: boolean;
-  onSubmit: (
-    e: React.FormEvent,
-    inputOverride?: string,
-  ) => void | boolean | Promise<void | boolean>;
+  onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
@@ -244,7 +233,6 @@ export const ChatInput = (props: ChatInputProps) => {
         ) : undefined
       }
       running={
-        !!props.hasActiveGoalRun ||
         props.status === "submitted" ||
         props.status === "streaming" ||
         !!activeToolApprovalRequest ||
@@ -258,9 +246,6 @@ export const ChatInput = (props: ChatInputProps) => {
 };
 
 const ChatInputContent = ({
-  goalPanel,
-  hasActiveGoalRun = false,
-  pauseGoalOnSend = false,
   onSubmit,
   onStop,
   onReconnect,
@@ -327,8 +312,7 @@ const ChatInputContent = ({
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
-  const isGenerating =
-    hasActiveGoalRun || status === "submitted" || status === "streaming";
+  const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
   const isEmptyNewChat = isNewChat && !hasMessages;
   const todoPanelVisible =
@@ -351,21 +335,18 @@ const ChatInputContent = ({
     [activeToolApprovalRequest, storedApprovalRequest],
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
-  const [submissionPending, setSubmissionPending] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const composerPointerDownRef = useRef(false);
   const composerPointerReleaseTimerRef = useRef<number | undefined>(undefined);
   const holdComposerFocusForPointer = () => {
     window.clearTimeout(composerPointerReleaseTimerRef.current);
     composerPointerDownRef.current = true;
   };
-
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
   const hasJoinedComposerPanels =
@@ -373,13 +354,6 @@ const ChatInputContent = ({
     !showAgentApprovalPrompt &&
     (todoPanelVisible || messageQueue.length > 0);
   const hasFilePreviews = !!uploadedFiles?.length;
-  const goalPlacement =
-    isMobile === true ||
-    showAgentApprovalPrompt ||
-    hasJoinedComposerPanels ||
-    hasFilePreviews
-      ? "detached"
-      : "attached";
 
   useEffect(() => {
     const releasePointer = (delay: number) => {
@@ -848,10 +822,6 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
-    (submissionPending ? "Sending message…" : undefined) ??
-    (uploadedFiles.some((file) => file.removing)
-      ? "Wait for the attachment to finish removing."
-      : undefined) ??
     sendDisabledReason ??
     (status === "ready" && editingQueuedMessageId
       ? "Finish editing the queued message before sending a new request"
@@ -860,63 +830,10 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
-  const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
-  const [goalEnabled, setGoalEnabled] = useState(false);
-  const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
-  useEffect(() => {
-    setGoalEnabled(false);
-    if (chatMode !== "agent" || subscription === "free") {
-      setGoalMode(false);
-      return;
-    }
-    const abort = new AbortController();
-    fetch("/api/agent-goal", { signal: abort.signal, cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!abort.signal.aborted) setGoalEnabled(data?.enabled === true);
-      })
-      .catch(() => undefined);
-    return () => abort.abort();
-  }, [chatId, chatMode, subscription, setGoalMode]);
-  useEffect(() => setDismissedGoalSuggestion(false), [input]);
-  const goalSuggestionDraft = getGoalSuggestionDraft(input);
-  const showGoalSuggestion =
-    !showAgentApprovalPrompt &&
-    chatMode === "agent" &&
-    subscription !== "free" &&
-    goalEnabled &&
-    !goalMode &&
-    !dismissedGoalSuggestion &&
-    goalSuggestionDraft !== null;
-  const goalExposure = useRef(false);
-  useEffect(() => {
-    if (showGoalSuggestion && !goalExposure.current) {
-      goalExposure.current = true;
-      captureAuthenticatedEvent("agent_goal_exposed", {
-        surface: "goal_slash_command",
-      });
-    }
-  }, [showGoalSuggestion]);
-  const selectGoal = () => {
-    if (goalSuggestionDraft === null) return;
-    setGoalMode(true);
-    setInput(goalSuggestionDraft);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
-    if (showGoalSuggestion) {
-      selectGoal();
-      return;
-    }
-    if (
-      isOffline ||
-      effectiveSendDisabledReason ||
-      (goalMode && !input.trim())
-    ) {
-      return;
-    }
+    if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
       (status === "ready" ||
@@ -927,16 +844,12 @@ const ChatInputContent = ({
 
     if (canSubmit) {
       isSubmittingRef.current = true;
-      setSubmissionPending(true);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
-        const accepted = await onSubmit(
-          e,
-          goalMode ? `/goal start ${input}` : undefined,
-        );
+        const accepted = await onSubmit(e);
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
@@ -955,8 +868,6 @@ const ChatInputContent = ({
           isSubmittingAttachmentsRef.current = false;
           return;
         }
-        setGoalMode(false);
-
         if (clearDraftOnSubmit) {
           uploadedFilesRef.current = [];
           removeDraft(draftId);
@@ -973,7 +884,6 @@ const ChatInputContent = ({
         console.error("Failed to submit message:", error);
       } finally {
         isSubmittingRef.current = false;
-        if (isMountedRef.current) setSubmissionPending(false);
       }
     }
   };
@@ -1028,13 +938,12 @@ const ChatInputContent = ({
       <div
         ref={chatInputContainerRef}
         className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
-
         data-testid="chat-input-container"
       >
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
-          className={`flex min-h-0 shrink flex-col overflow-y-auto bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink-0 flex-col overflow-y-auto bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
           {isOffline && (
@@ -1147,41 +1056,18 @@ const ChatInputContent = ({
             </div>
           )}
 
-          {!showAgentApprovalPrompt &&
-            uploadedFiles &&
-            uploadedFiles.length > 0 && (
-              <div className="order-2 shrink-0">
-                <FileUploadPreview
-                  uploadedFiles={uploadedFiles}
-                  onRemoveFile={handleRemoveFile}
-                  onRetryFile={handleRetryFile}
-                  onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
-                  onShowGeneratedTextInField={handleShowGeneratedTextInField}
-                  generatedTextAttachmentsAvailable={isAgent}
-                />
-              </div>
-            )}
-        </div>
-
-        {showGoalSuggestion && (
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={selectGoal}
-            className="order-1 mb-2 flex min-h-10 w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted px-3 py-1.5 text-left hover:bg-accent"
-          >
-            <GoalTargetIcon className="size-4 shrink-0" />
-            <span className="shrink-0">Goal</span>
-            <span className="min-w-0 truncate text-sm text-muted-foreground">
-              Set a goal to keep pursuing
-            </span>
-          </button>
-        )}
-        <div
-          className={`min-w-0 shrink-0 ${goalPlacement === "detached" ? "order-first" : "order-1"}`}
-          data-testid="chat-input-goal-slot"
-        >
-          {goalPanel?.(goalPlacement)}
+          {uploadedFiles && uploadedFiles.length > 0 && (
+            <div className="order-2 shrink-0">
+              <FileUploadPreview
+                uploadedFiles={uploadedFiles}
+                onRemoveFile={handleRemoveFile}
+                onRetryFile={handleRetryFile}
+                onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+                onShowGeneratedTextInField={handleShowGeneratedTextInField}
+                generatedTextAttachmentsAvailable={isAgent}
+              />
+            </div>
+          )}
         </div>
 
         <input
@@ -1193,15 +1079,14 @@ const ChatInputContent = ({
           onChange={handleFileUploadEvent}
         />
 
-        {showAgentApprovalPrompt && (
+        {showAgentApprovalPrompt ? (
           <AgentApprovalPrompt
             request={approvalRequest}
             hasConnectionError={status === "error"}
             onRetryConnection={onReconnect}
             onStop={() => void handleAgentStop()}
           />
-        )}
-        <div hidden={showAgentApprovalPrompt} className="order-2">
+        ) : (
           <div
             className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
@@ -1220,29 +1105,18 @@ const ChatInputContent = ({
                 )
               )
                 return;
-              const textarea = composerTextareaRef.current;
+              const textarea = event.currentTarget.querySelector("textarea");
               if (textarea && textarea !== document.activeElement) {
                 textarea.focus({ preventScroll: true });
               }
             }}
           >
             <ChatInputTextarea
-              composerRef={composerTextareaRef}
               draftId={draftId}
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
-              placeholder={goalMode ? "Describe your goal" : placeholder}
-              onCommandKeyDown={(e) => {
-                if (showGoalSuggestion && e.key === "Tab") {
-                  e.preventDefault();
-                  selectGoal();
-                }
-                if (e.key === "Escape") {
-                  setGoalMode(false);
-                  setDismissedGoalSuggestion(true);
-                }
-              }}
+              placeholder={placeholder}
               autoFocus={autoFocus}
               onBlur={(event) => {
                 if (composerPointerDownRef.current) return;
@@ -1258,20 +1132,6 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
-              goalControl={
-                goalMode ? (
-                  <GoalModeButton
-                    compact={isMobile === true}
-                    onClear={() => setGoalMode(false)}
-                  />
-                ) : undefined
-              }
-              allowSendWhileGenerating={hasActiveGoalRun}
-              pausesGoal={
-                pauseGoalOnSend &&
-                !goalMode &&
-                !/^\/goal(?:\s|$)/i.test(input.trim())
-              }
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
@@ -1283,14 +1143,10 @@ const ChatInputContent = ({
               uploadedFiles={uploadedFiles}
               chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
-              sendDisabledReason={
-                goalMode && !input.trim()
-                  ? "Describe your goal before sending."
-                  : effectiveSendDisabledReason
-              }
+              sendDisabledReason={effectiveSendDisabledReason}
             />
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

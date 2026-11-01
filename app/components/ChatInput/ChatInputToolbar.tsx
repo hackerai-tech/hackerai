@@ -15,12 +15,10 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
-  goalControl?: React.ReactNode;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
-  goalControl,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -96,7 +94,6 @@ export function ChatInputToolbar({
             </div>
           </>
         ) : null}
-        {goalControl}
       </div>
       <div
         className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"

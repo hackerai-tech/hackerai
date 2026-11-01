@@ -14,7 +14,6 @@ import {
 } from "@/types";
 
 type ToolApprovalControlsProps = {
-  canRequestApproval?: boolean;
   approvalId?: string;
   toolCallId: string;
   title: string;
@@ -202,7 +201,6 @@ export function getToolApprovalDisplayTarget({
 }
 
 export function ToolApprovalControls({
-  canRequestApproval = true,
   approvalId,
   toolCallId,
   title,
@@ -232,8 +230,8 @@ export function ToolApprovalControls({
   }, [isSettled]);
 
   useEffect(() => {
-    if (!approvalId || !canRequestApproval) {
-      clearActiveToolApprovalRequest({ approvalId, toolCallId });
+    if (!approvalId) {
+      clearActiveToolApprovalRequest({ toolCallId });
       return;
     }
     if (isSettled) {
@@ -254,7 +252,6 @@ export function ToolApprovalControls({
     });
   }, [
     approvalId,
-    canRequestApproval,
     autoReview,
     clearActiveToolApprovalRequest,
     detail,

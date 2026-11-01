@@ -53,19 +53,16 @@ function getSendButtonTooltip(
   hasFileErrors: boolean,
   isUploading: boolean,
   sendDisabledReason?: string,
-  pausesGoal = false,
 ): string {
   if (sendDisabledReason) return sendDisabledReason;
   if (!isOnline) return "Reconnect to send";
   if (hasFileErrors) return "Remove failed files to send";
   if (isUploading) return "File upload pending";
-  return pausesGoal ? "Send message and pause goal (⏎)" : "Send (⏎)";
+  return "Send (⏎)";
 }
 
 export interface SubmitStopButtonProps {
   isGenerating: boolean;
-  allowSendWhileGenerating?: boolean;
-  pausesGoal?: boolean;
   hideStop: boolean;
   onStop: () => void;
   onSubmit: (e: React.FormEvent) => void | Promise<void>;
@@ -82,8 +79,6 @@ export interface SubmitStopButtonProps {
 
 export function SubmitStopButton({
   isGenerating,
-  allowSendWhileGenerating = false,
-  pausesGoal = false,
   hideStop,
   onStop,
   onSubmit,
@@ -115,15 +110,9 @@ export function SubmitStopButton({
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
-  const showStop = isGenerating && !hideStop;
-  const showSend =
-    !showStop ||
-    (allowSendWhileGenerating &&
-      (input.trim().length > 0 || uploadedFiles.length > 0));
-
-  return (
-    <div className={containerClass}>
-      {showStop && (
+  if (isGenerating && !hideStop) {
+    return (
+      <div className={containerClass}>
         <TooltipPrimitive.Root>
           <TooltipTrigger asChild>
             <Button
@@ -140,47 +129,46 @@ export function SubmitStopButton({
             <p>Stop (⌃C)</p>
           </TooltipContent>
         </TooltipPrimitive.Root>
-      )}
-      {showSend && (
-        <form onSubmit={onSubmit}>
-          <TooltipPrimitive.Root>
-            <TooltipTrigger asChild>
-              <div className="inline-block">
-                <Button
-                  type="submit"
-                  disabled={
-                    !!sendDisabledReason ||
-                    !isOnline ||
-                    (status !== "ready" &&
-                      !(allowSendWhileGenerating && status === "streaming")) ||
-                    isUploadingFiles ||
-                    (!input.trim() && uploadedFiles.length === 0)
-                  }
-                  variant="default"
-                  className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
-                  aria-label={
-                    pausesGoal ? "Send message and pause goal" : "Send message"
-                  }
-                  data-testid="send-button"
-                >
-                  <ArrowUp size={15} strokeWidth={3} />
-                </Button>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>
-                {getSendButtonTooltip(
-                  isOnline,
-                  uploadedFiles.some((f) => f.error),
-                  isUploadingFiles,
-                  sendDisabledReason,
-                  pausesGoal,
-                )}
-              </p>
-            </TooltipContent>
-          </TooltipPrimitive.Root>
-        </form>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className={containerClass}>
+      <form onSubmit={onSubmit}>
+        <TooltipPrimitive.Root>
+          <TooltipTrigger asChild>
+            <div className="inline-block">
+              <Button
+                type="submit"
+                disabled={
+                  !!sendDisabledReason ||
+                  !isOnline ||
+                  status !== "ready" ||
+                  isUploadingFiles ||
+                  (!input.trim() && uploadedFiles.length === 0)
+                }
+                variant="default"
+                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
+                aria-label="Send message"
+                data-testid="send-button"
+              >
+                <ArrowUp size={15} strokeWidth={3} />
+              </Button>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>
+              {getSendButtonTooltip(
+                isOnline,
+                uploadedFiles.some((f) => f.error),
+                isUploadingFiles,
+                sendDisabledReason,
+              )}
+            </p>
+          </TooltipContent>
+        </TooltipPrimitive.Root>
+      </form>
     </div>
   );
 }
