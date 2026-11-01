@@ -395,9 +395,17 @@ export function CloudWorkspaceRegionChoice({
         {!busy && waitingText && (
           <p className="mt-2">
             {waitingText}{" "}
-            {autoChecks.current < 30
-              ? "We’ll check again while this stays open."
-              : "Use Check status to check again."}
+            {autoChecks.current < 30 ? (
+              "We’ll check again while this stays open."
+            ) : (
+              <>
+                Use Check status to check again. If this continues,{" "}
+                <a href="mailto:contact@hackerai.co" className="underline">
+                  contact support
+                </a>
+                .
+              </>
+            )}
           </p>
         )}
         {!busy && view.status === "empty" && (
@@ -426,7 +434,12 @@ export function CloudWorkspaceRegionChoice({
       {!busy && view.status === "unavailable" && (
         <p role="alert" className="mt-2 text-destructive">
           {notice ??
-            "We couldn’t check your saved workspaces. Your selection hasn’t been changed by this check. Try again in a few minutes."}
+            "We couldn’t check your saved workspaces. Your selection hasn’t been changed by this check. Try again in a few minutes."}{" "}
+          If this continues,{" "}
+          <a href="mailto:contact@hackerai.co" className="underline">
+            contact support
+          </a>
+          .
         </p>
       )}
       {!busy && notice && view.status !== "unavailable" && (
