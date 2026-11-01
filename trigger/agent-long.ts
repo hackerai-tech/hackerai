@@ -11,7 +11,6 @@ import {
   assertGoalExecutionAllowed,
 } from "@/lib/goals/server";
 import { createGoalCheckpointTool } from "@/lib/goals/tool";
-import { GOAL_SLICE_MS } from "@/lib/goals/contracts";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
@@ -1737,10 +1736,7 @@ export const agentLongTask = task({
     // than stream launch. Without this, slow setup (>2 min) could push
     // the soft stop past the plan-specific runtime cap.
     const taskStartTime = Date.now();
-    const agentLongMaxDurationMs =
-      payload.goalGeneration === undefined
-        ? getAgentLongMaxDurationMs(subscription)
-        : Math.min(GOAL_SLICE_MS, getAgentLongMaxDurationMs(subscription));
+    const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
     const runTimingTracker = new AgentRunTimingTracker();
     const backgroundRunWork = new Set<Promise<void>>();
     const registerBackgroundRunWork = (work: Promise<void>) => {
@@ -2043,7 +2039,7 @@ export const agentLongTask = task({
           parts: [
             {
               type: "text",
-              text: `Automatic goal continuation: begin work slice ${activeGoal.runs}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+              text: `Automatic goal continuation: begin run ${activeGoal.runs}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
             },
           ],
         };
@@ -2397,7 +2393,7 @@ export const agentLongTask = task({
       });
       activeRuntimeBudget = runtimeBudget;
       // Claimed goals checkpoint progress and continue across runs. Do not add
-      // time-pressure prompts to initial, resumed, or automatic goal slices.
+      // time-pressure prompts to initial, resumed, or automatic goal runs.
       const runtimeCheckpoint = createAgentRuntimeCheckpoint({
         enabled:
           !activeGoal &&

@@ -59,7 +59,7 @@ describe("goal completion and limits", () => {
       }),
     ).toBe("blocked");
   });
-  it("stops after two slices without tool progress and preserves an explicit wait", () => {
+  it("stops after two runs without tool progress and preserves an explicit wait", () => {
     expect(
       resolveGoalOutcome({
         ...base,

@@ -21,7 +21,14 @@ function visit(node: ts.Node) {
   if (ts.isVariableStatement(node)) {
     for (const declaration of node.declarationList.declarations) {
       const name = declaration.name.getText(source);
-      if (["activeGoal", "runtimeBudget", "runtimeCheckpoint"].includes(name))
+      if (
+        [
+          "agentLongMaxDurationMs",
+          "activeGoal",
+          "runtimeBudget",
+          "runtimeCheckpoint",
+        ].includes(name)
+      )
         statements.set(name, node.getText(source));
     }
   }
@@ -35,15 +42,16 @@ function visit(node: ts.Node) {
   ts.forEachChild(node, visit);
 }
 visit(source);
-if (!claim || statements.size !== 3)
+if (!claim || statements.size !== 4)
   throw new Error("Worker goal/runtime setup not found");
 const body = ts.transpileModule(
   `return (async () => {
+    ${statements.get("agentLongMaxDurationMs")}
     ${statements.get("activeGoal")}
     ${claim}
     ${statements.get("runtimeBudget")}
     ${statements.get("runtimeCheckpoint")}
-    return { runtimeBudget, runtimeCheckpoint };
+    return { agentLongMaxDurationMs, runtimeBudget, runtimeCheckpoint };
   })();`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
@@ -54,6 +62,7 @@ async function setup({
   isAutomaticContinuation = false,
   claimed = true,
   enabled = true,
+  maxDurationMs = 1000,
 } = {}) {
   const exposed = jest.fn();
   const abort = jest.fn();
@@ -77,7 +86,10 @@ async function setup({
     resolveAgentRuntimeCheckpointEnabled,
     getPostHogBooleanFlagDecisionForUser: decision,
     AGENT_RUNTIME_CHECKPOINT_FLAG: "agent-runtime-checkpoint-v1",
-    agentLongMaxDurationMs: 1000,
+    getAgentLongMaxDurationMs: () => maxDurationMs,
+    // Keep the former cap available so restoring it fails the duration assertion.
+    GOAL_SLICE_MS: 20 * 60 * 1000,
+    subscription: "pro",
     taskStartTime: Date.now(),
     markAgentLongDurationExceeded: jest.fn(),
     runtimeSettlementWatchdog: undefined,
@@ -100,6 +112,20 @@ async function setup({
 
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
+
+it.each([
+  ["ordinary Agent", false],
+  ["Goal", true],
+] as const)("gives %s the plan runtime", async (_, goal) => {
+  const planDurationMs = 6 * 60 * 60 * 1000;
+  const run = await setup({ goal, maxDurationMs: planDurationMs });
+  try {
+    expect(run.agentLongMaxDurationMs).toBe(planDurationMs);
+    expect(run.abort).not.toHaveBeenCalled();
+  } finally {
+    run.runtimeBudget.dispose();
+  }
+});
 
 it.each([
   ["initial", false, false],

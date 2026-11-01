@@ -173,7 +173,7 @@ export const createAgentCancelPost =
           });
         } catch {
           // Stopping cost-incurring work must survive a goal-storage failure.
-          // Worker cleanup also resolves canceled goal slices to paused.
+          // Worker cleanup also resolves canceled goal runs to paused.
           logger.warn(
             "Could not persist goal pause before Agent cancellation",
             {

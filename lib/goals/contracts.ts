@@ -1,6 +1,5 @@
 export const GOAL_FLAG = "persistent-agent-goals";
 const GOAL_MAX_EVIDENCE = 64;
-export const GOAL_SLICE_MS = 20 * 60 * 1000;
 export const GOAL_STATES = [
   "queued",
   "running",
@@ -181,7 +180,7 @@ export function resolveGoalOutcome(args: {
   judgment?: GoalJudgment;
 }): GoalState {
   // A boundary always wins over a model's pending completion claim.
-  // Canceling a work slice pauses the goal; explicit stop/clear controls
+  // Canceling a run pauses the goal; explicit stop/clear controls
   // persist their own terminal state before this resolver is reached.
   if (args.canceled) return "paused";
   if (

@@ -42,7 +42,7 @@ export function buildGoalCompletionEvidence(
 ) {
   const current = messages.find((m) => m.id === messageId)?.parts ?? [];
   // Provider recovery can keep completed tools on an earlier response from
-  // this run. Historical chat messages are not fresh evidence for this slice.
+  // this run. Historical chat messages are not fresh evidence for this run.
   const eligibleIds = new Set(runMessageIds);
   const executed = messages
     .filter(
@@ -93,7 +93,7 @@ export async function judgeGoalCompletion(
       return {
         verdict: "continue",
         reason:
-          "The verification command has not completed successfully in this work slice.",
+          "The verification command has not completed successfully in this run.",
       };
     const prior = await getConvexClient().query(
       api.agentGoals.evidenceForBackend,

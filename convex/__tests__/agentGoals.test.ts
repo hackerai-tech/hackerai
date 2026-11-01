@@ -567,7 +567,7 @@ describe("persistent goal lifecycle", () => {
       objective: "Replacement",
     });
   });
-  it("continues through ten work slices, then stops on no progress", async () => {
+  it("continues through ten runs, then stops on no progress", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);
     // Old persisted cap must not constrain newly deployed workers.

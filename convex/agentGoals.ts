@@ -609,7 +609,7 @@ export const finish = mutation({
           : state === "paused"
             ? "Run paused. Resume when ready."
             : state === "waiting"
-              ? "Waiting before the next work slice"
+              ? "Waiting before the next run"
               : state === "achieved"
                 ? "Completion verified against saved evidence"
                 : state === "blocked"

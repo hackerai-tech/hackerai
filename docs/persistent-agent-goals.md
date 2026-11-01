@@ -8,11 +8,11 @@ Goal messages retain a sent-as-goal receipt. Verified completion saves cumulativ
 
 ## Limits and completion
 
-Goals have no fixed run-count limit. Each run has up to twenty minutes of active work and remains subject to the existing plan, spend, approval, cancellation, and sandbox limits. Automatic continuations use fresh workers and preserve saved progress. Normal usage exhaustion leaves the goal unfinished and requires explicit resume after usage becomes available. Legacy goals stopped at the old run cap remain paused until the user resumes them; no run extension is needed.
+Goals have no fixed run-count limit or Goal-specific time slice. Each run uses the ordinary Agent plan runtime and remains subject to the existing step, context, spend, approval, cancellation, and sandbox limits. When an Agent run stops without verified completion or reaches an ordinary step, context, or runtime limit, the goal checks whether work should continue. Automatic continuations use fresh workers and preserve saved progress. Normal usage exhaustion leaves the goal unfinished and requires explicit resume after usage becomes available. Legacy goals stopped at the old run cap remain paused until the user resumes them; no run extension is needed.
 
 Completion requires saved assistant tool results for every criterion and a separate bounded model check. An optional verification command must finish successfully through the existing terminal and approval path in the final run. Checkpoint explanations alone cannot establish success. The completion check is billed through the run's normal usage settlement. Its failure blocks automatic work for review.
 
-Goals can wait up to thirty minutes before another slice. Two consecutive slices without usable tool results stop for review. These checks bound automatic work; they are not guarantees that every tool result represents useful progress or that model judgment is infallible. The chat retains the evidence for user review.
+Goals can wait up to thirty minutes before another run. Two consecutive runs without usable tool results stop for review. These checks bound automatic work; they are not guarantees that every tool result represents useful progress or that model judgment is infallible. The chat retains the evidence for user review.
 
 ## Durable lifecycle
 
@@ -30,6 +30,6 @@ If a worker terminates before saving its final state, loading goal status reconc
 
 Deploy the Convex functions and Trigger worker before testing goal admission in the web Preview. Independently verify the Vercel, Trigger, Convex, and PostHog selections according to `AGENTS.md`. Preview uses the Developer account and development PostHog project; Production requires a separate rollout decision. A feature-flag definition alone does not prove that the worker uses the expected project.
 
-Acceptance should exercise a real two-run goal, persisted progress after reload, independent completion, a failed verification command, Pause during work, Stop between slices, approval waiting, continuation past the former run limits, no-progress stopping, and safe recovery after a canceled or failed worker. Test a connected local or Desktop sandbox separately from cloud because those transports have different availability and reconnection behavior.
+Acceptance should exercise a real two-run goal, persisted progress after reload, independent completion, a failed verification command, Pause during work, Stop between runs, approval waiting, continuation past the former run limits, no-progress stopping, and safe recovery after a canceled or failed worker. Test a connected local or Desktop sandbox separately from cloud because those transports have different availability and reconnection behavior.
 
-The composer Stop button pauses the saved goal before canceling its active run. Resume stays visible but disabled during cancellation cleanup, then continues from saved progress. Canceled work slices also settle as paused if cleanup wins the race; explicit `/goal stop` and `/goal clear` retain their stopped/deleted semantics.
+The composer Stop button pauses the saved goal before canceling its active run. Resume stays visible but disabled during cancellation cleanup, then continues from saved progress. Canceled runs also settle as paused if cleanup wins the race; explicit `/goal stop` and `/goal clear` retain their stopped/deleted semantics.
