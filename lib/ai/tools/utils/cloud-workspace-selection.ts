@@ -79,7 +79,13 @@ async function inspectSelection(userId: string) {
       if (
         item.state !== "paused" ||
         item.metadata?.userID !== userId ||
-        item.metadata?.e2bCluster !== cluster.cluster ||
+        // US workspaces created before regional routing have no cluster tag.
+        // The authenticated US inventory plus owner/template checks establish
+        // their placement; an explicit conflicting tag must still fail closed.
+        (item.metadata?.e2bCluster !== cluster.cluster &&
+          !(
+            cluster.cluster === "us" && item.metadata?.e2bCluster === undefined
+          )) ||
         item.metadata?.template !== cluster.template ||
         !isRecoverableE2BSandboxVersion(item.metadata?.sandboxVersion)
       )
