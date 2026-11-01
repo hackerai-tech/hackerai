@@ -109,6 +109,11 @@ request deadlines. Retain local backend/worker/relay and transport verification.
 Use local web development when debugging requires it or Preview cannot exercise
 the affected behavior, and state that reason in the verification record.
 
+For process health and authentication troubleshooting, use the fixed-field
+[local diagnostic helpers](docs/safe-local-diagnostics.md). Avoid raw process
+arguments/environment dumps and full login-page snapshots; these can expose
+credentials or verification codes.
+
 Track task-owned process IDs and ports. Stop unused servers, watchers, and test
 runners when finished; never stop another task's processes to reclaim capacity.
 Report any services intentionally left running for continued testing.
