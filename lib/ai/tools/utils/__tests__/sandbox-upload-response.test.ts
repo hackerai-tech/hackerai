@@ -64,12 +64,20 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  async function upload(tempDirectory = directory, file = source) {
+  async function upload(
+    tempDirectory = directory,
+    file = source,
+    options: { path?: string; prefix?: string } = {},
+  ) {
     return run(
       "/bin/bash",
-      ["-c", buildPosixCurlUploadCommand(file, endpoint, "text/plain")],
+      [
+        "-c",
+        (options.prefix ?? "") +
+          buildPosixCurlUploadCommand(file, endpoint, "text/plain"),
+      ],
       {
-        env: { PATH: "/usr/bin:/bin", TMPDIR: tempDirectory },
+        env: { PATH: options.path ?? "/usr/bin:/bin", TMPDIR: tempDirectory },
         timeout: 5000,
       },
     ).then(
@@ -123,18 +131,27 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
     });
   });
 
-  it("bounds error inspection even when the response is large", async () => {
-    status = 403;
-    body = "PRIVATE".repeat(2000) + "<Code>AccessDenied</Code>";
-    const result = await upload();
-    expect(result.code).toBe(22);
-    expect(result.stderr).not.toMatch(/PRIVATE|AccessDenied/);
-    expect(getUploadFailureDiagnostics(endpoint, result.stderr)).toMatchObject({
-      upload_reported_storage_code: null,
-      upload_storage_diagnostic_present: true,
-    });
-    expect(await readdir(directory)).toEqual([path.basename(source)]);
-  });
+  it.each([200, 403])(
+    "bounds response storage without changing HTTP %s under a file-size limit",
+    async (httpStatus) => {
+      status = httpStatus;
+      body = "PRIVATE".repeat(20000) + "<Code>AccessDenied</Code>";
+      // A complete response file would exceed this process's file-size limit.
+      const result = await upload(directory, source, {
+        prefix: "ulimit -f 16; ",
+      });
+      expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toMatch(/PRIVATE|AccessDenied/);
+      expect(
+        getUploadFailureDiagnostics(endpoint, result.stderr),
+      ).toMatchObject({
+        upload_reported_storage_code: null,
+        upload_storage_diagnostic_present: httpStatus === 403,
+      });
+      expect(await readdir(directory)).toEqual([path.basename(source)]);
+    },
+  );
 
   it.each([false, true])(
     "preserves exact successful upload bytes with diagnostic setup unavailable=%s",
@@ -174,17 +191,9 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
       status = httpStatus;
       body = httpStatus === 403 ? "<Error>PRIVATE storage body</Error>" : "";
       const before = (await readdir(directory)).sort();
-      const result = await run(
-        "/bin/bash",
-        ["-c", buildPosixCurlUploadCommand(source, endpoint, "text/plain")],
-        {
-          env: { PATH: `${bin}:/usr/bin:/bin`, TMPDIR: directory },
-          timeout: 5000,
-        },
-      ).then(
-        (result) => ({ ...result, code: 0 }),
-        (error: { stdout: string; stderr: string; code: number }) => error,
-      );
+      const result = await upload(directory, source, {
+        path: `${bin}:/usr/bin:/bin`,
+      });
       expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
       expect(result.stdout).toBe("");
       expect(result.stderr).not.toContain("PRIVATE");
@@ -193,6 +202,38 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
       ).toMatchObject({
         upload_reported_http_status: httpStatus === 403 ? 403 : null,
         upload_storage_diagnostic_present: false,
+      });
+      expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+      expect((await readdir(directory)).sort()).toEqual(before);
+    },
+  );
+
+  it.each([200, 403])(
+    "preserves HTTP %s when diagnostic storage becomes unwritable",
+    async (httpStatus) => {
+      const bin = path.join(directory, "bin");
+      await mkdir(bin);
+      await writeFile(
+        path.join(bin, "mktemp"),
+        '#!/bin/sh\nfile=$(/usr/bin/mktemp "$@") || exit $?\nchmod 400 "$file"\nprintf "%s\\n" "$file"\n',
+        { mode: 0o700 },
+      );
+      const before = (await readdir(directory)).sort();
+      status = httpStatus;
+      body =
+        "<Error><Code>AccessDenied</Code><Message>PRIVATE body</Message></Error>";
+      const result = await upload(directory, source, {
+        path: `${bin}:/usr/bin:/bin`,
+      });
+      expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("PRIVATE");
+      expect(
+        getUploadFailureDiagnostics(endpoint, result.stderr),
+      ).toMatchObject({
+        upload_reported_http_status: httpStatus === 403 ? 403 : null,
+        upload_reported_storage_code: null,
+        upload_storage_diagnostic_present: httpStatus === 403,
       });
       expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
       expect((await readdir(directory)).sort()).toEqual(before);

@@ -30,6 +30,9 @@ export function buildPosixCurlUploadCommand(
 ): string {
   const request = `-X PUT -H ${quote(`Content-Type: ${contentType}`)} --data-binary @${quote(path)} ${quote(url)}`;
   const ordinaryUpload = `curl -fsSL ${request}`;
+  // FD 4 streams the response through a bounded, best-effort file sink. Always
+  // drain the rest so a failed diagnostic write cannot cause curl's EPIPE/23.
+  // FD 3 returns HTTP status and curl exit status independently of that sink.
   return `(
 case "$(command -v curl)" in
   */snap/bin/curl)
@@ -37,7 +40,7 @@ case "$(command -v curl)" in
     exit $?
     ;;
 esac
-if ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1; then
+if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1; then
   ${ordinaryUpload}
   exit $?
 fi
@@ -49,12 +52,22 @@ trap 'rm -f -- "$response_file"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-curl_exit=0
-http_status=$(curl -sSL -o "$response_file" -w '%{http_code}' ${request}) || curl_exit=$?
+curl_result=$(
+  {
+    {
+      curl_exit=0
+      http_status=$(curl -sSL -o /dev/fd/4 -w '%{http_code}' ${request}) || curl_exit=$?
+      printf '%s %s' "$http_status" "$curl_exit" >&3
+    } 4>&1 |
+    { head -c 8192 2>/dev/null > "$response_file"; cat >/dev/null 2>&1; }
+  } 3>&1
+)
+http_status=\${curl_result% *}
+curl_exit=\${curl_result##* }
 if [ "$curl_exit" -ne 0 ]; then exit "$curl_exit"; fi
 case "$http_status" in
   [45][0-9][0-9])
-    storage_code=$(LC_ALL=C head -c 8192 "$response_file" | LC_ALL=C sed -nE 's@.*<Code>(${STORAGE_ERROR_CODES.join("|")})</Code>.*@\\1@p' | head -n 1)
+    storage_code=$(LC_ALL=C head -c 8192 "$response_file" 2>/dev/null | LC_ALL=C sed -nE 's@.*<Code>(${STORAGE_ERROR_CODES.join("|")})</Code>.*@\\1@p' | head -n 1)
     printf 'curl: (22) The requested URL returned error: %s\\n' "$http_status" >&2
     printf '${STORAGE_ERROR_MARKER}%s\\n' "\${storage_code:-Unknown}" >&2
     exit 22
