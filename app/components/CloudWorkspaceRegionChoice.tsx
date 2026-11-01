@@ -109,6 +109,7 @@ export function CloudWorkspaceRegionChoice({
   const [browsing, setBrowsing] = useState(manage);
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
+  const refreshPending = useRef(false);
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const autoChecks = useRef(0);
@@ -166,7 +167,9 @@ export function CloudWorkspaceRegionChoice({
               surface: manage ? "workspace_dialog" : "workspace_error",
               changed_existing: previous.currentId !== undefined,
             });
-            window.dispatchEvent(new Event(changedEvent));
+            window.dispatchEvent(
+              new CustomEvent(changedEvent, { detail: titleId }),
+            );
           }
         } else next = await request(signal(), showChoices);
         if (!active.signal.aborted && current === generation.current) {
@@ -192,10 +195,14 @@ export function CloudWorkspaceRegionChoice({
           focusAfterAction.current = !automatic || optionsReadyWithFocus;
           setBusy(false);
           setChecking(false);
+          if (refreshPending.current) {
+            refreshPending.current = false;
+            void act(undefined, false);
+          }
         }
       }
     },
-    [apply, manage],
+    [apply, manage, titleId],
   );
   useEffect(() => {
     const active = new AbortController();
@@ -219,10 +226,17 @@ export function CloudWorkspaceRegionChoice({
     };
   }, [apply, manage]);
   useEffect(() => {
-    const refresh = () => void act(undefined, false);
+    const refresh = (event: Event) => {
+      if (event instanceof CustomEvent && event.detail === titleId) return;
+      if (busyRef.current) {
+        refreshPending.current = true;
+        return;
+      }
+      void act(undefined, false);
+    };
     window.addEventListener(changedEvent, refresh);
     return () => window.removeEventListener(changedEvent, refresh);
-  }, [act]);
+  }, [act, titleId]);
   useEffect(() => {
     if (view.status === "loading") return;
     const reason =

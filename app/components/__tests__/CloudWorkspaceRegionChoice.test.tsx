@@ -166,6 +166,38 @@ it("keeps the requested chooser open through waiting and only rechecks status", 
   expect(retry).not.toHaveBeenCalled();
 });
 
+it("reconciles a selection saved elsewhere during a pending status read", async () => {
+  let finish!: (value: ReturnType<typeof response>) => void;
+  fetchMock
+    .mockResolvedValueOnce(
+      response({ status: "waiting", reason: "recent_activity" }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValueOnce(
+      response({ status: "selected", id: "eu-one", region: "eu-central-1" }),
+    );
+  const retry = jest.fn();
+  render(<CloudWorkspaceRegionChoice onRetry={retry} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Check status" }));
+  await act(async () => {
+    window.dispatchEvent(new Event("hackerai:cloud-workspace-selected"));
+    window.dispatchEvent(new Event("hackerai:cloud-workspace-selected"));
+    finish(response({ status: "waiting", reason: "recent_activity" }));
+  });
+  await screen.findByRole("button", { name: "Retry" });
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Using your Europe workspace",
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  expect(retry).not.toHaveBeenCalled();
+});
+
 it("lets the owner keep the current workspace and regain Retry while switching is waiting", async () => {
   const selected = { status: "selected", id: "us-one", region: "us-east-1" };
   fetchMock
