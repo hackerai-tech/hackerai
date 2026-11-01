@@ -193,6 +193,22 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
     },
   );
 
+  it.each([200, 403])(
+    "preserves HTTP %s when the diagnostic sink fails under inherited errexit",
+    async (httpStatus) => {
+      status = httpStatus;
+      body = "PRIVATE".repeat(20000);
+      const result = await upload(directory, source, {
+        prefix: "set -e -o posix; ulimit -f 0; ",
+      });
+      expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("PRIVATE");
+      expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+      expect(await readdir(directory)).toEqual([path.basename(source)]);
+    },
+  );
+
   it("preserves curl's local read failure and cleans up diagnostics", async () => {
     const result = await upload(directory, path.join(directory, "absent"));
     expect(result.code).toBe(26);

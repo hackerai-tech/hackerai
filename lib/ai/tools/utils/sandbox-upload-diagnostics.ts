@@ -59,7 +59,7 @@ curl_result=$(
       http_status=$(curl -sSL -o /dev/fd/4 -w '%{http_code}' ${request}) || curl_exit=$?
       printf '%s %s' "$http_status" "$curl_exit" >&3
     } 4>&1 |
-    { head -c 8192 > "$response_file"; cat >/dev/null; } 2>/dev/null
+    { head -c 8192 > "$response_file" || :; cat >/dev/null; } 2>/dev/null
   } 3>&1
 )
 http_status=\${curl_result% *}
