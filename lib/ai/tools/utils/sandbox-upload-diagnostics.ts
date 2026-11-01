@@ -29,7 +29,7 @@ export function buildPosixCurlUploadCommand(
   contentType: string,
 ): string {
   const request = `-X PUT -H ${quote(`Content-Type: ${contentType}`)} --data-binary @${quote(path)} ${quote(url)}`;
-  const ordinaryUpload = `curl -fsSL ${request}`;
+  const ordinaryUpload = `curl -fsSL ${request} -o /dev/null`;
   // FD 4 streams the response through a bounded, best-effort file sink. Always
   // drain the rest so a failed diagnostic write cannot cause curl's EPIPE/23.
   // FD 3 returns HTTP status and curl exit status independently of that sink.

@@ -156,10 +156,12 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
   it.each([false, true])(
     "preserves exact successful upload bytes with diagnostic setup unavailable=%s",
     async (unavailable) => {
+      body = "PRIVATE success response";
       const result = await upload(
         unavailable ? path.join(directory, "missing") : directory,
       );
       expect(result.code).toBe(0);
+      expect(result.stdout).toBe("");
       expect(result.stderr).toBe("");
       expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
       expect(await readdir(directory)).toEqual([path.basename(source)]);
@@ -185,11 +187,11 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
       // boundary fixture, not a real Snap installation on this POSIX host.
       await writeFile(
         path.join(bin, "curl"),
-        '#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = "-o" ]; then exit 23; fi\ndone\nexec /usr/bin/curl "$@"\n',
+        '#!/bin/sh\nprevious=""\nfor arg in "$@"; do\n  if [ "$previous" = "-o" ] && [ "$arg" != "/dev/null" ]; then exit 23; fi\n  previous="$arg"\ndone\nexec /usr/bin/curl "$@"\n',
         { mode: 0o700 },
       );
       status = httpStatus;
-      body = httpStatus === 403 ? "<Error>PRIVATE storage body</Error>" : "";
+      body = "<Response>PRIVATE storage body</Response>";
       const before = (await readdir(directory)).sort();
       const result = await upload(directory, source, {
         path: `${bin}:/usr/bin:/bin`,
