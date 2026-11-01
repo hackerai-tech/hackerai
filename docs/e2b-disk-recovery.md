@@ -138,6 +138,35 @@ in the reboot documentation does not apply to that lifecycle. There is no API
 rollback to the earlier snapshot; waiting for timeout is not a rollback strategy.
 See also [pause lifecycle](https://docs.e2b.dev/sandbox/persistence).
 
+## Customer failures before reboot
+
+Customer approval is single-use. A failed dispatch or preflight may offer a new
+approval only when Redis proves the receipt never crossed the execution boundary.
+The old receipt is archived and the new offer has a different token, with no
+inherited confirmation or organization binding. Fresh eligibility and owner
+confirmation are required; this never dispatches recovery from a status read.
+
+Immediately before sending the reboot request, recovery durably records
+`reboot_requested`. An owned customer claim can be canceled only before that
+marker, restoring its exact previous workspace record and marking the receipt
+`failurePhase: before_reboot`. The marker, uncertain Redis writes, a reboot
+request, or any later failure keep the durable fence and require support.
+An interrupted worker is not automatically canceled merely because it timed out.
+
+Historical failed receipts without phase evidence remain support-only. An
+operator may use `reconcileLegacyPreflightFailure` only after verifying the
+original task is terminal and obtaining provider confirmation that no reboot
+occurred. It compares the exact raw receipt, refuses any workspace/result/activity
+record, and archives the review evidence before classifying the failure. It does
+not delete consent, renew approval, or touch E2B. Keep account details and the
+review reference in the private incident record. Never expose this operation
+through a customer endpoint.
+
+Deploy the matching web and recovery worker before enabling a renewed offer.
+Expired resume-failure evidence remains expired: the normal acquisition path
+must establish fresh evidence before another approval is offered. Do not rewrite
+failure timestamps to manufacture eligibility.
+
 ## If it stops
 
 The recovery fence has no automatic expiry, but only blocks application admission;

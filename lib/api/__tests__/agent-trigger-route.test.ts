@@ -23,6 +23,10 @@ Object.defineProperty(globalThis, "Response", {
   value: MockResponse,
 });
 
+const mockResolveWorkspaceRegion = jest.fn<any>();
+jest.mock("@/lib/ai/tools/utils/cloud-workspace-routing", () => ({
+  resolveCloudWorkspaceRegion: mockResolveWorkspaceRegion,
+}));
 const mockCreatePublicToken = jest.fn<any>();
 const mockSetActiveTriggerRun = jest.fn<any>();
 const mockReplaceActiveTriggerRun = jest.fn<any>();
@@ -149,6 +153,12 @@ describe("web request correlation at Agent dispatch", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockResolveWorkspaceRegion
+      .mockReset()
+      .mockImplementation(
+        async ({ preferredRegion }: { preferredRegion: string }) =>
+          preferredRegion,
+      );
     mockReplaceActiveTriggerRun.mockReset().mockResolvedValue({
       previousRunId: null,
       previousApprovalSessionId: null,
@@ -204,6 +214,68 @@ describe("web request correlation at Agent dispatch", () => {
         ...body,
       }),
     } as any);
+
+  it.each(dispatchPaths)(
+    "routes %s %s to the existing workspace before dispatch",
+    async (endpoint, mode) => {
+      mockResolveWorkspaceRegion.mockResolvedValue("eu-central-1");
+      const response = await start(endpoint, mode, requestId, {
+        sandboxPreference: "e2b",
+      });
+      expect(response.status).toBe(200);
+      if (mode === "full_access") {
+        expect(mockTriggerTask).toHaveBeenCalledWith(
+          "agent-long",
+          expect.objectContaining({ triggerRegion: "eu-central-1" }),
+          expect.objectContaining({ region: "eu-central-1" }),
+        );
+      } else {
+        expect(sessions.start).toHaveBeenCalledWith(
+          expect.objectContaining({
+            triggerConfig: expect.objectContaining({
+              region: "eu-central-1",
+              basePayload: expect.objectContaining({
+                triggerRegion: "eu-central-1",
+              }),
+            }),
+          }),
+        );
+      }
+    },
+  );
+  it.each(["/api/agent", "/api/agent-long"] as const)(
+    "returns an actionable workspace choice from %s without dispatch",
+    async (endpoint) => {
+      const {
+        CloudWorkspaceSelectionRequiredError,
+      } = require("@/lib/ai/tools/utils/cloud-workspace-selection-error");
+      mockResolveWorkspaceRegion.mockRejectedValue(
+        new CloudWorkspaceSelectionRequiredError(),
+      );
+      const response = await start(endpoint, "full_access", requestId, {
+        sandboxPreference: "e2b",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        metadata: { cloud_workspace_region_selection_required: true },
+      });
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
+  it("does not route Desktop requests through the Cloud binding", async () => {
+    mockResolveWorkspaceRegion.mockRejectedValue(
+      new Error("must not discover cloud"),
+    );
+    expect(
+      (
+        await start("/api/agent", "full_access", requestId, {
+          sandboxPreference: "desktop",
+        })
+      ).status,
+    ).toBe(200);
+    expect(mockResolveWorkspaceRegion).not.toHaveBeenCalled();
+  });
 
   it.each(["desktop", "desktop-environment:test", "e2b"])(
     "saves %s at admission before dispatch",

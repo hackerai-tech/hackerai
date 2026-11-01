@@ -2205,6 +2205,7 @@ describe("token-bucket async functions", () => {
           uncoveredPoints: 33,
           usageDeductionFailed: true,
           usageDeductionFailureReason: "deduction_failed",
+          usageDeductionOutcomeUnknown: true,
         });
       } finally {
         consoleErrorSpy.mockRestore();

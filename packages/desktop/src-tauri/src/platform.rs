@@ -213,7 +213,7 @@ pub fn build_command(
 /// Gracefully kill a child process.
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
-/// On Windows: calls kill() directly (which is always immediate).
+/// On Windows: stops the process tree before killing/reaping the shell.
 /// Always reaps the process with wait() afterward.
 pub async fn graceful_kill(child: &mut tokio::process::Child) {
     #[cfg(unix)]
@@ -224,13 +224,16 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
             terminate_process_group(pid, libc::SIGTERM);
             // Wait up to 2 seconds for the process to exit
             match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                Ok(_) => return,
+                Ok(_) => {}
                 Err(_) => {
                     // Process didn't exit in time, escalate to SIGKILL
                     terminate_process_group(pid, libc::SIGKILL);
                     let _ = child.kill().await;
                 }
             }
+            // A reaped shell does not prove its descendants stopped. Verify
+            // the group and escalate survivors before releasing update admission.
+            let _ = cancel_process_tree(pid).await;
         } else {
             // No PID available (already exited), just try kill
             let _ = child.kill().await;
@@ -239,6 +242,11 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
 
     #[cfg(not(unix))]
     {
+        if let Some(pid) = child.id() {
+            // Killing only bash/cmd can leave its native descendants writing
+            // files after the caller releases update admission.
+            let _ = cancel_process_tree(pid).await;
+        }
         let _ = child.kill().await;
     }
 
@@ -261,9 +269,11 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 
 /// Cancel a streaming command and report success only after the OS confirms
 /// that the process tree is no longer running.
+/// An unknown outcome fences updates even when a caller returns or aborts its
+/// output readers. Other work remains available for the rest of the session.
 pub async fn cancel_process_tree(pid: u32) -> bool {
     #[cfg(unix)]
-    {
+    let stopped = {
         terminate_process_group(pid, libc::SIGTERM);
         for _ in 0..10 {
             if !process_group_is_running(pid) {
@@ -278,24 +288,27 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        return !process_group_is_running(pid);
-    }
+        !process_group_is_running(pid)
+    };
 
     #[cfg(windows)]
-    {
-        return tokio::process::Command::new(windows_system_executable("taskkill.exe"))
+    let stopped = {
+        tokio::process::Command::new(windows_system_executable("taskkill.exe"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await
             .map(|output| output.status.success())
-            .unwrap_or(false);
-    }
+            .unwrap_or(false)
+    };
 
     #[cfg(not(any(unix, windows)))]
-    {
-        false
+    let stopped = false;
+
+    if !stopped {
+        crate::update_safety::UPDATE_GATE.block_for_unconfirmed_command();
     }
+    stopped
 }
 
 #[cfg(unix)]

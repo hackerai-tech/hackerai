@@ -154,6 +154,7 @@ export type AuxiliaryVisionModelRunner = (args: {
     raw?: unknown;
   };
   model?: string;
+  finishReason?: unknown;
 }>;
 
 const AUXILIARY_VISION_SYSTEM_PROMPT = `You are a precise visual-analysis component for a text-only cybersecurity assistant. Describe only what is visibly supported by the image.
@@ -207,6 +208,7 @@ const defaultModelRunner: AuxiliaryVisionModelRunner = async ({
     text: result.text,
     usage: result.usage,
     model: result.response.modelId,
+    finishReason: result.finishReason,
   };
 };
 
@@ -260,6 +262,8 @@ export async function describeImageWithAuxiliaryVision({
     const combinedSignal = abortSignal
       ? AbortSignal.any([abortSignal, timeoutController.signal])
       : timeoutController.signal;
+    let emptyDescription = false;
+    let responseFinishReason: string | null = null;
     try {
       combinedSignal.throwIfAborted();
       const result = await modelRunner({
@@ -282,6 +286,20 @@ export async function describeImageWithAuxiliaryVision({
       combinedSignal.throwIfAborted();
       const description = result.text.trim();
       if (!description) {
+        emptyDescription = true;
+        // Keep provider-specific raw reasons and response bodies out of logs.
+        responseFinishReason =
+          typeof result.finishReason === "string" &&
+          [
+            "stop",
+            "length",
+            "content-filter",
+            "tool-calls",
+            "error",
+            "other",
+          ].includes(result.finishReason)
+            ? result.finishReason
+            : null;
         throw new Error("Auxiliary vision model returned an empty description");
       }
       const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
@@ -377,7 +395,12 @@ export async function describeImageWithAuxiliaryVision({
             ? "caller_aborted"
             : category === "timeout"
               ? "timeout"
-              : "provider_error",
+              : emptyDescription
+                ? "empty_description"
+                : "provider_error",
+          ...(emptyDescription && {
+            response_finish_reason: responseFinishReason,
+          }),
           error_name: failure instanceof Error ? failure.name : "UnknownError",
         }),
       );

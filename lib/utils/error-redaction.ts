@@ -1,11 +1,18 @@
 const REDACTED_VALUE = "[Redacted]";
 
+// Match credential suffixes (including camelCase and header spellings), not
+// diagnostic fields such as tokenCount or max_tokens. The leading boundary
+// avoids retrying the variable-length key match at every character of long text.
+// Quoted values include escapes; unquoted values retain punctuation in secrets.
 const SENSITIVE_FIELD_PATTERN =
-  /(["']?\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
+  /(?<![\w-])(["']?\b[\w-]*(?:service[_-]?(?:role[_-]?)?key|api[_-]?key|secret[_-]?key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:Bearer|Basic)[ \t]+[^\s,}]+|[^\s,}]+)/gi;
+
+// Cover authorization credentials outside a key/value diagnostic as well.
+const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
-  /(["']?\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/g;
+  /(?<![\w-])(["']?\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,}]+)/g;
 
 const URL_PATTERN = /https?:\/\/[^\s"<>\\]+/gi;
 const SIGNED_URL_CREDENTIAL_PATTERN =
@@ -41,7 +48,8 @@ export const redactSensitiveErrorMessage = (message: string): string =>
     })
     .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
       return `${key}${separator}"${REDACTED_VALUE}"`;
-    });
+    })
+    .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`);
 
 export const stringifyRedactedError = (error: unknown): string => {
   const message =

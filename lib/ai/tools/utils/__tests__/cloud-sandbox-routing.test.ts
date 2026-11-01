@@ -1,3 +1,7 @@
+jest.mock("../cloud-workspace-routing", () => ({
+  resolveCloudWorkspaceRegion: jest.fn(),
+}));
+import { resolveCloudWorkspaceRegion } from "../cloud-workspace-routing";
 jest.mock("@/lib/cloud-recovery/store", () => ({ readFailures: jest.fn() }));
 import { readFailures } from "@/lib/cloud-recovery/store";
 jest.mock("@/lib/cloud-network/service", () => ({
@@ -47,6 +51,9 @@ describe("E2B cloud acquisition", () => {
   const originalEnv = process.env;
   beforeEach(() => {
     jest.resetAllMocks();
+    jest
+      .mocked(resolveCloudWorkspaceRegion)
+      .mockImplementation(async ({ preferredRegion }) => preferredRegion);
     process.env = { ...originalEnv };
     delete process.env.E2B_EU_API_KEY;
     delete process.env.E2B_EU_DOMAIN;
@@ -207,7 +214,7 @@ describe("E2B cloud acquisition", () => {
     },
   );
 
-  it.each([undefined, "eu-central-1"] as const)(
+  it.each(["eu-central-1"] as const)(
     "does not reconnect a pin through an unverified or different cluster: %s",
     async (region) => {
       read.mockResolvedValue(recovered);
@@ -224,9 +231,7 @@ describe("E2B cloud acquisition", () => {
       expect(phLogger.event).toHaveBeenCalledWith(
         "cloud_sandbox_acquisition_failed",
         expect.objectContaining({
-          workspace_guard_reason: region
-            ? "workspace_region_mismatch"
-            : "trigger_region_missing",
+          workspace_guard_reason: "workspace_region_mismatch",
           workspace_phase: "e2b",
           workspace_region: "us-east-1",
           trigger_region: region,
@@ -234,6 +239,21 @@ describe("E2B cloud acquisition", () => {
       );
     },
   );
+
+  it("uses the durable recovered region when an Ask caller has no Trigger region", async () => {
+    read.mockResolvedValue(recovered);
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox: jest.fn(),
+    });
+    expect(ensure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        triggerRegion: recovered.region,
+        destinationId: recovered.destinationId,
+      }),
+    );
+  });
 
   it("does not label different regions in the same E2B cluster as a mismatch", async () => {
     read.mockResolvedValue(recovered);
@@ -248,6 +268,49 @@ describe("E2B cloud acquisition", () => {
       jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
     ).not.toHaveProperty("workspace_guard_reason");
   });
+
+  it("lets an older queued US worker reconnect to the same E2B cluster", async () => {
+    read.mockResolvedValue(recovered);
+    jest.mocked(resolveCloudWorkspaceRegion).mockResolvedValue("us-east-1");
+    const setSandbox = jest.fn();
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { triggerRunId: "legacy-run", triggerRegion: "us-west-2" },
+    });
+    expect(ensure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        triggerRegion: "us-east-1",
+        destinationId: recovered.destinationId,
+      }),
+    );
+    expect(setSandbox).toHaveBeenCalledWith({ sandboxId: "new-e2b" });
+  });
+  it.each([undefined, "eu-central-1"] as const)(
+    "fences a queued worker with an unverified or different provider cluster: %s",
+    async (region) => {
+      process.env.E2B_EU_API_KEY = "test-eu-key";
+      jest.mocked(resolveCloudWorkspaceRegion).mockResolvedValue("us-east-1");
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox: jest.fn(),
+          context: { triggerRunId: "legacy-run", triggerRegion: region },
+        }),
+      ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          workspace_guard_reason: region
+            ? "workspace_region_mismatch"
+            : "trigger_region_missing",
+          workspace_region: "us-east-1",
+        }),
+      );
+    },
+  );
 
   it("never publishes a result if cleanup takes ownership during acquisition", async () => {
     available.mockRejectedValue(new CloudWorkspaceUnavailableError());

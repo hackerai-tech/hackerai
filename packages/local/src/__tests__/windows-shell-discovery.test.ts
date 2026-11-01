@@ -10,6 +10,12 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { buildShellSpawn, findGitBash } from "../utils";
+
+const integrationBash =
+  process.platform === "win32" ? findGitBash() : "/bin/bash";
+// Git Bash is optional locally, but Windows CI must exercise this regression.
+const testWithBash = integrationBash || process.env.CI ? it : it.skip;
 
 describe("Windows shell discovery", () => {
   const originalSystemRoot = process.env.SystemRoot;
@@ -20,6 +26,40 @@ describe("Windows shell discovery", () => {
     jest.dontMock("fs");
     jest.dontMock("child_process");
   });
+
+  testWithBash(
+    "initializes Git Bash utilities for non-interactive file writes with a Windows-only PATH",
+    () => {
+      // Execute the Windows invocation on real Bash. Windows CI uses Git Bash;
+      // POSIX hosts exercise the same generated script without a Windows VM.
+      const bash = integrationBash!;
+      expect(bash).toBeTruthy();
+      const content = "literal 'quotes' $HOME `not-a-command` \u03bb\n";
+      const command = `printf '%s' '${Buffer.from(content).toString("base64")}' | base64 -d`;
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => key.toLowerCase() !== "path",
+        ),
+      );
+      env.PATH =
+        process.platform === "win32"
+          ? `${process.env.SystemRoot}\\System32`
+          : "/nonexistent-hackerai-test-bin";
+      const invocation = buildShellSpawn(
+        "C:\\Git\\bin\\bash.exe",
+        "-c",
+        command,
+      );
+      expect(
+        execFileSync(bash, invocation.args, {
+          ...invocation.options,
+          env,
+          encoding: "utf8",
+          timeout: 5000,
+        }),
+      ).toBe(content);
+    },
+  );
 
   it("discovers portable Git through the system where.exe without searching the current directory", () => {
     process.env.SystemRoot = "C:\\Windows";

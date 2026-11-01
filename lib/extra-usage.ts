@@ -126,6 +126,8 @@ export interface ExtraUsageBalance {
 }
 
 export interface DeductBalanceResult {
+  /** A rejected action may already have committed; never automatically debit it again. */
+  outcomeUnknown?: boolean;
   success: boolean;
   newBalanceDollars: number;
   insufficientFunds: boolean;
@@ -336,6 +338,7 @@ export async function deductFromBalance(
       newBalanceDollars: 0,
       insufficientFunds: false,
       monthlyCapExceeded: false,
+      outcomeUnknown: true,
     };
   }
 }
@@ -469,6 +472,7 @@ export async function deductFromTeamBalance(
       newBalanceDollars: 0,
       insufficientFunds: false,
       monthlyCapExceeded: false,
+      outcomeUnknown: true,
     };
   }
 }

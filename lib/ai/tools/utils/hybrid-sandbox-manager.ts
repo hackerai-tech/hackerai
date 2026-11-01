@@ -1,3 +1,4 @@
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import { ChatSDKError } from "@/lib/errors";
@@ -892,11 +893,28 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
-    await sandbox.confirmNativeFileRelay();
+    try {
+      await sandbox.confirmNativeFileRelay();
+    } catch (error) {
+      // Never expose a Desktop that cannot persist output, or silently select a
+      // different computer. The caller can retry acquisition after reconnecting.
+      await sandbox.close();
+      if (error instanceof DesktopFileBridgeError) {
+        throw new ChatSDKError("bad_request:sandbox", error.message);
+      }
+      throw error;
+    }
     if (generation !== this.localAcquisitionGeneration) {
       // Close only this unpublished instance, never a newer selected sandbox.
       await sandbox.close();
       this.assertLocalAcquisitionCurrent(generation);
+    }
+    if (connection.isDesktop && !sandbox.supportsNativeFileRelay()) {
+      await sandbox.close();
+      throw new ChatSDKError(
+        "bad_request:sandbox",
+        "Desktop file access is unavailable. Update and restart the HackerAI Desktop app, reconnect this computer, then retry. Agent mode needs the native file bridge to save terminal output safely.",
+      );
     }
     this.sandbox = sandbox;
     this.isLocal = true;
@@ -1028,8 +1046,9 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get expected sandbox context for the system prompt based on preference
-   * without initializing the sandbox. Returns null for E2B (uses default prompt).
+   * Get expected sandbox context for the system prompt based on preference.
+   * Confirm missing Desktop file support before model work. Cloud uses the
+   * default prompt and does not initialize a sandbox here.
    */
   async getSandboxContextForPrompt(): Promise<string | null> {
     if (this.sandboxPreference === "e2b") {
@@ -1044,6 +1063,17 @@ export class HybridSandboxManager implements SandboxManager {
     );
 
     if (preferredConnection) {
+      if (
+        preferredConnection.isDesktop &&
+        preferredConnection.capabilities?.files !== true
+      ) {
+        // Resolve missing Desktop file support before starting model work, not
+        // after the first terminal command has already lost its checkpoint.
+        const { sandbox } = await this.getSandbox();
+        if (isCentrifugoSandbox(sandbox)) {
+          return this.buildSandboxContext(sandbox.getConnectionInfo());
+        }
+      }
       // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
       this.currentConnectionName = preferredConnection.name;
       return this.buildSandboxContext(preferredConnection);

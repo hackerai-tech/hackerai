@@ -114,6 +114,72 @@ describe("filterConnectionsByPresence", () => {
 });
 
 describe("stable environment acquisition", () => {
+  it.each([false, undefined])(
+    "blocks Desktop execution when files=%s cannot recover, then reacquires the repaired bridge",
+    async (files) => {
+      const oldWs = process.env.CENTRIFUGO_WS_URL;
+      const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+      // Keep real acquisition/capability negotiation; only replace relay I/O.
+      const dispatch = jest
+        .spyOn(CentrifugoSandbox.prototype as any, "dispatchFileRequest")
+        .mockRejectedValue(new Error("File bridge unavailable"));
+      const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "desktop",
+        "service-key",
+        null,
+        "pro",
+      );
+      jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          isDesktop: true,
+          capabilities: { commands: true, files, operationChannels: true },
+        }),
+      ]);
+      try {
+        await expect(
+          manager.getSandboxContextForPrompt(),
+        ).rejects.toMatchObject({
+          type: "bad_request",
+          surface: "sandbox",
+          message: expect.stringContaining(
+            "Desktop file access could not be verified",
+          ),
+        });
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(sandboxApi.connect).not.toHaveBeenCalled();
+
+        dispatch.mockResolvedValue({
+          type: "file_stat_result",
+          kind: "not_file",
+          path: ".",
+        });
+        const { sandbox } = await manager.getSandbox();
+        expect((sandbox as CentrifugoSandbox).supportsNativeFileRelay()).toBe(
+          true,
+        );
+        expect((sandbox as CentrifugoSandbox).supportsCommandStdin()).toBe(
+          false,
+        );
+        expect(setSandbox).toHaveBeenCalledWith(sandbox);
+        expect(dispatch).toHaveBeenCalledTimes(2);
+      } finally {
+        dispatch.mockRestore();
+        close.mockRestore();
+        if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+        else process.env.CENTRIFUGO_WS_URL = oldWs;
+        if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+        else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+      }
+    },
+  );
+
   it.each([false, true])(
     "shares local acquisition when concurrent connection lists differ=%s",
     async (different) => {
@@ -142,7 +208,7 @@ describe("stable environment acquisition", () => {
       );
       const connection = makeConnection({
         isDesktop: true,
-        capabilities: { commands: true, files: false, operationChannels: true },
+        capabilities: { commands: true, files: true, operationChannels: true },
       });
       const lists = jest
         .spyOn(manager, "listConnections")
@@ -486,6 +552,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
         connectionId: "desktop-conn",
         name: "Desktop",
         isDesktop: true,
+        capabilities: { commands: true, files: true },
         osInfo: {
           platform: "win32",
           arch: "x86_64",

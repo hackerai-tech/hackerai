@@ -1,3 +1,5 @@
+import type { DesktopFileFailure } from "@/lib/centrifugo/desktop-file-errors";
+
 export const LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE =
   "LOCAL_COMMAND_RELAY_UNSUBSCRIBED" as const;
 
@@ -17,6 +19,7 @@ export class LocalFileRequestError extends Error {
   constructor(
     readonly failure: LocalFileRequestFailure,
     message: string,
+    readonly fileFailure?: DesktopFileFailure,
   ) {
     super(message);
   }

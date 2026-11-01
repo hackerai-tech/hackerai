@@ -1,0 +1,50 @@
+name: Desktop Packaged Upgrade Tests
+
+on:
+  pull_request:
+    paths:
+      - "packages/desktop/src-tauri/**"
+      - ".github/scripts/test-linux-packaged-upgrade.py"
+      - ".github/scripts/prepare-desktop-release.sh"
+      - ".github/workflows/desktop-build.yml"
+      - ".github/workflows/desktop-upgrade-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-upgrade:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          cache: false
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+      - name: Install package build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils file
+      - name: Install desktop tooling
+        working-directory: packages/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Upgrade signed Debian and AppImage packages
+        run: python3 .github/scripts/test-linux-packaged-upgrade.py

@@ -568,37 +568,53 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
-  test("falls back to command upload when native Centrifugo upload fails", async () => {
-    const sandbox = makeSandbox(1234);
-    sandbox.files.uploadToUrl.mockRejectedValueOnce(new Error("exit status 1"));
+  test.each([false, true])(
+    "retains the command fallback when native transfer diagnostics fail (async: %s)",
+    async (asyncFailure) => {
+      const sandbox = makeSandbox(1234);
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(
+        new Error("exit status 1"),
+      );
+      const onTransferAttemptFailure = jest.fn(() => {
+        if (asyncFailure) return Promise.reject(new Error("observer failed"));
+        throw new Error("observer failed");
+      });
 
-    await uploadSandboxFileToConvex({
-      sandbox: sandbox as any,
-      userId: "u1",
-      fullPath: "/home/user/preview.png",
-      mediaType: "image/png",
-    });
+      await uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/home/user/preview.png",
+        mediaType: "image/png",
+        onTransferAttemptFailure,
+      });
 
-    expect(sandbox.files.uploadToUrl).toHaveBeenCalledWith(
-      "/home/user/preview.png",
-      "https://s3.example/upload",
-      "image/png",
-    );
-    expect(sandbox.commands.run).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("curl -fsSL -X PUT -H 'Content-Type: image/png'"),
-      expect.objectContaining({
-        timeoutMs: expect.any(Number),
-      }),
-    );
-    expect(mockConvexAction).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        name: "preview.png",
-        size: 1234,
-      }),
-    );
-  });
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledWith(
+        "/home/user/preview.png",
+        "https://s3.example/upload",
+        "image/png",
+      );
+      expect(sandbox.commands.run).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining(
+          "curl -fsSL -X PUT -H 'Content-Type: image/png'",
+        ),
+        expect.objectContaining({
+          timeoutMs: expect.any(Number),
+        }),
+      );
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          name: "preview.png",
+          size: 1234,
+        }),
+      );
+      expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+      expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ transfer_attempt_kind: "native" }),
+      );
+    },
+  );
 
   test.each([true, false])(
     "adds numeric signing diagnostics while preserving the original upload failure (native Windows: %s)",
@@ -625,6 +641,7 @@ describe("uploadSandboxFileToConvex", () => {
       const error = new Error(
         "Failed to upload file: curl: (22) The requested URL returned error: 403",
       );
+      const onTransferAttemptFailure = jest.fn();
       if (nativeWindows) {
         sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
       } else {
@@ -644,6 +661,7 @@ describe("uploadSandboxFileToConvex", () => {
           sandbox: sandbox as any,
           userId: "u1",
           fullPath: "/report.txt",
+          onTransferAttemptFailure,
         });
         if (nativeWindows) await expect(result).rejects.toBe(error);
         else
@@ -668,6 +686,19 @@ describe("uploadSandboxFileToConvex", () => {
           upload_signature_ttl_ms: 60_000,
           upload_signature_remaining_ms: 51_000,
         });
+        expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+        expect(onTransferAttemptFailure).toHaveBeenCalledWith({
+          transfer_attempt_kind: nativeWindows ? "native" : "command",
+          sandbox_type: nativeWindows ? "desktop" : "cloud",
+          transfer_exit_code: nativeWindows ? null : 22,
+          upload_reported_http_status: 403,
+          upload_signature_age_ms: 9_000,
+          upload_signature_ttl_ms: 60_000,
+          upload_signature_remaining_ms: 51_000,
+        });
+        expect(JSON.stringify(onTransferAttemptFailure.mock.calls)).not.toMatch(
+          /fixture-signature|X-Amz|s3\.example|report\.txt|requested URL/,
+        );
         expect(JSON.stringify(calls)).not.toMatch(/fixture-signature|X-Amz/);
         expect(mockConvexAction).not.toHaveBeenCalled();
         if (nativeWindows)
@@ -676,6 +707,38 @@ describe("uploadSandboxFileToConvex", () => {
       } finally {
         clock.mockRestore();
       }
+    },
+  );
+
+  test.each([false, true])(
+    "a transfer diagnostics failure cannot replace the original error (async: %s)",
+    async (asyncFailure) => {
+      const sandbox = {
+        ...makeSandbox(1234, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      Object.assign(sandbox.files, {
+        stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+      });
+      const original = Object.freeze(
+        new Error("private-native-transfer-error"),
+      );
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(original);
+      const onTransferAttemptFailure = jest.fn(() => {
+        if (asyncFailure) return Promise.reject(new Error("observer failed"));
+        throw new Error("observer failed");
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/private/report.txt",
+          onTransferAttemptFailure,
+        }),
+      ).rejects.toBe(original);
+      expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
     },
   );
 
@@ -690,12 +753,14 @@ describe("uploadSandboxFileToConvex", () => {
       if (command.includes("curl -fsSL -X PUT")) throw error;
       return originalRun(command);
     });
+    const onTransferAttemptFailure = jest.fn();
 
     await expect(
       uploadSandboxFileToConvex({
         sandbox: sandbox as any,
         userId: "u1",
         fullPath: "/report.txt",
+        onTransferAttemptFailure,
       }),
     ).rejects.toThrow("curl: (22) The requested URL returned error: 403");
     const event = consoleErrorSpy.mock.calls
@@ -705,6 +770,13 @@ describe("uploadSandboxFileToConvex", () => {
       upload_reported_http_status: 403,
       exit_code: 22,
     });
+    expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transfer_attempt_kind: "command",
+        transfer_exit_code: 22,
+        upload_reported_http_status: 403,
+      }),
+    );
     expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
     expect(mockConvexAction).not.toHaveBeenCalled();
   });

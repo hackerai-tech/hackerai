@@ -56,6 +56,7 @@ export interface UsageBillingBreakdown {
   uncoveredPoints?: number;
   usageDeductionFailed?: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
 }
 
 interface ResolvedUsageBillingBreakdown extends UsageBillingBreakdown {
@@ -77,6 +78,7 @@ export interface UsageCostRecord {
   uncoveredPoints: number;
   usageDeductionFailed: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -452,9 +454,13 @@ export class UsageTracker {
       uncoveredPoints: Math.max(0, billingBreakdown?.uncoveredPoints ?? 0),
       usageDeductionFailed:
         billingBreakdown?.usageDeductionFailed === true ||
+        billingBreakdown?.usageDeductionOutcomeUnknown === true ||
         (billingBreakdown?.uncoveredPoints ?? 0) > 0,
       usageDeductionFailureReason:
         billingBreakdown?.usageDeductionFailureReason,
+      ...(billingBreakdown?.usageDeductionOutcomeUnknown && {
+        usageDeductionOutcomeUnknown: true,
+      }),
     };
   }
 
@@ -492,6 +498,7 @@ export class UsageTracker {
     | "uncoveredPoints"
     | "usageDeductionFailed"
     | "usageDeductionFailureReason"
+    | "usageDeductionOutcomeUnknown"
   > {
     const {
       includedPointsDeducted,
@@ -499,6 +506,7 @@ export class UsageTracker {
       uncoveredPoints,
       usageDeductionFailed,
       usageDeductionFailureReason,
+      usageDeductionOutcomeUnknown,
     } = this.getBillingBreakdown(rateLimitInfo, billingBreakdown);
     const totalPoints =
       includedPointsDeducted + extraUsagePointsDeducted + uncoveredPoints;
@@ -513,6 +521,9 @@ export class UsageTracker {
         uncoveredPoints,
         usageDeductionFailed,
         usageDeductionFailureReason,
+        ...(usageDeductionOutcomeUnknown && {
+          usageDeductionOutcomeUnknown: true,
+        }),
       };
     }
 
@@ -531,6 +542,9 @@ export class UsageTracker {
       uncoveredPoints,
       usageDeductionFailed,
       usageDeductionFailureReason,
+      ...(usageDeductionOutcomeUnknown && {
+        usageDeductionOutcomeUnknown: true,
+      }),
     };
   }
 

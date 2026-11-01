@@ -129,6 +129,8 @@ export interface FileErrorMessage {
   type: "file_error";
   requestId: string;
   message: string;
+  /** Optional bounded cause from newer Desktop bridges. */
+  fileFailure?: import("./desktop-file-errors").DesktopFileFailure;
 }
 
 export interface FileStatResultMessage {

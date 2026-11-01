@@ -33,6 +33,8 @@ afterEach(() => {
 });
 
 it("stops an unhealthy batch after one probe and one reconnect, preserving the workspace", async () => {
+  const now = Date.UTC(2026, 10, 1, 15, 36, 42);
+  jest.spyOn(Date, "now").mockReturnValue(now);
   const run = jest
     .fn()
     .mockRejectedValue(new Error("Request handshake timed out after 5000ms"));
@@ -42,6 +44,7 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     kill: jest.fn(),
     getMetrics: jest.fn().mockResolvedValue([
       {
+        timestamp: new Date(now - 480_000),
         cpuUsedPct: 99,
         memUsed: 900,
         memTotal: 1000,
@@ -78,6 +81,7 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     expect.objectContaining({
       cpu_used_pct: 99,
       memory_used_bytes: 900,
+      metrics_sample_age_ms: 480_000,
       readiness_probe_reason: "operation_timeout",
     }),
   );
@@ -90,6 +94,10 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
     "initial",
     "reconnect_retry",
   ]);
+  expect(diagnostics.map(([, fields]) => fields.metrics_sample_age_ms)).toEqual(
+    [480_000, 480_000],
+  );
+  expect(sandbox.getMetrics).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
     /private-|secret|preserved-workspace/,
   );
@@ -344,6 +352,42 @@ it("bounds stalled metrics and filters untrusted fields", async () => {
   expect(result).toEqual({ metrics_status: "available", cpu_used_pct: 10 });
   expect(jest.getTimerCount()).toBe(0);
 });
+
+it.each([
+  ["old", -480_000, 480_000],
+  ["future", 500, -500],
+] as const)(
+  "reports the selected %s metrics sample age",
+  async (_, offset, age) => {
+    const now = Date.UTC(2026, 10, 1, 15, 36, 42);
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    const getMetrics = jest.fn().mockResolvedValue([
+      { timestamp: new Date(now - 600_000), cpuUsedPct: 90 },
+      { timestamp: new Date(now + offset), cpuUsedPct: 10, path: "private" },
+    ]);
+
+    await expect(
+      sampleAttachmentFailureMetrics({ getMetrics } as any),
+    ).resolves.toEqual({
+      metrics_status: "available",
+      metrics_sample_age_ms: age,
+      cpu_used_pct: 10,
+    });
+    expect(getMetrics).toHaveBeenCalledTimes(1);
+    expect(getMetrics).toHaveBeenCalledWith({ requestTimeoutMs: 1_000 });
+  },
+);
+
+it.each([undefined, new Date(NaN), "2026-11-01T15:36:42Z", 1_793_547_402_000])(
+  "retains numeric metrics without guessing an invalid sample timestamp: %p",
+  async (timestamp) => {
+    await expect(
+      sampleAttachmentFailureMetrics({
+        getMetrics: async () => [{ timestamp, cpuUsedPct: 10 }],
+      } as any),
+    ).resolves.toEqual({ metrics_status: "available", cpu_used_pct: 10 });
+  },
+);
 
 it("retains a wrapped E2B 504 after the acquisition budget is spent", async () => {
   const { CloudAcquisitionBudgetExhaustedError } =

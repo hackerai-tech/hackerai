@@ -2154,6 +2154,9 @@ export function captureUsageCost({
         extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
       usage_deduction_failed: usage.usageDeductionFailed,
+      ...(usage.usageDeductionOutcomeUnknown && {
+        usage_deduction_outcome_unknown: true,
+      }),
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
@@ -2296,6 +2299,9 @@ export function captureUsageSettlement({
       extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
       uncovered_points: deduction.uncoveredPoints,
       usage_deduction_failed: deduction.usageDeductionFailed,
+      ...(deduction.usageDeductionOutcomeUnknown && {
+        usage_deduction_outcome_unknown: true,
+      }),
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
       ...usagePricingAnalyticsProperties,

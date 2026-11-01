@@ -113,7 +113,12 @@ windowsDescribe("Windows generated-file metadata command", () => {
   const gitBash = process.platform === "win32" ? findGitBash() : null;
   const persistenceShells = [
     ["cmd", windowsSystemExecutable("cmd.exe")],
-    ...(gitBash ? [["git-bash", gitBash]] : []),
+    ...(gitBash
+      ? [
+          ["git-bash", gitBash],
+          ["git-bash minimal PATH", gitBash],
+        ]
+      : []),
   ];
   test.each(persistenceShells)(
     "persists large UTF-8 output through real %s commands",
@@ -146,6 +151,18 @@ windowsDescribe("Windows generated-file metadata command", () => {
             encoding: "utf8",
             timeout: 10_000,
             cwd: directory,
+            ...(kind === "git-bash minimal PATH"
+              ? {
+                  env: {
+                    ...Object.fromEntries(
+                      Object.entries(process.env).filter(
+                        ([key]) => key.toLowerCase() !== "path",
+                      ),
+                    ),
+                    Path: join(process.env.SystemRoot!, "System32"),
+                  },
+                }
+              : {}),
           });
           if (result.error) throw result.error;
           return {

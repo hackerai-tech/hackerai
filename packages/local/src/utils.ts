@@ -143,5 +143,14 @@ export function buildShellSpawn(
       options: { windowsVerbatimArguments: true },
     };
   }
+  if (base === "bash.exe") {
+    // Git for Windows is often launched from PowerShell with only Git/cmd on
+    // PATH. Non-login Bash then has builtins but cannot find base64/mkdir/cat.
+    // Initialize its bundled tools without sourcing profiles or changing cwd.
+    return {
+      args: [shellFlag, `export PATH="/usr/bin:/bin:$PATH"\n${command}`],
+      options: {},
+    };
+  }
   return { args: [shellFlag, command], options: {} };
 }

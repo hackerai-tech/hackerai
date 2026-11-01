@@ -84,7 +84,9 @@ export async function POST(request: NextRequest) {
         );
       } catch {
         await failConsent(userId, consent.token).catch(() => {});
-        return json({ status: "support" }, 202);
+        // Atomic settlement revokes an unclaimed token even if dispatch was
+        // accepted. Only the resulting verified state may offer fresh approval.
+        return json(await recoveryView(userId), 202);
       }
     }
     return json(await recoveryView(userId), 202);

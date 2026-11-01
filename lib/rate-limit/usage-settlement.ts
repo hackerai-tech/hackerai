@@ -7,6 +7,7 @@ import {
 } from "./token-bucket";
 
 export type UsageSettlementState = {
+  usageDeductionOutcomeUnknown?: boolean;
   includedPointsDeducted: number;
   extraUsagePointsDeducted: number;
   uncoveredPoints: number;
@@ -34,9 +35,14 @@ export const createUsageSettlementState = (
 
 export const getUsageSettlementInitialDeduction = (
   state: UsageSettlementState,
-): Pick<RateLimitInfo, "pointsDeducted" | "extraUsagePointsDeducted"> => ({
+): Pick<RateLimitInfo, "pointsDeducted" | "extraUsagePointsDeducted"> & {
+  usageDeductionOutcomeUnknown?: boolean;
+} => ({
   pointsDeducted: state.includedPointsDeducted,
   extraUsagePointsDeducted: state.extraUsagePointsDeducted,
+  ...(state.usageDeductionOutcomeUnknown && {
+    usageDeductionOutcomeUnknown: true,
+  }),
 });
 
 export const getSettledUsagePoints = (state: UsageSettlementState): number =>
@@ -64,12 +70,16 @@ export const shouldSettleUsageMidRun = ({
   state: UsageSettlementState;
   currentCostDollars: number;
   force?: boolean;
-}): boolean => getUnsettledUsagePoints(state, currentCostDollars) > 0;
+}): boolean =>
+  !state.usageDeductionOutcomeUnknown &&
+  getUnsettledUsagePoints(state, currentCostDollars) > 0;
 
 export const addUsageDeductionDelta = (
   state: UsageSettlementState,
   result: UsageDeductionResult,
 ): UsageDeductionResult => {
+  if (result.usageDeductionOutcomeUnknown)
+    state.usageDeductionOutcomeUnknown = true;
   state.includedPointsDeducted += nonNegativePoints(
     result.includedPointsDeducted,
   );
@@ -87,6 +97,9 @@ export const addUsageDeductionDelta = (
     extraUsagePointsDeducted: state.extraUsagePointsDeducted,
     uncoveredPoints: state.uncoveredPoints,
     usageDeductionFailed: state.usageDeductionFailed,
+    ...(state.usageDeductionOutcomeUnknown && {
+      usageDeductionOutcomeUnknown: true,
+    }),
     ...(state.usageDeductionFailureReason && {
       usageDeductionFailureReason: state.usageDeductionFailureReason,
     }),
@@ -97,6 +110,8 @@ export const replaceUsageSettlementState = (
   state: UsageSettlementState,
   cumulativeResult: UsageDeductionResult,
 ): void => {
+  if (cumulativeResult.usageDeductionOutcomeUnknown)
+    state.usageDeductionOutcomeUnknown = true;
   state.includedPointsDeducted = nonNegativePoints(
     cumulativeResult.includedPointsDeducted,
   );
@@ -104,7 +119,10 @@ export const replaceUsageSettlementState = (
     cumulativeResult.extraUsagePointsDeducted,
   );
   state.uncoveredPoints = nonNegativePoints(cumulativeResult.uncoveredPoints);
-  state.usageDeductionFailed = cumulativeResult.usageDeductionFailed;
-  state.usageDeductionFailureReason =
-    cumulativeResult.usageDeductionFailureReason;
+  state.usageDeductionFailed =
+    cumulativeResult.usageDeductionFailed ||
+    !!state.usageDeductionOutcomeUnknown;
+  state.usageDeductionFailureReason = state.usageDeductionOutcomeUnknown
+    ? "deduction_failed"
+    : cumulativeResult.usageDeductionFailureReason;
 };

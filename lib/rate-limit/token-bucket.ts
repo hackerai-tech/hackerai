@@ -297,6 +297,8 @@ export type UsageDeductionFailureReason =
   | "deduction_failed";
 
 export interface UsageDeductionResult {
+  /** An unacknowledged debit may have committed and requires reconciliation. */
+  usageDeductionOutcomeUnknown?: boolean;
   /** Points deducted from the paid plan's included-usage bucket. */
   includedPointsDeducted: number;
   /** Stored points deducted from the prepaid Extra Usage balance. */
@@ -393,6 +395,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsDeducted: number = 0,
     extraUsagePointsDeducted: number = 0,
     failureReason?: UsageDeductionFailureReason,
+    outcomeUnknown = false,
   ): UsageDeductionResult => {
     const coveredPoints =
       nonNegativePoints(includedPointsDeducted) +
@@ -409,6 +412,7 @@ const deductAdditionalUsagePoints = async ({
       uncoveredPoints,
       usageDeductionFailed: uncoveredPoints > 0 || !!failureReason,
       ...(failureReason && { usageDeductionFailureReason: failureReason }),
+      ...(outcomeUnknown && { usageDeductionOutcomeUnknown: true }),
     };
   };
 
@@ -438,6 +442,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsToExtraUsagePoints(fromExtraUsage);
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
+  let outcomeUnknown = false;
 
   if (extraUsagePointsToDeduct > 0) {
     if (
@@ -462,6 +467,7 @@ const deductAdditionalUsagePoints = async ({
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
           return {
+            outcomeUnknown: true,
             success: false,
             newBalanceDollars: 0,
             insufficientFunds: false,
@@ -473,13 +479,19 @@ const deductAdditionalUsagePoints = async ({
         extraUsageDeducted = extraUsagePointsToDeduct;
       } else {
         failureReason = getDeductionFailureReason(deductResult);
+        outcomeUnknown = deductResult.outcomeUnknown === true;
       }
     } else {
       failureReason = "extra_usage_unavailable";
     }
   }
 
-  return buildDeltaResult(includedDeducted, extraUsageDeducted, failureReason);
+  return buildDeltaResult(
+    includedDeducted,
+    extraUsageDeducted,
+    failureReason,
+    outcomeUnknown,
+  );
 };
 
 const scanRedisKeys = async (
@@ -1321,7 +1333,7 @@ export const deductUsage = async (
   initialDeduction?: Pick<
     RateLimitInfo,
     "pointsDeducted" | "extraUsagePointsDeducted"
-  >,
+  > & { usageDeductionOutcomeUnknown?: boolean },
   actualModelName?: string,
   usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
@@ -1427,6 +1439,15 @@ export const deductUsage = async (
       actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
 
+    // A lost action response is not proof of no debit. Preserve acknowledged
+    // totals without charging or refunding an unknown debit during finalization.
+    if (initialDeduction?.usageDeductionOutcomeUnknown) {
+      return withFinalCoverage(
+        { ...lastKnownDeductionResult, usageDeductionOutcomeUnknown: true },
+        "deduction_failed",
+      );
+    }
+
     const initialCoveredPoints =
       initialDeduction !== undefined
         ? initialIncludedPoints +
@@ -1517,6 +1538,9 @@ export const deductUsage = async (
       deltaResult.includedPointsDeducted,
       deltaResult.extraUsagePointsDeducted,
     );
+    if (deltaResult.usageDeductionOutcomeUnknown) {
+      lastKnownDeductionResult.usageDeductionOutcomeUnknown = true;
+    }
     return withFinalCoverage(
       lastKnownDeductionResult,
       deltaResult.usageDeductionFailureReason,
