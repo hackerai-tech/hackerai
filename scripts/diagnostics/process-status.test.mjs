@@ -79,7 +79,10 @@ test(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)", "--", sentinel],
       {
-        env: { PATH: process.env.PATH, DIAGNOSTIC_FIXTURE_TOKEN: sentinel },
+        env: {
+          PATH: process.env.PATH,
+          DIAGNOSTIC_FIXTURE_TOKEN: sentinel + "\nSECOND_SYNTHETIC_SECRET_LINE",
+        },
         stdio: "ignore",
       },
     );
