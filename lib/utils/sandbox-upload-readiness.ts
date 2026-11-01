@@ -33,6 +33,12 @@ export async function sampleAttachmentFailureMetrics(
     ]);
     const latest = metrics?.at(-1);
     if (!latest) return { metrics_status: "unavailable" };
+    const sampleTime =
+      latest.timestamp instanceof Date
+        ? Date.prototype.getTime.call(latest.timestamp)
+        : NaN;
+    // Keep future samples negative rather than reporting clock skew as fresh.
+    const sampleAgeMs = Date.now() - sampleTime;
     const fields = {
       cpu_used_pct: latest.cpuUsedPct,
       memory_used_bytes: latest.memUsed,
@@ -42,6 +48,9 @@ export async function sampleAttachmentFailureMetrics(
     };
     return {
       metrics_status: "available",
+      ...(Number.isSafeInteger(sampleAgeMs) && {
+        metrics_sample_age_ms: sampleAgeMs,
+      }),
       ...Object.fromEntries(
         Object.entries(fields).filter(
           ([, value]) =>
