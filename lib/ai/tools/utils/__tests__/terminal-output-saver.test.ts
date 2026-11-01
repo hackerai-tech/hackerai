@@ -285,22 +285,42 @@ describe("saveFullOutputToFile", () => {
     jest.useRealTimers();
   });
 
-  it("fails closed on remote clients without private stdin transport", async () => {
-    const sandbox = createSandbox({ sandboxKind: "centrifugo" });
-    sandbox.supportsCommandStdin = () => false;
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    try {
-      await expect(
-        saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
-      ).resolves.toBeNull();
-      expect(sandbox.files.write).not.toHaveBeenCalled();
-      expect(sandbox.commands.run).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-      eventSpy.mockRestore();
-    }
-  });
+  it.each([
+    [undefined, "unsupported_client"],
+    [false, "private_storage_unavailable"],
+  ] as const)(
+    "fails closed with capability %s and reports %s",
+    async (commandStdin, category) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo" }),
+        getConnectionInfo: () => ({ capabilities: { commandStdin } }),
+      };
+      sandbox.supportsCommandStdin = () => false;
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const eventSpy = jest
+        .spyOn(phLogger, "event")
+        .mockImplementation(() => {});
+      try {
+        await expect(
+          saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
+        ).resolves.toBeNull();
+        expect(sandbox.files.write).not.toHaveBeenCalled();
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+        expect(eventSpy).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            failure_category: category,
+            retry_decision: "not_retryable",
+            attempt_count: 1,
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+        eventSpy.mockRestore();
+      }
+    },
+  );
 
   it("retries one transient desktop relay failure and records recovery", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));

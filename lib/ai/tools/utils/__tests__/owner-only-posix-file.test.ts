@@ -1,5 +1,6 @@
 import {
   mkdir,
+  mkdtemp,
   readFile,
   rm,
   stat,
@@ -7,7 +8,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
+import { preparePrivateArtifactStorage } from "@/packages/local/src/private-artifact-hardening";
+import { classifyPersistenceFailure } from "../persistence-failure";
 import {
   readOwnerOnlyPosixFile,
   writeOwnerOnlyPosixFile,
@@ -71,6 +75,52 @@ describe("owner-only POSIX terminal artifacts", () => {
     } as any;
     return { root, directory, filePath, sandbox, commands };
   };
+
+  it("reports failed current-client storage preparation without suggesting an upgrade", async () => {
+    const base = await mkdtemp(
+      path.join(os.tmpdir(), "hackerai-storage-readiness-"),
+    );
+    roots.push(base);
+    const storageRoot = path.join(base, "records");
+    const outside = path.join(base, "outside");
+    await mkdir(outside, { mode: 0o755 });
+    await symlink(outside, storageRoot);
+    await symlink(outside, `${storageRoot}-uid-${process.getuid!()}`);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const storage = await preparePrivateArtifactStorage([storageRoot]);
+      expect(storage.ready).toBe(false);
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      sandbox.supportsCommandStdin = () => storage.ready;
+      sandbox.getConnectionInfo = () => ({
+        capabilities: { commandStdin: storage.ready },
+      });
+      const error = await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "private output",
+      ).then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+      expect(classifyPersistenceFailure(error)).toBe(
+        "private_storage_unavailable",
+      );
+      expect(error).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("startup storage diagnostics"),
+        }),
+      );
+      expect(commands.run).not.toHaveBeenCalled();
+      expect(await mode(outside)).toBe(0o755);
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   it.each(["append", "commit"])(
     "verifies a completed %s after a lost reply without replaying it",

@@ -9,6 +9,7 @@ export type PersistenceFailureCategory =
   | "filesystem"
   | "unknown"
   | "unsupported_client"
+  | "private_storage_unavailable"
   | "shell_syntax"
   | "missing_utility"
   | "read_only_filesystem"
