@@ -51,7 +51,10 @@ import {
 } from "@/packages/local/src/centrifugo-transport";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
-import { buildPosixCurlUploadCommand } from "./sandbox-upload-diagnostics";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
 import {
   LocalCommandRelayUnsubscribedError,
@@ -2965,6 +2968,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
               platform: this.isWindows() ? "windows" : "posix",
               http_client: httpClient,
+              ...(!this.isWindows() && httpClient === "curl"
+                ? getUploadFailureDiagnostics(uploadUrl, result.stderr)
+                : {}),
               exit_code: Number.isSafeInteger(result.exitCode)
                 ? result.exitCode
                 : null,

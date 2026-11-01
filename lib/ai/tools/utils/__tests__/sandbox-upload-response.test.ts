@@ -6,6 +6,7 @@ import {
   readdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -85,6 +86,30 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
       (error: { stdout: string; stderr: string; code: number }) => error,
     );
   }
+
+  it("does not create response storage when cleanup is unavailable", async () => {
+    const bin = path.join(directory, "bin");
+    await mkdir(bin);
+    for (const tool of ["curl", "mktemp", "head", "sed", "cat"]) {
+      const { stdout } = await run("/bin/sh", ["-c", `command -v ${tool}`], {
+        env: { PATH: "/usr/bin:/bin" },
+      });
+      await symlink(stdout.trim(), path.join(bin, tool));
+    }
+    status = 403;
+    body = "<Code>AccessDenied</Code><Message>PRIVATE</Message>";
+    const result = await upload(directory, source, { path: bin });
+    expect(result.code).toBe(22);
+    expect(result.stderr).not.toMatch(/PRIVATE|command not found/);
+    expect(getUploadFailureDiagnostics(endpoint, result.stderr)).toMatchObject({
+      upload_reported_http_status: 403,
+      upload_storage_diagnostic_present: false,
+    });
+    expect((await readdir(directory)).sort()).toEqual(
+      ["bin", path.basename(source)].sort(),
+    );
+    expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+  });
 
   it.each([
     ["SignatureDoesNotMatch", "SignatureDoesNotMatch"],

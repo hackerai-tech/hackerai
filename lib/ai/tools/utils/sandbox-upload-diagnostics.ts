@@ -40,7 +40,7 @@ case "$(command -v curl)" in
     exit $?
     ;;
 esac
-if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1; then
+if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1 || ! command -v rm >/dev/null 2>&1; then
   ${ordinaryUpload}
   exit $?
 fi
