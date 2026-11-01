@@ -47,5 +47,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify real Windows file metadata commands
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts --runInBand --ci
+      - name: Verify native Windows file paths
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
       - name: Verify Windows shell discovery
         run: pnpm exec jest packages/local/src/__tests__/windows-shell-discovery.test.ts --runInBand --ci
