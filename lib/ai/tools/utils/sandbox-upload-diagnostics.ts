@@ -44,14 +44,15 @@ if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head 
   ${ordinaryUpload}
   exit $?
 fi
+response_file=
+trap 'if [ -n "$response_file" ]; then rm -f -- "$response_file"; fi' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 response_file=$(umask 077; mktemp "\${TMPDIR:-/tmp}/hackerai-upload-response.XXXXXXXX" 2>/dev/null) || {
   ${ordinaryUpload}
   exit $?
 }
-trap 'rm -f -- "$response_file"' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
 curl_result=$(
   {
     {
