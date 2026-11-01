@@ -285,22 +285,42 @@ describe("saveFullOutputToFile", () => {
     jest.useRealTimers();
   });
 
-  it("fails closed on remote clients without private stdin transport", async () => {
-    const sandbox = createSandbox({ sandboxKind: "centrifugo" });
-    sandbox.supportsCommandStdin = () => false;
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    try {
-      await expect(
-        saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
-      ).resolves.toBeNull();
-      expect(sandbox.files.write).not.toHaveBeenCalled();
-      expect(sandbox.commands.run).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-      eventSpy.mockRestore();
-    }
-  });
+  it.each([
+    [undefined, "unsupported_client"],
+    [false, "private_storage_unavailable"],
+  ] as const)(
+    "fails closed with capability %s and reports %s",
+    async (commandStdin, category) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo" }),
+        getConnectionInfo: () => ({ capabilities: { commandStdin } }),
+      };
+      sandbox.supportsCommandStdin = () => false;
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const eventSpy = jest
+        .spyOn(phLogger, "event")
+        .mockImplementation(() => {});
+      try {
+        await expect(
+          saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
+        ).resolves.toBeNull();
+        expect(sandbox.files.write).not.toHaveBeenCalled();
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+        expect(eventSpy).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            failure_category: category,
+            retry_decision: "not_retryable",
+            attempt_count: 1,
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+        eventSpy.mockRestore();
+      }
+    },
+  );
 
   it("retries one transient desktop relay failure and records recovery", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
@@ -544,13 +564,21 @@ describe("saveFullOutputToFile", () => {
     warnSpy.mockRestore();
   });
 
-  it.each([true, false])(
-    "explains unavailable private storage (Desktop=%s) without unsafe fallback",
-    async (isDesktop) => {
+  it.each([
+    [true, undefined],
+    [false, undefined],
+    [true, false],
+    [false, false],
+  ])(
+    "explains unavailable private storage (Desktop=%s, commandStdin=%s) without unsafe fallback",
+    async (isDesktop, commandStdin) => {
       const sandbox = {
         ...createSandbox({ sandboxKind: "centrifugo" }),
         supportsCommandStdin: () => false,
-        getConnectionInfo: () => ({ isDesktop }),
+        getConnectionInfo: () => ({
+          isDesktop,
+          capabilities: { commandStdin },
+        }),
       };
       const terminalWriter = jest.fn(async () => undefined);
       const message = await saveTruncatedOutput({
@@ -562,10 +590,18 @@ describe("saveFullOutputToFile", () => {
         terminalWriter,
       });
       expect(message).toContain(
-        isDesktop
-          ? "restart or update the Desktop app"
-          : "private-storage startup error",
+        commandStdin === false
+          ? "startup storage diagnostics"
+          : isDesktop
+            ? "restart or update the Desktop app"
+            : "private-storage startup error",
       );
+      if (commandStdin === false) {
+        expect(message).not.toMatch(/up-to-date|update/);
+        expect(message).toContain(
+          "resolve the reported ownership or filesystem problem",
+        );
+      }
       expect(message).toContain("Do not rerun the original command unchanged");
       expect(terminalWriter).toHaveBeenCalledWith(message);
       expect(sandbox.commands.run).not.toHaveBeenCalled();
