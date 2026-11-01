@@ -270,6 +270,7 @@ jest.mock("../ChatInput", () => ({
   ChatInput: ({ onSubmit, goalPanel }: any) => (
     <div data-testid="chat-input">
       ChatInput{goalPanel?.("attached")}
+      <textarea aria-label="Test draft" />
       <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
         Submit test message
       </button>
@@ -502,6 +503,7 @@ describe("Chat Component Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    require("@/hooks/use-mobile").useIsMobile.mockReturnValue(false);
     mockBranchChat.mockReset();
     mockUseAuth.mockReturnValue(defaultAuth);
     global.fetch = originalFetch;
@@ -552,6 +554,42 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("preserves live draft and focus across folding and the first message", () => {
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      const input = screen.getByRole("textbox", { name: "Test draft" });
+      fireEvent.change(input, { target: { value: "Unsaved fold draft" } });
+      input.focus();
+      const { useIsMobile } = require("@/hooks/use-mobile");
+      for (const mobile of [true, false, true]) {
+        useIsMobile.mockReturnValue(mobile);
+        rerender(view());
+        expect(screen.getByRole("textbox", { name: "Test draft" })).toHaveValue(
+          "Unsaved fold draft",
+        );
+        expect(input).toHaveFocus();
+      }
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        messages: [
+          {
+            id: "first-message",
+            role: "user",
+            parts: [{ type: "text", text: "Hello" }],
+          },
+        ],
+      });
+      rerender(view());
+      expect(screen.getByRole("textbox", { name: "Test draft" })).toHaveValue(
+        "Unsaved fold draft",
+      );
+      expect(input).toHaveFocus();
+    });
+
     it.each([
       [
         new ConvexError({ code: "BRANCH_HISTORY_TOO_LARGE" }),

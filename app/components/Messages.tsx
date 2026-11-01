@@ -873,7 +873,7 @@ export const Messages = ({
               : undefined
           }
           className={cn(
-            `mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`,
+            `mx-auto w-full max-w-full sm:max-w-[768px] ${rowClassName}`,
             row.kind === "message" &&
               row.message.id === sourceMessageId &&
               "source-message-highlight",
@@ -943,7 +943,7 @@ export const Messages = ({
     shouldShowLoadingDots ||
     (error && finishReason !== "timeout") ? (
       <div
-        className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px] sm:min-w-[390px]"
+        className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px]"
         data-testid="messages-timeline-footer"
       >
         {showSummarizationSeparately && (
