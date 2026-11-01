@@ -564,13 +564,21 @@ describe("saveFullOutputToFile", () => {
     warnSpy.mockRestore();
   });
 
-  it.each([true, false])(
-    "explains unavailable private storage (Desktop=%s) without unsafe fallback",
-    async (isDesktop) => {
+  it.each([
+    [true, undefined],
+    [false, undefined],
+    [true, false],
+    [false, false],
+  ])(
+    "explains unavailable private storage (Desktop=%s, commandStdin=%s) without unsafe fallback",
+    async (isDesktop, commandStdin) => {
       const sandbox = {
         ...createSandbox({ sandboxKind: "centrifugo" }),
         supportsCommandStdin: () => false,
-        getConnectionInfo: () => ({ isDesktop }),
+        getConnectionInfo: () => ({
+          isDesktop,
+          capabilities: { commandStdin },
+        }),
       };
       const terminalWriter = jest.fn(async () => undefined);
       const message = await saveTruncatedOutput({
@@ -582,10 +590,18 @@ describe("saveFullOutputToFile", () => {
         terminalWriter,
       });
       expect(message).toContain(
-        isDesktop
-          ? "restart or update the Desktop app"
-          : "private-storage startup error",
+        commandStdin === false
+          ? "startup storage diagnostics"
+          : isDesktop
+            ? "restart or update the Desktop app"
+            : "private-storage startup error",
       );
+      if (commandStdin === false) {
+        expect(message).not.toMatch(/up-to-date|update/);
+        expect(message).toContain(
+          "resolve the reported ownership or filesystem problem",
+        );
+      }
       expect(message).toContain("Do not rerun the original command unchanged");
       expect(terminalWriter).toHaveBeenCalledWith(message);
       expect(sandbox.commands.run).not.toHaveBeenCalled();

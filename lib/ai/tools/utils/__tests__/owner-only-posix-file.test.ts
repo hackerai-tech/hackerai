@@ -84,6 +84,7 @@ describe("owner-only POSIX terminal artifacts", () => {
     const storageRoot = path.join(base, "records");
     const outside = path.join(base, "outside");
     await mkdir(outside, { mode: 0o755 });
+    const initialMode = await mode(outside);
     await symlink(outside, storageRoot);
     await symlink(outside, `${storageRoot}-uid-${process.getuid!()}`);
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -115,7 +116,7 @@ describe("owner-only POSIX terminal artifacts", () => {
         }),
       );
       expect(commands.run).not.toHaveBeenCalled();
-      expect(await mode(outside)).toBe(0o755);
+      expect(await mode(outside)).toBe(initialMode);
       await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       warn.mockRestore();

@@ -430,9 +430,11 @@ export async function saveTruncatedOutput(opts: {
       isCentrifugoSandbox(sandbox) &&
       sandbox.supportsCommandStdin?.() === false;
     const recovery = missingPrivateTransport
-      ? sandbox.getConnectionInfo?.()?.isDesktop
-        ? "\n[Desktop file access is unavailable. Ask the user to restart or update the Desktop app and reconnect this computer. Do not work around the private-storage guard.]"
-        : "\n[The local client has not enabled private artifact storage. Ask the user to reconnect an up-to-date local client; if it persists, check the local client's private-storage startup error. Do not bypass the ownership checks.]"
+      ? sandbox.getConnectionInfo?.()?.capabilities?.commandStdin === false
+        ? "\n[Private artifact storage preparation failed. Check the local client's startup storage diagnostics, resolve the reported ownership or filesystem problem, then restart and reconnect the client. Do not use sudo or remove another user's files to bypass the checks.]"
+        : sandbox.getConnectionInfo?.()?.isDesktop
+          ? "\n[Desktop file access is unavailable. Ask the user to restart or update the Desktop app and reconnect this computer. Do not work around the private-storage guard.]"
+          : "\n[The local client has not enabled private artifact storage. Ask the user to reconnect an up-to-date local client; if it persists, check the local client's private-storage startup error. Do not bypass the ownership checks.]"
       : "";
     const message = FULL_OUTPUT_SAVE_FAILED_MESSAGE + recovery;
     await terminalWriter(message);
