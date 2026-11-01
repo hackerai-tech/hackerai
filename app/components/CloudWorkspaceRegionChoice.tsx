@@ -130,7 +130,7 @@ export function CloudWorkspaceRegionChoice({
       if (id && previous.status !== "selection_required") return;
       managing.current = id ? false : showChoices;
       busyRef.current = true;
-      setBusy(true);
+      if (!automatic) setBusy(true);
       setNotice(null);
       if (!automatic) autoChecks.current = 0;
       const current = ++generation.current;
@@ -286,16 +286,19 @@ export function CloudWorkspaceRegionChoice({
       ref={cardRef}
       tabIndex={-1}
       role="group"
-      aria-labelledby={titleId}
+      aria-labelledby={manage ? undefined : titleId}
+      aria-label={manage ? "Cloud workspace status" : undefined}
       className={
-        manage ? "w-full text-sm" : "w-full rounded-lg border p-3 text-sm"
+        manage ? "mt-4 w-full text-sm" : "w-full rounded-lg border p-3 text-sm"
       }
     >
-      <p id={titleId} className="font-medium">
-        {view.status === "selection_required"
-          ? "Choose your cloud workspace"
-          : "Cloud workspace"}
-      </p>
+      {!manage && (
+        <p id={titleId} className="font-medium">
+          {view.status === "selection_required"
+            ? "Choose your cloud workspace"
+            : "Cloud workspace"}
+        </p>
+      )}
       {view.status === "selection_required" && (
         <>
           <p className="mt-1 text-muted-foreground">
@@ -345,12 +348,6 @@ export function CloudWorkspaceRegionChoice({
             files.
           </p>
         </>
-      )}
-      {view.status !== "empty" && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          All saved workspaces and files stay where they are. Switching does not
-          move, merge, or delete files.
-        </p>
       )}
       <div role="status">
         {(busy || view.status === "loading") && (
@@ -404,6 +401,12 @@ export function CloudWorkspaceRegionChoice({
           {notice}
         </p>
       )}
+      {view.status !== "empty" && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          All saved workspaces and files stay where they are. Switching does not
+          move, merge, or delete files.
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap gap-2">
         {view.status === "selection_required" && (
           <Button
@@ -420,6 +423,7 @@ export function CloudWorkspaceRegionChoice({
             ref={retryRef}
             size="sm"
             className="min-h-11"
+            disabled={busy}
             onClick={onRetry}
           >
             Retry

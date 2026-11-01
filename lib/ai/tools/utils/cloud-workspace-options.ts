@@ -43,6 +43,7 @@ export class WorkspaceOptionsChanged extends Error {}
 const isRegion = (value: unknown): value is TriggerRunRegion =>
   value === "us-east-1" || value === "us-west-2" || value === "eu-central-1";
 
+/** Read an owner-scoped, complete inventory without waking disks or clearing fences. */
 async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
   const redis = createRedisClient();
   const secret = process.env.CONVEX_SERVICE_ROLE_KEY;
@@ -162,6 +163,7 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
   });
 }
 
+/** Normal reads confirm the saved identity; management reads require an idle account. */
 export async function workspaceOptions(
   userId: string,
   manage = false,

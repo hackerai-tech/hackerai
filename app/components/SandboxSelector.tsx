@@ -562,7 +562,8 @@ export function SandboxSelector({
       </PopoverContent>
       <Dialog open={manageOpen} onOpenChange={setManageOpen}>
         <DialogContent
-          className="max-h-[85dvh] overflow-y-auto p-4 sm:p-6"
+          data-chat-input-agent-menu
+          className="max-h-[85dvh] overflow-y-auto p-4 sm:p-6 [&>[data-slot=dialog-close]]:top-1 [&>[data-slot=dialog-close]]:right-1 [&>[data-slot=dialog-close]]:flex [&>[data-slot=dialog-close]]:size-11 [&>[data-slot=dialog-close]]:items-center [&>[data-slot=dialog-close]]:justify-center"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             triggerRef.current?.focus();
