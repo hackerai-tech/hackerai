@@ -63,6 +63,7 @@ export async function resolveCloudWorkspaceRegion({
   const reportOperationFailure = (
     phase:
       | "workspace_state_read"
+      | "workspace_creation_reconcile"
       | "recovery_evidence_read"
       | "region_binding_read"
       | "inventory_sdk_load"
@@ -136,7 +137,7 @@ export async function resolveCloudWorkspaceRegion({
   if (workspace?.phase === "provisioning") {
     if (workspace.step === "reserved") return workspace.region;
     const creating = workspace;
-    workspace = await observeOperation("workspace_state_read", () =>
+    workspace = await observeOperation("workspace_creation_reconcile", () =>
       reconcileWorkspaceCreation(userId, creating, signal),
     );
   }
