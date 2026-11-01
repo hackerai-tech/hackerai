@@ -187,13 +187,13 @@ posixDescribe(
       jest.clearAllMocks();
     });
 
-    function adapter() {
+    function adapter(isDesktop = true) {
       const sandbox = new CentrifugoSandbox(
         "fixture",
         {
           connectionId: "fixture",
           name: "fixture",
-          isDesktop: true,
+          isDesktop,
           capabilities: { commands: true, files: true },
           osInfo: {
             platform: "darwin",
@@ -254,6 +254,25 @@ posixDescribe(
       ).rejects.toThrow("403");
       expect(statuses).toEqual([200, 403]);
     });
+
+    it.each(["copy", "write"])(
+      "prepares a literal-backslash POSIX filename through %s",
+      async (operation) => {
+        const source = join(directory, "source.txt");
+        const destination = join(directory, "prefix\\report.txt");
+        writeFileSync(source, "fixture");
+        // This is a file, not the destination's parent directory.
+        writeFileSync(join(directory, "prefix"), "preserve");
+        const sandbox = adapter(false);
+        if (operation === "copy")
+          await sandbox.files.copyLocal(source, destination);
+        else await sandbox.files.write(destination, "fixture");
+        expect(readFileSync(destination, "utf8")).toBe("fixture");
+        expect(readFileSync(join(directory, "prefix"), "utf8")).toBe(
+          "preserve",
+        );
+      },
+    );
 
     it.each(["different size", "same size"])(
       "uploads the exact POSIX filename with a backslash when a %s sibling exists",
