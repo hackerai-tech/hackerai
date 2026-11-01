@@ -289,6 +289,22 @@ describe("generated artifact delivery over HTTP", () => {
     expect(sandbox.commands.run).not.toHaveBeenCalled();
     expect(runMutation).not.toHaveBeenCalled();
     expect(context.fileAccumulator.add).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "agent_file_transfer_attempt_failed",
+      {
+        userId: "test-user",
+        chat_id: "chat-fixture",
+        trigger_run_id: null,
+        transfer_attempt_diagnostic_version: 1,
+        transfer_attempt_kind: "native",
+        sandbox_type: "desktop",
+        transfer_exit_code: null,
+        upload_reported_http_status: null,
+        upload_signature_age_ms: null,
+        upload_signature_ttl_ms: null,
+        upload_signature_remaining_ms: null,
+      },
+    );
     expect(phLogger.event).toHaveBeenLastCalledWith(
       "agent_file_delivery_completed",
       expect.objectContaining({
