@@ -95,7 +95,7 @@ const ChatInputLoadingState = ({
     data-testid="chat-input-loading-state"
     role="status"
   >
-    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+    <div className="mx-auto w-full min-w-0 max-w-full sm:max-w-[768px]">
       <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto bg-background">
         {topNotice}
       </div>
@@ -937,7 +937,7 @@ const ChatInputContent = ({
     >
       <div
         ref={chatInputContainerRef}
-        className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
         {/* Panels keep their content height and scroll as a stack instead of
@@ -1088,7 +1088,7 @@ const ChatInputContent = ({
           />
         ) : (
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onFocusCapture={() => setComposerFocused(true)}

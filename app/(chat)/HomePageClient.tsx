@@ -74,15 +74,15 @@ const UnauthenticatedContent = () => {
         <Header />
       </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
         {/* Centered content area */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-[15vh] pb-[18vh] min-h-0">
+        <div className="flex-1 flex flex-col items-center justify-center-safe px-4 py-6 sm:px-6 sm:py-10 [@media(max-height:500px)]:py-2">
           {/* Title */}
           <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
-            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
+            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl [@media(max-height:500px)]:text-3xl">
               What will you hack today?
             </h1>
-            <p className="text-muted-foreground text-lg leading-tight md:text-xl">
+            <p className="text-muted-foreground text-lg leading-tight md:text-xl [@media(max-height:500px)]:text-base">
               Find and fix vulnerabilities by working with AI.
             </p>
           </div>
