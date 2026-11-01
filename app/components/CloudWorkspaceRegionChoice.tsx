@@ -182,8 +182,7 @@ export function CloudWorkspaceRegionChoice({
       {view.status === "unconfirmed" && !busy && (
         <p role="alert" className="mt-2 text-destructive">
           We couldn’t confirm your workspace selection. Check status to try
-          again. If this continues, contact support for help reconnecting to
-          your workspace.
+          again. If this continues, contact support.
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
