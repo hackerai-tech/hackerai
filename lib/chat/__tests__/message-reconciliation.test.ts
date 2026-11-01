@@ -1,5 +1,6 @@
 import {
   areMessagesEquivalentForConvexSync,
+  mergePersistedGoalMessages,
   arePersistedMessagesAtLeastAsComplete,
 } from "../message-reconciliation";
 import type { ChatMessage } from "@/types";
@@ -15,6 +16,19 @@ const createAssistantMessage = (
 });
 
 describe("areMessagesEquivalentForConvexSync", () => {
+  it("applies a goal completion receipt after the answer already rendered", () => {
+    const current = createAssistantMessage("Done");
+    const persisted = {
+      ...current,
+      metadata: { goal: { achievedElapsedMs: 52000 } },
+    };
+    expect(areMessagesEquivalentForConvexSync([current], [persisted])).toBe(
+      false,
+    );
+    expect(
+      areMessagesEquivalentForConvexSync([persisted], [{ ...persisted }]),
+    ).toBe(true);
+  });
   it("detects completed text when the message ID and part count are unchanged", () => {
     const current = [createAssistantMessage("The latest")];
     const persisted = [
@@ -207,4 +221,41 @@ describe("arePersistedMessagesAtLeastAsComplete", () => {
       false,
     );
   });
+});
+
+it("shows a saved continuation and receipt without regressing earlier streamed text", () => {
+  const local = createAssistantMessage("Full first response", {
+    metadata: { mode: "agent" },
+  });
+  const saved = createAssistantMessage("Full first", {
+    metadata: { goal: { achievedElapsedMs: 52000 } },
+  });
+  const continuation = createAssistantMessage("Second work slice", {
+    id: "assistant-2",
+  });
+  const merged = mergePersistedGoalMessages([local], [saved, continuation]);
+  expect(merged).toHaveLength(2);
+  expect(merged[0].parts).toEqual(local.parts);
+  expect(merged[0].metadata).toMatchObject({
+    mode: "agent",
+    goal: { achievedElapsedMs: 52000 },
+  });
+  expect(merged[1]).toEqual(continuation);
+});
+
+it("places delayed saved continuations before later local user turns", () => {
+  const local = createAssistantMessage("Full first response");
+  const saved = createAssistantMessage("Full first");
+  const user = createAssistantMessage("A later user turn", {
+    id: "user-2",
+    role: "user",
+  });
+  const continuation = createAssistantMessage("Second work slice", {
+    id: "assistant-2",
+  });
+  const merged = mergePersistedGoalMessages(
+    [local, user],
+    [saved, continuation, user],
+  );
+  expect(merged).toEqual([local, continuation, user]);
 });

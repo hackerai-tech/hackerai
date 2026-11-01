@@ -102,6 +102,8 @@ function fixture(
 ) {
   const ordinaryFailure = new Error("ordinary failure handler reached");
   const dependencies = {
+    goalFailed: false,
+    goalUsageExhausted: false,
     triggerSignal,
     runReporting: { fail: jest.fn() },
     isHandledUserRateLimitError: () => false,
