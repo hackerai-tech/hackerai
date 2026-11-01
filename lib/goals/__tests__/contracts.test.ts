@@ -135,6 +135,13 @@ describe("goal completion and limits", () => {
 });
 
 describe("goal commands and contract validation", () => {
+  it("preserves a capitalized Start as part of the objective", () => {
+    expect(parseGoalCommand("/goal Start the server")).toMatchObject({
+      action: "start",
+      objective: "Start the server",
+      criteria: ["Start the server"],
+    });
+  });
   it("parses a completion contract without sending control commands as prompts", () => {
     expect(parseGoalCommand("/goal")).toEqual({ action: "status" });
     expect(parseGoalCommand("/goal pause")).toEqual({ action: "pause" });

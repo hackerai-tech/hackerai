@@ -32,7 +32,7 @@ export function parseGoalCommand(text: string): GoalCommand | null {
   const contract: GoalContract = {};
   const headline: string[] = [],
     criteria: string[] = [];
-  for (const line of content.replace(/^(?:--|start)\s+/i, "").split("\n")) {
+  for (const line of content.replace(/^(?:--|start)\s+/, "").split("\n")) {
     const field = line
       .trim()
       .match(
