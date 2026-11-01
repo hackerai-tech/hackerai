@@ -106,6 +106,7 @@ export function CloudWorkspaceRegionChoice({
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [browsing, setBrowsing] = useState(manage);
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
   const controller = useRef<AbortController | null>(null);
@@ -130,6 +131,7 @@ export function CloudWorkspaceRegionChoice({
       const previous = viewRef.current;
       if (id && previous.status !== "selection_required") return;
       managing.current = id ? false : showChoices;
+      setBrowsing(managing.current);
       busyRef.current = true;
       setChecking(true);
       if (!automatic) setBusy(true);
@@ -138,6 +140,7 @@ export function CloudWorkspaceRegionChoice({
       const current = ++generation.current;
       const signal = () =>
         AbortSignal.any([active.signal, AbortSignal.timeout(20_000)]);
+      let optionsReadyWithFocus = false;
       try {
         let next: CloudWorkspaceOptions;
         if (id && previous.status === "selection_required") {
@@ -166,8 +169,15 @@ export function CloudWorkspaceRegionChoice({
             window.dispatchEvent(new Event(changedEvent));
           }
         } else next = await request(signal(), showChoices);
-        if (!active.signal.aborted && current === generation.current)
+        if (!active.signal.aborted && current === generation.current) {
+          optionsReadyWithFocus =
+            automatic &&
+            previous.status === "waiting" &&
+            (next.status === "selection_required" ||
+              next.status === "selected") &&
+            !!cardRef.current?.contains(document.activeElement);
           apply(next);
+        }
       } catch {
         if (!active.signal.aborted && current === generation.current) {
           apply({ status: "unavailable" });
@@ -179,7 +189,7 @@ export function CloudWorkspaceRegionChoice({
       } finally {
         busyRef.current = false;
         if (!active.signal.aborted && current === generation.current) {
-          focusAfterAction.current = !automatic;
+          focusAfterAction.current = !automatic || optionsReadyWithFocus;
           setBusy(false);
           setChecking(false);
         }
@@ -306,8 +316,8 @@ export function CloudWorkspaceRegionChoice({
       {view.status === "selection_required" && (
         <>
           <p className="mt-1 text-muted-foreground">
-            Choose which workspace future cloud tasks use. You can switch again
-            when your tasks and connections have finished.
+            {!manage && "Choose which workspace future cloud tasks use. "}You
+            can switch again when your tasks and connections have finished.
           </p>
           <fieldset
             disabled={busy}
@@ -354,6 +364,9 @@ export function CloudWorkspaceRegionChoice({
         </>
       )}
       <div role="status">
+        {!busy && view.status === "selection_required" && (
+          <span className="sr-only">Workspace choices are ready.</span>
+        )}
         {(busy || view.status === "loading") && (
           <p className="mt-2">Checking your workspaces…</p>
         )}
@@ -385,7 +398,9 @@ export function CloudWorkspaceRegionChoice({
               ? "An earlier workspace setup hasn’t been confirmed yet."
               : view.reason === "recovery"
                 ? "Your workspace is protected while its recovery status is checked. Select Cloud in chat to review recovery options."
-                : "Your workspace identity needs verification before it can be changed."}{" "}
+                : view.reason === "cleanup"
+                  ? "Workspace cleanup status must be verified before another workspace can be selected."
+                  : "Your workspace identity needs verification before it can be changed."}{" "}
             Check status to try again. If this continues,{" "}
             <a href="mailto:contact@hackerai.co" className="underline">
               contact support
@@ -412,6 +427,20 @@ export function CloudWorkspaceRegionChoice({
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
+        {onRetry &&
+          browsing &&
+          view.status !== "selected" &&
+          view.status !== "loading" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11"
+              disabled={checking}
+              onClick={() => void act(undefined, false)}
+            >
+              Keep current workspace
+            </Button>
+          )}
         {view.status === "selection_required" && (
           <Button
             size="sm"

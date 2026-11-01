@@ -569,7 +569,7 @@ export function SandboxSelector({
             triggerRef.current?.focus();
           }}
         >
-          <DialogHeader className="text-left">
+          <DialogHeader className="pr-8 text-left">
             <DialogTitle>Cloud workspaces</DialogTitle>
             <DialogDescription>
               Choose which saved workspace future cloud tasks use.

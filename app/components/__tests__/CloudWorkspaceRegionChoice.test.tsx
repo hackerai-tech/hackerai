@@ -165,6 +165,52 @@ it("keeps the requested chooser open through waiting and only rechecks status", 
   expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
   expect(retry).not.toHaveBeenCalled();
 });
+
+it("lets the owner keep the current workspace and regain Retry while switching is waiting", async () => {
+  const selected = { status: "selected", id: "us-one", region: "us-east-1" };
+  fetchMock
+    .mockResolvedValueOnce(response(selected))
+    .mockResolvedValueOnce(
+      response({ status: "waiting", reason: "recent_activity" }),
+    )
+    .mockResolvedValueOnce(response(selected));
+  const retry = jest.fn();
+  render(<CloudWorkspaceRegionChoice onRetry={retry} />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Choose another workspace" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Keep current workspace" }),
+  );
+  expect(await screen.findByRole("button", { name: "Retry" })).toHaveFocus();
+  expect(fetchMock.mock.calls[2][0]).toBe("/api/sandbox/workspaces");
+  expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  expect(retry).not.toHaveBeenCalled();
+});
+
+it("announces available choices and keeps keyboard focus in the card when a wait ends", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ status: "waiting", reason: "active_tasks" }),
+      )
+      .mockResolvedValueOnce(response(options));
+    render(<CloudWorkspaceRegionChoice onRetry={jest.fn()} />);
+    (await screen.findByRole("button", { name: "Check status" })).focus();
+    await act(async () => {
+      jest.advanceTimersByTime(30_000);
+    });
+    expect(
+      await screen.findByRole("group", { name: "Choose your cloud workspace" }),
+    ).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Workspace choices are ready.",
+    );
+  } finally {
+    jest.useRealTimers();
+  }
+});
 it("requires an explicit choice and explicit retry after saving", async () => {
   fetchMock
     .mockResolvedValueOnce(response(options))
