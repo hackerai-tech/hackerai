@@ -31,6 +31,12 @@ export function buildPosixCurlUploadCommand(
   const request = `-X PUT -H ${quote(`Content-Type: ${contentType}`)} --data-binary @${quote(path)} ${quote(url)}`;
   const ordinaryUpload = `curl -fsSL ${request}`;
   return `(
+case "$(command -v curl)" in
+  */snap/bin/curl)
+    ${ordinaryUpload}
+    exit $?
+    ;;
+esac
 if ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1; then
   ${ordinaryUpload}
   exit $?

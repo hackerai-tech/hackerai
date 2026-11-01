@@ -1,6 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -151,6 +158,46 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
     ).toBeNull();
     expect(await readdir(directory)).toEqual([path.basename(source)]);
   });
+
+  it.each([200, 403])(
+    "preserves uploads with confined Snap curl (HTTP %s) without a response file",
+    async (httpStatus) => {
+      const bin = path.join(directory, "snap", "bin");
+      await mkdir(bin, { recursive: true });
+      // Model a curl that cannot write the shell's response path. This is a
+      // boundary fixture, not a real Snap installation on this POSIX host.
+      await writeFile(
+        path.join(bin, "curl"),
+        '#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = "-o" ]; then exit 23; fi\ndone\nexec /usr/bin/curl "$@"\n',
+        { mode: 0o700 },
+      );
+      status = httpStatus;
+      body = httpStatus === 403 ? "<Error>PRIVATE storage body</Error>" : "";
+      const before = (await readdir(directory)).sort();
+      const result = await run(
+        "/bin/bash",
+        ["-c", buildPosixCurlUploadCommand(source, endpoint, "text/plain")],
+        {
+          env: { PATH: `${bin}:/usr/bin:/bin`, TMPDIR: directory },
+          timeout: 5000,
+        },
+      ).then(
+        (result) => ({ ...result, code: 0 }),
+        (error: { stdout: string; stderr: string; code: number }) => error,
+      );
+      expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("PRIVATE");
+      expect(
+        getUploadFailureDiagnostics(endpoint, result.stderr),
+      ).toMatchObject({
+        upload_reported_http_status: httpStatus === 403 ? 403 : null,
+        upload_storage_diagnostic_present: false,
+      });
+      expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+      expect((await readdir(directory)).sort()).toEqual(before);
+    },
+  );
 
   it("removes the private response file when the owned upload is cancelled", async () => {
     status = 403;
