@@ -68,12 +68,17 @@ beforeEach(() => {
             userID: wrongOwner ? "other" : "owner",
             ...(legacyUs && cluster === "us"
               ? {}
-              : { e2bCluster: conflictingCluster ? "other" : cluster }),
+              : {
+                  e2bCluster:
+                    conflictingCluster && cluster === "us" ? "other" : cluster,
+                }),
             template: "terminal-agent-sandbox",
             sandboxVersion: "v12",
           },
         },
-        ...(extraWorkspace ? [{ sandboxId: "extra", state: "paused" }] : []),
+        ...(extraWorkspace && cluster === "us"
+          ? [{ sandboxId: "extra", state: "paused" }]
+          : []),
       ],
     } as never;
   });
@@ -196,8 +201,12 @@ it("allows a legacy US workspace with no cluster tag and preserves both inventor
   expect(Sandbox.kill).not.toHaveBeenCalled();
 });
 it("rejects an explicit conflicting cluster tag on a legacy-compatible inventory", async () => {
+  const choice = await token();
   conflictingCluster = true;
   await expect(workspaceRegionView("owner")).rejects.toThrow();
+  await expect(
+    selectWorkspaceRegion("owner", "us-east-1", choice),
+  ).rejects.toThrow();
   expect(mockEval).not.toHaveBeenCalled();
 });
 it("keeps multiple workspaces in one region with support instead of selecting a file store", async () => {
