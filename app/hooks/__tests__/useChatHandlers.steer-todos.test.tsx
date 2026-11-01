@@ -7,6 +7,11 @@ jest.mock("@/lib/utils/client-token-validation", () => ({
   ...jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
     "@/lib/utils/client-token-validation",
   ),
+  getInputTokenLimitStatus: jest.fn(
+    jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
+      "@/lib/utils/client-token-validation",
+    ).getInputTokenLimitStatus,
+  ),
 }));
 
 const mockCaptureAuthenticatedEvent = jest.fn();
@@ -149,6 +154,15 @@ const messages: ChatMessage[] = [
 describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest
+      .mocked(
+        require("@/lib/utils/client-token-validation").getInputTokenLimitStatus,
+      )
+      .mockImplementation(
+        jest.requireActual<
+          typeof import("@/lib/utils/client-token-validation")
+        >("@/lib/utils/client-token-validation").getInputTokenLimitStatus,
+      );
     mockQueueMessage.mockReset();
     mockQueueMessage.mockReturnValue("queued-1");
     mockInput = "";
@@ -174,6 +188,281 @@ describe("useChatHandlers steer todo handoff", () => {
           }) as Response,
       ),
     });
+  });
+
+  it.each([
+    "/goal pause",
+    "/goal stop",
+    "/goal clear",
+    "A new bounded follow-up",
+  ])("retains the active response before admitting %s", async (input) => {
+    mockInput = input;
+    mockMessageQueue = [];
+    const calls: string[] = [];
+    let finishSave!: (value: null) => void;
+    mockSaveAssistantMessage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    jest.mocked(global.fetch).mockImplementation(async (url, options) => {
+      const path = String(url);
+      if (path.startsWith("/api/agent-goal?"))
+        return {
+          ok: true,
+          json: async () => ({ goal: { generation: 4, activeRunId: "run-1" } }),
+        } as Response;
+      if (path === "/api/agent/cancel")
+        return {
+          ok: true,
+          json: async () => ({ outcome: "canceled", runId: "run-1" }),
+        } as Response;
+      if (path === "/api/agent-goal") {
+        calls.push("goal-control");
+        expect(JSON.parse(String(options?.body))).toMatchObject({
+          generation: 4,
+        });
+        return {
+          ok: true,
+          json: async () => ({
+            state: input === "/goal clear" ? "canceled" : "paused",
+          }),
+        } as Response;
+      }
+      return { ok: true, status: 200 } as Response;
+    });
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "running",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+    let submission!: Promise<boolean>;
+    act(() => {
+      submission = result.current.handleSubmit({
+        preventDefault: jest.fn(),
+      } as any);
+    });
+    await waitFor(() => expect(mockSaveAssistantMessage).toHaveBeenCalled());
+    expect(calls).toEqual([]);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    await act(async () => {
+      finishSave(null);
+      expect(await submission).toBe(true);
+    });
+    expect(calls).toEqual(["goal-control"]);
+    if (input.startsWith("/goal"))
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    else
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ text: input }),
+        expect.anything(),
+      );
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["/goal clear", "Follow-up after failed save"])(
+    "keeps %s when the active response cannot be saved",
+    async (input) => {
+      mockInput = input;
+      mockMessageQueue = [];
+      mockSaveAssistantMessage.mockRejectedValueOnce(
+        new Error("Synthetic partial save failure"),
+      );
+      jest.mocked(global.fetch).mockImplementation(
+        async (url) =>
+          ({
+            ok: true,
+            json: async () =>
+              String(url).startsWith("/api/agent-goal?")
+                ? { goal: { generation: 4, activeRunId: "run-1" } }
+                : { outcome: "canceled" },
+          }) as Response,
+      );
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          goalState: "running",
+          goalGeneration: 4,
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: "run-1" },
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any),
+        ).toBe(false);
+      });
+      expect(fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.anything(),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { generation: 5, activeRunId: "run-1" },
+    { generation: 4, activeRunId: "replacement-run" },
+  ])("rejects a goal control after replacement: %p", async (goal) => {
+    mockInput = "/goal clear";
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ goal }),
+    } as Response);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "running",
+        goalGeneration: 4,
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-1" },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(false);
+    });
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.anything(),
+    );
+    expect(mockClearInput).not.toHaveBeenCalled();
+  });
+
+  it("targets the persisted continuation when the local stream still identifies its predecessor", async () => {
+    mockInput = "/goal pause";
+    jest.mocked(global.fetch).mockImplementation(
+      async (url) =>
+        ({
+          ok: true,
+          json: async () =>
+            String(url).startsWith("/api/agent-goal?")
+              ? { goal: { generation: 4, activeRunId: "successor-run" } }
+              : { state: "paused", outcome: "canceled" },
+        }) as Response,
+    );
+    const activeRunRef = { current: "predecessor-run" };
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "running",
+        goalGeneration: 4,
+        persistedTriggerRunId: "successor-run",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: activeRunRef,
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agent/cancel",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "successor-run",
+        }),
+      }),
+    );
+    expect(mockSaveAssistantMessage).toHaveBeenCalled();
+  });
+
+  it("does not stop or normalize a different run whose start is still pending", async () => {
+    let finishStart!: (response: Response) => void;
+    const controller = new AbortController();
+    jest.mocked(fetch).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+    const stream = fetchAgentLongStream({
+      method: "POST",
+      body: JSON.stringify({ chatId: "chat-1" }),
+      signal: controller.signal,
+    }).catch((error: Error) => error);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "goal-run" },
+      }),
+    );
+    let stopped!: Promise<boolean>;
+    act(() => {
+      stopped = result.current.handleStop({
+        requireSavedResponse: true,
+        expectedTriggerRunId: "goal-run",
+      });
+    });
+    expect(mockStop).not.toHaveBeenCalled();
+    await act(async () => {
+      finishStart({
+        ok: true,
+        json: async () => ({
+          runId: "new-unrelated-run",
+          publicAccessToken: "synthetic",
+        }),
+      } as Response);
+      controller.abort();
+      expect(await stopped).toBe(false);
+    });
+    expect(await stream).toMatchObject({ name: "AbortError" });
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockSaveAssistantMessage).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   const renderSummarySteer = (isSummarizing = true) => {
@@ -1721,6 +2010,200 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSetTodos).not.toHaveBeenCalled();
     expect(mockSetMessages).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("pauses an unclaimed goal before queueing a valid user message", async () => {
+    mockInput = "Please check this first";
+    mockMessageQueue = [];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ goal: { generation: 4 }, state: "paused" }),
+    } as Response);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "queued",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as unknown as React.FormEvent),
+      ).toBe(true);
+    });
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          action: "pause",
+          generation: 4,
+        }),
+      }),
+    );
+    expect(mockQueueMessage).toHaveBeenCalledWith(mockInput, []);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "streaming"] as const)(
+    "does not pause a goal when an oversized message is rejected while %s",
+    async (status) => {
+      mockInput = "Oversized message";
+      mockMessageQueue = [];
+      const validation = await import("@/lib/utils/client-token-validation");
+      jest
+        .mocked(validation.getInputTokenLimitStatus)
+        .mockResolvedValueOnce({ exceedsLimit: true, tokenCount: 999999 });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status,
+          goalState: "running",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as unknown as React.FormEvent),
+        ).toBe(false);
+      });
+      expect(global.fetch).not.toHaveBeenCalledWith(
+        "/api/agent-goal",
+        expect.anything(),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the draft when the saved objective exceeds the input budget", async () => {
+    mockInput = "/goal resume";
+    mockMessageQueue = [];
+    const validation = await import("@/lib/utils/client-token-validation");
+    jest
+      .mocked(validation.getInputTokenLimitStatus)
+      .mockImplementationOnce(async (text) =>
+        text.includes("Updated file goal")
+          ? { exceedsLimit: true, tokenCount: 999999 }
+          : { exceedsLimit: false },
+      );
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        goal: {
+          objective: "Updated file goal",
+          criteria: ["Verify the new file"],
+          sandboxPreference: "e2b",
+          permissionMode: "full_access",
+          selectedModel: "hackerai-standard",
+        },
+      }),
+    } as Response);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    try {
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as unknown as React.FormEvent),
+        ).toBe(false);
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).not.toHaveBeenCalled();
+    } finally {
+      jest.mocked(validation.getInputTokenLimitStatus).mockClear();
+    }
+  });
+
+  it.each(["/goal", "/goal status", "/goal pause", "/goal clear"])(
+    "handles %s in an unsaved chat without a backend request or model run",
+    async (command) => {
+      mockInput = command;
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "new-chat",
+          messages: [],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: false,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as unknown as React.FormEvent);
+      });
+      expect(accepted).toBe(true);
+      expect(mockClearInput).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports failure to goal controls when the partial response could not be saved", async () => {
+    mockSaveAssistantMessage.mockRejectedValueOnce(
+      new Error("Synthetic save failure"),
+    );
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+    let stopped: boolean | undefined;
+    await act(async () => {
+      stopped = await result.current.handleStop({ requireSavedResponse: true });
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalled();
+    expect(stopped).toBe(false);
   });
 });
 
