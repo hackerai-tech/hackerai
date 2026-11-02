@@ -392,7 +392,7 @@ describe("goal controls", () => {
         screen.queryByText("Verification and evidence"),
       ).not.toBeInTheDocument();
       expect(screen.queryByText(/Completion check:/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Marker exists/)).not.toBeInTheDocument();
+      expect(screen.getByText("Marker exists")).toBeVisible();
       expect(screen.queryByText("PRIVATE_EVIDENCE")).not.toBeInTheDocument();
       expect(screen.queryByRole("link")).not.toBeInTheDocument();
       expect(
@@ -456,6 +456,7 @@ describe("goal controls", () => {
       expect(
         screen.queryByText(/Evidence saved, awaiting verification/),
       ).not.toBeInTheDocument();
+      expect(screen.getByText("Marker exists")).toBeVisible();
       expect(screen.getByText(goal.reason)).toBeVisible();
       expect(screen.getByText("Latest progress: Created file")).toBeVisible();
       expect(screen.queryByText(/✓/)).not.toBeInTheDocument();

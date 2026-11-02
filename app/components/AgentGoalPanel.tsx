@@ -39,7 +39,7 @@ import {
   isGoalTimerRunning,
   type GoalTiming,
 } from "@/lib/goals/timing";
-import { type GoalState } from "@/lib/goals/contracts";
+import { defaultGoalCriterion, type GoalState } from "@/lib/goals/contracts";
 import { toast } from "sonner";
 
 const stateLabels: Record<GoalState, string> = {
@@ -407,6 +407,14 @@ export function AgentGoalPanel({
       )}
       {(!isMobile || goal.state === "achieved") && (
         <p className="whitespace-pre-wrap">{goal.objective}</p>
+      )}
+      {(goal.criteria.length !== 1 ||
+        goal.criteria[0] !== defaultGoalCriterion(goal.objective)) && (
+        <ul aria-label="Goal requirements" className="list-disc space-y-1 pl-4">
+          {goal.criteria.map((criterion, i) => (
+            <li key={i}>{criterion}</li>
+          ))}
+        </ul>
       )}
       {goal.state !== "achieved" && <p>{goal.reason}</p>}
       {goal.state !== "achieved" &&
