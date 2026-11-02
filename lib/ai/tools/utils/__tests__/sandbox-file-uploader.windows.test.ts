@@ -9,10 +9,9 @@ import {
   readFileSync,
   rmSync,
   existsSync,
-  mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
 import {
@@ -181,31 +180,13 @@ windowsDescribe("Windows generated-file metadata command", () => {
           };
         });
       const output = "owned UTF-8 \u03bb \u2713\n".repeat(4000);
-      // Legacy Git Bash reports must use the same /tmp -> C:\temp mapping
-      // as native metadata. MSYS's own /tmp points somewhere else.
-      if (legacyPlatform) mkdirSync("C:\\temp", { recursive: true });
-      const aliasDirectory = legacyPlatform
-        ? mkdtempSync("C:\\temp\\hackerai-legacy-platform-")
-        : null;
-      const destination = join(
-        aliasDirectory ?? directory,
-        "Research & Dev",
-        "output.txt",
+      const destination = join(directory, "Research & Dev", "output.txt");
+      await adapter.files.write(destination, output);
+      expect(readFileSync(destination, "utf8")).toBe(output);
+      expect(adapter.commands.run).toHaveBeenCalledWith(
+        "echo $BASH_VERSION",
+        expect.anything(),
       );
-      const input = aliasDirectory
-        ? `/tmp/${basename(aliasDirectory)}/Research & Dev/output.txt`
-        : destination;
-      try {
-        await adapter.files.write(input, output);
-        expect(readFileSync(destination, "utf8")).toBe(output);
-        expect(adapter.commands.run).toHaveBeenCalledWith(
-          "echo $BASH_VERSION",
-          expect.anything(),
-        );
-      } finally {
-        if (aliasDirectory)
-          rmSync(aliasDirectory, { recursive: true, force: true });
-      }
     },
   );
 

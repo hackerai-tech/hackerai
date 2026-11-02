@@ -477,6 +477,32 @@ describe("isSameLocalMachine", () => {
     ).toBe(true);
   });
 
+  it("reconnects a legacy Git Bash report to its normalized Windows identity only on the same host", () => {
+    const previous = makeConnection({
+      ...kaliConnection,
+      isDesktop: true,
+      osInfo: { ...kaliConnection.osInfo!, platform: "mingw64_nt-10.0-22631" },
+    });
+    const replacement = {
+      ...previous,
+      connectionId: "replacement",
+      osInfo: { ...previous.osInfo!, platform: "win32" },
+    };
+    expect(isSameLocalMachine(previous, replacement)).toBe(true);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        osInfo: { ...replacement.osInfo, hostname: "other-host" },
+      }),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        environmentId: "other-machine",
+      }),
+    ).toBe(false);
+  });
+
   it("rejects another host and connections without host identity", () => {
     expect(
       isSameLocalMachine(

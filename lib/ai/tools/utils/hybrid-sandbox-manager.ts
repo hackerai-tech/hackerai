@@ -123,7 +123,8 @@ export function isSameLocalMachine(
   return (
     current.name === candidate.name &&
     current.isDesktop === candidate.isDesktop &&
-    current.osInfo.platform === candidate.osInfo.platform &&
+    normalizeSandboxPlatform(current.osInfo.platform) ===
+      normalizeSandboxPlatform(candidate.osInfo.platform) &&
     current.osInfo.arch === candidate.osInfo.arch &&
     current.osInfo.release === candidate.osInfo.release &&
     current.osInfo.hostname === candidate.osInfo.hostname
