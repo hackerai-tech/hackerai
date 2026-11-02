@@ -518,13 +518,25 @@ it("bounds automatic status checks and resumes safe reads after a manual check",
     jest.useRealTimers();
   }
 });
-it("keeps a hidden recovery response actionable in workspace management", async () => {
-  fetchMock.mockResolvedValue(respond({ status: "hidden" }));
+it.each(["hidden", "recovered"])(
+  "keeps %s recovery actionable in workspace management without a historical success announcement",
+  async (status) => {
+    fetchMock.mockResolvedValue(respond({ status }));
+    render(<CloudWorkspaceRecovery surface="workspace_dialog" />);
+    expect(
+      await screen.findByText(/No recovery action is available yet/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+  },
+);
+
+it("does not claim no recovery is available when the management status read fails", async () => {
+  fetchMock.mockRejectedValue(new Error("offline"));
   render(<CloudWorkspaceRecovery surface="workspace_dialog" />);
+  await screen.findByText(/Workspace status couldn’t be checked/);
   expect(
-    await screen.findByText(/No recovery action is available yet/),
-  ).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Check status" }));
-  await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
-  expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+    screen.queryByText(/No recovery action is available yet/),
+  ).not.toBeInTheDocument();
 });

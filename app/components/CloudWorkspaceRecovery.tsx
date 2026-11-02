@@ -48,9 +48,7 @@ export function CloudWorkspaceRecovery({
   // Announce completion only if this mount actually displayed the incident.
   const hidden =
     view.status === "hidden" ||
-    (view.status === "recovered" &&
-      !observedRecovery &&
-      surface !== "workspace_dialog");
+    (view.status === "recovered" && !observedRecovery);
   const refresh = useCallback(
     async (signal?: AbortSignal, reportError = true) => {
       const generation = ++statusReadGeneration.current;
@@ -205,7 +203,7 @@ export function CloudWorkspaceRecovery({
     >
       <p className="font-medium mb-2">Cloud workspace</p>
       {hidden ? (
-        surface === "workspace_dialog" ? (
+        surface === "workspace_dialog" && !error ? (
           <p role="status">
             {checked
               ? "No recovery action is available yet. Checking status does not restart or change your workspace."

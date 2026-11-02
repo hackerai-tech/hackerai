@@ -176,7 +176,8 @@ export function CloudWorkspaceRegionChoice({
         if (!active.signal.aborted && current === generation.current) {
           optionsReadyWithFocus =
             automatic &&
-            previous.status === "waiting" &&
+            (previous.status === "waiting" ||
+              previous.status === "protected") &&
             (next.status === "selection_required" ||
               next.status === "selected") &&
             !!cardRef.current?.contains(document.activeElement);
@@ -456,12 +457,13 @@ export function CloudWorkspaceRegionChoice({
           {notice}
         </p>
       )}
-      {view.status !== "empty" && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          All saved workspaces and files stay where they are. Switching does not
-          move, merge, or delete files.
-        </p>
-      )}
+      {view.status !== "empty" &&
+        !(view.status === "protected" && view.reason === "recovery") && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            All saved workspaces and files stay where they are. Switching does
+            not move, merge, or delete files.
+          </p>
+        )}
       <div className="mt-3 flex flex-wrap gap-2">
         {onRetry &&
           browsing &&
