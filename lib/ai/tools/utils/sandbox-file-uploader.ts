@@ -443,15 +443,16 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
 }): Promise<void> {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
   const fileName = getFileNameFromPath(sandbox, fullPath);
+  const sandboxType = getSandboxLogFields(sandbox).sandbox_type;
   const reportFailure = (
     kind: GeneratedFileTransferAttemptFailure["transfer_attempt_kind"],
     error: unknown,
     exitCode: number | null = null,
   ) => {
     if (!args.onFailure) return;
+    // A failed diagnostic getter must not hide an uncertain attempt from the
+    // signature refresh decision. Still report it once with an unknown exit.
     try {
-      // Native adapters carry the same bounded command outcome as the fallback.
-      // Keep TLS/read failures distinguishable from HTTP rejections in analytics.
       if (
         exitCode === null &&
         error instanceof Error &&
@@ -460,10 +461,14 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       ) {
         exitCode = error.exitCode;
       }
+    } catch {
+      exitCode = null;
+    }
+    try {
       void Promise.resolve(
         args.onFailure({
           transfer_attempt_kind: kind,
-          sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
+          sandbox_type: sandboxType,
           transfer_exit_code:
             typeof exitCode === "number" &&
             Number.isInteger(exitCode) &&
@@ -607,7 +612,7 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
   recordPhase("file_metadata");
-  const fileSize = await getSandboxFileSize(
+  let fileSize = await getSandboxFileSize(
     sandbox,
     fullPath,
     args.onNativeStatFailure,
@@ -632,66 +637,109 @@ export async function uploadSandboxFileToConvex(args: {
   let uploadUrl: string;
   let s3Key: string;
   let storageLocation: S3StorageLocation;
-  try {
-    recordPhase("upload_url");
-    const generatedUrl = args.storageRegion
-      ? await generateS3UploadUrl(
-          name,
-          mediaType,
-          userId,
-          fileSize,
-          args.storageRegion,
-        )
-      : await generateS3UploadUrl(name, mediaType, userId, fileSize);
-    uploadUrl = generatedUrl.uploadUrl;
-    s3Key = generatedUrl.s3Key;
-    storageLocation = generatedUrl.storageLocation;
-  } catch (error) {
-    logger.error(
-      "sandbox_generated_file_upload_url_failed",
-      error instanceof Error ? error : undefined,
-      {
-        event: "sandbox_generated_file_upload_url_failed",
-        service: "chat-handler",
-        user_id: userId,
-        file_name: name,
-        file_path: fullPath,
-        media_type: mediaType,
-        size_bytes: fileSize,
-        ...getSandboxLogFields(sandbox),
-        error: errorToLog(error),
-      },
-    );
-    throw error;
-  }
+  let refreshedSize = false;
+  while (true) {
+    try {
+      recordPhase("upload_url");
+      const generatedUrl = args.storageRegion
+        ? await generateS3UploadUrl(
+            name,
+            mediaType,
+            userId,
+            fileSize,
+            args.storageRegion,
+          )
+        : await generateS3UploadUrl(name, mediaType, userId, fileSize);
+      uploadUrl = generatedUrl.uploadUrl;
+      s3Key = generatedUrl.s3Key;
+      storageLocation = generatedUrl.storageLocation;
+    } catch (error) {
+      logger.error(
+        "sandbox_generated_file_upload_url_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_upload_url_failed",
+          service: "chat-handler",
+          user_id: userId,
+          file_name: name,
+          file_path: fullPath,
+          media_type: mediaType,
+          size_bytes: fileSize,
+          ...getSandboxLogFields(sandbox),
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
 
-  try {
-    recordPhase("transfer");
-    await uploadGeneratedFileFromSandboxToUrl({
-      sandbox,
-      fullPath,
-      uploadUrl,
-      mediaType,
-      onFailure: args.onTransferAttemptFailure,
-    });
-  } catch (error) {
-    logger.error(
-      "sandbox_generated_file_upload_to_url_failed",
-      error instanceof Error ? error : undefined,
-      {
-        event: "sandbox_generated_file_upload_to_url_failed",
-        service: "chat-handler",
-        user_id: userId,
-        file_name: name,
-        file_path: fullPath,
-        media_type: mediaType,
-        size_bytes: fileSize,
-        s3_key: s3Key,
-        ...getSandboxLogFields(sandbox),
-        error: errorToLog(error),
-      },
-    );
-    throw error;
+    const transferFailures: GeneratedFileTransferAttemptFailure[] = [];
+    try {
+      recordPhase("transfer");
+      await uploadGeneratedFileFromSandboxToUrl({
+        sandbox,
+        fullPath,
+        uploadUrl,
+        mediaType,
+        onFailure: (failure) => {
+          transferFailures.push(failure);
+          return args.onTransferAttemptFailure?.(failure);
+        },
+      });
+      break;
+    } catch (error) {
+      // Content-Length is signed before the sandbox reads the file. A growing
+      // report can invalidate that signature. Re-sign only a confirmed rejection
+      // with a changed size; a TLS/reset failure has an unknown upload outcome.
+      if (
+        !refreshedSize &&
+        transferFailures.length > 0 &&
+        transferFailures.every(
+          (failure) =>
+            failure.upload_reported_http_status === 403 &&
+            failure.upload_reported_storage_code === "SignatureDoesNotMatch",
+        )
+      ) {
+        const latestSize = await getSandboxFileSize(sandbox, fullPath).catch(
+          () => null,
+        );
+        if (latestSize !== null && latestSize !== fileSize) {
+          recordPhase("file_metadata");
+          if (latestSize > MAX_GENERATED_FILE_SIZE_BYTES) {
+            logger.warn("sandbox_generated_file_too_large", {
+              event: "sandbox_generated_file_too_large",
+              service: "chat-handler",
+              user_id: userId,
+              file_name: name,
+              media_type: mediaType,
+              size_bytes: latestSize,
+              limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
+              ...getSandboxLogFields(sandbox),
+            });
+          }
+          assertSandboxFileSizeAllowed(name, latestSize);
+          fileSize = latestSize;
+          refreshedSize = true;
+          continue;
+        }
+      }
+      logger.error(
+        "sandbox_generated_file_upload_to_url_failed",
+        error instanceof Error ? error : undefined,
+        {
+          event: "sandbox_generated_file_upload_to_url_failed",
+          service: "chat-handler",
+          user_id: userId,
+          file_name: name,
+          file_path: fullPath,
+          media_type: mediaType,
+          size_bytes: fileSize,
+          s3_key: s3Key,
+          ...getSandboxLogFields(sandbox),
+          error: errorToLog(error),
+        },
+      );
+      throw error;
+    }
   }
 
   try {
