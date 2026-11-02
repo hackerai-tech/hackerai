@@ -759,10 +759,12 @@ export const useChatHandlers = ({
       }
     }
     const clearSubmittedDraft = () => {
+      const currentFiles = getUploadedFiles();
       if (
         currentChatIdRef.current === chatId &&
         getInput() === submittedInput &&
-        getUploadedFiles() === uploadedFiles
+        (currentFiles === uploadedFiles ||
+          (currentFiles.length === 0 && uploadedFiles.length === 0))
       ) {
         clearInput();
         clearUploadedFiles();

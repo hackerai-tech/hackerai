@@ -2157,6 +2157,21 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(mockSendMessage).toHaveBeenCalledTimes(1);
     },
   );
+  it("clears an admitted goal draft when routing refreshes an empty attachment list", async () => {
+    mockInput = "/goal Write the chosen word";
+    mockMessageQueue = [];
+    mockSendMessage.mockImplementationOnce(async () => {
+      mockUploadedFiles = [];
+    });
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(mockClearInput).toHaveBeenCalled();
+    expect(mockClearUploadedFiles).toHaveBeenCalled();
+  });
   it("fences explicit resume against edits after the saved goal is read", async () => {
     mockInput = "/goal resume";
     mockMessageQueue = [];
