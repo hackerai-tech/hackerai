@@ -111,6 +111,7 @@ export function CloudWorkspaceRegionChoice({
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
   const refreshPending = useRef(false);
+  const recoveryRefreshPending = useRef(false);
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const autoChecks = useRef(0);
@@ -199,7 +200,11 @@ export function CloudWorkspaceRegionChoice({
           setChecking(false);
           if (refreshPending.current) {
             refreshPending.current = false;
+            recoveryRefreshPending.current = false;
             void act(undefined, false);
+          } else if (recoveryRefreshPending.current) {
+            recoveryRefreshPending.current = false;
+            void act(undefined, undefined, true);
           }
         }
       }
@@ -207,7 +212,8 @@ export function CloudWorkspaceRegionChoice({
     [apply, manage, titleId],
   );
   const refreshAfterRecovery = useCallback(() => {
-    void act(undefined, undefined, true);
+    if (busyRef.current) recoveryRefreshPending.current = true;
+    else void act(undefined, undefined, true);
   }, [act]);
   useEffect(() => {
     const active = new AbortController();
