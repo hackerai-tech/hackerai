@@ -28,6 +28,8 @@
     "test": "jest",
     "test:changed": "jest --onlyChanged --runInBand --passWithNoTests && pnpm test:user-research-runner && pnpm test:desktop-qa && pnpm test:diagnostics",
     "test:watch": "jest --watch",
+    "benchmark:prompt-cache": "jest --runInBand lib/ai/__tests__/prompt-cache.test.ts lib/ai/__tests__/openrouter-cache-session.test.ts scripts/__tests__/benchmark-prompt-cache.test.ts",
+    "benchmark:prompt-cache:live": "tsx scripts/benchmark-prompt-cache.ts --live",
     "test:coverage": "jest --coverage",
     "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner && pnpm test:desktop-qa && pnpm test:diagnostics",
     "test:user-research-runner": "node --test .agents/skills/hackerai-user-research/scripts/run-research.test.mjs",

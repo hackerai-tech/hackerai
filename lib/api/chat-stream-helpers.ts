@@ -24,6 +24,7 @@ import type {
   SystemModelMessage,
 } from "ai";
 import { NoSuchModelError } from "ai";
+import { buildPromptCacheOptions } from "@/lib/ai/prompt-cache";
 import type {
   ChatMode,
   ExtraUsageConfig,
@@ -1078,8 +1079,13 @@ export function buildProviderOptions(
       abliteration: {
         reasoningEffort:
           options.selectedModelOverride === "hackerai-max" ? "max" : "high",
+        ...buildPromptCacheOptions(modelName ?? "", options.cacheSessionId)
+          .abliteration,
       },
-    } as Record<"abliteration", { reasoningEffort: "max" | "high" }>;
+    } as Record<
+      "abliteration",
+      { reasoningEffort: "max" | "high"; prompt_cache_key?: string }
+    >;
   }
   const modelId =
     options.requestedModelSlug ??
@@ -1208,8 +1214,8 @@ export function buildProviderOptions(
           }
         : {}),
       ...(userId && { user: userId }),
-      ...(isDeepSeekV4 &&
-        options.cacheSessionId && { session_id: options.cacheSessionId }),
+      ...buildPromptCacheOptions(modelId ?? "", options.cacheSessionId)
+        .openrouter,
       ...((providerRouting || isExplicitPaidFlashTier) && {
         provider: {
           ...providerRouting,
@@ -1245,31 +1251,6 @@ export function buildSystemPrompt(
     providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
   }));
   return messages.length === 1 ? messages[0] : messages;
-}
-
-/**
- * Add an Anthropic cache breakpoint to the last user message.
- * This tells Anthropic to cache everything up to and including that message,
- * maximizing cache hits on subsequent agentic steps.
- */
-export function addCacheBreakpointToLastUserMessage<
-  T extends Array<Record<string, unknown>>,
->(messages: T, modelName: string): T {
-  if (!isAnthropicModel(modelName)) return messages;
-  const result = [...messages] as T;
-  for (let i = result.length - 1; i >= 0; i--) {
-    if (result[i].role === "user") {
-      result[i] = {
-        ...result[i],
-        providerOptions: {
-          ...((result[i].providerOptions as Record<string, unknown>) || {}),
-          ...ANTHROPIC_CACHE_BREAKPOINT,
-        },
-      };
-      break;
-    }
-  }
-  return result;
 }
 
 /**

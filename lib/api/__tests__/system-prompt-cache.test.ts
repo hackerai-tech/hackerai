@@ -2,10 +2,8 @@ import { deserialize, serialize } from "node:v8";
 import { TextDecoderStream, WritableStream } from "node:stream/web";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { generateText, streamText, type ModelMessage } from "ai";
-import {
-  addCacheBreakpointToLastUserMessage,
-  buildSystemPrompt,
-} from "../chat-stream-helpers";
+import { buildSystemPrompt } from "../chat-stream-helpers";
+import { addPromptCacheBreakpoints } from "@/lib/ai/prompt-cache";
 import {
   systemPrompt,
   SYSTEM_PROMPT_RUNTIME_BOUNDARY,
@@ -259,7 +257,7 @@ it.each([false, true])(
       },
     });
     const prompt = await makePrompt("synthetic-host", "Alice");
-    const messages = addCacheBreakpointToLastUserMessage(
+    const messages = addPromptCacheBreakpoints(
       [{ role: "user", content: "Reply OK" }],
       claudeRoute,
     ) as ModelMessage[];
