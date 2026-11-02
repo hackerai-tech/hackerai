@@ -65,6 +65,17 @@ desktop, cloud and local sandboxes, and relevant model providers. Check recovery
 as well as the happy path, including cancellation, retry, and reconnect when
 applicable. Apply the visual and manual verification rules below.
 
+For fixes affecting Linux execution, shell commands, file transfers, or network
+behavior, reproduce the failure and verify the fix in an isolated Linux Docker
+container or VM using the actual application code and relevant system tools.
+Check available local Docker contexts and VMs before asking the user for a test
+machine; a missing default Docker socket does not establish that Docker is
+unavailable. Exercise the affected success and failure/recovery paths, record
+the OS and tool versions, and clean up task-owned resources. Distinguish injected
+lab failures from independently confirmed customer causes. Linux checks
+supplement required Windows CI and native Desktop acceptance; they do not replace
+them. Documentation-only changes do not require a container run.
+
 For native Desktop Computer Use, use the
 [hackerai-desktop-qa skill](.agents/skills/hackerai-desktop-qa/SKILL.md) and its
 local QA runner to reuse builds, record diagnostics and clean up owned processes.
