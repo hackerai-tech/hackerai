@@ -117,19 +117,27 @@ windowsDescribe("Windows generated-file metadata command", () => {
       ? [
           ["git-bash", gitBash],
           ["git-bash minimal PATH", gitBash],
+          ["git-bash legacy platform", gitBash],
         ]
       : []),
   ];
   test.each(persistenceShells)(
     "persists large UTF-8 output through real %s commands",
     async (kind, shell) => {
+      const legacyPlatform = kind === "git-bash legacy platform";
+      const probe = legacyPlatform
+        ? spawnSync(shell!, ["-c", "uname -s"], { encoding: "utf8" })
+        : null;
+      if (probe && (probe.status !== 0 || !probe.stdout.trim())) {
+        throw new Error("Git Bash platform probe failed");
+      }
       const adapter = new CentrifugoSandbox(
         "fixture-user",
         {
           connectionId: "fixture-connection",
           name: "fixture",
           osInfo: {
-            platform: "win32",
+            platform: probe ? probe.stdout.trim().toLowerCase() : "win32",
             arch: "x64",
             release: "test",
             hostname: "fixture",

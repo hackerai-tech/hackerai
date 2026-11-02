@@ -477,6 +477,32 @@ describe("isSameLocalMachine", () => {
     ).toBe(true);
   });
 
+  it("reconnects a legacy Git Bash report to its normalized Windows identity only on the same host", () => {
+    const previous = makeConnection({
+      ...kaliConnection,
+      isDesktop: true,
+      osInfo: { ...kaliConnection.osInfo!, platform: "mingw64_nt-10.0-22631" },
+    });
+    const replacement = {
+      ...previous,
+      connectionId: "replacement",
+      osInfo: { ...previous.osInfo!, platform: "win32" },
+    };
+    expect(isSameLocalMachine(previous, replacement)).toBe(true);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        osInfo: { ...replacement.osInfo, hostname: "other-host" },
+      }),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        environmentId: "other-machine",
+      }),
+    ).toBe(false);
+  });
+
   it("rejects another host and connections without host identity", () => {
     expect(
       isSameLocalMachine(
@@ -557,37 +583,44 @@ describe("HybridSandboxManager browser automation prompt", () => {
     warnSpy.mockRestore();
   });
 
-  it("uses a cmd-compatible browser probe for Windows local contexts", async () => {
-    mockConvexQuery.mockResolvedValue([
-      makeConnection({
-        connectionId: "desktop-conn",
-        name: "Desktop",
-        isDesktop: true,
-        capabilities: { commands: true, files: true },
-        osInfo: {
-          platform: "win32",
-          arch: "x86_64",
-          release: "11",
-          hostname: "windows-box",
-        },
-      }),
-    ]);
+  it.each(["win32", "mingw64_nt-10.0-22631"])(
+    "uses Windows paths and browser probe for %s local contexts",
+    async (platform) => {
+      mockConvexQuery.mockResolvedValue([
+        makeConnection({
+          connectionId: "desktop-conn",
+          name: "Desktop",
+          isDesktop: true,
+          capabilities: { commands: true, files: true },
+          osInfo: {
+            platform,
+            arch: "x86_64",
+            release: "11",
+            hostname: "windows-box",
+          },
+        }),
+      ]);
 
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-    );
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "desktop",
+        "service-key",
+        null,
+        "pro",
+      );
 
-    const context = await manager.getSandboxContextForPrompt();
+      const context = await manager.getSandboxContextForPrompt();
 
-    expect(context).toContain("where agent-browser && agent-browser --version");
-    expect(context).toContain("`npm install -g agent-browser`");
-    expect(context).not.toContain("command -v agent-browser");
-  });
+      expect(context).toContain(
+        "where agent-browser && agent-browser --version",
+      );
+      expect(context).toContain("`npm install -g agent-browser`");
+      expect(context).not.toContain("command -v agent-browser");
+      expect(context).toContain("- OS: Windows");
+      expect(context).toContain("C:\\temp\\hackerai-upload");
+    },
+  );
 
   it("keeps unknown-OS connections distinct from the E2B default prompt", async () => {
     mockConvexQuery.mockResolvedValue([makeConnection({})]);

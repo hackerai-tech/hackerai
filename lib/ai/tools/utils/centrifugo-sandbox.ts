@@ -49,7 +49,11 @@ import {
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
-import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+} from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import {
   buildPosixCurlUploadCommand,
@@ -482,7 +486,8 @@ export class CentrifugoSandbox extends EventEmitter {
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const shellInfo = this.connectionInfo.isDesktop
@@ -528,6 +533,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs = 30000,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
@@ -537,7 +543,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       );
     }
 
-    return this.dispatchFileRequest<T>(input, expectedTypes, timeoutMs, signal);
+    return this.dispatchFileRequest<T>(
+      input,
+      expectedTypes,
+      timeoutMs,
+      signal,
+      nativePaths,
+    );
   }
 
   // Only the read-only acquisition probe may enter here without an advertised
@@ -547,7 +559,21 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs: number,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
+    signal?.throwIfAborted();
+    // Resolve before subscribing so a failed/cancelled shell lookup cannot
+    // leave a pending native mutation or an unhandled subscription callback.
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(input.path),
+      signal,
+      nativePaths,
+    );
+    const allowedRoot =
+      this.workingDirectory &&
+      (input.type === "file_write" || input.type === "file_append")
+        ? await this.toNativePath(this.workingDirectory, signal, nativePaths)
+        : undefined;
     signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
     const isolated = this.supportsOperationChannels();
@@ -758,12 +784,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             ...(isolated ? { fileResponseAck: true } : {}),
             // Native metadata and mutations must name the same file as shell
             // transfers, including Windows /tmp and Git Bash drive paths.
-            path: this.toNativePath(this.resolveWorkingPath(input.path)),
+            path: nativePath,
             requestId,
-            ...(this.workingDirectory &&
-            (input.type === "file_write" || input.type === "file_append")
-              ? { allowedRoot: this.toNativePath(this.workingDirectory) }
-              : {}),
+            ...(allowedRoot ? { allowedRoot } : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
@@ -1764,19 +1787,47 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    */
   isWindows(): boolean {
     return (
-      this.connectionInfo.osInfo?.platform === "win32" ||
-      this.shellKind === "cmd"
+      normalizeSandboxPlatform(this.connectionInfo.osInfo?.platform ?? "") ===
+        "win32" || this.shellKind === "cmd"
     );
   }
 
-  /**
-   * Convert Unix-style paths (e.g. /tmp/hackerai-upload/file.png) to
-   * Windows-native paths when running on a Windows sandbox.
-   * Paths are generated before the sandbox platform is known, so they
-   * always arrive in Unix form and need translating here.
-   */
-  private toNativePath(path: string): string {
+  /** Resolve POSIX mount paths using the same Windows shell that created them. */
+  private async toNativePath(
+    path: string,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     if (!this.isWindows()) return path;
+    if (
+      path.startsWith("/") &&
+      !path.startsWith("//") &&
+      (await this.detectShell(signal)) === "bash"
+    ) {
+      const cached = nativePaths?.get(path);
+      if (cached !== undefined) return cached;
+      // Git Bash /tmp is an MSYS mount, often the user's Windows TEMP directory.
+      // Use its installed utility, independent of PATH or project executables.
+      const result = await this.runSetupCommand(
+        `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
+        { signal },
+      );
+      const resolved = result.stdout.replace(/\r?\n$/, "");
+      if (
+        result.exitCode !== 0 ||
+        /[\r\n\0]/.test(resolved) ||
+        !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
+      ) {
+        // Never guess another file location when conversion fails.
+        throw new Error(
+          "Failed to resolve the Windows file path through Git Bash",
+        );
+      }
+      nativePaths?.set(path, resolved);
+      return resolved;
+    }
+    // cmd.exe has no MSYS mount table; preserve its established upload alias.
     if (path === "/tmp" || path.startsWith("/tmp/")) {
       return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
     }
@@ -1784,7 +1835,6 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     if (bashDrive) {
       return `${bashDrive[1].toUpperCase()}:\\${(bashDrive[2] ?? "").replace(/\//g, "\\")}`;
     }
-    // Translate any remaining absolute Unix paths to Windows-style
     return path.replace(/\//g, "\\");
   }
 
@@ -1830,7 +1880,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     // Older desktop clients did not publish osInfo. Probe those connections
     // instead of assuming Bash: a Windows cmd relay would otherwise receive
     // single-quoted signed URLs and split their `&` query fields into commands.
-    if (declaredPlatform && declaredPlatform !== "win32") {
+    if (declaredPlatform && !this.isWindows()) {
       this.shellKind = "bash";
       return "bash";
     }
@@ -1908,7 +1958,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const shell = await this.detectShell(signal);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(rawPath),
+      signal,
+    );
     const path =
       useBash && this.isWindows()
         ? CentrifugoSandbox.toBashPath(nativePath)
@@ -2221,8 +2274,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const scriptPath = this.workingDirectory
       ? scriptName
       : `/tmp/${scriptName}`;
-    const nativeScriptPath = this.toNativePath(
+    const nativeScriptPath = await this.toNativePath(
       this.resolveWorkingPath(scriptPath),
+      signal,
     );
     try {
       // files.write already chunks legacy cmd.exe writes below its command
@@ -2340,6 +2394,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     firstChunkType: "file_write" | "file_append",
     signal?: AbortSignal,
   ): Promise<void> {
+    // Pin successful mount resolutions only for this write, including its root.
+    // This avoids per-chunk relay probes without reusing stale mounts on a later
+    // operation or replacement connection, or redirecting an append mid-write.
+    const nativePaths = new Map<string, string>();
     for (
       let offset = 0;
       offset < encodedContent.length;
@@ -2358,6 +2416,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         new Set(["file_ok"]),
         120000,
         signal,
+        nativePaths,
       );
     }
   }
@@ -2459,7 +2518,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         return;
       }
 
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escapedPath = escapePath(path);
@@ -2478,9 +2537,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         throw new Error("File path exceeds the local file command limit");
       }
 
-      // Ensure parent directory exists. Pass the native (unconverted) dir
-      // so ensureDirectory re-applies its own shell-aware path handling.
-      const dir = this.parentDir(this.toNativePath(rawPath));
+      // Use the resolved parent so mkdir and the write target the same mount.
+      const dir = this.parentDir(nativePath);
       if (dir) {
         await this.ensureDirectory(dir, signal);
       }

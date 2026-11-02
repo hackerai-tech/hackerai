@@ -582,6 +582,42 @@ describe("desktop capability registration", () => {
     },
   );
 
+  it.each(["MINGW64_NT-10.0-22631", "MINGW32_NT-6.1", "MSYS_NT-10.0-22631"])(
+    "publishes Windows identity when the native shell reports %s",
+    async (platform) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (
+          cmd === "execute_command" &&
+          String(args?.command).startsWith("uname")
+        ) {
+          return {
+            stdout: `${platform} 3.5.4 x86_64\r\nqa-host\r\n`,
+            stderr: "",
+            exit_code: 0,
+          };
+        }
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        expect(config.connectDesktop).toHaveBeenCalledWith(
+          expect.objectContaining({
+            osInfo: expect.objectContaining({
+              platform: "win32",
+              arch: "x86_64",
+              hostname: "qa-host",
+            }),
+          }),
+        );
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
   it("records Windows native diagnostics without trusting the browser user agent", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
