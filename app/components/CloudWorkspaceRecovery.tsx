@@ -16,12 +16,15 @@ const steps: Record<string, string> = {
 export function CloudWorkspaceRecovery({
   surface = "cloud_connection_error",
 }: {
-  surface?: "cloud_connection_error" | "workspace_status";
+  surface?: "cloud_connection_error" | "workspace_status" | "workspace_dialog";
 }) {
   const [view, setView] = useState<RecoveryView>({ status: "hidden" });
   const [observedRecovery, setObservedRecovery] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const [checksStopped, setChecksStopped] = useState(false);
+  const checks = useRef(0);
   const exposed = useRef<string | null>(null);
   const statusReadGeneration = useRef(0);
   const updateView = useCallback((next: RecoveryView) => {
@@ -38,7 +41,9 @@ export function CloudWorkspaceRecovery({
   // Announce completion only if this mount actually displayed the incident.
   const hidden =
     view.status === "hidden" ||
-    (view.status === "recovered" && !observedRecovery);
+    (view.status === "recovered" &&
+      !observedRecovery &&
+      surface !== "workspace_dialog");
   const refresh = useCallback(
     async (signal?: AbortSignal, reportError = true) => {
       const generation = ++statusReadGeneration.current;
@@ -47,39 +52,45 @@ export function CloudWorkspaceRecovery({
       try {
         const response = await fetch("/api/sandbox/recovery", {
           cache: "no-store",
-          signal,
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(20000)])
+            : AbortSignal.timeout(20000),
         });
         if (!response.ok) throw new Error("Recovery status unavailable");
         const next = await response.json();
         if (isCurrent()) {
+          setChecked(true);
           updateView(next);
           setError(false);
         }
       } catch {
-        if (isCurrent() && reportError) setError(true);
+        if (isCurrent() && reportError) {
+          setChecked(true);
+          setError(true);
+        }
       }
     },
     [updateView],
   );
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal, surface === "cloud_connection_error");
+    void refresh(controller.signal, surface !== "workspace_status");
     return () => controller.abort();
   }, [refresh, surface]);
   useEffect(() => {
     // Another tab can confirm an offered or deferred recovery. Keep reading
     // server state until it settles, without submitting consent from this tab.
     // Abort older reads while a local decision is being submitted.
-    if (busy) return;
+    if (busy || checksStopped) return;
     // The acquisition deadline can close its stream before failure persistence
     // finishes. Reconcile that event independently, with six reads and backoff.
-    const checkingRecordedFailure =
-      hidden && surface === "cloud_connection_error";
+    const checkingRecordedFailure = hidden && surface !== "workspace_status";
     if (
       view.status !== "recovering" &&
       view.status !== "waiting" &&
       view.status !== "offered" &&
       view.status !== "declined" &&
+      view.status !== "support" &&
       !checkingRecordedFailure
     )
       return;
@@ -87,24 +98,37 @@ export function CloudWorkspaceRecovery({
     let hiddenChecks = 0;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      if (document.visibilityState === "hidden") {
+        timer = setTimeout(() => void poll(), 30000);
+        return;
+      }
+      if (checks.current >= 42) {
+        setChecksStopped(true);
+        return;
+      }
+      checks.current += 1;
       await refresh(controller.signal);
       if (
         !controller.signal.aborted &&
+        checks.current < 42 &&
         (!checkingRecordedFailure || ++hiddenChecks < 6)
       )
         timer = setTimeout(
           () => void poll(),
           checkingRecordedFailure
             ? Math.min(5000 * 2 ** hiddenChecks, 30000)
-            : 5000,
+            : checks.current < 12
+              ? 5000
+              : 30000,
         );
+      else if (!controller.signal.aborted) setChecksStopped(true);
     };
     timer = setTimeout(() => void poll(), 5000);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [view.status, hidden, busy, refresh, surface]);
+  }, [view.status, hidden, busy, refresh, surface, checksStopped]);
   useEffect(() => {
     if (
       view.status === "offered" &&
@@ -119,6 +143,8 @@ export function CloudWorkspaceRecovery({
   }, [view, surface]);
   async function decide(decision: boolean | "reopen") {
     if (!view.token || busy) return;
+    checks.current = 0;
+    setChecksStopped(false);
     statusReadGeneration.current += 1;
     setBusy(true);
     setError(false);
@@ -158,14 +184,28 @@ export function CloudWorkspaceRecovery({
       window.open("https://help.hackerai.co/", "_blank", "noopener,noreferrer");
     }
   }
-  if (hidden && !error) return null;
+  async function checkStatus() {
+    checks.current = 0;
+    setChecksStopped(false);
+    await refresh();
+  }
+  if (hidden && !error && surface !== "workspace_dialog") return null;
   return (
     <div
       className="mt-3 rounded-lg border p-4 text-sm"
+      role="group"
       aria-label="Cloud workspace recovery"
     >
       <p className="font-medium mb-2">Cloud workspace</p>
-      {hidden ? null : view.status === "declined" ? (
+      {hidden ? (
+        surface === "workspace_dialog" ? (
+          <p>
+            {checked
+              ? "No recovery action is available yet. Checking status does not restart or change your workspace."
+              : "Checking recovery status…"}
+          </p>
+        ) : null
+      ) : view.status === "declined" ? (
         <>
           <p>Recovery is available whenever you’re ready.</p>
           <Button
@@ -181,16 +221,22 @@ export function CloudWorkspaceRecovery({
       ) : view.status === "offered" ? (
         <>
           <p>
-            Your cloud workspace couldn’t resume. Recovery may restart it from
-            saved disk. A restart stops running processes and discards changes
-            not saved to disk.
+            Your cloud workspace couldn’t resume. Recovery may restart this same
+            workspace in its current region from saved disk. A restart stops
+            running processes and discards writes not yet flushed to disk. Other
+            saved workspaces are kept.
           </p>
           <p className="mt-2 text-muted-foreground">
             Recovery will not continue your previous task. After recovery, start
             a new request.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={() => void decide(true)}>
+            <Button
+              className="min-h-11"
+              size="sm"
+              disabled={busy}
+              onClick={() => void decide(true)}
+            >
               {busy ? "Submitting…" : "Recover workspace"}
             </Button>
             <Button
@@ -238,12 +284,31 @@ export function CloudWorkspaceRecovery({
       ) : (
         <p role="status">
           {view.status === "waiting"
-            ? "We’re waiting for current tasks and workspace connections to finish. We’ll check automatically and show recovery when it’s safe. This can take up to 15 minutes after the last activity."
+            ? "We’re checking whether recovery is safe. Active tasks, recent connections, or a busy provider can delay recovery. We’ll check automatically. The safety wait can last 15 minutes after the last activity."
             : (steps[view.step ?? "queued"] ??
               "Verifying your cloud workspace…")}{" "}
           You can leave this page and return to check progress.
         </p>
       )}
+      {checksStopped && (
+        <p className="mt-2 text-muted-foreground" role="status">
+          Automatic checks have stopped. Check status for the latest update.
+        </p>
+      )}
+      {!error &&
+        (surface === "workspace_dialog" ||
+          checksStopped ||
+          view.status === "support") && (
+          <Button
+            className="mt-3 min-h-11"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void checkStatus()}
+          >
+            Check status
+          </Button>
+        )}
       {error && (
         <p className="mt-2" role="alert">
           {hidden
@@ -254,7 +319,7 @@ export function CloudWorkspaceRecovery({
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => void refresh()}
+            onClick={() => void checkStatus()}
           >
             Check status
           </Button>

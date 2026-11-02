@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type {
@@ -415,15 +416,13 @@ export function CloudWorkspaceRegionChoice({
             create your first workspace.
           </p>
         )}
-        {!busy && view.status === "protected" && (
+        {!busy && view.status === "protected" && view.reason !== "recovery" && (
           <p className="mt-2">
             {view.reason === "provisioning"
               ? "An earlier workspace setup hasn’t been confirmed yet."
-              : view.reason === "recovery"
-                ? "Your workspace is protected while its recovery status is checked. Select Cloud in chat to review recovery options."
-                : view.reason === "cleanup"
-                  ? "Workspace cleanup status must be verified before another workspace can be selected."
-                  : "Your workspace identity needs verification before it can be changed."}{" "}
+              : view.reason === "cleanup"
+                ? "Workspace cleanup status must be verified before another workspace can be selected."
+                : "Your workspace identity needs verification before it can be changed."}{" "}
             Check status to try again. If this continues,{" "}
             <a href="mailto:contact@hackerai.co" className="underline">
               contact support
@@ -432,6 +431,9 @@ export function CloudWorkspaceRegionChoice({
           </p>
         )}
       </div>
+      {view.status === "protected" && view.reason === "recovery" && (
+        <CloudWorkspaceRecovery surface="workspace_dialog" />
+      )}
       {!busy && view.status === "unavailable" && (
         <p role="alert" className="mt-2 text-destructive">
           {notice ??
@@ -501,18 +503,19 @@ export function CloudWorkspaceRegionChoice({
             Choose another workspace
           </Button>
         )}
-        {["waiting", "unavailable", "protected"].includes(view.status) && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="min-h-11"
-            aria-disabled={checking}
-            aria-busy={checking}
-            onClick={() => void act()}
-          >
-            {checking ? "Checking status…" : "Check status"}
-          </Button>
-        )}
+        {["waiting", "unavailable", "protected"].includes(view.status) &&
+          !(view.status === "protected" && view.reason === "recovery") && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11"
+              aria-disabled={checking}
+              aria-busy={checking}
+              onClick={() => void act()}
+            >
+              {checking ? "Checking status…" : "Check status"}
+            </Button>
+          )}
       </div>
     </div>
   );

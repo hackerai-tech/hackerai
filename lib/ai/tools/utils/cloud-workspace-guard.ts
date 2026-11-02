@@ -125,6 +125,8 @@ export const cloudWorkspaceStateKey = (userId: string) =>
   `cloud_workspace_migration:v1:${userId}`;
 export const activityKeyFor = (userId: string) =>
   `cloud_workspace_activity:v1:${userId}`;
+export const cloudRecoveryHistoryKey = (userId: string) =>
+  `cloud_recovery_history:v1:${userId}`;
 export const cloudRecoveryConsentKey = (userId: string) =>
   `cloud_recovery_consent:v1:${userId}`;
 export const cloudWorkspaceRegionKey = (userId: string) =>
@@ -319,7 +321,8 @@ export async function claimE2BDiskRecovery(args: {
   // Compare the complete prior record and require no recent normal activity.
   // A different owner, malformed record, or cleanup fence is never overwritten.
   const claimed = await redis.eval(
-    `local raw = redis.call('GET', KEYS[1]);
+    `if redis.call('HEXISTS', KEYS[5], ARGV[3]) == 1 then return 0 end
+     local raw = redis.call('GET', KEYS[1]);
      if ARGV[4] ~= '' then
        local consentRaw = redis.call('GET', KEYS[4]);
        local ok, consent = pcall(cjson.decode, consentRaw or '')
@@ -347,7 +350,8 @@ export async function claimE2BDiskRecovery(args: {
       cloudWorkspaceStateKey(args.userId),
       activityKeyFor(args.userId),
       recoveryResultKeyFor(args.userId),
-      ...(args.customerConsent ? [args.customerConsent.key] : []),
+      args.customerConsent?.key ?? cloudRecoveryConsentKey(args.userId),
+      cloudRecoveryHistoryKey(args.userId),
     ],
     [
       previous ? JSON.stringify(previous) : "",
@@ -425,9 +429,21 @@ export async function claimE2BDiskRecovery(args: {
 
 export async function readE2BDiskRecoveryResult(
   userId: string,
+  token?: string,
 ): Promise<unknown> {
   const redis = createRedisClient();
   if (!redis) throw new CloudWorkspaceUnavailableError();
+  if (token) {
+    const archived = await redis.hget<{ result?: unknown }>(
+      cloudRecoveryHistoryKey(userId),
+      token,
+    );
+    if (archived !== null) {
+      if (!archived || typeof archived !== "object" || !archived.result)
+        throw new CloudWorkspaceUnavailableError();
+      return archived.result;
+    }
+  }
   return redis.get(recoveryResultKeyFor(userId));
 }
 
@@ -594,11 +610,12 @@ export async function claimCloudWorkspaceCleanup(
           : JSON.stringify(observed);
       try {
         const finished = await redis.eval(
-          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3]) end return 1`,
+          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end return 1`,
           [
             cloudWorkspaceStateKey(userId),
             cloudWorkspaceRegionKey(userId),
             cloudWorkspaceSelectionHistoryKey(userId),
+            cloudRecoveryHistoryKey(userId),
           ],
           [
             serialized,

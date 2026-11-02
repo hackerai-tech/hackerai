@@ -286,7 +286,7 @@ it("renders informed consent without submitting or replaying a task", async () =
   render(<CloudWorkspaceRecovery />);
   expect(
     await screen.findByText(
-      /A restart stops running processes and discards changes/,
+      /A restart stops running processes and discards writes not yet flushed to disk/,
     ),
   ).toBeInTheDocument();
   expect(
@@ -492,4 +492,39 @@ it("keeps a manual status check after failed background reads exhaust their wind
   } finally {
     jest.useRealTimers();
   }
+});
+
+it("bounds automatic status checks and resumes safe reads after a manual check", async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockResolvedValue(respond({ status: "waiting" }));
+    render(<CloudWorkspaceRecovery surface="workspace_dialog" />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(30 * 60000);
+    });
+    expect(
+      screen.getByText(/Automatic checks have stopped/),
+    ).toBeInTheDocument();
+    const count = fetchMock.mock.calls.length;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(10 * 60000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(count);
+    fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+    await act(async () => {});
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(count);
+    expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+it("keeps a hidden recovery response actionable in workspace management", async () => {
+  fetchMock.mockResolvedValue(respond({ status: "hidden" }));
+  render(<CloudWorkspaceRecovery surface="workspace_dialog" />);
+  expect(
+    await screen.findByText(/No recovery action is available yet/),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+  expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
 });

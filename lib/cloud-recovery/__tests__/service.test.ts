@@ -1,3 +1,4 @@
+import { reconcileCompletedRecovery } from "../completed";
 import { createHmac } from "node:crypto";
 import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
 import {
@@ -71,6 +72,7 @@ jest.mock("@/lib/ai/tools/utils/e2b-disk-recovery", () => ({
   ...jest.requireActual("@/lib/ai/tools/utils/e2b-disk-recovery"),
   recoverE2BDiskOnly: jest.fn(),
 }));
+jest.mock("../completed", () => ({ reconcileCompletedRecovery: jest.fn() }));
 jest.mock("../store", () => ({
   ...jest.requireActual("../store"),
   readConsent: jest.fn(),
@@ -114,6 +116,7 @@ const exists = jest.fn();
 const prior = process.env;
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(reconcileCompletedRecovery).mockResolvedValue(false);
   jest.mocked(phLogger.event).mockReset();
   jest.mocked(phLogger.flush).mockResolvedValue(undefined);
   process.env = {
@@ -1054,4 +1057,80 @@ describe("fresh consent after a verified pre-reboot failure", () => {
     expect(await recoveryView("owner")).toMatchObject({ status: "waiting" });
     expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
   });
+});
+
+it("offers fresh consent after archiving a verified previous recovery, without dispatching", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValueOnce({ ...consent, status: "executing" })
+    .mockResolvedValue(null);
+  jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+    version: 1,
+    phase: "e2b",
+    token,
+    sourceId: target.sandboxId,
+    destinationId: target.sandboxId,
+    region: target.region,
+  });
+  jest.mocked(readE2BDiskRecoveryResult).mockResolvedValue({
+    token,
+    status: "verified_ready",
+    sandboxId: target.sandboxId,
+    region: target.region,
+    completedAt: new Date(Date.now() - 60000).toISOString(),
+  });
+  jest.mocked(reconcileCompletedRecovery).mockResolvedValue(true);
+  expect((await recoveryView("owner")).status).toBe("offered");
+  expect(offerConsent).toHaveBeenCalledWith("owner", target);
+  expect(decideConsent).not.toHaveBeenCalled();
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+});
+it.each([false, true])(
+  "retained paused copies only permit recovery with an exact pin (pinned=%s)",
+  async (pinned) => {
+    if (pinned)
+      jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+        version: 1,
+        phase: "e2b",
+        token,
+        sourceId: target.sandboxId,
+        destinationId: target.sandboxId,
+        region: target.region,
+      });
+    const pages = [[{ ...info, sandboxId: "retained-copy" }], [info]];
+    let page = 0;
+    jest.mocked(Sandbox.list).mockReturnValue({
+      get hasNext() {
+        return page < pages.length;
+      },
+      nextItems: async () => pages[page++],
+    } as never);
+    expect((await recoveryView("owner")).status).toBe(
+      pinned ? "offered" : "support",
+    );
+    expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  },
+);
+
+it("automatically reoffers an expired unclaimed dispatch after fresh checks without rebooting", async () => {
+  jest
+    .mocked(readConsent)
+    .mockResolvedValueOnce({
+      ...consent,
+      status: "confirmed",
+      confirmedAt: Date.now() - 11 * 60000,
+    })
+    .mockResolvedValue({
+      ...consent,
+      status: "failed",
+      failurePhase: "before_reboot",
+    });
+  jest.mocked(retryPreflightConsent).mockResolvedValue({
+    ...consent,
+    token: "6ad19af5-4d14-4d4b-aab7-90734610a6da",
+  });
+  expect((await recoveryView("owner")).status).toBe("offered");
+  expect(failConsent).toHaveBeenCalledWith("owner", token, expect.any(Number));
+  expect(recoverE2BDiskOnly).not.toHaveBeenCalled();
+  expect(decideConsent).not.toHaveBeenCalled();
 });
