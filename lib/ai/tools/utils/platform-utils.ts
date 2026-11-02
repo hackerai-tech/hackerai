@@ -46,3 +46,8 @@ export function escapeShellValue(value: string, platform?: string): string {
   // POSIX shells: wrap in single quotes, escape inner single quotes
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
+
+/** A backslash is a filename character on POSIX, even on a Windows worker. */
+export function getSandboxFileName(path: string, windows: boolean): string {
+  return path.split(windows ? /[/\\]/ : /\//).pop() || "file";
+}

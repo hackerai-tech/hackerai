@@ -9,6 +9,7 @@ import {
   isCentrifugoSandbox,
   isE2BSandbox,
 } from "./sandbox-types";
+import { getSandboxFileName } from "./platform-utils";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -242,7 +243,7 @@ async function getSandboxFileSize(
           event: "sandbox_generated_file_size_command_threw",
           service: "chat-handler",
           ...getSandboxLogFields(sandbox),
-          file_name: getFileNameFromPath(fullPath),
+          file_name: getFileNameFromPath(sandbox, fullPath),
           file_path: fullPath,
           error: errorToLog(error),
         },
@@ -261,7 +262,7 @@ async function getSandboxFileSize(
     event: "sandbox_generated_file_size_failed",
     service: "chat-handler",
     ...getSandboxLogFields(sandbox),
-    file_name: getFileNameFromPath(fullPath),
+    file_name: getFileNameFromPath(sandbox, fullPath),
     file_path: fullPath,
     stat_exit_code: statResult.exitCode,
     stat_stderr: statResult.stderr?.slice(0, 500),
@@ -306,7 +307,7 @@ async function getWindowsSandboxFileSize(
           event: "sandbox_generated_file_size_windows_command_threw",
           service: "chat-handler",
           ...getSandboxLogFields(sandbox),
-          file_name: getFileNameFromPath(fullPath),
+          file_name: getFileNameFromPath(sandbox, fullPath),
           file_path: fullPath,
           error: errorToLog(error),
         },
@@ -324,7 +325,7 @@ async function getWindowsSandboxFileSize(
     event: "sandbox_generated_file_size_failed",
     service: "chat-handler",
     ...getSandboxLogFields(sandbox),
-    file_name: getFileNameFromPath(fullPath),
+    file_name: getFileNameFromPath(sandbox, fullPath),
     file_path: fullPath,
     windows_exit_code: winResult.exitCode,
     windows_stderr: winResult.stderr?.slice(0, 500),
@@ -365,8 +366,11 @@ function errorToLog(error: unknown) {
   return { message: String(error) };
 }
 
-function getFileNameFromPath(fullPath: string): string {
-  return fullPath.split(/[/\\]/).pop() || "file";
+function getFileNameFromPath(sandbox: AnySandbox, fullPath: string): string {
+  return getSandboxFileName(
+    fullPath,
+    isCentrifugoSandbox(sandbox) && sandbox.isWindows(),
+  );
 }
 
 type SandboxCommandResult = {
@@ -438,7 +442,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   ) => void | Promise<void>;
 }): Promise<void> {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
-  const fileName = getFileNameFromPath(fullPath);
+  const fileName = getFileNameFromPath(sandbox, fullPath);
   const reportFailure = (
     kind: GeneratedFileTransferAttemptFailure["transfer_attempt_kind"],
     error: unknown,
@@ -592,13 +596,14 @@ export async function uploadSandboxFileToConvex(args: {
 
   const { sandbox, userId, fullPath } = args;
   const mediaType = args.mediaType || DEFAULT_MEDIA_TYPE;
-  const name = args.name || getFileNameFromPath(fullPath);
   recordPhase("file_metadata");
   const fileSize = await getSandboxFileSize(
     sandbox,
     fullPath,
     args.onNativeStatFailure,
   );
+  // Metadata discovery also resolves legacy relays that omit their platform.
+  const name = args.name || getFileNameFromPath(sandbox, fullPath);
   if (fileSize > MAX_GENERATED_FILE_SIZE_BYTES) {
     logger.warn("sandbox_generated_file_too_large", {
       event: "sandbox_generated_file_too_large",

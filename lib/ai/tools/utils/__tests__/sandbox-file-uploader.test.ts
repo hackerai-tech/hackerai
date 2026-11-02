@@ -40,7 +40,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
         if (command.includes("stat -Lc%s")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
-        if (command.startsWith("for %I")) {
+        if (command.includes("for %I")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -957,13 +957,29 @@ describe("uploadSandboxFileToConvex", () => {
     expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 
-  test("derives the file name from Windows-style paths", async () => {
+  test("keeps a Windows-looking filename intact on a POSIX sandbox", async () => {
     const sandbox = makeSandbox(1234);
+    const name = "C:\\literal\\report.txt";
+    const uploaded = await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: `/tmp/${name}`,
+    });
+    expect(uploaded.name).toBe(name);
+    expect(mockConvexAction.mock.calls[0][1].name).toBe(name);
+  });
+
+  test.each([
+    "C:\\Users\\user\\report.txt",
+    "\\\\server\\share\\report.txt",
+    "/c/Users/user/report.txt",
+  ])("derives the file name on Windows: %s", async (fullPath) => {
+    const sandbox = makeSandbox(1234, false, true);
 
     await uploadSandboxFileToConvex({
       sandbox: sandbox as any,
       userId: "u1",
-      fullPath: "C:\\Users\\user\\report.txt",
+      fullPath,
     });
 
     expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(

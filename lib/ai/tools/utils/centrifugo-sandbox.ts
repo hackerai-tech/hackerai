@@ -53,6 +53,7 @@ import {
   getPlatformDisplayName,
   escapeShellValue,
   normalizeSandboxPlatform,
+  getSandboxFileName,
 } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import {
@@ -2520,7 +2521,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escapedPath = escapePath(path);
       // Legacy Windows relays may launch Bash through cmd.exe, whose command
       // line limit applies even though the inner shell accepts POSIX syntax.
@@ -2656,7 +2657,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       }
 
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe uses `type`, bash uses `cat`
       const command = useBash ? `cat ${escaped}` : `type ${escaped}`;
@@ -2723,7 +2724,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         rawPath,
         signal,
       );
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
       const command = useBash
@@ -2786,7 +2787,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         await this.shellContext(rawPath, signal);
       const httpClient = await this.detectHttpClient(signal);
       const dir = this.parentDir(path);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
 
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
@@ -2951,7 +2952,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, nativePath, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -2972,7 +2973,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         }
       }
 
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
@@ -2991,9 +2992,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       let command: string;
       let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
-        command = this.isWindows()
-          ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
-          : buildPosixCurlUploadCommand(path, uploadUrl, contentType);
+        command =
+          this.isWindows() && !useBash
+            ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+            : buildPosixCurlUploadCommand(path, uploadUrl, contentType, {
+                sslNoRevoke:
+                  this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke,
+              });
       } else if (httpClient === "wget") {
         command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
       } else {
@@ -3026,7 +3031,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
               platform: this.isWindows() ? "windows" : "posix",
               http_client: httpClient,
-              ...(!this.isWindows() && httpClient === "curl"
+              ...(httpClient === "curl"
                 ? getUploadFailureDiagnostics(uploadUrl, result.stderr)
                 : {}),
               exit_code: Number.isSafeInteger(result.exitCode)

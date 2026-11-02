@@ -318,6 +318,8 @@ posixDescribe(
           },
         });
         expect(accepted).toEqual([bytes]);
+        const saved = jest.mocked(getConvexClient().action).mock.calls[0][1];
+        expect(saved).toMatchObject({ name: "reports\\result.txt" });
         expect(statuses).toEqual([200]);
         expect(failures).toEqual([]);
       },

@@ -5308,7 +5308,7 @@ describe("CentrifugoSandbox", () => {
             sandbox_type: desktop ? "desktop" : "local",
             platform,
             http_client: client,
-            ...(platform === "posix" && client === "curl"
+            ...(client === "curl"
               ? {
                   upload_reported_http_status: exitCode === 22 ? 403 : null,
                   upload_reported_storage_code:

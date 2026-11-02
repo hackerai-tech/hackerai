@@ -27,9 +27,11 @@ export function buildPosixCurlUploadCommand(
   path: string,
   url: string,
   contentType: string,
+  options: { sslNoRevoke?: boolean } = {},
 ): string {
   const request = `-X PUT -H ${quote(`Content-Type: ${contentType}`)} --data-binary @${quote(path)} ${quote(url)}`;
-  const ordinaryUpload = `curl -fsSL ${request} -o /dev/null`;
+  const tlsFlags = options.sslNoRevoke ? " --ssl-no-revoke" : "";
+  const ordinaryUpload = `curl -fsSL${tlsFlags} ${request} -o /dev/null`;
   // FD 4 streams the response through a bounded, best-effort file sink. Always
   // drain the rest so a failed diagnostic write cannot cause curl's EPIPE/23.
   // FD 3 returns HTTP status and curl exit status independently of that sink.
@@ -40,15 +42,18 @@ case "$(command -v curl)" in
     exit $?
     ;;
 esac
-# A POSIX shell on Windows can invoke native curl, which cannot open the
-# shell's /dev/fd paths. Keep its ordinary upload before creating diagnostics.
+# Native Windows curl cannot open MSYS /dev/fd paths. With fail-with-body,
+# use inherited stdout instead, retaining curl's own HTTP error and exit code.
+windows_curl=0
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
-    ${ordinaryUpload}
-    exit $?
+    case "$(curl --help all 2>/dev/null)" in
+      *--fail-with-body*) windows_curl=1 ;;
+      *) ${ordinaryUpload}; exit $? ;;
+    esac
     ;;
 esac
-if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1 || ! command -v rm >/dev/null 2>&1; then
+if { [ "$windows_curl" = 0 ] && [ ! -d /dev/fd ]; } || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1 || ! command -v rm >/dev/null 2>&1; then
   ${ordinaryUpload}
   exit $?
 fi
@@ -65,7 +70,12 @@ curl_result=$(
   {
     {
       curl_exit=0
-      http_status=$(curl -sSL -o /dev/fd/4 -w '%{http_code}' ${request}) || curl_exit=$?
+      http_status=0
+      if [ "$windows_curl" = 1 ]; then
+        curl --fail-with-body -sSL${tlsFlags} ${request} >&4 || curl_exit=$?
+      else
+        http_status=$(curl -sSL -o /dev/fd/4 -w '%{http_code}' ${request}) || curl_exit=$?
+      fi
       printf '%s %s' "$http_status" "$curl_exit" >&3
     } 4>&1 |
     { head -c 8192 > "$response_file" || :; cat >/dev/null; } 2>/dev/null
@@ -73,6 +83,11 @@ curl_result=$(
 )
 http_status=\${curl_result% *}
 curl_exit=\${curl_result##* }
+if [ "$windows_curl" = 1 ] && [ "$curl_exit" = 22 ]; then
+  storage_code=$(LC_ALL=C head -c 8192 "$response_file" 2>/dev/null | LC_ALL=C sed -nE 's@.*<Code>(${STORAGE_ERROR_CODES.join("|")})</Code>.*@\\1@p' | head -n 1)
+  printf '${STORAGE_ERROR_MARKER}%s\\n' "\${storage_code:-Unknown}" >&2
+  exit 22
+fi
 if [ "$curl_exit" -ne 0 ]; then exit "$curl_exit"; fi
 case "$http_status" in
   [45][0-9][0-9])

@@ -19,9 +19,14 @@ const windowsDescribe = process.platform === "win32" ? describe : describe.skip;
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 windowsDescribe("native Windows curl through Git Bash", () => {
-  it.each([200, 403])(
-    "preserves HTTP %s and exact upload bytes",
-    async (status) => {
+  it.each([
+    [200, "", false],
+    [403, "AccessDenied", false],
+    [403, "SignatureDoesNotMatch", false],
+    [403, null, true],
+  ] as const)(
+    "preserves HTTP %s, code %s and exact bytes (oversized=%s)",
+    async (status, code, oversized) => {
       const shell = findGitBash();
       if (!shell)
         throw new Error("Windows upload acceptance requires Git Bash");
@@ -35,7 +40,8 @@ windowsDescribe("native Windows curl through Git Bash", () => {
         requests.push(Buffer.concat(chunks).toString());
         res.writeHead(status, { "Content-Type": "application/xml" });
         res.end(
-          "<Error><Code>AccessDenied</Code><Message>PRIVATE body</Message></Error>",
+          (oversized ? "PRIVATE".repeat(20000) : "") +
+            `<Error><Code>${code ?? "AccessDenied"}</Code><Message>PRIVATE body</Message></Error>`,
         );
       });
       try {
@@ -63,7 +69,8 @@ windowsDescribe("native Windows curl through Git Bash", () => {
           getUploadFailureDiagnostics(endpoint, result.stderr),
         ).toMatchObject({
           upload_reported_http_status: status === 403 ? 403 : null,
-          upload_storage_diagnostic_present: false,
+          upload_reported_storage_code: status === 403 ? code : null,
+          upload_storage_diagnostic_present: status === 403,
         });
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
