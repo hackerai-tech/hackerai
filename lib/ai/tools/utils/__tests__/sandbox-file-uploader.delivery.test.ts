@@ -244,7 +244,7 @@ posixDescribe(
       });
       expect(accepted[0]).toEqual(readFileSync(path));
       const mismatched = adapter();
-      jest.mocked(mismatched.files.stat).mockResolvedValueOnce({
+      jest.mocked(mismatched.files.stat).mockResolvedValue({
         type: "file_stat_result",
         requestId: "fixture",
         path,
@@ -276,6 +276,41 @@ posixDescribe(
         ),
       );
       expect(getConvexClient().action).toHaveBeenCalledTimes(1);
+      expect(generateS3UploadUrl).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-signs once when a rejected upload's source changed after metadata discovery", async () => {
+      const path = join(directory, "growing.txt");
+      writeFileSync(path, "before");
+      const updated = Buffer.from("completed report\n");
+      const sign = jest.mocked(generateS3UploadUrl).getMockImplementation()!;
+      jest
+        .mocked(generateS3UploadUrl)
+        .mockImplementationOnce(async (...args) => {
+          const result = await sign(...args);
+          writeFileSync(path, updated);
+          return result;
+        });
+      const saved = await uploadSandboxFileToConvex({
+        sandbox: adapter(),
+        userId: "fixture",
+        fullPath: path,
+        onTransferAttemptFailure: () => {
+          throw new Error("optional observer unavailable");
+        },
+      });
+      expect(statuses).toEqual([403, 403, 200]);
+      expect(accepted).toEqual([updated]);
+      expect(generateS3UploadUrl).toHaveBeenCalledTimes(2);
+      expect(
+        jest.mocked(generateS3UploadUrl).mock.calls.map((args) => args[3]),
+      ).toEqual([6, updated.length]);
+      expect(saved.sizeBytes).toBe(updated.length);
+      expect(getConvexClient().action).toHaveBeenCalledTimes(1);
+      expect(getConvexClient().action).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ size: updated.length }),
+      );
     });
 
     it.each(["copy", "write"])(
