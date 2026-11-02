@@ -62,6 +62,11 @@ import {
 } from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
 import {
+  buildUploadNetworkProbeCommand,
+  parseUploadNetworkProbe,
+  type UploadProbeShell,
+} from "./sandbox-upload-network-diagnostics";
+import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
   LocalFileRequestError,
@@ -2110,6 +2115,64 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
   private snapCurlFallbackSelected = false;
 
+  private uploadNetworkProbeAttempted = false;
+
+  private async diagnoseUploadNetworkFailure(
+    uploadUrl: string,
+    useBash: boolean,
+    exitCode: 6 | 28 | 35 | 124 | -1,
+  ): Promise<void> {
+    try {
+      if (this.uploadNetworkProbeAttempted) return;
+      const shell: UploadProbeShell = this.isWindows()
+        ? useBash
+          ? "windows-bash"
+          : "cmd"
+        : "posix";
+      const command = buildUploadNetworkProbeCommand(
+        uploadUrl,
+        shell,
+        this.isWindows() && this.curlCaps?.sslNoRevoke === true,
+      );
+      if (!command) return;
+      // Set before awaiting: concurrent uploads share this instance's budget.
+      this.uploadNetworkProbeAttempted = true;
+      let output: string | undefined;
+      let commandExitCode: number | null = null;
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 10_000,
+          displayName: "",
+        });
+        output = result.stdout;
+        if (
+          Number.isSafeInteger(result.exitCode) &&
+          result.exitCode >= 0 &&
+          result.exitCode <= 255
+        )
+          commandExitCode = result.exitCode;
+      } catch {
+        // No retry: this measures connectivity, never repeats the upload.
+      }
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_network_diagnostic",
+          diagnostic_version: 1,
+          sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+          platform: this.isWindows() ? "windows" : "posix",
+          shell,
+          upload_exit_code: exitCode,
+          command_exit_code: commandExitCode,
+          ...parseUploadNetworkProbe(output),
+        }),
+      );
+    } catch {
+      // Even a failed probe or logging sink must preserve the original error.
+    }
+  }
+
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
   // --retry-connrefused requires curl >= 7.52.0
@@ -3043,6 +3106,21 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 : null,
             }),
           );
+          if (
+            httpClient === "curl" &&
+            (result.exitCode === 6 ||
+              result.exitCode === 28 ||
+              result.exitCode === 35 ||
+              result.exitCode === 124 ||
+              (result.exitCode === -1 &&
+                result.stderr.trim() === "Command timed out"))
+          ) {
+            await this.diagnoseUploadNetworkFailure(
+              uploadUrl,
+              useBash,
+              result.exitCode,
+            );
+          }
           if (
             result.exitCode === 26 &&
             httpClient === "curl" &&

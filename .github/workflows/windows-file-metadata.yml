@@ -8,6 +8,8 @@ on:
       - "lib/ai/tools/utils/platform-utils.ts"
       - "app/services/desktop-sandbox-bridge.ts"
       - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
@@ -24,6 +26,8 @@ on:
       - "lib/ai/tools/utils/platform-utils.ts"
       - "app/services/desktop-sandbox-bridge.ts"
       - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
@@ -57,6 +61,8 @@ jobs:
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts --runInBand --ci
       - name: Verify native Windows curl through Git Bash
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-response.windows.test.ts --runInBand --ci
+      - name: Verify native Windows TLS connectivity diagnostics
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.test.ts lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.windows.test.ts --runInBand --ci
       - name: Verify native Windows file paths
         run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
       - name: Verify Windows shell discovery
