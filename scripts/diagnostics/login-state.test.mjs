@@ -120,6 +120,51 @@ test("an unresponsive read returns a bounded unavailable state", async () => {
     state: "unavailable",
   });
 });
+test("a URL read that finishes after timeout never starts DOM inspection", async () => {
+  const tab = tabFor('<input type="password">');
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let evaluations = 0;
+  tab.url = async () => pending;
+  tab.playwright.evaluate = async () => {
+    evaluations++;
+  };
+  assert.deepEqual(await diagnoseLogin(tab, { timeoutMs: 10 }), {
+    origin: null,
+    state: "unavailable",
+  });
+  release("https://signin.hackerai.co/password");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(evaluations, 0);
+});
+test("a DOM read that finishes after timeout never starts another URL read", async () => {
+  const tab = tabFor('<input type="password">');
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let urlReads = 0;
+  tab.url = async () => {
+    urlReads++;
+    return "https://signin.hackerai.co/password";
+  };
+  tab.playwright.evaluate = async () => pending;
+  assert.deepEqual(await diagnoseLogin(tab, { timeoutMs: 10 }), {
+    origin: null,
+    state: "unavailable",
+  });
+  release({
+    password: true,
+    email: false,
+    verification: false,
+    challenge: false,
+    sessionUi: false,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(urlReads, 1);
+});
 test("split OTP controls take priority over password fields", async () => {
   const html =
     '<input type="password">' +

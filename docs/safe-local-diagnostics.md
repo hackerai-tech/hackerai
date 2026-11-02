@@ -58,7 +58,7 @@ the minimum controls needed under the current task/tool policy. Do not capture
 or echo the challenge code. Errors stay generic even if the browser embeds page
 content in an exception. The default three-second deadline bounds the returned
 result; it cannot forcibly cancel a browser tool already executing. It never
-retries or mutates the page.
+starts another browser read after returning, retries, or mutates the page.
 
 The machine-local Production QA bridge can re-export `diagnoseLogin` from a
 reviewed copy installed beside `credentials.mjs` as `login-diagnostics.mjs`.
