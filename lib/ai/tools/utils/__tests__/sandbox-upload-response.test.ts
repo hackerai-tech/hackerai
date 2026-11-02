@@ -209,6 +209,25 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
     },
   );
 
+  it("keeps legacy Windows curl uploads when fail-with-body is unavailable", async () => {
+    status = 403;
+    body = "<Code>AccessDenied</Code><Message>PRIVATE</Message>";
+    const result = await upload(directory, source, {
+      prefix: `uname() { printf 'MINGW64_NT-10.0\\n'; }
+curl() { if [ "$1" = '--help' ]; then return 0; fi; command curl "$@"; }
+`,
+    });
+    expect(result.code).toBe(22);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).not.toContain("PRIVATE");
+    expect(getUploadFailureDiagnostics(endpoint, result.stderr)).toMatchObject({
+      upload_reported_http_status: 403,
+      upload_storage_diagnostic_present: false,
+    });
+    expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+    expect(await readdir(directory)).toEqual([path.basename(source)]);
+  });
+
   it("preserves curl's local read failure and cleans up diagnostics", async () => {
     const result = await upload(directory, path.join(directory, "absent"));
     expect(result.code).toBe(26);
@@ -282,7 +301,9 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
         getUploadFailureDiagnostics(endpoint, result.stderr),
       ).toMatchObject({
         upload_reported_http_status: httpStatus === 403 ? 403 : null,
-        upload_storage_diagnostic_present: false,
+        upload_reported_storage_code:
+          httpStatus === 403 ? "AccessDenied" : null,
+        upload_storage_diagnostic_present: httpStatus === 403,
       });
       expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
       expect((await readdir(directory)).sort()).toEqual(before);

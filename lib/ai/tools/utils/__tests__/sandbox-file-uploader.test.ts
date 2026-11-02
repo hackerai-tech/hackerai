@@ -40,7 +40,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
         if (command.includes("stat -Lc%s")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
-        if (command.startsWith("for %I")) {
+        if (command.includes("for %I")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -568,6 +568,38 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
+  test.each([35, 22, -1, 256])(
+    "retains only a bounded native upload exit code: %s",
+    async (exitCode) => {
+      const sandbox = makeSandbox(1234, false, true);
+      const error = Object.assign(new Error("private transfer failure"), {
+        exitCode,
+      });
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+      const onTransferAttemptFailure = jest.fn();
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\owned\\report.txt",
+          onTransferAttemptFailure,
+        }),
+      ).rejects.toBe(error);
+      expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transfer_attempt_kind: "native",
+          transfer_exit_code:
+            exitCode >= 0 && exitCode <= 255 ? exitCode : null,
+          upload_reported_http_status: null,
+        }),
+      );
+      expect(JSON.stringify(onTransferAttemptFailure.mock.calls)).not.toContain(
+        "private",
+      );
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
   test.each([false, true])(
     "retains the command fallback when native transfer diagnostics fail (async: %s)",
     async (asyncFailure) => {
@@ -957,13 +989,29 @@ describe("uploadSandboxFileToConvex", () => {
     expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 
-  test("derives the file name from Windows-style paths", async () => {
+  test("keeps a Windows-looking filename intact on a POSIX sandbox", async () => {
     const sandbox = makeSandbox(1234);
+    const name = "C:\\literal\\report.txt";
+    const uploaded = await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: `/tmp/${name}`,
+    });
+    expect(uploaded.name).toBe(name);
+    expect(mockConvexAction.mock.calls[0][1].name).toBe(name);
+  });
+
+  test.each([
+    "C:\\Users\\user\\report.txt",
+    "\\\\server\\share\\report.txt",
+    "/c/Users/user/report.txt",
+  ])("derives the file name on Windows: %s", async (fullPath) => {
+    const sandbox = makeSandbox(1234, false, true);
 
     await uploadSandboxFileToConvex({
       sandbox: sandbox as any,
       userId: "u1",
-      fullPath: "C:\\Users\\user\\report.txt",
+      fullPath,
     });
 
     expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(

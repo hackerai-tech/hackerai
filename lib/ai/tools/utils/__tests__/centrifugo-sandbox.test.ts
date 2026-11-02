@@ -1796,6 +1796,34 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("attachment cancellation", () => {
+    it("preserves a literal POSIX backslash in the attachment staging label", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+
+      await sandbox.files.copyLocal(
+        "/tmp/source.txt",
+        "/tmp/prefix\\report.txt",
+      );
+
+      expect(run).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          displayName: "Preparing: prefix\\report.txt",
+        }),
+      );
+    });
+
     it.each(["copy", "download"])(
       "forwards Stop through %s and waits for command cancellation",
       async (operation) => {
@@ -5296,9 +5324,14 @@ describe("CentrifugoSandbox", () => {
         );
         (sandbox as any).commands.run = run;
         try {
-          await expect(
-            sandbox.files.uploadToUrl(path, url, "private/media-type"),
-          ).rejects.toThrow("Failed to upload file:");
+          const failure = await sandbox.files
+            .uploadToUrl(path, url, "private/media-type")
+            .catch((error: Error & { exitCode?: number }) => error);
+          expect(failure).toBeInstanceOf(Error);
+          expect(failure).toMatchObject({
+            message: expect.stringContaining("Failed to upload file:"),
+            exitCode: Number.isSafeInteger(exitCode) ? exitCode : undefined,
+          });
           expect(warn).toHaveBeenCalledTimes(1);
           expect(warn.mock.calls[0][0]).toBe("[centrifugo-http]");
           const serialized = warn.mock.calls[0][1] as string;
@@ -5308,7 +5341,7 @@ describe("CentrifugoSandbox", () => {
             sandbox_type: desktop ? "desktop" : "local",
             platform,
             http_client: client,
-            ...(platform === "posix" && client === "curl"
+            ...(client === "curl"
               ? {
                   upload_reported_http_status: exitCode === 22 ? 403 : null,
                   upload_reported_storage_code:
