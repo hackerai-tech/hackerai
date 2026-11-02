@@ -737,6 +737,10 @@ export const useChatHandlers = ({
               resumeMessage = input.trim() || undefined;
             } else {
               resumeMessage = goalResumeMessage(data.goal, goalCommand.input);
+              goalCommand = {
+                ...goalCommand,
+                expectedGeneration: data.goal.generation,
+              };
             }
             goalSettings = {
               sandboxPreference: data.goal.sandboxPreference,

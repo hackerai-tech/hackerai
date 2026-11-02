@@ -1968,6 +1968,45 @@ describe("Chat Component Integration", () => {
       }
     });
 
+    it.each([true, false])(
+      "restores a goal control before the editor loads (trigger focused: %s)",
+      async (focusTrigger) => {
+        mockComputerOverlayMedia = true;
+        const GoalSidebarHarness = () => {
+          const { openSidebar, sidebarOpen } = useGlobalState();
+          return sidebarOpen ? null : (
+            <button
+              aria-label="Edit goal"
+              onClick={() => openSidebar({ kind: "goal", chatId: "chat-1" })}
+            >
+              Edit
+            </button>
+          );
+        };
+        render(
+          <TestWrapper>
+            <GoalSidebarHarness />
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        const trigger = screen.getByRole("button", { name: "Edit goal" });
+        if (focusTrigger) trigger.focus();
+        fireEvent.click(trigger);
+        const dialog = await screen.findByRole("dialog", { name: "Edit goal" });
+        // The sidebar shell can mount before the dynamically loaded goal textarea.
+        expect(
+          screen.queryByRole("textbox", { name: "Goal objective" }),
+        ).not.toBeInTheDocument();
+        dialog.focus();
+        fireEvent.keyDown(dialog, { key: "Escape" });
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "Edit goal" }),
+          ).toHaveFocus(),
+        );
+      },
+    );
+
     it("uses an accessible Computer overlay on narrow workspaces", async () => {
       mockComputerOverlayMedia = true;
       const rects = jest

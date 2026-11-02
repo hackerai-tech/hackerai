@@ -2123,6 +2123,29 @@ describe("useChatHandlers steer todo handoff", () => {
     permissionMode: "ask_approval",
     selectedModel: "auto",
   };
+  it("fences explicit resume against edits after the saved goal is read", async () => {
+    mockInput = "/goal resume";
+    mockMessageQueue = [];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+    } as Response);
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: jest.fn() } as any);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: expect.objectContaining({
+            action: "resume",
+            expectedGeneration: 4,
+          }),
+        }),
+      }),
+    );
+  });
   it.each(["needs_input", "blocked"])(
     "resumes a %s goal with the user's actual reply and original permissions",
     async (state) => {

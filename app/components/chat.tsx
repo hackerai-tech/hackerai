@@ -526,6 +526,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const computerDialogRef = useRef<HTMLDivElement>(null);
   const computerDialogPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const computerDialogShowedGoalRef = useRef(false);
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const { appendDataPart, clearDataStream } =
     useBatchedDataStreamAppend(setDataStream);
@@ -660,9 +661,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
 
-    const wasGoalEditor = !!dialog.querySelector(
-      '[aria-label="Goal objective"]',
-    );
     const focusTimeout = window.setTimeout(() => {
       if (!hasNestedDialogFocus())
         (
@@ -677,10 +675,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       window.clearTimeout(focusTimeout);
       document.removeEventListener("keydown", handleKeyDown);
       const previousFocus = computerDialogPreviousFocusRef.current;
+      const showedGoalEditor = computerDialogShowedGoalRef.current;
+      computerDialogShowedGoalRef.current = false;
       if (!hasNestedDialogFocus()) {
-        if (previousFocus?.isConnected && !dialog.contains(previousFocus))
+        if (
+          previousFocus?.isConnected &&
+          previousFocus !== document.body &&
+          !dialog.contains(previousFocus)
+        )
           previousFocus.focus();
-        else if (wasGoalEditor)
+        else if (showedGoalEditor)
           document
             .querySelector<HTMLButtonElement>(
               '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
@@ -689,6 +693,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     };
   }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
+
+  // Record content while open: closing clears it, and the lazy sidebar may not
+  // have mounted the editor when the focus trap first runs.
+  useEffect(() => {
+    if (
+      computerSidebarOverlay &&
+      sidebarOpen &&
+      sidebarContent &&
+      "kind" in sidebarContent &&
+      sidebarContent.kind === "goal"
+    )
+      computerDialogShowedGoalRef.current = true;
+  }, [computerSidebarOverlay, sidebarContent, sidebarOpen]);
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
