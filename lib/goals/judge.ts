@@ -20,6 +20,22 @@ import {
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
 
+// Budget encoded entries, including metadata and escaping, rather than only
+// result text. Keep recent evidence intact instead of slicing proofs mid-result.
+function keepNewestJudgeResults<T extends { result: string }>(
+  results: T[],
+): T[] {
+  let used = 2; // JSON array brackets
+  const kept: T[] = [];
+  for (let i = results.length - 1; i >= 0; i--) {
+    const size = JSON.stringify(results[i]).length + (kept.length ? 1 : 0);
+    if (used + size > 48_000) continue;
+    used += size;
+    kept.unshift(results[i]);
+  }
+  return kept;
+}
+
 /** Retain only this run's assistant snapshots across separate stream callbacks. */
 export function retainGoalRunMessages(
   previous: UIMessage[],
@@ -65,19 +81,22 @@ export function buildGoalCompletionEvidence(
         ]
       : [];
   });
-  const toolResults = executed
-    .flatMap((part) => {
-      if (!("toolCallId" in part) || !part.type.startsWith("tool-")) return [];
-      return [
-        {
-          runId,
-          toolCallId: String(part.toolCallId),
-          eligibleEvidence: isGoalEvidencePart(part, String(part.toolCallId)),
-          result: serializeGoalEvidence(part),
-        },
-      ];
-    })
-    .slice(-64);
+  const toolResults = keepNewestJudgeResults(
+    executed
+      .flatMap((part) => {
+        if (!("toolCallId" in part) || !part.type.startsWith("tool-"))
+          return [];
+        return [
+          {
+            runId,
+            toolCallId: String(part.toolCallId),
+            eligibleEvidence: isGoalEvidencePart(part, String(part.toolCallId)),
+            result: serializeGoalEvidence(part),
+          },
+        ];
+      })
+      .slice(-64),
+  );
   return {
     current,
     toolResults,
@@ -112,7 +131,7 @@ export async function judgeGoalCompletion(
         userId: goal.userId,
       },
     );
-    const evidence = mergeGoalEvidence(prior, proofs);
+    const evidence = keepNewestJudgeResults(mergeGoalEvidence(prior, proofs));
     const result = await generateText({
       model: myProvider.languageModel(AGENT_AUTO_REVIEW_MODEL),
       system:
@@ -192,7 +211,8 @@ export async function judgeGoalCompletion(
             p.runId === e.runId,
         ),
     );
-    const combined = mergeGoalEvidence(prior, verified);
+    // Proofs omitted from the model input cannot establish independent completion.
+    const combined = mergeGoalEvidence<GoalEvidence>(evidence, verified);
     if (
       decision.verdict === "done" &&
       (!gatePassed ||

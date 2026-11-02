@@ -119,6 +119,96 @@ describe("independent goal completion check", () => {
       evidence: goal.checkpoint!.evidence,
     });
   });
+  it("bounds large current and saved evidence while retaining the newest results", async () => {
+    mockPriorEvidence.mockResolvedValue(
+      Array.from({ length: 64 }, (_, i) => ({
+        criterion: 0,
+        runId: `prior-${i}`,
+        toolCallId: `old-${i}`,
+        explanation: "Saved proof",
+        result: "x".repeat(4000),
+      })),
+    );
+    const large = [
+      {
+        ...messages[0],
+        parts: Array.from({ length: 64 }, (_, i) => ({
+          type: "tool-run_terminal_cmd",
+          toolCallId: `cmd-${i}`,
+          state: "output-available",
+          output: { result: { exitCode: 0, output: "x".repeat(3500) } },
+        })),
+      },
+    ] as UIMessage[];
+    generate.mockResolvedValue({
+      output: {
+        verdict: "continue",
+        reason: "More work",
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    await judgeGoalCompletion(
+      { ...goal, checkpoint: undefined },
+      large,
+      "r1",
+      jest.fn(),
+    );
+    const input = JSON.parse(generate.mock.calls[0][0].prompt);
+    expect(JSON.stringify(input.toolResults).length).toBeLessThanOrEqual(48000);
+    expect(JSON.stringify(input.evidence).length).toBeLessThanOrEqual(48000);
+    expect(input.toolResults.at(-1).toolCallId).toBe("cmd-63");
+    expect(input.evidence.at(-1).toolCallId).toBe("old-63");
+    expect(
+      input.toolResults.map((p: { toolCallId: string }) =>
+        Number(p.toolCallId.split("-")[1]),
+      ),
+    ).toEqual(expect.arrayContaining([62, 63]));
+  });
+  it("cannot count an omitted older criterion as independently verified", async () => {
+    mockPriorEvidence.mockResolvedValue([
+      {
+        criterion: 0,
+        runId: "earliest",
+        toolCallId: "omitted",
+        explanation: "Old proof",
+        result: "x".repeat(4000),
+      },
+      ...Array.from({ length: 63 }, (_, i) => ({
+        criterion: 1,
+        runId: `prior-${i}`,
+        toolCallId: `old-${i}`,
+        explanation: "Newer proof",
+        result: "x".repeat(4000),
+      })),
+    ]);
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "Claim",
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const decision = await judgeGoalCompletion(
+      {
+        ...goal,
+        checkpoint: undefined,
+        criteria: ["First criterion", "Second criterion"],
+      },
+      [],
+      "r1",
+      jest.fn(),
+    );
+    expect(decision?.verdict).toBe("continue");
+    expect(
+      JSON.parse(generate.mock.calls[0][0].prompt).evidence.some(
+        (p: { criterion: number }) => p.criterion === 0,
+      ),
+    ).toBe(false);
+  });
   it("uses actual results and bills the separate completion check", async () => {
     generate.mockResolvedValue({
       output: {
