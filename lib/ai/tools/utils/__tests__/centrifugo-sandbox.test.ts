@@ -1796,6 +1796,34 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("attachment cancellation", () => {
+    it("preserves a literal POSIX backslash in the attachment staging label", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+
+      await sandbox.files.copyLocal(
+        "/tmp/source.txt",
+        "/tmp/prefix\\report.txt",
+      );
+
+      expect(run).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          displayName: "Preparing: prefix\\report.txt",
+        }),
+      );
+    });
+
     it.each(["copy", "download"])(
       "forwards Stop through %s and waits for command cancellation",
       async (operation) => {

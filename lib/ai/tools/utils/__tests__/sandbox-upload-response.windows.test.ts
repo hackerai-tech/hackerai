@@ -25,6 +25,7 @@ windowsDescribe("native Windows curl through Git Bash", () => {
     [403, "AccessDenied", false, false],
     [403, "SignatureDoesNotMatch", false, false],
     [403, null, true, false],
+    [403, null, false, true],
   ] as const)(
     "preserves HTTP %s, code %s and exact bytes (oversized=%s, legacy=%s)",
     async (status, code, oversized, legacy) => {
@@ -70,8 +71,8 @@ windowsDescribe("native Windows curl through Git Bash", () => {
           getUploadFailureDiagnostics(endpoint, result.stderr),
         ).toMatchObject({
           upload_reported_http_status: status === 403 ? 403 : null,
-          upload_reported_storage_code: status === 403 ? code : null,
-          upload_storage_diagnostic_present: status === 403,
+          upload_reported_storage_code: status === 403 && !legacy ? code : null,
+          upload_storage_diagnostic_present: status === 403 && !legacy,
         });
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));

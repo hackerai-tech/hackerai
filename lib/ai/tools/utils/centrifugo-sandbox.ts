@@ -2678,7 +2678,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       options?.signal?.throwIfAborted();
       const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
       const destCtx = await this.shellContext(destRawPath, options?.signal);
-      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
       const mkdirPart = !dir
