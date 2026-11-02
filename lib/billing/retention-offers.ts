@@ -15,7 +15,6 @@ import type { SubscriptionTier } from "@/types";
  * whose stated reason a pause can actually address.
  */
 export const PAUSE_OFFER_FLAG_KEY = "hac-96-pause-subscription-offer";
-export const DOWNGRADE_OFFER_FLAG_KEY = "hac-97-downgrade-offer";
 
 export type RetentionOfferType = "pause" | "downgrade";
 
@@ -56,9 +55,8 @@ export const DOWNGRADE_TARGETS: Partial<
 };
 
 /**
- * Which cancellation reasons see the downgrade offer. `price_reasons` is the
- * default mapping; `all_reasons` is the flag variant that tests whether the
- * offer also converts people who cite quality, features, or a competitor.
+ * The standard offer uses `all_reasons`. Keep the historical `price_reasons`
+ * policy available for explicit eligibility evaluation and analytics labels.
  * Usage-limit cancellers never see it: a cheaper tier makes that worse.
  */
 export const DOWNGRADE_REASON_POLICIES = [
@@ -68,12 +66,6 @@ export const DOWNGRADE_REASON_POLICIES = [
 export type DowngradeReasonPolicy = (typeof DOWNGRADE_REASON_POLICIES)[number];
 export const DEFAULT_DOWNGRADE_REASON_POLICY: DowngradeReasonPolicy =
   "price_reasons";
-
-export function parseDowngradeReasonPolicy(
-  value: unknown,
-): DowngradeReasonPolicy | undefined {
-  return DOWNGRADE_REASON_POLICIES.find((policy) => policy === value);
-}
 
 const DOWNGRADE_REASONS_BY_POLICY: Record<
   DowngradeReasonPolicy,
