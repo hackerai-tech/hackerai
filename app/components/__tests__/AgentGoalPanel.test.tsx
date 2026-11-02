@@ -40,6 +40,47 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
+  it.each([false, true])(
+    "links verified reply-only completion to its saved response (mobile: %s)",
+    async (isMobile) => {
+      mockIsMobile = isMobile;
+      setMockQueryResult({
+        ...goal,
+        state: "achieved",
+        judgment: {
+          verdict: "done",
+          reason: "Reply delivered",
+          responseEvidence: {
+            messageId: "reply-id",
+            text: "TEXT_ONLY_GOAL_OK",
+          },
+        },
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={jest.fn()}
+          settings={settings}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show goal details" }),
+      );
+      fireEvent.click(screen.getByText("Verification and evidence"));
+      const link = screen.getByRole("link", { name: "final response" });
+      expect(link).toHaveAttribute("href", "/c/chat#message=reply-id");
+      expect(screen.queryByText("TEXT_ONLY_GOAL_OK")).not.toBeInTheDocument();
+      fireEvent.click(link);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Goal achievement details" }),
+        ).not.toBeInTheDocument(),
+      );
+    },
+  );
   it.each(["Clear goal", "Pause goal"])(
     "saves the running response before %s and aborts when stopping fails",
     async (name) => {

@@ -48,6 +48,9 @@ export const goalJudgment = v.object({
   ),
   reason: v.string(),
   evidence: v.optional(v.array(goalEvidence)),
+  responseEvidence: v.optional(
+    v.object({ messageId: v.string(), text: v.string() }),
+  ),
   waitSeconds: v.optional(v.number()),
 });
 export const goalFields = {

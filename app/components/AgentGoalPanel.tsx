@@ -472,6 +472,24 @@ export function AgentGoalPanel({
                 </a>
               </p>
             ))}
+            {goal.judgment?.responseEvidence && (
+              <p>
+                Completion verified from the{" "}
+                <a
+                  className="underline"
+                  href={getSourceMessageHref(
+                    chatId,
+                    goal.judgment.responseEvidence.messageId,
+                  )}
+                  onClick={() => {
+                    setExpanded(false);
+                    setMobileOpen(false);
+                  }}
+                >
+                  final response
+                </a>
+              </p>
+            )}
           </div>
         </details>
       )}

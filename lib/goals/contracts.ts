@@ -70,8 +70,50 @@ export type GoalJudgment = {
   reason: string;
   // Optional for compatibility with workers deployed before automatic evaluation.
   evidence?: GoalEvidence[];
+  // Only a complete, independently classified in-chat deliverable may use this.
+  // Keep the exact evaluated text so settlement cannot verify a different reply.
+  responseEvidence?: { messageId: string; text: string };
   waitSeconds?: number;
 };
+
+export function goalResponseText(parts: readonly unknown[]): string {
+  return parts
+    .flatMap((part) => {
+      const p = part as { type?: string; text?: unknown } | null;
+      return p?.type === "text" && typeof p.text === "string" ? [p.text] : [];
+    })
+    .join("\n");
+}
+
+/** Revalidate the full reply actually judged, never a quote or historical claim. */
+export function validGoalResponseEvidence(
+  evidence: GoalJudgment["responseEvidence"],
+  messages: readonly { id: string; role: string; parts?: readonly unknown[] }[],
+  finalMessageId: string,
+  verificationCommand?: string,
+): boolean {
+  if (
+    !evidence ||
+    verificationCommand?.trim() ||
+    evidence.messageId !== finalMessageId ||
+    !evidence.text.trim() ||
+    evidence.text.length > 16000
+  )
+    return false;
+  if (
+    messages.some((m) =>
+      m.parts?.some((part) => {
+        const p = part as { type?: unknown } | null;
+        return typeof p?.type === "string" && p.type.startsWith("tool-");
+      }),
+    )
+  )
+    return false;
+  const message = messages.find(
+    (m) => m.id === finalMessageId && m.role === "assistant",
+  );
+  return !!message && goalResponseText(message.parts ?? []) === evidence.text;
+}
 
 // Long objectives retain their full text; the default criterion references it
 // instead of duplicating it into a field with a smaller limit.

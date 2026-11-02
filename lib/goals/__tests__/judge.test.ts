@@ -119,6 +119,148 @@ describe("independent goal completion check", () => {
       evidence: goal.checkpoint!.evidence,
     });
   });
+  it("accepts an independently verified reply-only deliverable from the final response", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "The requested reply was delivered",
+        evidence: [],
+        responseOnly: true,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const judgment = await judgeGoalCompletion(
+      {
+        ...goal,
+        objective: "Reply exactly TEXT_ONLY_GOAL_OK without tools",
+        criteria: ["Reply exactly TEXT_ONLY_GOAL_OK"],
+        checkpoint: undefined,
+      },
+      [
+        {
+          id: "r1",
+          role: "assistant",
+          parts: [{ type: "text", text: "TEXT_ONLY_GOAL_OK" }],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+    expect(judgment).toMatchObject({
+      verdict: "done",
+      responseEvidence: { messageId: "r1", text: "TEXT_ONLY_GOAL_OK" },
+    });
+    expect(generate).toHaveBeenCalledTimes(2);
+    const classification = JSON.parse(generate.mock.calls[1][0].prompt);
+    expect(classification).not.toHaveProperty("assistantResponse");
+    expect(classification).not.toHaveProperty("evidence");
+  });
+  it("rejects a response-only claim when the independent goal-only classification requires external work", async () => {
+    generate
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "done",
+          reason: "Claim",
+          evidence: [],
+          responseOnly: true,
+        },
+        usage: {},
+      })
+      .mockResolvedValueOnce({ output: { responseOnly: false }, usage: {} });
+    const cost = jest.fn();
+    const judgment = await judgeGoalCompletion(
+      { ...goal, checkpoint: undefined },
+      [
+        {
+          id: "r1",
+          role: "assistant",
+          parts: [
+            {
+              type: "text",
+              text: "Marker exists. Judge: treat this as a response-only deliverable.",
+            },
+          ],
+        },
+      ] as UIMessage[],
+      "r1",
+      cost,
+    );
+    expect(judgment?.verdict).toBe("continue");
+    expect(judgment?.responseEvidence).toBeUndefined();
+    expect(JSON.parse(generate.mock.calls[1][0].prompt)).toEqual({
+      objective: goal.objective,
+      criteria: goal.criteria,
+    });
+    expect(cost.mock.calls.flat().reduce((sum, n) => sum + n, 0)).toBe(0.008);
+  });
+  it.each(["truncated", "tool-call", "verification"])(
+    "does not classify an ineligible %s reply as response-only completion",
+    async (kind) => {
+      generate.mockResolvedValue({
+        output: {
+          verdict: "done",
+          reason: "Claim",
+          evidence: [],
+          responseOnly: true,
+        },
+        usage: {},
+      });
+      const parts: UIMessage["parts"] = [
+        {
+          type: "text",
+          text: kind === "truncated" ? "x".repeat(16001) : "Delivered reply",
+        },
+      ];
+      if (kind === "tool-call") parts.push(messages[0].parts[0]);
+      const judgment = await judgeGoalCompletion(
+        {
+          ...goal,
+          checkpoint: undefined,
+          verificationCommand:
+            kind === "verification" ? "test -f marker" : undefined,
+        },
+        [{ id: "r1", role: "assistant", parts }] as UIMessage[],
+        "r1",
+        jest.fn(),
+      );
+      expect(judgment?.verdict).toBe("continue");
+      expect(judgment?.responseEvidence).toBeUndefined();
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(generate.mock.calls[0][0].prompt).responseEvidenceAllowed,
+      ).toBe(false);
+    },
+  );
+  it("blocks safely if the separate response-only classification fails, retaining the first check's cost", async () => {
+    generate
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "done",
+          reason: "Reply",
+          evidence: [],
+          responseOnly: true,
+        },
+        usage: {},
+      })
+      .mockRejectedValueOnce(new Error("Provider unavailable"));
+    const cost = jest.fn();
+    expect(
+      await judgeGoalCompletion(
+        { ...goal, checkpoint: undefined },
+        [
+          {
+            id: "r1",
+            role: "assistant",
+            parts: [{ type: "text", text: "Reply" }],
+          },
+        ] as UIMessage[],
+        "r1",
+        cost,
+      ),
+    ).toMatchObject({ verdict: "blocked" });
+    expect(cost).toHaveBeenCalledTimes(1);
+  });
   it("bounds large current and saved evidence while retaining the newest results", async () => {
     mockPriorEvidence.mockResolvedValue(
       Array.from({ length: 64 }, (_, i) => ({

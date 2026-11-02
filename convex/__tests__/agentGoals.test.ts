@@ -408,6 +408,124 @@ describe("persistent goal lifecycle", () => {
     ).toBeGreaterThanOrEqual(0);
   });
   it.each([
+    "TEXT_ONLY_GOAL_OK",
+    "First paragraph\n" + "A detailed explanation. ".repeat(100),
+  ])(
+    "settles a verified reply-only deliverable using its complete saved response (%#)",
+    async (text) => {
+      const db = database();
+      await invoke(start, db.ctx, {
+        ...startArgs,
+        objective: "Deliver the requested reply",
+        criteria: ["Deliver the requested reply"],
+      });
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      const id = await db.message("r1", [
+        ...text.split("\n").map((part) => ({ type: "text", text: part })),
+      ]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        judgment: {
+          verdict: "done",
+          reason: "Reply delivered",
+          evidence: [],
+          responseEvidence: { messageId: "r1", text },
+        },
+      });
+      expect(db.goal().state).toBe("achieved");
+      expect(db.goal().judgment.responseEvidence).toEqual({
+        messageId: "r1",
+        text,
+      });
+      expect(
+        (await db.ctx.db.get(id)).goal.achievedElapsedMs,
+      ).toBeGreaterThanOrEqual(0);
+      expect(db.goal().continuationSourceRunId).toBeUndefined();
+    },
+  );
+  it.each([
+    "wrong-chat",
+    "user-message",
+    "historical",
+    "changed-text",
+    "empty",
+    "oversized",
+    "verification",
+    "retry-tool",
+  ])(
+    "rejects %s response evidence without recording an achievement",
+    async (kind) => {
+      const db = database();
+      await invoke(start, db.ctx, {
+        ...startArgs,
+        verificationCommand:
+          kind === "verification" ? "test -f marker" : undefined,
+      });
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      const text =
+        kind === "empty"
+          ? " "
+          : kind === "oversized"
+            ? "x".repeat(16001)
+            : "TEXT_ONLY_GOAL_OK";
+      const id = await db.message(
+        "r1",
+        [
+          {
+            type: "text",
+            text: kind === "changed-text" ? `${text} EXTRA` : text,
+          },
+        ],
+        kind === "wrong-chat" ? "other-chat" : "chat",
+      );
+      if (kind === "user-message") await db.ctx.db.patch(id, { role: "user" });
+      await db.message("old", [{ type: "text", text }]);
+      if (kind === "retry-tool") await db.message("retry", [result]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        messageIds: kind === "retry-tool" ? ["r1", "retry"] : ["r1"],
+        judgment: {
+          verdict: "done",
+          reason: "Claim",
+          evidence: [],
+          responseEvidence: {
+            messageId: kind === "historical" ? "old" : "r1",
+            text,
+          },
+        },
+      });
+      expect(db.goal().state).not.toBe("achieved");
+      expect(db.goal().judgment.responseEvidence).toBeUndefined();
+      expect((await db.ctx.db.get(id)).goal).toBeUndefined();
+    },
+  );
+  it.each(["canceled", "failed", "usageExhausted"])(
+    "keeps %s authoritative over verified response completion",
+    async (boundary) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      const id = await db.message("r1", [{ type: "text", text: "Reply" }]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        [boundary]: true,
+        judgment: {
+          verdict: "done",
+          reason: "Reply",
+          responseEvidence: { messageId: "r1", text: "Reply" },
+        },
+      });
+      expect(db.goal().state).toBe(
+        {
+          canceled: "paused",
+          failed: "failed",
+          usageExhausted: "usage_exhausted",
+        }[boundary],
+      );
+      expect((await db.ctx.db.get(id)).goal).toBeUndefined();
+    },
+  );
+  it.each([
     { ...proof, runId: "unrelated" },
     { ...proof, criterion: 9 },
     { ...proof, toolCallId: "invented" },

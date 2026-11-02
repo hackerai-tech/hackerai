@@ -17,6 +17,7 @@ import {
   resolveGoalOutcome,
   validGoalStart,
   verificationGatePassed,
+  validGoalResponseEvidence,
 } from "../lib/goals/contracts";
 import type { MutationCtx, QueryCtx } from "./lib/serviceFunctions";
 
@@ -577,6 +578,18 @@ export const finish = mutation({
         return source ? [{ ...e, messageId: source.id }] : [];
       });
     const evidence = mergeGoalEvidence(goal.evidence, verified);
+    const responseEvidence =
+      args.judgment?.verdict === "done" &&
+      validGoalResponseEvidence(
+        args.judgment.responseEvidence,
+        runMessages,
+        args.messageId ?? args.runId,
+        goal.verificationCommand,
+      )
+        ? args.judgment.responseEvidence
+        : undefined;
+    const judgment = args.judgment ? { ...args.judgment } : undefined;
+    if (judgment && !responseEvidence) delete judgment.responseEvidence;
     const progressed =
       verified.length > 0 ||
       runMessages.some((m) =>
@@ -599,9 +612,10 @@ export const finish = mutation({
                 message?.parts ?? [],
                 goal.verificationCommand,
               ) &&
-              goal.criteria.every((_, i) =>
-                evidence.some((e) => e.criterion === i),
-              ),
+              (!!responseEvidence ||
+                goal.criteria.every((_, i) =>
+                  evidence.some((e) => e.criterion === i),
+                )),
           });
     const timing = goalTimingForState(goal, state, Date.now());
     await ctx.db.patch(goal._id, {
@@ -626,7 +640,7 @@ export const finish = mutation({
             (args.judgment?.waitSeconds ?? goal.checkpoint?.waitSeconds ?? 0) *
               1000
           : undefined,
-      judgment: args.judgment,
+      judgment,
       progress: args.judgment?.reason ?? goal.progress,
       reason: ["paused", "canceled"].includes(goal.state)
         ? goal.reason
