@@ -14,6 +14,7 @@ import {
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
   ABLITERATED_FREE_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
@@ -24,6 +25,7 @@ export {
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
   ABLITERATED_FREE_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
 } from "./abliteration-keys";
 import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { UIMessage } from "ai";
@@ -45,6 +47,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
     | typeof ABLITERATED_PRO_THREE_STEPS_KEY
     | typeof ABLITERATED_FREE_THREE_STEPS_KEY
+    | typeof ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
     | typeof INFERENCE_CYBER_FLAG;
   variant: "control" | "test";
   modelKey: ModelName;
@@ -145,8 +148,8 @@ export async function evaluateAbliteratedModel({
     }
   };
   // Only trusted deployed callers can enable the direct-provider rollout.
-  // Evaluate lazily after eligibility and Free treatment assignment, so Free
-  // control and excluded requests never enter the provider rollout.
+  // Evaluate lazily after application eligibility. A lookup failure preserves
+  // the Abliteration route, independently of the retired Free experiment.
   const evaluateInference = async (): Promise<boolean> => {
     if (!inferenceEnvironment || !isInferenceConfigured() || !posthog)
       return false;
@@ -163,12 +166,11 @@ export async function evaluateAbliteratedModel({
       return false;
     }
   };
-  // Free enrollment is independent of paid routing and the closed Pro trial.
-  // Capture today's selected Free route for both control and later steps.
+  // The shipped Free policy is independent of experiment/analytics availability.
+  // Keep the selected Free baseline for generations after the first three.
   if (subscription === "free") {
     if (
       !providerConfigured ||
-      !posthog ||
       !userId ||
       limitRescue ||
       !newUserTurn ||
@@ -178,32 +180,24 @@ export async function evaluateAbliteratedModel({
       !messages.length ||
       messagesContainUnsupportedFiles(messages)
     ) {
-      reportDecision("free_user", undefined, ABLITERATED_FREE_THREE_STEPS_KEY);
-      return undefined;
-    }
-    try {
-      const variant = await getPostHogFlagWithoutExposure(
-        posthog,
-        ABLITERATED_FREE_THREE_STEPS_KEY,
-        userId,
-        { subscription, subscription_tier: subscription },
+      reportDecision(
+        "free_user",
+        undefined,
+        ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
       );
-      if (variant !== "control" && variant !== "test") return undefined;
-      return {
-        key: ABLITERATED_FREE_THREE_STEPS_KEY,
-        variant,
-        modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
-        baselineModel: selectedModel,
-        generationStepLimit: 3,
-        inferenceCyberEnabled:
-          variant === "test" && (await evaluateInference()),
-        selectionSource: "moderation",
-        moderationEligible,
-        moderationChecked,
-      };
-    } catch {
       return undefined;
     }
+    return {
+      key: ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
+      variant: "test",
+      modelKey: ABLITERATION_MODEL_KEY,
+      baselineModel: selectedModel,
+      generationStepLimit: 3,
+      inferenceCyberEnabled: await evaluateInference(),
+      selectionSource: "moderation",
+      moderationEligible,
+      moderationChecked,
+    };
   }
   if (
     !providerConfigured ||
