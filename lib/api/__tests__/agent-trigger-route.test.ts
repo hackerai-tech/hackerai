@@ -658,6 +658,7 @@ describe("Agent trigger route lifecycle", () => {
       previousApprovalSessionId: null,
     });
     mockCreatePublicToken
+      .mockReset()
       .mockResolvedValueOnce("run-token")
       .mockResolvedValueOnce("session-token");
     mockCancelAgentTriggerRun.mockResolvedValue(true);
@@ -832,6 +833,133 @@ describe("Agent trigger route lifecycle", () => {
 
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledTimes(1);
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it.each(["updated", "stale"])(
+    "records the actual conditional cleanup acknowledgement: %s",
+    async (clearResult) => {
+      const failure = new Error("private association failure");
+      mockReplaceActiveTriggerRun.mockRejectedValueOnce(failure);
+      mockSetActiveTriggerRun.mockResolvedValueOnce(clearResult);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalizeStartedAgentRun({
+            chatId: "00000000-0000-4000-8000-000000000001",
+            runId: "run_000000000000000000000000",
+            approvalSessionId: "approval-session-1",
+          }),
+        ).rejects.toBe(failure);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const event = JSON.parse(String(warn.mock.calls[0][0]));
+        expect(event).toMatchObject({
+          event: "agent_run_handoff_cleanup_result",
+          failure_stage: "associate_run",
+          chat_id: "00000000-0000-4000-8000-000000000001",
+          trigger_run_id: "run_000000000000000000000000",
+          close_session_status: "fulfilled",
+          cancel_run_status: "fulfilled",
+          clear_association_result: clearResult,
+        });
+        expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
+          chatId: "00000000-0000-4000-8000-000000000001",
+          triggerRunId: null,
+          approvalSessionId: null,
+          expectedRunId: "run_000000000000000000000000",
+          clearApprovalPending: true,
+        });
+        expect(mockCancelAgentTriggerRun).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(event)).not.toMatch(
+          /private association failure|run-token|session-token|approval-session-1/,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("reports rejected cleanup attempts without replacing the original failure", async () => {
+    const failure = new Error("association failed");
+    mockReplaceActiveTriggerRun.mockRejectedValueOnce(failure);
+    mockCancelAgentTriggerRun.mockRejectedValueOnce(
+      new Error("private cancel"),
+    );
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(
+      new Error("private close"),
+    );
+    mockSetActiveTriggerRun.mockRejectedValueOnce(new Error("private clear"));
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "chat-1",
+          runId: "run-1",
+          approvalSessionId: "approval-session-1",
+        }),
+      ).rejects.toBe(failure);
+      const event = JSON.parse(String(warn.mock.calls[0][0]));
+      expect(event).toMatchObject({
+        close_session_status: "rejected",
+        cancel_run_status: "rejected",
+        clear_association_result: "rejected",
+      });
+      expect(JSON.stringify(event)).not.toContain("private");
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("bounds unexpected cleanup values and omits unvalidated identifiers", async () => {
+    const failure = new Error("association failed");
+    mockReplaceActiveTriggerRun.mockRejectedValueOnce(failure);
+    mockSetActiveTriggerRun.mockResolvedValueOnce({
+      private: "cleanup payload",
+    });
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "private chat content",
+          runId: "private run content",
+          approvalSessionId: undefined,
+        }),
+      ).rejects.toBe(failure);
+      const event = JSON.parse(String(warn.mock.calls[0][0]));
+      expect(event).toMatchObject({
+        close_session_status: "not_requested",
+        clear_association_result: "unrecognized",
+      });
+      expect(event).not.toHaveProperty("chat_id");
+      expect(event).not.toHaveProperty("trigger_run_id");
+      expect(JSON.stringify(event)).not.toMatch(/private|cleanup payload/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the original error and cleanup when the outcome diagnostic throws", async () => {
+    const failure = new Error("association failed");
+    mockReplaceActiveTriggerRun.mockRejectedValueOnce(failure);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("diagnostic sink unavailable");
+    });
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "chat-1",
+          runId: "run-1",
+          approvalSessionId: "approval-session-1",
+        }),
+      ).rejects.toBe(failure);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("returns tokens only after the active run association succeeds", async () => {
