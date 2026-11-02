@@ -1391,7 +1391,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         goalAdmissionRef.current?.chatId === chatId &&
         !goalAdmissionRef.current.accepted
       ) {
-        goalAdmissionRef.current.error = displayError;
+        goalAdmissionRef.current.error =
+          displayError instanceof ChatSDKError
+            ? new Error(
+                formatTaskUiCopy(
+                  typeof displayError.cause === "string"
+                    ? displayError.cause
+                    : displayError.message,
+                ),
+              )
+            : displayError;
         return; // The composer reports this admission error and preserves its draft.
       }
       if (displayError instanceof ChatSDKError) {
@@ -1490,12 +1499,26 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         ) {
           // Failed requests can leave an optimistic bubble. Remove it only after
           // confirming it was never persisted; unknown outcomes stay visible.
-          const persisted = await convex
-            .query(api.messages.isUserMessagePersisted, {
-              chatId,
-              messageId: id,
-            })
-            .catch(() => undefined);
+          let persistenceTimeout: ReturnType<typeof setTimeout> | undefined;
+          let persisted: boolean | undefined;
+          try {
+            persisted = await Promise.race([
+              convex
+                .query(api.messages.isUserMessagePersisted, {
+                  chatId,
+                  messageId: id,
+                })
+                .catch(() => undefined),
+              new Promise<undefined>((resolve) => {
+                persistenceTimeout = setTimeout(
+                  () => resolve(undefined),
+                  5_000,
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(persistenceTimeout);
+          }
           if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
             if (persisted === false)
               setMessages((current) =>

@@ -1616,6 +1616,75 @@ describe("Chat Component Integration", () => {
       },
     );
 
+    it("preserves server guidance when goal admission is rejected", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react")
+        .useConvex()
+        .query.mockResolvedValueOnce(undefined);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      mockSendMessage.mockImplementationOnce(async () => {
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          onError: (error: Error) => void;
+        };
+        const { ChatSDKError } = require("@/lib/errors");
+        options.onError(
+          new ChatSDKError(
+            "bad_request:chat",
+            "The goal changed. Reload before resuming.",
+          ),
+        );
+      });
+      await act(async () => {
+        await expect(
+          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+        ).rejects.toThrow("The goal changed. Reload before resuming.");
+      });
+    });
+
+    it("releases a rejected goal submission when its persistence lookup cannot reconnect", async () => {
+      jest.useFakeTimers();
+      try {
+        mockDesktopState = { chatMode: "agent" };
+        const query = require("convex/react").useConvex().query;
+        query.mockResolvedValue(undefined);
+        query.mockImplementationOnce(() => new Promise(() => {}));
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        mockSetMessages.mockClear();
+        let settled = false;
+        const rejection = mockChatHandlerArgs.sendGoalMessage!({
+          text: "Use blue",
+        }).catch((error: Error) => {
+          settled = true;
+          return error;
+        });
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5_000);
+        });
+        expect(settled).toBe(true);
+        expect(await rejection).toEqual(
+          expect.objectContaining({
+            message: expect.stringContaining("could not start"),
+          }),
+        );
+        expect(mockSetMessages).not.toHaveBeenCalled();
+        expect(mockClearError).toHaveBeenCalled();
+        await expect(
+          mockChatHandlerArgs.sendGoalMessage!({ text: "Try again" }),
+        ).rejects.toThrow("could not start");
+        expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it("keeps a stopped submission distinct from rejected admission", async () => {
       mockDesktopState = { chatMode: "agent" };
       render(
