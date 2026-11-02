@@ -73,6 +73,8 @@ const UPDATE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_PROJECT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0] : [250];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
@@ -798,12 +800,51 @@ export async function getProjectById({
   id: string;
   userId: string;
 }) {
+  const queryArgs = { serviceKey, id, userId };
   try {
-    return await getConvexClient().query(api.projects.getProjectForBackend, {
-      serviceKey,
-      id,
-      userId,
-    });
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().query(
+          api.projects.getProjectForBackend,
+          queryArgs,
+        );
+      } catch (error) {
+        // Retry only the transport failure observed on this read. Structured
+        // guards and server errors remain authoritative on the first attempt.
+        const retryReason =
+          error instanceof TypeError && getErrorData(error) === undefined
+            ? getRetryableDatabaseErrorReason(error)
+            : undefined;
+        const retryDelayMs = GET_PROJECT_RETRY_DELAYS_MS[attemptIndex];
+        if (
+          retryReason !== "network_fetch_failed" ||
+          retryDelayMs === undefined
+        ) {
+          throw error;
+        }
+
+        try {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              event: "project_fetch_retry_scheduled",
+              service: "chat-handler",
+              timestamp: new Date().toISOString(),
+              db_operation: "projects.getProjectForBackend",
+              retry_reason: retryReason,
+              attempt: attemptIndex + 1,
+              next_attempt: attemptIndex + 2,
+              retry_delay_ms: retryDelayMs,
+              project_id: id,
+              user_id: userId,
+            }),
+          );
+        } catch {
+          // Diagnostics must not prevent the bounded read recovery.
+        }
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("projects.getProjectForBackend", error, {
       project_id: id,
