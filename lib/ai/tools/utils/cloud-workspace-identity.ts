@@ -185,24 +185,69 @@ export async function reconcileWorkspaceCreation(
   creating: ProvisioningWorkspace,
   signal?: AbortSignal,
 ) {
-  const cluster = getE2BClusterRouting(creating.region).createCluster;
-  const pager = Sandbox.list({
-    ...cluster.connectionOptions,
-    retries: 0,
-    requestTimeoutMs: 10_000,
-    query: {
-      metadata: { userID: userId, workspaceCreationToken: creating.token },
-      state: ["running", "paused"],
-    },
-  });
-  const items = await pager.nextItems({ signal });
-  if (
-    pager.hasNext ||
-    items.length !== 1 ||
-    !isOwnedWorkspace(items[0], cluster, userId) ||
-    items[0].metadata?.workspaceCreationToken !== creating.token
-  )
-    throw new CloudWorkspaceUnavailableError();
-  signal?.throwIfAborted();
-  return finishWorkspaceCreation(userId, creating, items[0].sandboxId);
+  let failureReason:
+    | "inventory_lookup_failed"
+    | "inventory_validation_failed"
+    | "inventory_incomplete"
+    | "no_matching_workspace"
+    | "multiple_matching_workspaces"
+    | "workspace_identity_mismatch"
+    | "creation_token_mismatch"
+    | "request_aborted"
+    | "binding_finalize_unconfirmed" = "inventory_lookup_failed";
+  try {
+    const cluster = getE2BClusterRouting(creating.region).createCluster;
+    const pager = Sandbox.list({
+      ...cluster.connectionOptions,
+      retries: 0,
+      requestTimeoutMs: 10_000,
+      query: {
+        metadata: { userID: userId, workspaceCreationToken: creating.token },
+        state: ["running", "paused"],
+      },
+    });
+    const items = await pager.nextItems({ signal });
+    failureReason = "inventory_validation_failed";
+    const rejection = pager.hasNext
+      ? "inventory_incomplete"
+      : items.length === 0
+        ? "no_matching_workspace"
+        : items.length !== 1
+          ? "multiple_matching_workspaces"
+          : !isOwnedWorkspace(items[0], cluster, userId)
+            ? "workspace_identity_mismatch"
+            : items[0].metadata?.workspaceCreationToken !== creating.token
+              ? "creation_token_mismatch"
+              : undefined;
+    if (rejection) {
+      failureReason = rejection;
+      throw new CloudWorkspaceUnavailableError();
+    }
+    failureReason = "request_aborted";
+    signal?.throwIfAborted();
+    failureReason = "binding_finalize_unconfirmed";
+    return await finishWorkspaceCreation(userId, creating, items[0].sandboxId);
+  } catch (error) {
+    try {
+      const reason =
+        failureReason === "inventory_lookup_failed" &&
+        signal?.aborted &&
+        (error === signal.reason ||
+          (error instanceof Error && error.name === "AbortError"))
+          ? "request_aborted"
+          : failureReason === "binding_finalize_unconfirmed" &&
+              error instanceof CloudWorkspaceUnavailableError
+            ? "binding_rejected"
+            : failureReason;
+      // One closed reason per reconciliation; never include inventory, tokens,
+      // workspace identities or provider/store error contents.
+      console.warn("Cloud workspace creation reconciliation failed", {
+        event: "cloud_workspace_creation_reconcile_failed",
+        reason,
+      });
+    } catch {
+      // Diagnostics must not replace the original rejection or retry a commit.
+    }
+    throw error;
+  }
 }
