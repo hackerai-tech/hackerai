@@ -116,7 +116,10 @@ describe("Windows shell discovery", () => {
       const gitMarker = `git-${root}`;
       const bashMarker = `bash-${root}`;
       const oldCwd = process.cwd();
+      const oldBashOverride = process.env.HACKERAI_BASH_PATH;
       try {
+        // Exercise PATH discovery even when the developer configured Git Bash.
+        delete process.env.HACKERAI_BASH_PATH;
         mkdirSync(project, { recursive: true });
         mkdirSync(gitCmd, { recursive: true });
         mkdirSync(gitBin, { recursive: true });
@@ -168,6 +171,9 @@ describe("Windows shell discovery", () => {
         expect(readFileSync(utils!.findGitBash()!, "utf8")).toBe(bashMarker);
         expect(existsSync(marker)).toBe(false);
       } finally {
+        if (oldBashOverride === undefined)
+          delete process.env.HACKERAI_BASH_PATH;
+        else process.env.HACKERAI_BASH_PATH = oldBashOverride;
         process.chdir(oldCwd);
         rmSync(root, { recursive: true, force: true });
       }
