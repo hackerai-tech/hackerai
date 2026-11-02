@@ -84,6 +84,131 @@ const loadSaveMessageWithMocks = async () => {
   };
 };
 
+describe("saveMessage retry acknowledgement diagnostics", () => {
+  it.each([
+    [null, "acknowledged"],
+    ["stale_run", "stale_run"],
+    [{ privateResult: "do not log" }, "unrecognized_ack"],
+  ])(
+    "reports one bounded acknowledgement after retries: %s",
+    async (result, acknowledgement) => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation
+        .mockRejectedValueOnce(
+          new Error("[Request ID: abc] Server Error") as never,
+        )
+        .mockRejectedValueOnce(
+          new Error("[Request ID: def] Server Error") as never,
+        )
+        .mockResolvedValueOnce(result as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await expect(
+          saveMessage({
+            chatId: "chat-1",
+            userId: "user-1",
+            message: {
+              id: "message-1",
+              role: "user",
+              parts: [{ type: "text", text: "private message" }],
+            },
+            usage: { privateUsage: "do not log" },
+          }),
+        ).resolves.toBe(result);
+        expect(mockMutation).toHaveBeenCalledTimes(3);
+        expect(info).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(info.mock.calls[0][0]))).toEqual({
+          level: "info",
+          event: "message_save_retry_acknowledged",
+          service: "chat-handler",
+          timestamp: expect.any(String),
+          db_operation: "messages.saveMessage",
+          attempts: 3,
+          acknowledgement,
+          chat_id: "chat-1",
+          user_id: "user-1",
+          message_id: "message-1",
+        });
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("keeps an acknowledged mutation successful when diagnostic logging throws", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation
+      .mockRejectedValueOnce(
+        new Error("[Request ID: abc] Server Error") as never,
+      )
+      .mockResolvedValueOnce(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("logger offline");
+    });
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).resolves.toBeNull();
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("keeps first-attempt acknowledgements quiet", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockResolvedValueOnce(null as never);
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).resolves.toBeNull();
+      expect(info).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("does not report acknowledgement when retries are exhausted", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(
+      new Error("[Request ID: abc] Server Error") as never,
+    );
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).rejects.toMatchObject({ surface: "database" });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+});
+
 describe("fenceAndGetActiveAgentResourcesForUser", () => {
   it("distinguishes unavailable notes from a successful empty snapshot for strict callers", async () => {
     const { getNotes, mockQuery } = await loadSaveMessageWithMocks();
