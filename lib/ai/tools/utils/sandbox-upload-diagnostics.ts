@@ -40,6 +40,14 @@ case "$(command -v curl)" in
     exit $?
     ;;
 esac
+# A POSIX shell on Windows can invoke native curl, which cannot open the
+# shell's /dev/fd paths. Keep its ordinary upload before creating diagnostics.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    ${ordinaryUpload}
+    exit $?
+    ;;
+esac
 if [ ! -d /dev/fd ] || ! command -v mktemp >/dev/null 2>&1 || ! command -v head >/dev/null 2>&1 || ! command -v sed >/dev/null 2>&1 || ! command -v cat >/dev/null 2>&1 || ! command -v rm >/dev/null 2>&1; then
   ${ordinaryUpload}
   exit $?

@@ -252,6 +252,44 @@ posixDescribe("bounded storage rejection diagnostics through real curl", () => {
   );
 
   it.each([200, 403])(
+    "preserves HTTP %s in Windows POSIX shells whose curl cannot open shell descriptors",
+    async (httpStatus) => {
+      const bin = path.join(directory, "bin");
+      await mkdir(bin);
+      // Native Windows curl can use standard streams but cannot open MSYS
+      // /dev/fd paths. Model that boundary; this is not a Windows native test.
+      await writeFile(
+        path.join(bin, "curl"),
+        '#!/bin/sh\nprevious=""\nfor arg in "$@"; do\n  if [ "$previous" = "-o" ] && [ "$arg" = "/dev/fd/4" ]; then exit 23; fi\n  previous="$arg"\ndone\nexec /usr/bin/curl "$@"\n',
+        { mode: 0o700 },
+      );
+      await writeFile(
+        path.join(bin, "uname"),
+        '#!/bin/sh\nprintf "MINGW64_NT-10.0\\n"\n',
+        { mode: 0o700 },
+      );
+      status = httpStatus;
+      body =
+        "<Error><Code>AccessDenied</Code><Message>PRIVATE body</Message></Error>";
+      const before = (await readdir(directory)).sort();
+      const result = await upload(directory, source, {
+        path: `${bin}:/usr/bin:/bin`,
+      });
+      expect(result.code).toBe(httpStatus === 403 ? 22 : 0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("PRIVATE");
+      expect(
+        getUploadFailureDiagnostics(endpoint, result.stderr),
+      ).toMatchObject({
+        upload_reported_http_status: httpStatus === 403 ? 403 : null,
+        upload_storage_diagnostic_present: false,
+      });
+      expect(requests.map((bytes) => bytes.toString())).toEqual([payload]);
+      expect((await readdir(directory)).sort()).toEqual(before);
+    },
+  );
+
+  it.each([200, 403])(
     "preserves HTTP %s when the OS rejects diagnostic file writes",
     async (httpStatus) => {
       // RLIMIT_FSIZE also applies to privileged users, unlike chmod-based
