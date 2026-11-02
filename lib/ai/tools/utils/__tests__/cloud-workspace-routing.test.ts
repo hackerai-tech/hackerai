@@ -139,7 +139,14 @@ it("distinguishes creation reconciliation from reading persisted state", async (
   });
 
   await expect(resolve("us-east-1")).rejects.toBe(failure);
-  expect(warning).toHaveBeenCalledTimes(1);
+  expect(warning).toHaveBeenCalledTimes(2);
+  expect(warning).toHaveBeenCalledWith(
+    "Cloud workspace creation reconciliation failed",
+    {
+      event: "cloud_workspace_creation_reconcile_failed",
+      reason: "inventory_lookup_failed",
+    },
+  );
   expect(warning).toHaveBeenCalledWith(
     "Cloud workspace routing operation failed",
     {
