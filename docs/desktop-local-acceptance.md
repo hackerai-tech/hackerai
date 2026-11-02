@@ -176,6 +176,82 @@ testing; a browser tab cannot substitute for native acceptance.
 Use only explicitly authorized targets and request budgets. Do not invent
 pentest scope to obtain acceptance evidence.
 
+## Windows VM checks
+
+Use an existing task-authorized Windows VM when a failure needs Windows curl,
+Git Bash, command-line quoting, or native file dialogs. Keep the VM and its disk,
+TPM and UEFI state outside disposable worktrees. On an ARM host, distinguish the
+Windows ARM guest, native ARM tools, and any x64 executables running under
+emulation. Record each executable's actual architecture and version; a VM test
+does not establish behavior on physical x64 hardware.
+
+Install Windows from official media and preserve its security requirements.
+Inspect any automatically attached guest-tools media before the initial install:
+an unattended setup file can change Windows requirements. Attach driver/tool
+media separately after setup when necessary. Verify TPM and Secure Boot in the
+guest rather than relying on the VM configuration. In elevated PowerShell:
+
+```powershell
+Get-CimInstance Win32_OperatingSystem |
+  Select-Object Caption, Version, BuildNumber, OSArchitecture
+Get-CimInstance -Namespace root/cimv2/security/microsofttpm -ClassName Win32_Tpm |
+  Select-Object SpecVersion
+Confirm-SecureBootUEFI
+```
+
+For a reusable app-testing baseline, install the official released Windows app
+and its runtime dependencies first. Record the release version, published asset
+digest and installed executable hash. Compiler toolchains are not required to
+run the released app; install them only when building a source change is needed.
+Use an authorized QA account and label released-app Production checks separately
+from Development/Preview acceptance. A released binary cannot verify unbuilt
+native changes.
+
+For source-level regression tests, give the guest its own source checkout and
+dependencies. A source archive must exclude ignored credentials, runtime state
+and installed dependencies; record its commit and checksum. Keep shared media read-only and free of credentials.
+Verify guest-tools installation, network access and keyboard input before
+entering credentials. If bulk text entry drops or repeats characters, test a
+harmless string with individual key presses and verify it before submission.
+
+Install dependencies in the guest, then run the Windows upload and shell
+regressions from its repository root:
+
+```powershell
+corepack pnpm install --frozen-lockfile
+corepack pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts lib/ai/tools/utils/__tests__/sandbox-upload-response.windows.test.ts packages/local/src/__tests__/windows-shell-discovery.test.ts --runInBand --ci
+corepack pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
+```
+
+The first command group requires Git Bash. For a portable installation, set
+`HACKERAI_BASH_PATH` to its actual `bin\bash.exe` in the test process. Capture
+Node, Git Bash and `$env:SystemRoot\System32\curl.exe --version` output, and
+report selected and skipped tests. The path filter intentionally excludes the
+rest of the sandbox suite. Do not count Windows-only tests skipped on macOS or
+Linux as Windows verification.
+
+For TLS diagnosis, exercise the actual upload-command code with Windows system
+curl through Git Bash. Use a loopback test server and a temporary test CA passed
+only to the test command. Check exact bytes for success, storage and proxy 403s,
+connection resets before TLS and after request-body delivery, and certificate
+rejection. Do not globally trust the test CA or disable certificate validation.
+Ensure diagnostics omit private response bodies and signed URLs. Label injected
+failures separately from independently reproduced customer failures.
+
+These checks supplement the native journey above. When verifying native source
+changes, build a distinct Windows QA app from the intended source using the
+current Windows build prerequisites and target in the repository workflow. Do
+not dispatch a signing/release workflow just to obtain a QA binary. Verify WebView2, the executable hash, and the actual
+Development/Preview frontend, backend, worker, relay and account. Remember that
+guest `localhost` refers to Windows, not the host. Do not broaden host service
+bindings or substitute Production to make the guest connect.
+
+Before calling the VM reusable, verify a normal shutdown and restart preserve
+the tools and test results. Create backups only with the VM fully shut down,
+keeping disk, TPM and UEFI state together. If the graphics device does not
+support suspend snapshots, use a powered-off backup. Retain task-owned test
+logs and report any installer, service or acceptance step left unfinished.
+
 ## Record results and leave a reviewable state
 
 For every check, record **PASS**, **FAIL**, or **BLOCKED**, with evidence and

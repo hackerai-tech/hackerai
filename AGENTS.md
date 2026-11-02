@@ -76,6 +76,12 @@ lab failures from independently confirmed customer causes. Linux checks
 supplement required Windows CI and native Desktop acceptance; they do not replace
 them. Documentation-only changes do not require a container run.
 
+For Windows-specific reproduction, check available Windows VMs before asking
+for another test machine. Record the guest architecture and whether the tested
+executable uses emulation; Windows ARM with an x64 executable is not physical
+x64 Windows evidence. Follow the [Windows VM checks](docs/desktop-local-acceptance.md#windows-vm-checks)
+and retain required Windows CI and native Desktop acceptance.
+
 For native Desktop Computer Use, use the
 [hackerai-desktop-qa skill](.agents/skills/hackerai-desktop-qa/SKILL.md) and its
 local QA runner to reuse builds, record diagnostics and clean up owned processes.
