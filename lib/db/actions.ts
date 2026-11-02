@@ -1183,7 +1183,38 @@ export async function saveMessage({
     for (let attemptIndex = 0; ; attemptIndex++) {
       signal?.throwIfAborted();
       try {
-        return await client.mutation(api.messages.saveMessage, mutationArgs);
+        const result = await client.mutation(
+          api.messages.saveMessage,
+          mutationArgs,
+        );
+        if (attemptIndex > 0) {
+          try {
+            // An RPC acknowledgement can also be a fenced/no-op result; it is
+            // not proof that this invocation changed durable message contents.
+            console.info(
+              JSON.stringify({
+                level: "info",
+                event: "message_save_retry_acknowledged",
+                service: "chat-handler",
+                timestamp: new Date().toISOString(),
+                db_operation: "messages.saveMessage",
+                attempts: attemptIndex + 1,
+                acknowledgement:
+                  result === null
+                    ? "acknowledged"
+                    : result === "stale_run"
+                      ? "stale_run"
+                      : "unrecognized_ack",
+                chat_id: chatId,
+                user_id: userId,
+                message_id: message.id,
+              }),
+            );
+          } catch {
+            // Diagnostics must never retry or fail an acknowledged mutation.
+          }
+        }
+        return result;
       } catch (error) {
         signal?.throwIfAborted();
         const retryReason = getRetryableSaveMessageErrorReason(error);
