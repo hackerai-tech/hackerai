@@ -1034,13 +1034,21 @@ describe("Agent trigger route lifecycle", () => {
     mockCancelAgentTriggerRun
       .mockRejectedValueOnce(new Error("cancellation unavailable"))
       .mockResolvedValue(true);
-    await expect(
-      finalizeStartedAgentRun({
-        chatId: "chat-1",
-        runId: "new",
-        approvalSessionId: undefined,
-      }),
-    ).rejects.toThrow("cancellation unavailable");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "chat-1",
+          runId: "new",
+          approvalSessionId: undefined,
+        }),
+      ).rejects.toThrow("cancellation unavailable");
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        failure_stage: "cancel_previous_run",
+      });
+    } finally {
+      warn.mockRestore();
+    }
     expect(mockCancelAgentTriggerRun.mock.calls.map(([id]) => id)).toEqual([
       "old",
       "new",
@@ -1048,6 +1056,42 @@ describe("Agent trigger route lifecycle", () => {
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
       expect.objectContaining({ expectedRunId: "new", triggerRunId: null }),
     );
+  });
+
+  it("records failure to close the displaced Session and cleans up the replacement", async () => {
+    const failure = new Error("previous Session unavailable");
+    mockReplaceActiveTriggerRun.mockResolvedValue({
+      previousRunId: "old",
+      previousApprovalSessionId: "old-session",
+    });
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(failure);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "chat-1",
+          runId: "new",
+          approvalSessionId: "new-session",
+        }),
+      ).rejects.toBe(failure);
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        failure_stage: "close_previous_session",
+        close_session_status: "fulfilled",
+      });
+      expect(mockCloseAgentApprovalSession.mock.calls).toEqual([
+        ["old-session", "agent-run-replaced"],
+        ["new-session", "agent-run-association-failed"],
+      ]);
+      expect(mockCancelAgentTriggerRun.mock.calls.map(([id]) => id)).toEqual([
+        "old",
+        "new",
+      ]);
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedRunId: "new", triggerRunId: null }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does not cancel an idempotently returned same run", async () => {
