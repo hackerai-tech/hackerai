@@ -304,3 +304,23 @@ describe("composer goal edits", () => {
     },
   );
 });
+
+it("requires a goal version for reply-driven resume and rejects malformed reply flags", () => {
+  expect(
+    validGoalRequest({
+      action: "resume",
+      expectedGeneration: 4,
+      resumeOnReply: true,
+    }),
+  ).toBe(true);
+  expect(validGoalRequest({ action: "resume", resumeOnReply: true })).toBe(
+    false,
+  );
+  expect(
+    validGoalRequest({
+      action: "resume",
+      expectedGeneration: 4,
+      resumeOnReply: "true",
+    }),
+  ).toBe(false);
+});

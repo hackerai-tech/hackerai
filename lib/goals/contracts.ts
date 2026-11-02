@@ -165,6 +165,13 @@ export function validGoalRequest(value: unknown): boolean {
       request.expectedGeneration < 0)
   )
     return false;
+  if (
+    request.resumeOnReply !== undefined &&
+    (typeof request.resumeOnReply !== "boolean" ||
+      request.action !== "resume" ||
+      (request.resumeOnReply && request.expectedGeneration === undefined))
+  )
+    return false;
   if (request.action === "start") return validGoalStart(request);
   return request.action === "resume";
 }

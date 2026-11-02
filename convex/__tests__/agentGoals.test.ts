@@ -567,6 +567,73 @@ describe("persistent goal lifecycle", () => {
       objective: "Replacement",
     });
   });
+  it.each(["needs_input", "blocked"])(
+    "settles %s without scheduling work until the user replies",
+    async (outcome) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      await invoke(checkpoint, db.ctx, {
+        ...owner,
+        runId: "r1",
+        checkpoint: {
+          outcome,
+          progress: "Which color should the file contain?",
+          evidence: [],
+        },
+      });
+      await invoke(finish, db.ctx, terminal);
+      expect(db.goal()).toMatchObject({
+        state: outcome,
+        reason: "Which color should the file contain?",
+      });
+      expect(db.goal().activeRunId).toBeUndefined();
+      expect(db.goal().continuationSourceRunId).toBeUndefined();
+      db.chat().active_trigger_run_id = undefined;
+      expect(
+        await invoke(claimRun, db.ctx, {
+          ...owner,
+          generation: 1,
+          runId: "unsolicited",
+        }),
+      ).toBeNull();
+      await invoke(control, db.ctx, {
+        ...owner,
+        action: "resume",
+        generation: 1,
+        resumeOnReply: true,
+      });
+      expect(db.goal()).toMatchObject({
+        state: "queued",
+        generation: 2,
+        permissionMode: "ask_approval",
+      });
+      await invoke(claimRun, db.ctx, {
+        ...owner,
+        generation: 2,
+        runId: "reply-run",
+      });
+      expect(db.goal()).toMatchObject({
+        state: "running",
+        activeRunId: "reply-run",
+      });
+    },
+  );
+  it("does not resume on a reply if another tab paused the goal after it was read", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    db.goal().state = "needs_input";
+    await invoke(control, db.ctx, { ...owner, action: "pause" });
+    await expect(
+      invoke(control, db.ctx, {
+        ...owner,
+        action: "resume",
+        generation: 1,
+        resumeOnReply: true,
+      }),
+    ).rejects.toThrow("Goal is no longer waiting for a reply");
+    expect(db.goal().state).toBe("paused");
+  });
   it("continues through ten runs, then stops on no progress", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

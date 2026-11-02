@@ -182,6 +182,7 @@ export const control = mutation({
       v.literal("resume"),
     ),
     additionalRuns: v.optional(v.number()),
+    resumeOnReply: v.optional(v.boolean()),
     generation: v.optional(v.number()),
   },
   returns: goalDoc,
@@ -193,6 +194,12 @@ export const control = mutation({
     if (args.generation !== undefined && args.generation !== goal.generation)
       throw new ConvexError("Goal changed. Reload before changing it.");
     if (args.action === "resume") {
+      // A reply must not undo a Pause that raced the composer's status read.
+      if (
+        args.resumeOnReply &&
+        !["needs_input", "blocked"].includes(goal.state)
+      )
+        throw new ConvexError("Goal is no longer waiting for a reply");
       if (
         goal.deletedAt ||
         goal.activeRunId ||

@@ -10,7 +10,12 @@ export type GoalCommand =
       objective: string;
       criteria: string[];
     } & GoalContract)
-  | { action: "resume"; input?: string }
+  | {
+      action: "resume";
+      input?: string;
+      expectedGeneration?: number;
+      resumeOnReply?: boolean;
+    }
   | { action: "status" | "pause" | "stop" | "clear" };
 export function parseGoalCommand(text: string): GoalCommand | null {
   const match = text.trim().match(/^\/goal(?:\s+([\s\S]*))?$/i);

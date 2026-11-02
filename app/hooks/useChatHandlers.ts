@@ -628,6 +628,19 @@ export const useChatHandlers = ({
       );
       return false;
     }
+    // A reply to a request for help continues that goal; an explicitly paused
+    // goal remains paused. The saved state is checked again before admission.
+    const resumeOnReply =
+      !goalCommand &&
+      isExistingChat &&
+      shouldUseAgentLongForAgent({
+        mode: chatModeRef.current,
+        isTauri: isTauriEnvironment(),
+      }) &&
+      subscription !== "free" &&
+      (goalState === "needs_input" || goalState === "blocked") &&
+      (!!input.trim() || uploadedFiles.some(isSendableUploadedFile));
+    if (resumeOnReply) goalCommand = { action: "resume" as const };
     if (goalCommand) {
       if (["status", "pause", "stop", "clear"].includes(goalCommand.action)) {
         // New chats have no persisted owner record to reconcile yet.
@@ -677,6 +690,7 @@ export const useChatHandlers = ({
       if (
         status !== "ready" ||
         activeTriggerRunRef?.current ||
+        (resumeOnReply && persistedTriggerRunId) ||
         messageQueue.length
       ) {
         toast.info(
@@ -693,12 +707,43 @@ export const useChatHandlers = ({
           const data = await r.json();
           if (!r.ok || !data.goal)
             throw new Error(data.message ?? "No saved goal in this chat.");
-          resumeMessage = goalResumeMessage(data.goal, goalCommand.input);
-          goalSettings = {
-            sandboxPreference: data.goal.sandboxPreference,
-            agentPermissionMode: data.goal.permissionMode,
-            selectedModel: data.goal.selectedModel,
-          };
+          if (resumeOnReply && data.enabled !== true) {
+            // Turning off goal access must not prevent ordinary chat replies.
+            goalCommand = null;
+          } else {
+            if (resumeOnReply) {
+              if (
+                data.goal.activeRunId ||
+                data.goal.state !== goalState ||
+                goalGeneration === undefined ||
+                data.goal.generation !== goalGeneration
+              )
+                throw new Error(
+                  "The goal changed. Your reply is saved. Review its status before sending again.",
+                );
+              if (
+                data.goal.permissionMode !== agentPermissionModeRef.current ||
+                data.goal.sandboxPreference !== sandboxPreferenceRef.current
+              )
+                throw new Error(
+                  "Restore the goal's sandbox and permissions before replying to continue it, or clear the goal to start separate work.",
+                );
+              goalCommand = {
+                action: "resume",
+                expectedGeneration: data.goal.generation,
+                resumeOnReply: true,
+              };
+              // The worker reloads the goal; the actual reply is not a blanket approval.
+              resumeMessage = input.trim() || undefined;
+            } else {
+              resumeMessage = goalResumeMessage(data.goal, goalCommand.input);
+            }
+            goalSettings = {
+              sandboxPreference: data.goal.sandboxPreference,
+              agentPermissionMode: data.goal.permissionMode,
+              selectedModel: data.goal.selectedModel,
+            };
+          }
         } catch (error) {
           toast.error(
             error instanceof Error ? error.message : "Goal could not resume",
