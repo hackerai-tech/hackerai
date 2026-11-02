@@ -1,5 +1,8 @@
 import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
-import { checkFreeCostBudget, checkRateLimitCapacity } from "@/lib/rate-limit";
+import {
+  checkFreeMonthlyCostLimit,
+  checkRateLimitCapacity,
+} from "@/lib/rate-limit";
 import type {
   ExtraUsageConfig,
   RateLimitInfo,
@@ -17,26 +20,26 @@ type SubagentBillingCapacityInput = {
 };
 
 export type SubagentBillingCapacityDependencies = {
-  checkFreeCostBudget: typeof checkFreeCostBudget;
+  checkFreeMonthlyCostLimit: typeof checkFreeMonthlyCostLimit;
   checkRateLimitCapacity: typeof checkRateLimitCapacity;
 };
 
 const defaultDependencies: SubagentBillingCapacityDependencies = {
-  checkFreeCostBudget,
+  checkFreeMonthlyCostLimit,
   checkRateLimitCapacity,
 };
 
 /**
  * Revalidate the cost capacity for a child without charging another user
  * request. A free child is part of the already-authorized parent Agent request,
- * so only its frozen shared cost budget needs another preflight check.
+ * so only its shared monthly cost budget needs another preflight check.
  */
 export const checkSubagentBillingCapacity = async (
   input: SubagentBillingCapacityInput,
   dependencies: SubagentBillingCapacityDependencies = defaultDependencies,
 ): Promise<RateLimitInfo | undefined> => {
   if (input.subscription === "free") {
-    await dependencies.checkFreeCostBudget(
+    await dependencies.checkFreeMonthlyCostLimit(
       input.freeQuotaSubject ?? input.userId,
       ...(input.freeLimits ? [input.freeLimits] : []),
     );
