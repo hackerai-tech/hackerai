@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 const CACHE_SESSION_VERSION = "v1";
 
 /**
- * Builds an opaque, stable OpenRouter sticky-routing key for one model route.
+ * Builds an opaque, stable provider cache-affinity key for one model route.
  *
  * Keeping the route in the hash lets a chat return to a previously warmed
  * model without pinning unrelated model selections to the same provider.
+ * Also used by direct Abliteration. Keep the existing version/prefix so
+ * deployed OpenRouter sessions retain their routing identity.
  */
 export function createOpenRouterCacheSessionId({
   chatId,

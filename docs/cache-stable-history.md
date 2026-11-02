@@ -1,6 +1,8 @@
 # Cache-stable model history
 
 The experiment is owned and reviewed in [HAC-129](https://linear.app/hackerai/issue/HAC-129/implement-cache-stable-model-history-and-prefix-aligned-compaction).
+See [provider prompt caching](prompt-cache.md) for the separate request-level
+cache hints and fast validation commands.
 It optimizes reusable model input, not application response caching. Stable
 requests make provider cache reuse possible; they do not guarantee a cache hit
 or a lower total cost.

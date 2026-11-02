@@ -80,7 +80,6 @@ jest.mock("ai", () => ({
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   getAppendedNotesUpdate: (...args: unknown[]) => mockNotesUpdate(...args),
-  addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
   applyPrepareStepReminders: async (messages: ModelMessage[]) => messages,
   buildProviderOptions: mockBuildProviderOptions,
   buildSystemPrompt: (prompt: string) => prompt,

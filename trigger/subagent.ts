@@ -34,6 +34,11 @@ import { agentUiStream } from "./streams";
 import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
+import {
+  buildPromptCacheOptions,
+  addPromptCacheBreakpoints,
+} from "@/lib/ai/prompt-cache";
 import {
   createLoadSkillTool,
   createSearchSkillsTool,
@@ -1147,6 +1152,18 @@ export const subagentTask = task({
             const tools = authorizedTools;
 
             const provider = createTrackedProvider();
+            const getCacheOptions = (modelName: string) => {
+              const requestedModelSlug =
+                provider.languageModel(modelName).modelId;
+              return buildPromptCacheOptions(
+                requestedModelSlug,
+                createOpenRouterCacheSessionId({
+                  chatId: row.subagent_id,
+                  mode: "subagent",
+                  requestedModelSlug,
+                }),
+              );
+            };
             const getGuardedLanguageModel = (
               modelName: string,
               generationAttempt: number,
@@ -1369,6 +1386,7 @@ export const subagentTask = task({
                   systemPrompt +
                   (await cloudNetworkPrompt()) +
                   getSandboxBrowserGuidance(sandboxManager.getSandboxInfo()),
+                providerOptions: getCacheOptions(activeModelName),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1535,7 +1553,11 @@ export const subagentTask = task({
                       getSandboxBrowserGuidance(
                         sandboxManager.getSandboxInfo(),
                       ),
-                    messages: compacted.messages as ModelMessage[],
+                    messages: addPromptCacheBreakpoints(
+                      compacted.messages as ModelMessage[],
+                      provider.languageModel(activeModelName).modelId,
+                    ),
+                    providerOptions: getCacheOptions(activeModelName),
                   };
                 },
                 onError: ({ error }) => {

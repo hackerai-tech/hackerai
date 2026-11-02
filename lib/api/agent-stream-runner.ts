@@ -98,10 +98,10 @@ import {
 } from "@/lib/analytics/cache-history";
 import { getAppendedNotesUpdate } from "./chat-stream-helpers";
 import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
+import { addPromptCacheBreakpoints } from "@/lib/ai/prompt-cache";
 import {
   buildProviderOptions,
   buildSystemPrompt,
-  addCacheBreakpointToLastUserMessage,
   applyPrepareStepReminders,
   runSummarizationStep,
   getFallbackSlugs,
@@ -1587,9 +1587,12 @@ export async function createAgentStream(
           effectiveModelName,
         );
 
-    const prepared = addOpenRouterFileAnnotationsToLastAssistantMessage(
-      messagesWithAuthorization,
-      openRouterFileAnnotations,
+    const prepared = addPromptCacheBreakpoints(
+      addOpenRouterFileAnnotationsToLastAssistantMessage(
+        messagesWithAuthorization,
+        openRouterFileAnnotations,
+      ),
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId,
     );
     // A failed compaction must not send expanded history to a smaller model.
     // Preserve the transcript for retry instead of silently deleting context.
@@ -2068,7 +2071,7 @@ export async function createAgentStream(
     buildSystemPrompt(
       (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
         runtimeSection,
-      name,
+      ctx.trackedProvider.languageModel(name).modelId,
     );
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
@@ -2772,10 +2775,7 @@ export async function createAgentStream(
           effectiveModelInfo.modelName,
         );
         const preparedMessages = (await prepareProviderMessages(
-          addCacheBreakpointToLastUserMessage(
-            updatedMessages,
-            effectiveModelInfo.modelName,
-          ) as ModelMessage[],
+          updatedMessages as ModelMessage[],
           effectiveModelInfo.modelName,
         )) as typeof messages;
         if (historyEnabled) {
@@ -2861,7 +2861,7 @@ export async function createAgentStream(
             : {}),
           system: buildSystemPrompt(
             ctx.currentSystemPrompt + runtimeSection,
-            fallbackModelInfo.modelName,
+            fallbackModelInfo.requestedSlug,
           ),
         };
       }
