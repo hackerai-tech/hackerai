@@ -196,6 +196,7 @@ Get-CimInstance Win32_OperatingSystem |
   Select-Object Caption, Version, BuildNumber, OSArchitecture
 Get-CimInstance -Namespace root/cimv2/security/microsofttpm -ClassName Win32_Tpm |
   Select-Object SpecVersion
+Get-Tpm | Select-Object TpmPresent, TpmEnabled, TpmReady
 Confirm-SecureBootUEFI
 ```
 
@@ -225,7 +226,7 @@ corepack pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts 
 
 The first command group requires Git Bash. For a portable installation, set
 `HACKERAI_BASH_PATH` to its actual `bin\bash.exe` in the test process. Capture
-Node, Git Bash and `$env:SystemRoot\System32\curl.exe --version` output, and
+Node, Git Bash and `& "$env:SystemRoot\System32\curl.exe" --version` output, and
 report selected and skipped tests. The path filter intentionally excludes the
 rest of the sandbox suite. Do not count Windows-only tests skipped on macOS or
 Linux as Windows verification.
