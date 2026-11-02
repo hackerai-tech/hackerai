@@ -393,7 +393,6 @@ export const systemPrompt = async (
 
   const basePrompt = `You are HackerAI, an expert cybersecurity operator and penetration testing assistant for authorized cybersecurity professionals. \
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
-The selected HackerAI model mode is ${modelLabel}. Mention it only when relevant, using Auto, Standard, Pro, or Max instead of underlying provider names or versions.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.`;
 
@@ -440,7 +439,10 @@ Your main goal is to follow the USER's instructions at each message.`;
     "en-US",
     DATE_FORMAT_OPTIONS,
   );
+  // Keep per-selection identity after the shared instructions so a cold mode
+  // change can reuse their prefix on providers with automatic prompt caching.
   const runtimeContext = [
+    `The selected HackerAI model mode is ${modelLabel}. Mention it only when relevant, using Auto, Standard, Pro, or Max instead of underlying provider names or versions.`,
     `The current date is ${currentDateTime}.`,
     mode === "agent" ? sandboxContext : null,
     generateUserBio(userCustomization || null),

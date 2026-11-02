@@ -1,6 +1,7 @@
 import {
   summarizeCacheRows,
   baselineCacheOptions,
+  legacyModePrefix,
 } from "../benchmark-prompt-cache";
 
 const row = {
@@ -68,4 +69,27 @@ it("compares the historical DeepSeek parent and child policies separately", () =
   expect(
     baselineCacheOptions("z-ai/glm-5.3-flash", "opaque-session", "agent"),
   ).toEqual({});
+});
+
+it("reconstructs the historical mode prefix without dropping or changing instructions", () => {
+  const anchor =
+    "HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.\n";
+  const identity =
+    "The selected HackerAI model mode is Pro. Mention it only when relevant.";
+  const stable =
+    "You are HackerAI.\n" + anchor + "Shared approval instructions.";
+  const prompt =
+    stable +
+    "\n\n<runtime_context>\n" +
+    identity +
+    "\n\nCurrent date and host.\n</runtime_context>";
+  expect(legacyModePrefix(prompt)).toBe(
+    "You are HackerAI.\n" +
+      anchor +
+      identity +
+      "\nShared approval instructions.\n\n<runtime_context>\nCurrent date and host.\n</runtime_context>",
+  );
+  expect(() => legacyModePrefix("Unrecognized prompt")).toThrow(
+    "Unexpected system-prompt layout",
+  );
 });

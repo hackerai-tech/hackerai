@@ -16,6 +16,10 @@ import {
   addPromptCacheBreakpoints,
 } from "../lib/ai/prompt-cache";
 import { createOpenRouterCacheSessionId } from "../lib/ai/openrouter-cache-session";
+import {
+  systemPrompt,
+  SYSTEM_PROMPT_RUNTIME_BOUNDARY,
+} from "../lib/system-prompt";
 import { isAbliterationModel } from "../lib/ai/abliteration";
 import {
   getOpenRouterProviderRoutingForModel,
@@ -45,6 +49,7 @@ const finite = (value: unknown): number | null =>
     ? value
     : null;
 
+/** Weight reads by observed input; report coverage so absent usage stays unknown. */
 export function summarizeCacheRows(rows: Row[]) {
   const covered = rows.filter((r) => r.input !== null && r.cached !== null);
   const input = covered.reduce((sum, r) => sum + r.input!, 0);
@@ -79,6 +84,27 @@ export function baselineCacheOptions(
     : {};
 }
 
+/** Recreate the previous identity placement; fail if the fixture drifts. */
+export function legacyModePrefix(prompt: string): string {
+  const identity = prompt.match(
+    /^The selected HackerAI model mode is .+$/m,
+  )?.[0];
+  const anchor =
+    "HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.\n";
+  if (
+    !identity ||
+    !prompt.includes(anchor) ||
+    !prompt.includes(SYSTEM_PROMPT_RUNTIME_BOUNDARY + identity + "\n\n")
+  ) {
+    throw new Error(
+      "Unexpected system-prompt layout; historical comparison unavailable",
+    );
+  }
+  return prompt
+    .replace(identity + "\n\n", "")
+    .replace(anchor, anchor + identity + "\n");
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const modelIndex = args.indexOf("--model");
@@ -86,18 +112,27 @@ async function main() {
     modelIndex < 0 ? DEEPSEEK_V4_FLASH_VISION_SLUG : args[modelIndex + 1];
   const scopeIndex = args.indexOf("--scope");
   const scope = scopeIndex < 0 ? "agent" : args[scopeIndex + 1];
+  const scenarioIndex = args.indexOf("--scenario");
+  const scenario = scenarioIndex < 0 ? "tools" : args[scenarioIndex + 1];
+  const providerIndex = args.indexOf("--provider");
+  const providerOnly = providerIndex < 0 ? undefined : args[providerIndex + 1];
   const pairIndex = args.indexOf("--pairs");
   const pairs = pairIndex < 0 ? 1 : Number(args[pairIndex + 1]);
   if (
     !args.includes("--live") ||
     !modelId ||
+    !["tools", "model-mode"].includes(scenario) ||
+    (scenario === "model-mode" &&
+      (scope !== "agent" || !modelId.startsWith("deepseek/"))) ||
+    (providerIndex >= 0 &&
+      (!providerOnly || !/^[a-zA-Z0-9_/-]{1,128}$/.test(providerOnly))) ||
     (scope !== "agent" && scope !== "subagent") ||
     !Number.isInteger(pairs) ||
     pairs < 1 ||
     pairs > 2
   ) {
     throw new Error(
-      "Use --live [--model provider/model] [--scope agent|subagent] [--pairs 1|2]",
+      "Use --live [--model provider/model] [--scope agent|subagent] [--pairs 1|2] [--scenario tools|model-mode] [--provider slug]",
     );
   }
   const direct = isAbliterationModel(modelId);
@@ -140,6 +175,8 @@ async function main() {
         {
           model: modelId,
           scope,
+          scenario,
+          providerOnly,
           runId,
           pairs,
           rows,
@@ -175,20 +212,25 @@ async function main() {
       const messages: ModelMessage[] = [
         {
           role: "user",
-          content: "Report the current marker.",
+          content:
+            scenario === "model-mode"
+              ? "Call report with the selected HackerAI mode from your current system instructions as the marker. Use Standard or Pro exactly."
+              : "Report the current marker.",
           ...(anthropic &&
             variant === "baseline" && { providerOptions: marker }),
         },
       ];
       const cacheOptions =
-        variant === "treatment"
+        variant === "treatment" || scenario === "model-mode"
           ? buildPromptCacheOptions(modelId, sessionId)
           : baselineCacheOptions(modelId, sessionId, scope);
       const providerOptions = direct
         ? cacheOptions
         : {
             openrouter: {
-              provider: getOpenRouterProviderRoutingForModel(modelId),
+              provider: providerOnly
+                ? { only: [providerOnly], allow_fallbacks: false }
+                : getOpenRouterProviderRoutingForModel(modelId),
               ...("openrouter" in cacheOptions ? cacheOptions.openrouter : {}),
             },
           };
@@ -196,13 +238,45 @@ async function main() {
         if (deadline.aborted) throw new Error("Benchmark deadline reached");
         if (rows.reduce((sum, r) => sum + (r.cost ?? 0), 0) > 1)
           throw new Error("Reported spend limit reached");
+        const selectedMode =
+          (pair + step) % 2 === 0 ? "hackerai-standard" : "hackerai-pro";
+        const expectedMarker =
+          scenario === "model-mode"
+            ? selectedMode === "hackerai-standard"
+              ? "Standard"
+              : "Pro"
+            : `CACHE_${step}`;
+        let requestSystem = system;
+        if (scenario === "model-mode") {
+          const current = await systemPrompt(
+            "synthetic-user",
+            "agent",
+            "pro",
+            "model-deepseek-v4-flash-vision",
+            null,
+            null,
+            "ask_approval",
+            true,
+            undefined,
+            selectedMode,
+          );
+          // Each call represents a fresh chat, isolating reusable instructions
+          // from answer-history effects. Both arms use actual application text.
+          requestSystem =
+            `Synthetic isolated benchmark session ${conversationId}.\n` +
+            (variant === "baseline" ? legacyModePrefix(current) : current);
+        }
         const started = performance.now();
         try {
           const result = await generateText({
             model,
             system: anthropic
-              ? { role: "system", content: system, providerOptions: marker }
-              : system,
+              ? {
+                  role: "system",
+                  content: requestSystem,
+                  providerOptions: marker,
+                }
+              : requestSystem,
             messages:
               variant === "treatment"
                 ? addPromptCacheBreakpoints(messages, modelId)
@@ -224,7 +298,7 @@ async function main() {
             typeof call.input === "object" &&
             call.input !== null &&
             "marker" in call.input &&
-            call.input.marker === `CACHE_${step}`;
+            call.input.marker === expectedMarker;
           const raw = result.usage.raw as Record<string, unknown> | undefined;
           const costDetails = raw?.cost_details as
             Record<string, unknown> | undefined;
@@ -261,6 +335,7 @@ async function main() {
           console.log(JSON.stringify(row));
           save();
           if (!valid) break;
+          if (scenario === "model-mode") continue;
           messages.push(...result.response.messages, {
             role: "tool",
             content: [

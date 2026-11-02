@@ -91,6 +91,44 @@ const makePrompt = (
     true,
   );
 
+it("shares the instruction prefix across product modes while sending the current identity exactly once", async () => {
+  const prompts = await Promise.all(
+    (
+      ["auto", "hackerai-standard", "hackerai-pro", "hackerai-max"] as const
+    ).map((mode) =>
+      systemPrompt(
+        "user",
+        "agent",
+        "pro",
+        "model-deepseek-v4-flash-vision",
+        null,
+        null,
+        "ask_approval",
+        true,
+        undefined,
+        mode,
+      ),
+    ),
+  );
+  const prefixes = prompts.map(
+    (prompt) => prompt.split(SYSTEM_PROMPT_RUNTIME_BOUNDARY)[0],
+  );
+  expect(new Set(prefixes).size).toBe(1);
+  expect(prefixes[0]).toContain("Agent tool approval mode: Ask for approval.");
+  for (const [index, label] of ["Auto", "Standard", "Pro", "Max"].entries()) {
+    const prompt = prompts[index];
+    expect(prompt.match(/The selected HackerAI model mode is /g)).toHaveLength(
+      1,
+    );
+    expect(prompt.split(SYSTEM_PROMPT_RUNTIME_BOUNDARY)[1]).toContain(
+      `The selected HackerAI model mode is ${label}.`,
+    );
+    expect(buildSystemPrompt(prompt, "deepseek/deepseek-v4.1-flash-1017")).toBe(
+      prompt,
+    );
+  }
+});
+
 it("keeps an identical instruction prefix across host, profile and date changes", async () => {
   const first = await makePrompt("first-host", "Alice");
   const second = (await makePrompt("second-host", "Bob")).replace(

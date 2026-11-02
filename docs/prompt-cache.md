@@ -38,6 +38,12 @@ cache hints. Do not retain obsolete permissions or unbounded tool output merely
 to improve a hit ratio. The [stopped history pilot](cache-stable-history.md) is
 separate and must not be reactivated by these changes.
 
+Automatic prefix caching also depends on the position of variable text. Keep
+selected product-mode identity in the system runtime suffix after shared
+instructions. It remains a current system instruction; changing the mode must
+not rewrite the opening shared instruction prefix. Dates, host/user facts and
+permissions still follow their normal refresh and authorization rules.
+
 ## Fast checks
 
 `pnpm benchmark:prompt-cache` runs offline SDK serialization and tool-loop
@@ -53,6 +59,15 @@ can be selected by their actual provider slug, including `abliterated-model-larg
 Only the model API credential is loaded from this checkout or the environment.
 The runner never executes tools, loads customer chats or connects to Convex.
 It checks that each model returns the latest synthetic tool-result marker.
+
+`pnpm benchmark:prompt-cache:live --scenario model-mode --provider together --pairs 2`
+compares the historical early identity line against the current application
+prompt. It alternates Standard/Pro on fresh-chat requests, beginning with a cold
+isolated prefix in each arm. Each answer must name the current system-selected
+mode. The provider restriction applies only to this benchmark and prevents a
+cheaper/different upstream from masquerading as a cache gain. This measures cold
+prefix reuse across mode variants, not average traffic savings or continuation
+behavior. The ordinary tool-loop scenario measures continuations separately.
 
 Results go to `.artifacts/prompt-cache/`. Each request is bounded to 512 output
 tokens, 45 seconds, no retries; the run has a six-minute deadline and a $1
