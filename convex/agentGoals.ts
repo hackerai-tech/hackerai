@@ -554,12 +554,28 @@ export const finish = mutation({
       if (source?.chat_id === args.chatId && source.role === "assistant")
         runMessages.push(source);
     }
-    const verified = (goal.checkpoint?.evidence ?? []).flatMap((e) => {
-      const source = runMessages.find((m) =>
-        m.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
-      );
-      return source ? [{ ...e, messageId: source.id }] : [];
-    });
+    const verified = (
+      args.judgment?.evidence ??
+      goal.checkpoint?.evidence ??
+      []
+    )
+      .slice(0, 8)
+      .flatMap((e) => {
+        if (
+          e.runId !== args.runId ||
+          !Number.isInteger(e.criterion) ||
+          e.criterion < 0 ||
+          e.criterion >= goal.criteria.length ||
+          !e.explanation.trim() ||
+          e.explanation.length > 1000 ||
+          e.toolCallId.length > 200
+        )
+          return [];
+        const source = runMessages.find((m) =>
+          m.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
+        );
+        return source ? [{ ...e, messageId: source.id }] : [];
+      });
     const evidence = mergeGoalEvidence(goal.evidence, verified);
     const progressed =
       verified.length > 0 ||
@@ -606,9 +622,12 @@ export const finish = mutation({
         : goal.generation,
       waitUntil:
         state === "waiting"
-          ? Date.now() + (goal.checkpoint?.waitSeconds ?? 0) * 1000
+          ? Date.now() +
+            (args.judgment?.waitSeconds ?? goal.checkpoint?.waitSeconds ?? 0) *
+              1000
           : undefined,
       judgment: args.judgment,
+      progress: args.judgment?.reason ?? goal.progress,
       reason: ["paused", "canceled"].includes(goal.state)
         ? goal.reason
         : state === "queued"

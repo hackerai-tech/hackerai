@@ -69,15 +69,71 @@ describe("independent goal completion check", () => {
     jest.clearAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
   });
+  it("classifies a normal question without a checkpoint or tool evidence", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Which word should I write?",
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const response = [
+      {
+        id: "r1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Which word should I write?" }],
+      },
+    ] as UIMessage[];
+    const judgment = await judgeGoalCompletion(
+      { ...goal, checkpoint: undefined, verificationCommand: "cat marker" },
+      response,
+      "r1",
+      jest.fn(),
+    );
+    expect(judgment?.verdict).toBe("needs_input");
+    expect(
+      JSON.parse(generate.mock.calls[0][0].prompt).assistantResponse,
+    ).toContain("Which word");
+  });
+  it("verifies completion without a checkpoint using real result references", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "Marker observed",
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    expect(
+      await judgeGoalCompletion(
+        { ...goal, checkpoint: undefined },
+        messages,
+        "r1",
+        jest.fn(),
+      ),
+    ).toMatchObject({
+      verdict: "done",
+      evidence: goal.checkpoint!.evidence,
+    });
+  });
   it("uses actual results and bills the separate completion check", async () => {
     generate.mockResolvedValue({
-      output: { verdict: "done", reason: "Marker observed" },
+      output: {
+        verdict: "done",
+        reason: "Marker observed",
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
       usage: { inputTokens: 100, outputTokens: 10 },
     });
     const cost = jest.fn();
     expect(await judgeGoalCompletion(goal, messages, "r1", cost)).toEqual({
       verdict: "done",
       reason: "Marker observed",
+      evidence: goal.checkpoint!.evidence,
     });
     const call = generate.mock.calls[0][0];
     expect(JSON.parse(call.prompt).evidence[0].result).toContain(
@@ -91,7 +147,16 @@ describe("independent goal completion check", () => {
     expect(call.providerOptions.openrouter.models).toEqual(["fallback"]);
     expect(cost).toHaveBeenCalledWith(0.004);
   });
-  it("continues without spending on a judge when a verification gate fails", async () => {
+  it("cannot accept done when a verification gate fails", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "Claim",
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
     const cost = jest.fn();
     expect(
       (
@@ -103,29 +168,55 @@ describe("independent goal completion check", () => {
         )
       )?.verdict,
     ).toBe("continue");
-    expect(generate).not.toHaveBeenCalled();
-    expect(cost).not.toHaveBeenCalled();
+    expect(cost).toHaveBeenCalledWith(0.004);
   });
   it("cannot accept invented evidence and stops safely on verifier failure", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "Claim",
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
     expect(
       (await judgeGoalCompletion(goal, [], "r1", jest.fn()))?.verdict,
     ).toBe("continue");
-    expect(generate).not.toHaveBeenCalled();
     generate.mockRejectedValue(new Error("Unavailable"));
     expect(
-      (await judgeGoalCompletion(goal, messages, "r1", jest.fn()))?.verdict,
+      (
+        await judgeGoalCompletion(
+          { ...goal, checkpoint: undefined },
+          messages,
+          "r1",
+          jest.fn(),
+        )
+      )?.verdict,
     ).toBe("blocked");
   });
   it("blocks safely when saved evidence cannot be read", async () => {
     mockPriorEvidence.mockRejectedValue(new Error("Storage unavailable"));
     expect(
-      (await judgeGoalCompletion(goal, messages, "r1", jest.fn()))?.verdict,
+      (
+        await judgeGoalCompletion(
+          { ...goal, checkpoint: undefined },
+          messages,
+          "r1",
+          jest.fn(),
+        )
+      )?.verdict,
     ).toBe("blocked");
     expect(generate).not.toHaveBeenCalled();
   });
   it("uses the fallback message while preserving the run's identity", async () => {
     generate.mockResolvedValue({
-      output: { verdict: "done", reason: "Marker observed" },
+      output: {
+        verdict: "done",
+        reason: "Marker observed",
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
       usage: {},
     });
     await judgeGoalCompletion(
@@ -153,7 +244,12 @@ it("retains earlier-stage evidence for the same criterion when judging a later r
     },
   ]);
   generate.mockResolvedValue({
-    output: { verdict: "done", reason: "Both stages verified" },
+    output: {
+      verdict: "done",
+      reason: "Both stages verified",
+      evidence: goal.checkpoint!.evidence,
+      waitSeconds: null,
+    },
     usage: {},
   });
   await judgeGoalCompletion(goal, messages, "r1", jest.fn());

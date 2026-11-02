@@ -81,6 +81,50 @@ describe("goal completion and limits", () => {
       }),
     ).toBe("waiting");
   });
+  it("accepts automatic outcomes without a checkpoint while honoring control boundaries", () => {
+    const automatic = { ...base, checkpoint: undefined };
+    expect(resolveGoalOutcome(automatic)).toBe("achieved");
+    const question = {
+      ...automatic,
+      judgment: {
+        verdict: "needs_input" as const,
+        reason: "Which file?",
+        evidence: [],
+      },
+    };
+    expect(resolveGoalOutcome(question)).toBe("needs_input");
+    expect(resolveGoalOutcome({ ...question, canceled: true })).toBe("paused");
+    expect(resolveGoalOutcome({ ...question, failed: true })).toBe("failed");
+    expect(resolveGoalOutcome({ ...question, usageExhausted: true })).toBe(
+      "usage_exhausted",
+    );
+    const delayed = {
+      ...automatic,
+      judgment: {
+        verdict: "wait" as const,
+        reason: "Authorized job",
+        waitSeconds: 60,
+      },
+    };
+    expect(resolveGoalOutcome(delayed)).toBe("waiting");
+    for (const waitSeconds of [0, -1, 1801, 1.5])
+      expect(
+        resolveGoalOutcome({
+          ...delayed,
+          judgment: { ...delayed.judgment, waitSeconds },
+        }),
+      ).toBe("queued");
+    expect(
+      resolveGoalOutcome({
+        ...question,
+        checkpoint: {
+          outcome: "achieved",
+          progress: "Old claim",
+          evidence: [],
+        },
+      }),
+    ).toBe("needs_input");
+  });
   it("rejects invented, failed, pending, and bookkeeping evidence", () => {
     expect(isGoalEvidencePart(terminal(), "cmd")).toBe(true);
     expect(isGoalEvidencePart(terminal(), "invented")).toBe(false);

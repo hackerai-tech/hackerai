@@ -66,8 +66,11 @@ export type GoalContract = {
   stopWhen?: string;
 };
 export type GoalJudgment = {
-  verdict: "done" | "continue" | "blocked";
+  verdict: "done" | "continue" | "needs_input" | "blocked" | "wait";
   reason: string;
+  // Optional for compatibility with workers deployed before automatic evaluation.
+  evidence?: GoalEvidence[];
+  waitSeconds?: number;
 };
 
 // Long objectives retain their full text; the default criterion references it
@@ -199,21 +202,34 @@ export function resolveGoalOutcome(args: {
     return "usage_exhausted";
   if (args.failed || args.finishReason === "error") return "failed";
   if (args.judgment?.verdict === "blocked") return "blocked";
-  if (args.checkpoint?.outcome === "needs_input") return "needs_input";
-  if (args.checkpoint?.outcome === "blocked") return "blocked";
+  if (args.judgment?.verdict === "needs_input") return "needs_input";
+  if (!args.judgment && args.checkpoint?.outcome === "needs_input")
+    return "needs_input";
+  if (!args.judgment && args.checkpoint?.outcome === "blocked")
+    return "blocked";
   const boundary =
     args.finishReason &&
     args.finishReason !== "stop" &&
     args.finishReason !== "tool-calls";
   if (
     !boundary &&
-    args.checkpoint?.outcome === "achieved" &&
     args.allCriteriaVerified &&
     args.judgment?.verdict === "done"
   )
     return "achieved";
   if (args.noProgressRuns >= 2) return "blocked";
-  if (args.checkpoint?.outcome === "wait" && args.checkpoint.waitSeconds)
+  const waitSeconds = args.judgment
+    ? args.judgment.verdict === "wait"
+      ? args.judgment.waitSeconds
+      : undefined
+    : args.checkpoint?.outcome === "wait"
+      ? args.checkpoint.waitSeconds
+      : undefined;
+  if (
+    Number.isInteger(waitSeconds) &&
+    waitSeconds! >= 1 &&
+    waitSeconds! <= 1800
+  )
     return "waiting";
   return "queued";
 }

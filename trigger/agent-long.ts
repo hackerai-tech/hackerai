@@ -10,7 +10,6 @@ import {
   finishGoalRun,
   assertGoalExecutionAllowed,
 } from "@/lib/goals/server";
-import { createGoalCheckpointTool } from "@/lib/goals/tool";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
@@ -2039,7 +2038,7 @@ export const agentLongTask = task({
           parts: [
             {
               type: "text",
-              text: `Automatic goal continuation: begin run ${activeGoal.runs}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+              text: `Automatic goal continuation: begin run ${activeGoal.runs}. ${goalExecutionInstructions(activeGoal)} Continue from the saved goal progress. Do not restart completed work. Work only within the original scope and approvals, and report the outcome or what is needed from the user when ending the turn.`,
             },
           ],
         };
@@ -3102,19 +3101,8 @@ export const agentLongTask = task({
                   : {}),
               },
             );
-            const goalTools: ToolSet = activeGoal
-              ? {
-                  goal_checkpoint: createGoalCheckpointTool(
-                    chatId,
-                    userId,
-                    ctx.run.id,
-                  ),
-                }
-              : {};
-            const tools = { ...baseTools, ...goalTools };
-            const getToolsForModel: typeof getBaseToolsForModel = (
-              ...args
-            ) => ({ ...getBaseToolsForModel(...args), ...goalTools });
+            const tools = baseTools;
+            const getToolsForModel = getBaseToolsForModel;
             finishE2BIdleLeaseRelease = async () => {
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
@@ -3323,7 +3311,7 @@ export const agentLongTask = task({
                     verifiedCriteria: activeGoal.evidence,
                     run: activeGoal.runs,
                   }) +
-                  "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. Include executed-tool evidence for partial progress as well as final completion, so later runs retain earlier stages. Cite each distinct tool result needed to verify the criterion (up to eight proofs per checkpoint). If a verificationCommand is set, run that exact command as a separate terminal invocation without prepending or appending anything, including exit-code echoes; the terminal result records its exit code. An achieved checkpoint requests independent verification; describe completion as pending verification until the goal status confirms it. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
+                  "\nWork within the existing authorization and tool approvals. When ending your turn, report completed work and any remaining work or blocker plainly. The harness independently evaluates your final response and actual tool results after the turn; no checkpoint tool call is needed. If a verificationCommand is set, run that exact command as a separate terminal invocation without prepending or appending anything, including exit-code echoes; the terminal result records its exit code. Completion is independently verified against saved tool results. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, ask a clear question and end the turn. The harness will wait for the user instead of continuing automatically. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
                 : "");
             // Repeat the claimed goal at the latest user turn so old assistant plans
             // and compacted summaries cannot silently reintroduce replaced work.

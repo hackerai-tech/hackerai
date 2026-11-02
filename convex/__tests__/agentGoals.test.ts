@@ -358,6 +358,74 @@ describe("persistent goal lifecycle", () => {
       }),
     ).toBeNull();
   });
+  it("settles a question as needs_input without a checkpoint, then accepts a fresh reply run", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await db.message("r1", [
+      { type: "text", text: "Which word should I write?" },
+    ]);
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      judgment: { verdict: "needs_input", reason: "Which word?", evidence: [] },
+    });
+    expect(db.goal()).toMatchObject({
+      state: "needs_input",
+      reason: "Which word?",
+      progress: "Which word?",
+      evidence: [],
+    });
+    expect(db.goal().activeRunId).toBeUndefined();
+    expect(db.goal().continuationSourceRunId).toBeUndefined();
+    expect(db.goal().activeSince).toBeUndefined();
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(control, db.ctx, { ...owner, action: "resume" });
+    expect(
+      await invoke(claimRun, db.ctx, {
+        ...owner,
+        generation: db.goal().generation,
+        runId: "r2",
+      }),
+    ).not.toBeNull();
+  });
+  it("persists automatic proof and completion without a checkpoint", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    const id = await db.message("r1", [result]);
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      judgment: {
+        verdict: "done",
+        reason: "Marker observed",
+        evidence: [proof],
+      },
+    });
+    expect(db.goal().state).toBe("achieved");
+    expect(db.goal().evidence).toEqual([{ ...proof, messageId: "r1" }]);
+    expect(
+      (await db.ctx.db.get(id)).goal.achievedElapsedMs,
+    ).toBeGreaterThanOrEqual(0);
+  });
+  it.each([
+    { ...proof, runId: "unrelated" },
+    { ...proof, criterion: 9 },
+    { ...proof, toolCallId: "invented" },
+  ])(
+    "rejects automatic proof without current-run provenance: %p",
+    async (invalid) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      await db.message("r1", [result]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        judgment: { verdict: "done", reason: "Claim", evidence: [invalid] },
+      });
+      expect(db.goal().state).toBe("queued");
+      expect(db.goal().evidence).toEqual([]);
+    },
+  );
   it("verifies saved evidence, including fallback message IDs, before completion", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

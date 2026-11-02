@@ -41,10 +41,14 @@ export const goalContractFields = {
 export const goalJudgment = v.object({
   verdict: v.union(
     v.literal("done"),
+    v.literal("needs_input"),
+    v.literal("wait"),
     v.literal("continue"),
     v.literal("blocked"),
   ),
   reason: v.string(),
+  evidence: v.optional(v.array(goalEvidence)),
+  waitSeconds: v.optional(v.number()),
 });
 export const goalFields = {
   ...goalContractFields,
