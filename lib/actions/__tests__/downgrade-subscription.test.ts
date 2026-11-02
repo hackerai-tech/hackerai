@@ -337,6 +337,26 @@ describe("downgradeSubscriptionAction", () => {
     },
   );
 
+  it("refuses non-price reasons under the explicit price policy", async () => {
+    mockDowngradePolicy.mockReturnValue({
+      state: "enabled",
+      reasonPolicy: "price_reasons",
+    } as never);
+    const { default: downgradeSubscriptionAction } =
+      await import("../downgrade-subscription");
+
+    await expect(
+      downgradeSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "missing_feature",
+          reasonSubcategory: "missing_capability",
+          reasonDetails: "I need a feature this plan does not include",
+        },
+      }),
+    ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
+    expect(mockCreateSchedule).not.toHaveBeenCalled();
+  });
+
   it("refuses usage-limit reasons and a disabled policy", async () => {
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
