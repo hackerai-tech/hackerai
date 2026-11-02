@@ -49,7 +49,11 @@ import {
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
-import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+} from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import {
   buildPosixCurlUploadCommand,
@@ -482,7 +486,8 @@ export class CentrifugoSandbox extends EventEmitter {
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const shellInfo = this.connectionInfo.isDesktop
@@ -1764,8 +1769,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    */
   isWindows(): boolean {
     return (
-      this.connectionInfo.osInfo?.platform === "win32" ||
-      this.shellKind === "cmd"
+      normalizeSandboxPlatform(this.connectionInfo.osInfo?.platform ?? "") ===
+        "win32" || this.shellKind === "cmd"
     );
   }
 
@@ -1830,7 +1835,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     // Older desktop clients did not publish osInfo. Probe those connections
     // instead of assuming Bash: a Windows cmd relay would otherwise receive
     // single-quoted signed URLs and split their `&` query fields into commands.
-    if (declaredPlatform && declaredPlatform !== "win32") {
+    if (declaredPlatform && !this.isWindows()) {
       this.shellKind = "bash";
       return "bash";
     }

@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
       - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
@@ -19,6 +21,8 @@ on:
     branches: [main]
     paths:
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
       - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"

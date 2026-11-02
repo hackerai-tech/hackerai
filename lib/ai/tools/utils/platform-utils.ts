@@ -3,10 +3,20 @@
  */
 
 /**
+ * Desktop's uname probe historically published MSYS/Git Bash kernel names.
+ * They identify Windows hosts even though their command shell is POSIX.
+ */
+export function normalizeSandboxPlatform(platform: string): string {
+  return /^(?:mingw32|mingw64|msys)_nt(?:-|$)/i.test(platform)
+    ? "win32"
+    : platform;
+}
+
+/**
  * Convert a Node.js `process.platform` value to a human-readable OS name.
  */
 export function getPlatformDisplayName(platform: string): string {
-  switch (platform) {
+  switch (normalizeSandboxPlatform(platform)) {
     case "darwin":
       return "macOS";
     case "win32":

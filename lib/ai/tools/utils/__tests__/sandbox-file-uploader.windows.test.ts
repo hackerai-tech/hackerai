@@ -9,9 +9,10 @@ import {
   readFileSync,
   rmSync,
   existsSync,
+  mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
 import {
@@ -117,19 +118,27 @@ windowsDescribe("Windows generated-file metadata command", () => {
       ? [
           ["git-bash", gitBash],
           ["git-bash minimal PATH", gitBash],
+          ["git-bash legacy platform", gitBash],
         ]
       : []),
   ];
   test.each(persistenceShells)(
     "persists large UTF-8 output through real %s commands",
     async (kind, shell) => {
+      const legacyPlatform = kind === "git-bash legacy platform";
+      const probe = legacyPlatform
+        ? spawnSync(shell!, ["-c", "uname -s"], { encoding: "utf8" })
+        : null;
+      if (probe && (probe.status !== 0 || !probe.stdout.trim())) {
+        throw new Error("Git Bash platform probe failed");
+      }
       const adapter = new CentrifugoSandbox(
         "fixture-user",
         {
           connectionId: "fixture-connection",
           name: "fixture",
           osInfo: {
-            platform: "win32",
+            platform: probe ? probe.stdout.trim().toLowerCase() : "win32",
             arch: "x64",
             release: "test",
             hostname: "fixture",
@@ -172,13 +181,31 @@ windowsDescribe("Windows generated-file metadata command", () => {
           };
         });
       const output = "owned UTF-8 \u03bb \u2713\n".repeat(4000);
-      const destination = join(directory, "Research & Dev", "output.txt");
-      await adapter.files.write(destination, output);
-      expect(readFileSync(destination, "utf8")).toBe(output);
-      expect(adapter.commands.run).toHaveBeenCalledWith(
-        "echo $BASH_VERSION",
-        expect.anything(),
+      // Legacy Git Bash reports must use the same /tmp -> C:\temp mapping
+      // as native metadata. MSYS's own /tmp points somewhere else.
+      if (legacyPlatform) mkdirSync("C:\\temp", { recursive: true });
+      const aliasDirectory = legacyPlatform
+        ? mkdtempSync("C:\\temp\\hackerai-legacy-platform-")
+        : null;
+      const destination = join(
+        aliasDirectory ?? directory,
+        "Research & Dev",
+        "output.txt",
       );
+      const input = aliasDirectory
+        ? `/tmp/${basename(aliasDirectory)}/Research & Dev/output.txt`
+        : destination;
+      try {
+        await adapter.files.write(input, output);
+        expect(readFileSync(destination, "utf8")).toBe(output);
+        expect(adapter.commands.run).toHaveBeenCalledWith(
+          "echo $BASH_VERSION",
+          expect.anything(),
+        );
+      } finally {
+        if (aliasDirectory)
+          rmSync(aliasDirectory, { recursive: true, force: true });
+      }
     },
   );
 

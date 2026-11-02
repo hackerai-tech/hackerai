@@ -115,7 +115,10 @@ function createSandbox(
   );
 }
 
-function createDesktopSandbox(workingDirectory?: string): CentrifugoSandbox {
+function createDesktopSandbox(
+  workingDirectory?: string,
+  platform = "win32",
+): CentrifugoSandbox {
   return new CentrifugoSandbox(
     "user-1",
     {
@@ -123,7 +126,7 @@ function createDesktopSandbox(workingDirectory?: string): CentrifugoSandbox {
       isDesktop: true,
       capabilities: { commands: true, pty: true, files: true },
       osInfo: {
-        platform: "win32",
+        platform,
         arch: "x64",
         release: "10.0.22631",
         hostname: "WIN-DEV",
@@ -1103,13 +1106,16 @@ describe("CentrifugoSandbox", () => {
     );
 
     it.each([
-      ["/tmp/report.txt", "C:\\temp\\report.txt"],
-      ["/c/temp/report.txt", "C:\\temp\\report.txt"],
-      ["C:/temp/report.txt", "C:\\temp\\report.txt"],
+      ["/tmp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["/c/temp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["C:/temp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["/tmp/report.txt", "C:\\temp\\report.txt", "mingw64_nt-10.0-22631"],
+      ["/c/temp/report.txt", "C:\\temp\\report.txt", "mingw32_nt-6.1"],
+      ["C:/temp/report.txt", "C:\\temp\\report.txt", "msys_nt-10.0-22631"],
     ])(
       "stats the same Windows file used by shell transfers: %s",
-      async (input, expected) => {
-        const sandbox = createDesktopSandbox();
+      async (input, expected, platform) => {
+        const sandbox = createDesktopSandbox(undefined, platform);
         const pending = sandbox.files.stat(input);
         await jest.advanceTimersByTimeAsync(0);
         const sub = mockSubscriptions[0];
@@ -4028,26 +4034,29 @@ describe("CentrifugoSandbox", () => {
       return { sandbox, runs };
     }
 
-    it("does not cache a failed shell probe or issue file mutations after it", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      const run = jest
-        .spyOn(sandbox.commands, "run")
-        .mockResolvedValueOnce({
-          stdout: "",
-          stderr: "shell unavailable",
-          exitCode: 2,
-        } as any)
-        .mockResolvedValue({
-          stdout: "$BASH_VERSION",
-          stderr: "",
-          exitCode: 0,
-        } as any);
-      await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
-        "Failed to detect local shell",
-      );
-      expect(run).toHaveBeenCalledTimes(1);
-      await expect(sandbox.detectShell()).resolves.toBe("cmd");
-    });
+    it.each(["win32", "mingw64_nt-10.0-22631"])(
+      "does not cache a failed %s shell probe or issue file mutations after it",
+      async (platform) => {
+        const sandbox = createSandbox({ osInfo: { platform } } as any);
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockResolvedValueOnce({
+            stdout: "",
+            stderr: "shell unavailable",
+            exitCode: 2,
+          } as any)
+          .mockResolvedValue({
+            stdout: "$BASH_VERSION",
+            stderr: "",
+            exitCode: 0,
+          } as any);
+        await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
+          "Failed to detect local shell",
+        );
+        expect(run).toHaveBeenCalledTimes(1);
+        await expect(sandbox.detectShell()).resolves.toBe("cmd");
+      },
+    );
 
     it("bounds Windows Bash file commands for relays launched through cmd.exe", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
