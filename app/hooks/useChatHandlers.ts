@@ -61,6 +61,7 @@ interface UseChatHandlersProps {
     message?: any,
     options?: { body?: any },
   ) => void | Promise<void>;
+  sendGoalMessage?: (message: any, options?: { body?: any }) => Promise<void>;
   sendQueuedMessage?: (
     id: string,
     body: Record<string, unknown>,
@@ -112,6 +113,7 @@ export const useChatHandlers = ({
   chatId,
   messages,
   sendMessage,
+  sendGoalMessage,
   sendQueuedMessage,
   stop,
   regenerate,
@@ -758,6 +760,7 @@ export const useChatHandlers = ({
     }
     const clearSubmittedDraft = () => {
       if (
+        currentChatIdRef.current === chatId &&
         getInput() === submittedInput &&
         getUploadedFiles() === uploadedFiles
       ) {
@@ -967,51 +970,58 @@ export const useChatHandlers = ({
       createdAt: Date.now(),
       ...(goalCommand?.action === "start" ? { goal: { sent: true } } : {}),
     };
+    let validFiles: NonNullable<
+      ReturnType<typeof createFileMessagePartFromUploadedFile>
+    >[] = [];
     try {
-      // Get file objects from uploaded files - URLs are already resolved in global state
-      const validFiles = uploadedFiles
+      validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
         .filter((part): part is NonNullable<typeof part> => part !== null);
-
-      runChatAction("send message", () =>
-        sendMessage(
-          {
-            text: outgoingText,
-            files: validFiles.length > 0 ? validFiles : undefined,
-            metadata: outgoingMetadata,
-          },
-          {
-            body: {
-              mode: currentChatMode,
-              todos,
-              sandboxPreference,
-              agentPermissionMode: agentPermissionModeRef.current,
-              selectedModel: requestSelectedModel,
-              ...(goalCommand ? { goal: goalCommand } : {}),
-              ...goalSettings,
-            },
-          },
-        ),
-      );
     } catch (error) {
       console.error("Failed to process files:", error);
-      // Fallback to text-only message if file processing fails
-      runChatAction("send fallback message", () =>
-        sendMessage(
-          { text: outgoingText, metadata: outgoingMetadata },
-          {
-            body: {
-              mode: currentChatMode,
-              todos,
-              sandboxPreference,
-              agentPermissionMode: agentPermissionModeRef.current,
-              selectedModel: requestSelectedModel,
-              ...(goalCommand ? { goal: goalCommand } : {}),
-              ...goalSettings,
-            },
-          },
-        ),
+      if (goalCommand) {
+        toast.error(
+          "Could not prepare the goal attachments. Your draft is saved.",
+        );
+        return false;
+      }
+    }
+    const outgoingMessage = {
+      text: outgoingText,
+      files: validFiles.length > 0 ? validFiles : undefined,
+      metadata: outgoingMetadata,
+    };
+    const outgoingOptions = {
+      body: {
+        mode: currentChatMode,
+        todos,
+        sandboxPreference,
+        agentPermissionMode: agentPermissionModeRef.current,
+        selectedModel: requestSelectedModel,
+        ...(goalCommand ? { goal: goalCommand } : {}),
+        ...goalSettings,
+      },
+    };
+    if (goalCommand) {
+      try {
+        // The dedicated sender resolves at durable admission, not stream end.
+        await (sendGoalMessage ?? sendMessage)(
+          outgoingMessage,
+          outgoingOptions,
+        );
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "AbortError"))
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Goal could not start. Your draft is saved.",
+          );
+        return false;
+      }
+    } else {
+      void runChatAction("send message", () =>
+        sendMessage(outgoingMessage, outgoingOptions),
       );
     }
 

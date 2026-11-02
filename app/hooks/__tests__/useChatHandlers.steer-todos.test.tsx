@@ -2123,6 +2123,40 @@ describe("useChatHandlers steer todo handoff", () => {
     permissionMode: "ask_approval",
     selectedModel: "auto",
   };
+  it.each(["/goal resume", "Use blue"])(
+    "retains text and attachments when goal admission rejects %s",
+    async (text) => {
+      mockInput = text;
+      mockAgentPermissionMode = "ask_approval";
+      mockMessageQueue = [];
+      mockUploadedFiles = [
+        {
+          file: new File(["blue"], "note.txt", { type: "text/plain" }),
+          fileId: "file-1",
+          uploaded: true,
+          url: "https://example.com/note.txt",
+        },
+      ];
+      jest.mocked(global.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+      } as Response);
+      mockSendMessage.mockRejectedValueOnce(
+        new Error("Goal changed after it was read"),
+      );
+      const { result } = renderGoalReply("needs_input");
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any),
+        ).toBe(false);
+      });
+      expect(mockClearInput).not.toHaveBeenCalled();
+      expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    },
+  );
   it("fences explicit resume against edits after the saved goal is read", async () => {
     mockInput = "/goal resume";
     mockMessageQueue = [];

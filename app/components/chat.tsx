@@ -3,7 +3,7 @@ import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type FileUIPart } from "ai";
 import dynamic from "next/dynamic";
 import {
   useRef,
@@ -944,6 +944,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     id: string;
     resolve: () => void;
   } | null>(null);
+  type GoalAdmission = {
+    chatId: string;
+    id: string;
+    resolve: () => void;
+    error?: Error;
+    aborted?: boolean;
+    accepted: boolean;
+  };
+  const goalAdmissionRef = useRef<GoalAdmission | null>(null);
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
@@ -1006,6 +1015,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           return fetchAgentLongStream(
             init,
             (run) => {
+              const pendingGoal = goalAdmissionRef.current;
+              if (
+                pendingGoal &&
+                pendingGoal.chatId === request?.chatId &&
+                pendingGoal?.id === queuedMessageId
+              )
+                pendingGoal.resolve();
               if (
                 requestGeneration !== agentLongRequestGenerationRef.current ||
                 (run.chatId !== undefined &&
@@ -1166,6 +1182,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     error,
     regenerate: regenerateUnchecked,
     resumeStream,
+    clearError,
   } = useChat({
     id: chatId,
     messages: serverMessages,
@@ -1330,6 +1347,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: ({ isAbort, isError }) => {
+      if (isAbort && goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.aborted = true;
       performanceTracker.setOutcome(
         isError ? "error" : isAbort ? "aborted" : "completed",
       );
@@ -1368,6 +1387,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       const structuredStreamError = deserializeChatSDKErrorFromStream(error);
       const displayError = structuredStreamError ?? error;
+      if (
+        goalAdmissionRef.current?.chatId === chatId &&
+        !goalAdmissionRef.current.accepted
+      ) {
+        goalAdmissionRef.current.error = displayError;
+        return; // The composer reports this admission error and preserves its draft.
+      }
       if (displayError instanceof ChatSDKError) {
         const errorMessage =
           typeof displayError.cause === "string"
@@ -1401,6 +1427,90 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       return sendMessageUnchecked(...args);
     },
     [sendMessageUnchecked, computerSendDisabledReasonRef],
+  );
+  const sendGoalMessage = useCallback(
+    async (
+      message: {
+        text?: string;
+        files?: FileUIPart[];
+        metadata?: ChatMessage["metadata"];
+      },
+      options?: { body?: Record<string, unknown> },
+    ) => {
+      if (goalAdmissionRef.current)
+        throw new Error("A goal is already starting.");
+      const id = uuidv4();
+      let accepted = false;
+      let resolveAdmission!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        resolveAdmission = resolve;
+      });
+      const pending: GoalAdmission = {
+        chatId,
+        id,
+        accepted: false,
+        resolve: () => {
+          accepted = true;
+          pending.accepted = true;
+          resolveAdmission();
+        },
+      };
+      goalAdmissionRef.current = pending;
+      try {
+        // The SDK generates a new ID for text-form sends; use explicit parts so
+        // admission can acknowledge this exact message, including attachments.
+        const sending = sendMessage(
+          {
+            id,
+            role: "user",
+            parts: [
+              ...(message.files ?? []),
+              ...(message.text
+                ? [{ type: "text" as const, text: message.text }]
+                : []),
+            ],
+            metadata: message.metadata,
+          },
+          options,
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted) {
+          if (pending.aborted)
+            throw new DOMException("Goal submission stopped", "AbortError");
+          throw (
+            pending.error ??
+            new Error("Goal could not start. Your draft is saved; try again.")
+          );
+        }
+      } catch (error) {
+        if (
+          isChatMountedRef.current &&
+          activeChatIdRef.current === chatId &&
+          !(error instanceof Error && error.name === "AbortError")
+        ) {
+          // Failed requests can leave an optimistic bubble. Remove it only after
+          // confirming it was never persisted; unknown outcomes stay visible.
+          const persisted = await convex
+            .query(api.messages.isUserMessagePersisted, {
+              chatId,
+              messageId: id,
+            })
+            .catch(() => undefined);
+          if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
+            if (persisted === false)
+              setMessages((current) =>
+                current.filter((item) => item.id !== id),
+              );
+            clearError?.();
+          }
+        }
+        throw error;
+      } finally {
+        if (goalAdmissionRef.current === pending)
+          goalAdmissionRef.current = null;
+      }
+    },
+    [chatId, sendMessage, convex, setMessages, clearError],
   );
   const regenerate = useCallback<typeof regenerateUnchecked>(
     (...args) => {
@@ -2326,6 +2436,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     messages,
     sendMessage,
+    sendGoalMessage,
     sendQueuedMessage:
       shouldUseAgentLong ||
       messageQueue.some((message) => message.deliveryStatus)
