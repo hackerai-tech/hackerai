@@ -88,6 +88,9 @@ export async function reconcileCompletedRecovery(
         failures.data.region !== r.region))
   )
     return false;
+  // These listings cover already-admitted work. New cloud admission and cached
+  // subagent sandbox acquisition atomically set activityKeyFor via
+  // assertCloudWorkspaceAvailable; the Lua check below closes that race.
   const [parents, children] = await Promise.all([
     getActiveTriggerRunsForUser({ userId }),
     listActiveSubagentsForUser(userId),

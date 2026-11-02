@@ -58,12 +58,13 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
     activityKeyFor(userId),
   ];
   let values = await redis.mget<unknown[]>(...keys);
-  if (
-    values[3] !== null &&
-    values[4] !== null &&
-    (await reconcileCompletedRecovery(userId))
-  ) {
-    values = await redis.mget<unknown[]>(...keys);
+  if (values[3] !== null && values[4] !== null) {
+    try {
+      if (await reconcileCompletedRecovery(userId))
+        values = await redis.mget<unknown[]>(...keys);
+    } catch {
+      // A failed reconciliation or reread must retain the protected snapshot.
+    }
   }
   const [saved, existing, failures, consent, result, activity] = values;
   const finish = (view: CloudWorkspaceOptions) => ({

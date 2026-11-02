@@ -422,3 +422,24 @@ it("offers same-workspace recovery directly in management without automatically 
   );
   expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
 });
+
+it.each(["hidden", "recovered"])(
+  "refreshes protected workspace options after a %s recovery status without replaying a task",
+  async (status) => {
+    let settled = false;
+    const retry = jest.fn();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/recovery")) {
+        settled = true;
+        return response({ status });
+      }
+      return response(
+        settled ? options : { status: "protected", reason: "recovery" },
+      );
+    });
+    render(<CloudWorkspaceRegionChoice manage onRetry={retry} />);
+    expect(await screen.findAllByRole("radio")).toHaveLength(3);
+    expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+    expect(retry).not.toHaveBeenCalled();
+  },
+);

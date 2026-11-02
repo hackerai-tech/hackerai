@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { once } from "node:events";
 
 let mockSocket: string;
-let mockBeforeEval: (() => void) | undefined;
+let mockBeforeEval: (() => void | Promise<void>) | undefined;
+let mockMgetCount = 0;
+let mockMgetFailureAt = 0;
 const encode = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 const mockCommand = (...args: unknown[]) =>
   JSON.parse(
@@ -30,8 +32,11 @@ jest.mock("../../lib/rate-limit/redis", () => ({
     hget: async (key: string, field: string) =>
       mockDecode(mockCommand("HGET", key, field)),
     get: async (key: string) => mockDecode(mockCommand("GET", key)),
-    mget: async (...keys: string[]) =>
-      mockCommand("MGET", ...keys).map(mockDecode),
+    mget: async (...keys: string[]) => {
+      if (++mockMgetCount === mockMgetFailureAt)
+        throw new Error("Redis unavailable");
+      return mockCommand("MGET", ...keys).map(mockDecode);
+    },
     set: async (
       key: string,
       value: unknown,
@@ -47,7 +52,7 @@ jest.mock("../../lib/rate-limit/redis", () => ({
     eval: async (lua: string, keys: string[], args: unknown[]) => {
       const hook = mockBeforeEval;
       mockBeforeEval = undefined;
-      hook?.();
+      await hook?.();
       return mockCommand("EVAL", lua, keys.length, ...keys, ...args);
     },
     exists: async (key: string) => mockCommand("EXISTS", key),
@@ -196,6 +201,8 @@ afterAll(async () => {
   process.env = env;
 });
 beforeEach(() => {
+  mockMgetCount = 0;
+  mockMgetFailureAt = 0;
   mockBeforeEval = undefined;
   jest.resetAllMocks();
   jest
@@ -985,5 +992,48 @@ it.each([false, true])(
       });
       await expect(claim()).rejects.toThrow();
     }
+  },
+);
+
+it.each(["reconciliation", "reread"])(
+  "keeps the protected recovery view when opportunistic %s fails",
+  async (failure) => {
+    completedIncident();
+    if (failure === "reconciliation")
+      jest
+        .mocked(getActiveTriggerRunsForUser)
+        .mockRejectedValueOnce(new Error("Convex unavailable"));
+    else mockMgetFailureAt = 3;
+    expect(await workspaceOptions(owner, true)).toEqual({
+      status: "protected",
+      reason: "recovery",
+    });
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);
+
+it.each([true, false])(
+  "serializes real cloud admission with completed retirement (admission first=%s)",
+  async (admissionFirst) => {
+    const { reconcileCompletedRecovery } =
+      await import("../../lib/cloud-recovery/completed");
+    const { binding } = completedIncident();
+    const admit = () =>
+      assertCloudWorkspaceAvailable(
+        owner,
+        binding.destinationId,
+        binding.region,
+      );
+    if (admissionFirst) mockBeforeEval = admit;
+    expect(await reconcileCompletedRecovery(owner)).toBe(!admissionFirst);
+    if (!admissionFirst) await admit();
+    expect(mockCommand("EXISTS", recoveryKeys[5])).toBe(1);
+    expect(mockCommand("EXISTS", recoveryKeys[6])).toBe(admissionFirst ? 0 : 1);
+    expect(mockDecode(mockCommand("GET", recoveryKeys[0]))).toEqual(binding);
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
   },
 );

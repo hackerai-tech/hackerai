@@ -15,8 +15,10 @@ const steps: Record<string, string> = {
 };
 export function CloudWorkspaceRecovery({
   surface = "cloud_connection_error",
+  onSettled,
 }: {
   surface?: "cloud_connection_error" | "workspace_status" | "workspace_dialog";
+  onSettled?: () => void;
 }) {
   const [view, setView] = useState<RecoveryView>({ status: "hidden" });
   const [observedRecovery, setObservedRecovery] = useState(false);
@@ -27,16 +29,21 @@ export function CloudWorkspaceRecovery({
   const checks = useRef(0);
   const exposed = useRef<string | null>(null);
   const statusReadGeneration = useRef(0);
-  const updateView = useCallback((next: RecoveryView) => {
-    if (
-      next.status === "offered" ||
-      next.status === "declined" ||
-      next.status === "waiting" ||
-      next.status === "recovering"
-    )
-      setObservedRecovery(true);
-    setView(next);
-  }, []);
+  const updateView = useCallback(
+    (next: RecoveryView) => {
+      if (
+        next.status === "offered" ||
+        next.status === "declined" ||
+        next.status === "waiting" ||
+        next.status === "recovering"
+      )
+        setObservedRecovery(true);
+      setView(next);
+      if (next.status === "hidden" || next.status === "recovered")
+        onSettled?.();
+    },
+    [onSettled],
+  );
   // Durable recovery receipts belong to the workspace, not the current chat.
   // Announce completion only if this mount actually displayed the incident.
   const hidden =
@@ -199,7 +206,7 @@ export function CloudWorkspaceRecovery({
       <p className="font-medium mb-2">Cloud workspace</p>
       {hidden ? (
         surface === "workspace_dialog" ? (
-          <p>
+          <p role="status">
             {checked
               ? "No recovery action is available yet. Checking status does not restart or change your workspace."
               : "Checking recovery status…"}

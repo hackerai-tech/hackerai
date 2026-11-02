@@ -205,6 +205,9 @@ export function CloudWorkspaceRegionChoice({
     },
     [apply, manage, titleId],
   );
+  const refreshAfterRecovery = useCallback(() => {
+    void act(undefined, undefined, true);
+  }, [act]);
   useEffect(() => {
     const active = new AbortController();
     controller.current = active;
@@ -432,7 +435,10 @@ export function CloudWorkspaceRegionChoice({
         )}
       </div>
       {view.status === "protected" && view.reason === "recovery" && (
-        <CloudWorkspaceRecovery surface="workspace_dialog" />
+        <CloudWorkspaceRecovery
+          surface="workspace_dialog"
+          onSettled={refreshAfterRecovery}
+        />
       )}
       {!busy && view.status === "unavailable" && (
         <p role="alert" className="mt-2 text-destructive">
