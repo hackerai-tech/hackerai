@@ -15,6 +15,7 @@ jest.mock("@/lib/auth/expected-auth-errors", () => ({
 
 import { phLogger } from "@/lib/posthog/server";
 import { onRequestError } from "@/instrumentation";
+import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 
 describe("onRequestError", () => {
   const mockPhLoggerError = phLogger.error as jest.MockedFunction<
@@ -23,7 +24,63 @@ describe("onRequestError", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(isEndedSessionRefreshError).mockReturnValue(false);
   });
+
+  describe.each([false, true])(
+    "expected auth error: %s",
+    (expectedAuthError) => {
+      it.each([
+        [
+          "/auth/callback?code=oauth-secret&access_token=token-secret",
+          "/auth/callback",
+        ],
+        ["/api/chat?%74oken=encoded-secret&custom=private-value", "/api/chat"],
+        ["/auth/callback#fragment-secret?code=oauth-secret", "/auth/callback"],
+        [
+          "https://example.test/auth/callback?state=state-secret",
+          "https://example.test/auth/callback",
+        ],
+        ["/c/%3F%23opaque?code=oauth-secret", "/c/%3F%23opaque"],
+        ["/c/opaque-chat-id", "/c/opaque-chat-id"],
+        ["/invalid%path?code=oauth-secret", "/invalid%path"],
+      ])(
+        "keeps query and fragment out of request diagnostics for %s",
+        (path, safePath) => {
+          jest
+            .mocked(isEndedSessionRefreshError)
+            .mockReturnValue(expectedAuthError);
+          const error = new Error("request failed");
+          const request = { path, method: "GET", headers: {} };
+          onRequestError(error, request, {
+            routePath: "/auth/callback",
+            routeType: "route",
+            routerKind: "App Router",
+            revalidateReason: undefined,
+          });
+
+          const logger = expectedAuthError ? phLogger.warn : phLogger.error;
+          expect(logger).toHaveBeenCalledWith(
+            expectedAuthError
+              ? "auth_session_refresh_ended"
+              : "Next.js request error",
+            expect.objectContaining({
+              error,
+              path: safePath,
+              method: "GET",
+              routePath: "/auth/callback",
+              routeType: "route",
+              routerKind: "App Router",
+            }),
+          );
+          expect(
+            expectedAuthError ? phLogger.error : phLogger.warn,
+          ).not.toHaveBeenCalled();
+          expect(request.path).toBe(path);
+        },
+      );
+    },
+  );
 
   it("adds bounded Server Action request metadata without sensitive headers", () => {
     const error = Object.assign(
