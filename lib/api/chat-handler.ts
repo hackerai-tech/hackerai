@@ -1,11 +1,6 @@
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
-import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
-import {
-  evaluateFreeAgentBudget,
-  freeAgentBudgetPolicy,
-} from "@/lib/experiments/free-agent-budget";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
@@ -62,7 +57,7 @@ import {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
-  checkFreeCostBudget,
+  checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
   deductUsageDelta,
@@ -524,27 +519,10 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
-      const freeAgentBudget = await evaluateFreeAgentBudget({
-        posthog: (posthog ??= PostHogClient()),
-        userId,
-        mode,
-        subscription,
-        requestId,
-      });
-      const freeLimits = freeAgentBudgetPolicy(
-        freeAgentBudget,
-        regionalFreeLimits,
-      );
-      const freeDailySettlement = freeLimits?.agentDailyBudget
-        ? new FreeDailyCostSettlement(
-            freeUsageSubject,
-            freeLimits,
-            crypto.randomUUID(),
-          )
-        : undefined;
+      const freeLimits = regionalFreeLimits;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeCostBudget(freeUsageSubject, freeLimits)
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -1427,16 +1405,10 @@ export const createChatHandler = () => {
                         },
                       });
                     } else if (subscription === "free") {
-                      if (freeDailySettlement) {
-                        await freeDailySettlement.settle(
-                          usageCostRecord.costDollars,
-                        );
-                      } else {
-                        await recordFreeMonthlyCost(
-                          freeUsageSubject,
-                          usageCostRecord.costDollars,
-                        );
-                      }
+                      await recordFreeMonthlyCost(
+                        freeUsageSubject,
+                        usageCostRecord.costDollars,
+                      );
                     } else {
                       const deductionResult = await deductUsage(
                         userId,
@@ -1535,7 +1507,6 @@ export const createChatHandler = () => {
                       responseModel: state.responseModel,
                       analyticsRequestContext,
                       experiment: routingExperimentContext,
-                      freeAgentBudget,
                       fallbackServed:
                         state.responseModel && retryUsedFallbackModel
                           ? true
@@ -1574,10 +1545,6 @@ export const createChatHandler = () => {
                 model,
               }) => {
                 if (hasRecordedUsage) return;
-                if (freeDailySettlement) {
-                  await freeDailySettlement.settle(currentCostDollars);
-                  return;
-                }
                 if (!usageSettlementState) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1653,7 +1620,6 @@ export const createChatHandler = () => {
                   deduction: deductionResult,
                   forced: force,
                   experiment: routingExperimentContext,
-                  freeAgentBudget,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -1802,11 +1768,6 @@ export const createChatHandler = () => {
               registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
-              checkBudgetBeforeStep: freeDailySettlement
-                ? async () => {
-                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
-                  }
-                : undefined,
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
@@ -2559,7 +2520,6 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   experiment: routingExperimentContext,
-                                  freeAgentBudget,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -2955,7 +2915,6 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       experiment: routingExperimentContext,
-                      freeAgentBudget,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

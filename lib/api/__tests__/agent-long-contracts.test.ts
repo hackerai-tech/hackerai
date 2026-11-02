@@ -2539,7 +2539,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const lock = await acquireFreeRunConcurrencyLock(",
     );
     const monthlyIndex = taskSrc.indexOf(
-      "await checkFreeCostBudget(",
+      "await checkFreeMonthlyCostLimit(",
       lockIndex,
     );
     const consumeIndex = taskSrc.indexOf(
@@ -2562,15 +2562,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
     expect(taskSrc).toMatch(
-      /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
+      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
     );
     expect(
       taskSrc.match(
-        /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
+        /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
     ).not.toHaveLength(0);
     expect(taskSrc).not.toMatch(
-      /checkFreeCostBudget\(freeUsageSubject,\s*userId/,
+      /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
     );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
