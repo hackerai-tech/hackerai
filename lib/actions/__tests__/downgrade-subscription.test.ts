@@ -19,7 +19,7 @@ const mockGetBillingActionContext = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockConvexQuery = jest.fn();
 const mockPauseFlag = jest.fn();
-const mockDowngradeFlag = jest.fn();
+const mockDowngradePolicy = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 
@@ -65,7 +65,7 @@ jest.mock("@/convex/_generated/api", () => ({
 
 jest.mock("@/lib/billing/retention-offers.server", () => ({
   getPauseOfferFlagState: mockPauseFlag,
-  getDowngradeOfferFlag: mockDowngradeFlag,
+  getDowngradeOfferPolicy: mockDowngradePolicy,
   isPauseOfferEnabledForUser: async () => false,
 }));
 
@@ -126,9 +126,9 @@ describe("downgradeSubscriptionAction", () => {
       stripeCustomerId: "cus_123",
     } as never);
     mockPauseFlag.mockResolvedValue("disabled" as never);
-    mockDowngradeFlag.mockResolvedValue({
+    mockDowngradePolicy.mockReturnValue({
       state: "enabled",
-      reasonPolicy: "price_reasons",
+      reasonPolicy: "all_reasons",
     } as never);
     mockConvexQuery.mockResolvedValue(null as never);
     mockConvexMutation.mockImplementation((async (name: string) =>
@@ -319,7 +319,25 @@ describe("downgradeSubscriptionAction", () => {
     );
   });
 
-  it("refuses non-price reasons and a disabled flag", async () => {
+  it.each(["missing_feature", "switched_tool"] as const)(
+    "schedules a downgrade for %s under the standard policy",
+    async (reasonCategory) => {
+      const { default: downgradeSubscriptionAction } =
+        await import("../downgrade-subscription");
+      await expect(
+        downgradeSubscriptionAction({
+          cancellationReason: {
+            reasonCategory,
+            reasonSubcategory: "missing_capability",
+            reasonDetails: "I need a feature this plan does not include",
+          },
+        }),
+      ).resolves.toMatchObject({ scheduled: true, toTier: "pro" });
+      expect(mockCreateSchedule).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("refuses usage-limit reasons and a disabled policy", async () => {
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
 
@@ -333,9 +351,9 @@ describe("downgradeSubscriptionAction", () => {
       }),
     ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
 
-    mockDowngradeFlag.mockResolvedValue({
+    mockDowngradePolicy.mockReturnValue({
       state: "disabled",
-      reasonPolicy: "price_reasons",
+      reasonPolicy: "all_reasons",
     } as never);
     await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
       BILLING_ERRORS.retentionOfferUnavailable,

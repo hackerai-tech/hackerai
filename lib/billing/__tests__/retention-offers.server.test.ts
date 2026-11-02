@@ -67,7 +67,7 @@ describe("getPauseOfferFlagState", () => {
   });
 });
 
-describe("getDowngradeOfferFlag", () => {
+describe("getDowngradeOfferPolicy", () => {
   const originalOverride = process.env.DOWNGRADE_OFFER_ENABLED;
 
   beforeEach(() => {
@@ -76,68 +76,46 @@ describe("getDowngradeOfferFlag", () => {
   });
 
   afterEach(() => {
-    if (originalOverride === undefined) {
+    if (originalOverride === undefined)
       delete process.env.DOWNGRADE_OFFER_ENABLED;
-    } else process.env.DOWNGRADE_OFFER_ENABLED = originalOverride;
+    else process.env.DOWNGRADE_OFFER_ENABLED = originalOverride;
   });
 
-  it("maps the flag variants to reason policies", async () => {
-    const { getDowngradeOfferFlag } =
+  it.each([undefined, "true", "all_reasons"])(
+    "offers all supported reasons without PostHog when override is %s",
+    async (override) => {
+      if (override !== undefined)
+        process.env.DOWNGRADE_OFFER_ENABLED = override;
+      const { getDowngradeOfferPolicy } =
+        await import("../retention-offers.server");
+      mockGetFlagValue.mockRejectedValue(
+        new Error("PostHog unavailable") as never,
+      );
+      expect(getDowngradeOfferPolicy()).toEqual({
+        state: "enabled",
+        reasonPolicy: "all_reasons",
+      });
+      expect(mockGetFlagValue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves an explicit price-only environment restriction", async () => {
+    process.env.DOWNGRADE_OFFER_ENABLED = " PRICE_REASONS ";
+    const { getDowngradeOfferPolicy } =
       await import("../retention-offers.server");
-    mockGetFlagValue.mockResolvedValueOnce("all_reasons" as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
-      state: "enabled",
-      reasonPolicy: "all_reasons",
-    });
-    mockGetFlagValue.mockResolvedValueOnce("price_reasons" as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+    expect(getDowngradeOfferPolicy()).toEqual({
       state: "enabled",
       reasonPolicy: "price_reasons",
     });
-    mockGetFlagValue.mockResolvedValueOnce(false as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+    expect(mockGetFlagValue).not.toHaveBeenCalled();
+  });
+
+  it("honors the emergency off switch without calling PostHog", async () => {
+    process.env.DOWNGRADE_OFFER_ENABLED = " FALSE ";
+    const { getDowngradeOfferPolicy } =
+      await import("../retention-offers.server");
+    expect(getDowngradeOfferPolicy()).toEqual({
       state: "disabled",
-      reasonPolicy: "price_reasons",
-    });
-    expect(mockWarn).not.toHaveBeenCalled();
-  });
-
-  it("treats a boolean true and an unknown variant as the default policy", async () => {
-    const { getDowngradeOfferFlag } =
-      await import("../retention-offers.server");
-    mockGetFlagValue.mockResolvedValueOnce(true as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
-      state: "enabled",
-      reasonPolicy: "price_reasons",
-    });
-    mockGetFlagValue.mockResolvedValueOnce("everyone" as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
-      state: "enabled",
-      reasonPolicy: "price_reasons",
-    });
-    expect(mockWarn).toHaveBeenCalledWith(
-      "retention_offer_flag_unknown_variant",
-      expect.objectContaining({ variant: "everyone" }),
-    );
-  });
-
-  it("fails closed when the flag service is unavailable", async () => {
-    const { getDowngradeOfferFlag } =
-      await import("../retention-offers.server");
-    mockGetFlagValue.mockResolvedValue(null as never);
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
-      state: "unavailable",
-      reasonPolicy: "price_reasons",
-    });
-    expect(mockGetFlagValue).toHaveBeenCalledTimes(2);
-  });
-
-  it("accepts a policy name as the environment override", async () => {
-    process.env.DOWNGRADE_OFFER_ENABLED = "all_reasons";
-    const { getDowngradeOfferFlag } =
-      await import("../retention-offers.server");
-    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
-      state: "enabled",
       reasonPolicy: "all_reasons",
     });
     expect(mockGetFlagValue).not.toHaveBeenCalled();
