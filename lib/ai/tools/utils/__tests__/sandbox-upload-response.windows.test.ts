@@ -20,13 +20,14 @@ const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 windowsDescribe("native Windows curl through Git Bash", () => {
   it.each([
-    [200, "", false],
-    [403, "AccessDenied", false],
-    [403, "SignatureDoesNotMatch", false],
-    [403, null, true],
+    [200, "", false, false],
+    [200, "", false, true],
+    [403, "AccessDenied", false, false],
+    [403, "SignatureDoesNotMatch", false, false],
+    [403, null, true, false],
   ] as const)(
-    "preserves HTTP %s, code %s and exact bytes (oversized=%s)",
-    async (status, code, oversized) => {
+    "preserves HTTP %s, code %s and exact bytes (oversized=%s, legacy=%s)",
+    async (status, code, oversized, legacy) => {
       const shell = findGitBash();
       if (!shell)
         throw new Error("Windows upload acceptance requires Git Bash");
@@ -52,7 +53,7 @@ windowsDescribe("native Windows curl through Git Bash", () => {
         const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/upload`;
         // Select Windows' own curl, not the MSYS build with its virtual filesystem.
         const curl = windowsSystemExecutable("curl.exe").replaceAll("\\", "/");
-        const command = `curl() { ${quote(curl)} "$@"; }\n${buildPosixCurlUploadCommand(source.replaceAll("\\", "/"), endpoint, "text/plain")}`;
+        const command = `curl() { ${legacy ? 'if [ "$1" = "--help" ]; then return 0; fi; ' : ""}${quote(curl)} "$@"; }\n${buildPosixCurlUploadCommand(source.replaceAll("\\", "/"), endpoint, "text/plain")}`;
         const spec = buildShellSpawn(shell, "-c", command);
         const result = await run(shell, spec.args, {
           ...spec.options,
