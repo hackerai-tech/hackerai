@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type {
@@ -110,6 +111,7 @@ export function CloudWorkspaceRegionChoice({
   const [notice, setNotice] = useState<string | null>(null);
   const busyRef = useRef(false);
   const refreshPending = useRef(false);
+  const recoveryRefreshPending = useRef(false);
   const controller = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const autoChecks = useRef(0);
@@ -175,7 +177,8 @@ export function CloudWorkspaceRegionChoice({
         if (!active.signal.aborted && current === generation.current) {
           optionsReadyWithFocus =
             automatic &&
-            previous.status === "waiting" &&
+            (previous.status === "waiting" ||
+              previous.status === "protected") &&
             (next.status === "selection_required" ||
               next.status === "selected") &&
             !!cardRef.current?.contains(document.activeElement);
@@ -197,13 +200,21 @@ export function CloudWorkspaceRegionChoice({
           setChecking(false);
           if (refreshPending.current) {
             refreshPending.current = false;
+            recoveryRefreshPending.current = false;
             void act(undefined, false);
+          } else if (recoveryRefreshPending.current) {
+            recoveryRefreshPending.current = false;
+            void act(undefined, undefined, true);
           }
         }
       }
     },
     [apply, manage, titleId],
   );
+  const refreshAfterRecovery = useCallback(() => {
+    if (busyRef.current) recoveryRefreshPending.current = true;
+    else void act(undefined, undefined, true);
+  }, [act]);
   useEffect(() => {
     const active = new AbortController();
     controller.current = active;
@@ -415,15 +426,13 @@ export function CloudWorkspaceRegionChoice({
             create your first workspace.
           </p>
         )}
-        {!busy && view.status === "protected" && (
+        {!busy && view.status === "protected" && view.reason !== "recovery" && (
           <p className="mt-2">
             {view.reason === "provisioning"
               ? "An earlier workspace setup hasn’t been confirmed yet."
-              : view.reason === "recovery"
-                ? "Your workspace is protected while its recovery status is checked. Select Cloud in chat to review recovery options."
-                : view.reason === "cleanup"
-                  ? "Workspace cleanup status must be verified before another workspace can be selected."
-                  : "Your workspace identity needs verification before it can be changed."}{" "}
+              : view.reason === "cleanup"
+                ? "Workspace cleanup status must be verified before another workspace can be selected."
+                : "Your workspace identity needs verification before it can be changed."}{" "}
             Check status to try again. If this continues,{" "}
             <a href="mailto:contact@hackerai.co" className="underline">
               contact support
@@ -432,6 +441,12 @@ export function CloudWorkspaceRegionChoice({
           </p>
         )}
       </div>
+      {view.status === "protected" && view.reason === "recovery" && (
+        <CloudWorkspaceRecovery
+          surface="workspace_dialog"
+          onSettled={refreshAfterRecovery}
+        />
+      )}
       {!busy && view.status === "unavailable" && (
         <p role="alert" className="mt-2 text-destructive">
           {notice ??
@@ -448,12 +463,13 @@ export function CloudWorkspaceRegionChoice({
           {notice}
         </p>
       )}
-      {view.status !== "empty" && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          All saved workspaces and files stay where they are. Switching does not
-          move, merge, or delete files.
-        </p>
-      )}
+      {view.status !== "empty" &&
+        !(view.status === "protected" && view.reason === "recovery") && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            All saved workspaces and files stay where they are. Switching does
+            not move, merge, or delete files.
+          </p>
+        )}
       <div className="mt-3 flex flex-wrap gap-2">
         {onRetry &&
           browsing &&
@@ -501,18 +517,19 @@ export function CloudWorkspaceRegionChoice({
             Choose another workspace
           </Button>
         )}
-        {["waiting", "unavailable", "protected"].includes(view.status) && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="min-h-11"
-            aria-disabled={checking}
-            aria-busy={checking}
-            onClick={() => void act()}
-          >
-            {checking ? "Checking status…" : "Check status"}
-          </Button>
-        )}
+        {["waiting", "unavailable", "protected"].includes(view.status) &&
+          !(view.status === "protected" && view.reason === "recovery") && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11"
+              aria-disabled={checking}
+              aria-busy={checking}
+              onClick={() => void act()}
+            >
+              {checking ? "Checking status…" : "Check status"}
+            </Button>
+          )}
       </div>
     </div>
   );

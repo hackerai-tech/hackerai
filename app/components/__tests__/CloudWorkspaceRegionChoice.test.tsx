@@ -401,3 +401,75 @@ it("does not steal composer focus when a background status read finds a saved ch
   await screen.findByRole("button", { name: "Retry" });
   expect(composer).toHaveFocus();
 });
+
+it("offers same-workspace recovery directly in management without automatically confirming", async () => {
+  fetchMock.mockImplementation(async (url: string) =>
+    response(
+      url.includes("/recovery")
+        ? { status: "offered", token: "7ad19af5-4d14-4d4b-aab7-90734610a6da" }
+        : { status: "protected", reason: "recovery" },
+    ),
+  );
+  render(<CloudWorkspaceRegionChoice manage />);
+  expect(
+    await screen.findByRole("button", { name: "Recover workspace" }),
+  ).toBeEnabled();
+  expect(
+    screen.getByText(/same workspace in its current region/),
+  ).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Check status" })).toHaveLength(
+    1,
+  );
+  expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+});
+
+it.each(["hidden", "recovered"])(
+  "refreshes protected workspace options after a %s recovery status without replaying a task",
+  async (status) => {
+    let settled = false;
+    const retry = jest.fn();
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/recovery")) {
+        settled = true;
+        return response({ status });
+      }
+      return response(
+        settled ? options : { status: "protected", reason: "recovery" },
+      );
+    });
+    render(<CloudWorkspaceRegionChoice manage onRetry={retry} />);
+    expect(await screen.findAllByRole("radio")).toHaveLength(3);
+    expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+    expect(retry).not.toHaveBeenCalled();
+  },
+);
+
+it("queues a recovery settlement behind an older options read and preserves management choices", async () => {
+  let finish!: (value: ReturnType<typeof response>) => void;
+  let optionReads = 0;
+  let recoveryReads = 0;
+  fetchMock.mockImplementation(async (url: string) => {
+    if (url.includes("/recovery"))
+      return response({
+        status: ++recoveryReads === 1 ? "hidden" : "recovered",
+      });
+    expect(url).toContain("?manage=1");
+    optionReads++;
+    if (optionReads === 2)
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    return response(
+      optionReads === 1 ? { status: "protected", reason: "recovery" } : options,
+    );
+  });
+  render(<CloudWorkspaceRegionChoice manage />);
+  await waitFor(() => expect(optionReads).toBe(2));
+  fireEvent.click(screen.getByRole("button", { name: "Check status" }));
+  await waitFor(() => expect(recoveryReads).toBe(2));
+  await act(async () => {
+    finish(response({ status: "protected", reason: "recovery" }));
+  });
+  expect(await screen.findAllByRole("radio")).toHaveLength(3);
+  expect(fetchMock.mock.calls.every(([, opts]) => !opts?.method)).toBe(true);
+});

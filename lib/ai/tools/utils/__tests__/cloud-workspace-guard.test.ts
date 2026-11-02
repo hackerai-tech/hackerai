@@ -157,6 +157,8 @@ describe("cloud workspace guard", () => {
       "cloud_workspace_migration:v1:user-1",
       "cloud_workspace_activity:v1:user-1",
       "cloud_workspace_recovery_result:v1:user-1",
+      "cloud_recovery_consent:v1:user-1",
+      "cloud_recovery_history:v1:user-1",
     ]);
     await recovery.update({
       step: "backup_created",

@@ -186,7 +186,10 @@ export async function recoverE2BDiskOnly(
 ): Promise<Record<string, unknown>> {
   // Enforce authorization even if a future caller bypasses the CLI.
   validateDiskRecoveryAuthorization(auth);
-  const existingResult = await readE2BDiskRecoveryResult(auth.userId);
+  const existingResult = await readE2BDiskRecoveryResult(
+    auth.userId,
+    auth.idempotencyKey,
+  );
   if (
     existingResult &&
     typeof existingResult === "object" &&

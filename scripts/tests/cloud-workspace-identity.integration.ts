@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { once } from "node:events";
 
 let mockSocket: string;
+let mockBeforeEval: (() => void | Promise<void>) | undefined;
+let mockMgetCount = 0;
+let mockMgetFailureAt = 0;
 const encode = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
 const mockCommand = (...args: unknown[]) =>
   JSON.parse(
@@ -26,9 +29,14 @@ const mockDecode = (v: unknown) => {
 };
 jest.mock("../../lib/rate-limit/redis", () => ({
   createRedisClient: () => ({
+    hget: async (key: string, field: string) =>
+      mockDecode(mockCommand("HGET", key, field)),
     get: async (key: string) => mockDecode(mockCommand("GET", key)),
-    mget: async (...keys: string[]) =>
-      mockCommand("MGET", ...keys).map(mockDecode),
+    mget: async (...keys: string[]) => {
+      if (++mockMgetCount === mockMgetFailureAt)
+        throw new Error("Redis unavailable");
+      return mockCommand("MGET", ...keys).map(mockDecode);
+    },
     set: async (
       key: string,
       value: unknown,
@@ -41,8 +49,12 @@ jest.mock("../../lib/rate-limit/redis", () => ({
         ...(opts?.nx ? ["NX"] : []),
         ...(opts?.ex ? ["EX", opts.ex] : []),
       ),
-    eval: async (lua: string, keys: string[], args: unknown[]) =>
-      mockCommand("EVAL", lua, keys.length, ...keys, ...args),
+    eval: async (lua: string, keys: string[], args: unknown[]) => {
+      const hook = mockBeforeEval;
+      mockBeforeEval = undefined;
+      await hook?.();
+      return mockCommand("EVAL", lua, keys.length, ...keys, ...args);
+    },
     exists: async (key: string) => mockCommand("EXISTS", key),
     del: async (...keys: string[]) => mockCommand("DEL", ...keys),
   }),
@@ -189,6 +201,9 @@ afterAll(async () => {
   process.env = env;
 });
 beforeEach(() => {
+  mockMgetCount = 0;
+  mockMgetFailureAt = 0;
+  mockBeforeEval = undefined;
   jest.resetAllMocks();
   jest
     .mocked(getActiveTriggerRunsForUser)
@@ -762,3 +777,263 @@ it("reads every inventory page before offering an exact-ID choice", async () => 
   ]);
   expect(Sandbox.create).not.toHaveBeenCalled();
 });
+
+const recoveryToken = "7ad19af5-4d14-4d4b-aab7-90734610a6da";
+const recoveryKeys = [
+  "cloud_workspace_migration:v1:",
+  "cloud_recovery_consent:v1:",
+  "cloud_workspace_recovery_result:v1:",
+  "cloud_resume_failures:v1:",
+  "cloud_workspace_region:v1:",
+  "cloud_workspace_activity:v1:",
+  "cloud_recovery_history:v1:",
+].map((k) => k + owner);
+function completedIncident() {
+  const now = Date.now();
+  const target = {
+    sandboxId: "us-original",
+    region: "us-east-1",
+    template: "terminal-agent-sandbox",
+    sandboxVersion: "v12",
+    attempts: [recoveryToken],
+    uncertain: false,
+    lastFailedAt: now - 2000,
+  };
+  const receipt = {
+    token: recoveryToken,
+    target,
+    status: "executing",
+    issuedAt: now - 4000,
+    confirmedAt: now - 3000,
+  };
+  const result = {
+    token: recoveryToken,
+    status: "verified_ready",
+    sandboxId: target.sandboxId,
+    region: target.region,
+    completedAt: new Date(now - 1000).toISOString(),
+    backupSnapshotId: "verified-backup",
+  };
+  const binding = workspaceBinding(target.sandboxId, "us-east-1", "selected");
+  [binding, receipt, result, target, target.region].forEach((v, i) =>
+    mockCommand("SET", recoveryKeys[i], v),
+  );
+  return { binding, receipt, result, target };
+}
+
+it("automatically retires only completed bookkeeping while preserving exact binding and idempotent history", async () => {
+  const { reconcileCompletedRecovery } =
+    await import("../../lib/cloud-recovery/completed");
+  const { readE2BDiskRecoveryResult, claimE2BDiskRecovery } =
+    await import("../../lib/ai/tools/utils/cloud-workspace-guard");
+  const { binding, result } = completedIncident();
+  expect(await reconcileCompletedRecovery(owner)).toBe(true);
+  expect(mockDecode(mockCommand("GET", recoveryKeys[0]))).toEqual(binding);
+  expect(mockCommand("MGET", ...recoveryKeys.slice(1, 4))).toEqual([
+    null,
+    null,
+    null,
+  ]);
+  expect(await readE2BDiskRecoveryResult(owner, recoveryToken)).toEqual(result);
+  await expect(
+    claimE2BDiskRecovery({
+      userId: owner,
+      sandboxId: binding.destinationId,
+      region: binding.region,
+      token: recoveryToken,
+      operatorId: "stale-operator",
+    }),
+  ).rejects.toThrow();
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+
+it("preserves new failure evidence for fresh confirmation after a completed incident", async () => {
+  const { reconcileCompletedRecovery } =
+    await import("../../lib/cloud-recovery/completed");
+  const { target } = completedIncident();
+  const newFailure = { ...target, lastFailedAt: Date.now() };
+  mockCommand("SET", recoveryKeys[3], newFailure);
+  expect(await reconcileCompletedRecovery(owner)).toBe(true);
+  expect(mockDecode(mockCommand("GET", recoveryKeys[3]))).toEqual(newFailure);
+});
+
+it.each([
+  "new_failure",
+  "new_fence",
+  "activity",
+  "region",
+  "consent",
+  "result",
+])(
+  "refuses completed reconciliation when %s races the snapshot",
+  async (kind) => {
+    const { reconcileCompletedRecovery } =
+      await import("../../lib/cloud-recovery/completed");
+    const fixture = completedIncident();
+    mockBeforeEval = () => {
+      const change = {
+        new_failure: [3, { ...fixture.target, lastFailedAt: Date.now() }],
+        new_fence: [
+          0,
+          { ...fixture.binding, recoveryPending: { unknown: true } },
+        ],
+        activity: [5, "active"],
+        region: [4, "eu-central-1"],
+        consent: [1, { ...fixture.receipt, status: "confirmed" }],
+        result: [2, { ...fixture.result, status: "unknown" }],
+      }[kind]!;
+      mockCommand("SET", recoveryKeys[change[0] as number], change[1]);
+    };
+    expect(await reconcileCompletedRecovery(owner)).toBe(false);
+    expect(mockCommand("EXISTS", recoveryKeys[1], recoveryKeys[2])).toBe(2);
+    expect(mockCommand("EXISTS", recoveryKeys[6])).toBe(0);
+  },
+);
+
+it.each([
+  "unknown",
+  "wrong_id",
+  "missing_backup",
+  "future",
+  "preservation",
+  "active_parent",
+  "active_child",
+  "has_more",
+])("keeps recovery protected for %s", async (kind) => {
+  const { reconcileCompletedRecovery } =
+    await import("../../lib/cloud-recovery/completed");
+  const f = completedIncident();
+  if (kind === "unknown")
+    mockCommand("SET", recoveryKeys[2], { ...f.result, status: "unknown" });
+  if (kind === "wrong_id")
+    mockCommand("SET", recoveryKeys[2], { ...f.result, sandboxId: "other" });
+  if (kind === "missing_backup")
+    mockCommand("SET", recoveryKeys[2], { ...f.result, backupSnapshotId: "" });
+  if (kind === "future")
+    mockCommand("SET", recoveryKeys[2], {
+      ...f.result,
+      completedAt: new Date(Date.now() + 60000).toISOString(),
+    });
+  if (kind === "preservation")
+    mockCommand("SET", recoveryKeys[0], {
+      ...f.binding,
+      preservationHold: true,
+    });
+  if (kind === "active_parent" || kind === "has_more")
+    jest.mocked(getActiveTriggerRunsForUser).mockResolvedValueOnce({
+      runs: kind === "active_parent" ? [{}] : [],
+      hasMore: kind === "has_more",
+    } as never);
+  if (kind === "active_child")
+    jest
+      .mocked(listActiveSubagentsForUser)
+      .mockResolvedValueOnce({ runs: [{}], hasMore: false } as never);
+  expect(await reconcileCompletedRecovery(owner)).toBe(false);
+  expect(mockCommand("EXISTS", recoveryKeys[1], recoveryKeys[2])).toBe(2);
+});
+
+it("completed recovery no longer blocks management and preserves all retained copies", async () => {
+  const { binding } = completedIncident();
+  inventory = [
+    item(binding.destinationId, "us"),
+    item("other-us", "us"),
+    item("other-eu", "eu"),
+  ];
+  const before = JSON.stringify(inventory);
+  const view = await workspaceOptions(owner, true);
+  expect(view.status).toBe("selection_required");
+  if (view.status !== "selection_required") throw new Error("missing choices");
+  expect(view.currentId).toBe(binding.destinationId);
+  await chooseWorkspace(owner, "other-eu", view.token);
+  expect((await readCloudWorkspaceState(owner))?.phase).toBe("e2b");
+  expect(JSON.stringify(inventory)).toBe(before);
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "expired dispatch reconciliation cannot race an already-claimed worker (claimed=%s)",
+  async (claimed) => {
+    const { failConsent } = await import("../../lib/cloud-recovery/store");
+    const { claimE2BDiskRecovery } =
+      await import("../../lib/ai/tools/utils/cloud-workspace-guard");
+    const f = completedIncident();
+    mockCommand("DEL", recoveryKeys[2]);
+    const expired = {
+      ...f.receipt,
+      status: "confirmed",
+      confirmedAt: Date.now() - 11 * 60000,
+    };
+    mockCommand("SET", recoveryKeys[1], expired);
+    const claim = () =>
+      claimE2BDiskRecovery({
+        userId: owner,
+        sandboxId: f.binding.destinationId,
+        region: f.binding.region,
+        token: recoveryToken,
+        operatorId: "customer",
+        customerConsent: { key: recoveryKeys[1], token: recoveryToken },
+      });
+    if (claimed) await claim();
+    await failConsent(owner, recoveryToken, Date.now() - 10 * 60000);
+    const saved = mockDecode(mockCommand("GET", recoveryKeys[1]));
+    if (claimed) {
+      expect(saved.status).toBe("executing");
+      expect(mockDecode(mockCommand("GET", recoveryKeys[0])).phase).toBe(
+        "recovery",
+      );
+    } else {
+      expect(saved).toMatchObject({
+        status: "failed",
+        failurePhase: "before_reboot",
+      });
+      await expect(claim()).rejects.toThrow();
+    }
+  },
+);
+
+it.each(["reconciliation", "reread"])(
+  "keeps the protected recovery view when opportunistic %s fails",
+  async (failure) => {
+    completedIncident();
+    if (failure === "reconciliation")
+      jest
+        .mocked(getActiveTriggerRunsForUser)
+        .mockRejectedValueOnce(new Error("Convex unavailable"));
+    else mockMgetFailureAt = 3;
+    expect(await workspaceOptions(owner, true)).toEqual({
+      status: "protected",
+      reason: "recovery",
+    });
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);
+
+it.each([true, false])(
+  "serializes real cloud admission with completed retirement (admission first=%s)",
+  async (admissionFirst) => {
+    const { reconcileCompletedRecovery } =
+      await import("../../lib/cloud-recovery/completed");
+    const { binding } = completedIncident();
+    const admit = () =>
+      assertCloudWorkspaceAvailable(
+        owner,
+        binding.destinationId,
+        binding.region,
+      );
+    if (admissionFirst) mockBeforeEval = admit;
+    expect(await reconcileCompletedRecovery(owner)).toBe(!admissionFirst);
+    if (!admissionFirst) await admit();
+    expect(mockCommand("EXISTS", recoveryKeys[5])).toBe(1);
+    expect(mockCommand("EXISTS", recoveryKeys[6])).toBe(admissionFirst ? 0 : 1);
+    expect(mockDecode(mockCommand("GET", recoveryKeys[0]))).toEqual(binding);
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);

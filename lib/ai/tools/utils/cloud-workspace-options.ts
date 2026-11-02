@@ -1,3 +1,4 @@
+import { reconcileCompletedRecovery } from "@/lib/cloud-recovery/completed";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
@@ -56,8 +57,16 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
     `cloud_workspace_recovery_result:v1:${userId}`,
     activityKeyFor(userId),
   ];
-  const [saved, existing, failures, consent, result, activity] =
-    await redis.mget<unknown[]>(...keys);
+  let values = await redis.mget<unknown[]>(...keys);
+  if (values[3] !== null && values[4] !== null) {
+    try {
+      if (await reconcileCompletedRecovery(userId))
+        values = await redis.mget<unknown[]>(...keys);
+    } catch {
+      // A failed reconciliation or reread must retain the protected snapshot.
+    }
+  }
+  const [saved, existing, failures, consent, result, activity] = values;
   const finish = (view: CloudWorkspaceOptions) => ({
     redis,
     keys,
