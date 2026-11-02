@@ -533,6 +533,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs = 30000,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
@@ -542,7 +543,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       );
     }
 
-    return this.dispatchFileRequest<T>(input, expectedTypes, timeoutMs, signal);
+    return this.dispatchFileRequest<T>(
+      input,
+      expectedTypes,
+      timeoutMs,
+      signal,
+      nativePaths,
+    );
   }
 
   // Only the read-only acquisition probe may enter here without an advertised
@@ -552,6 +559,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs: number,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     // Resolve before subscribing so a failed/cancelled shell lookup cannot
@@ -559,11 +567,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const nativePath = await this.toNativePath(
       this.resolveWorkingPath(input.path),
       signal,
+      nativePaths,
     );
     const allowedRoot =
       this.workingDirectory &&
       (input.type === "file_write" || input.type === "file_append")
-        ? await this.toNativePath(this.workingDirectory, signal)
+        ? await this.toNativePath(this.workingDirectory, signal, nativePaths)
         : undefined;
     signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
@@ -1787,6 +1796,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   private async toNativePath(
     path: string,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<string> {
     signal?.throwIfAborted();
     if (!this.isWindows()) return path;
@@ -1795,6 +1805,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       !path.startsWith("//") &&
       (await this.detectShell(signal)) === "bash"
     ) {
+      const cached = nativePaths?.get(path);
+      if (cached !== undefined) return cached;
       // Git Bash /tmp is an MSYS mount, often the user's Windows TEMP directory.
       // Use its installed utility, independent of PATH or project executables.
       const result = await this.runSetupCommand(
@@ -1812,6 +1824,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           "Failed to resolve the Windows file path through Git Bash",
         );
       }
+      nativePaths?.set(path, resolved);
       return resolved;
     }
     // cmd.exe has no MSYS mount table; preserve its established upload alias.
@@ -2381,6 +2394,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     firstChunkType: "file_write" | "file_append",
     signal?: AbortSignal,
   ): Promise<void> {
+    // Pin successful mount resolutions only for this write, including its root.
+    // This avoids per-chunk relay probes without reusing stale mounts on a later
+    // operation or replacement connection, or redirecting an append mid-write.
+    const nativePaths = new Map<string, string>();
     for (
       let offset = 0;
       offset < encodedContent.length;
@@ -2399,6 +2416,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         new Set(["file_ok"]),
         120000,
         signal,
+        nativePaths,
       );
     }
   }

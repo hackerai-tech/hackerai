@@ -1212,13 +1212,10 @@ describe("CentrifugoSandbox", () => {
               }),
             );
           });
-          await expect(sandbox.files.stat(source)).resolves.toMatchObject(
-            {
-              kind: "file",
-              sizeBytes: Buffer.byteLength(payload),
-            },
-            30_000,
-          );
+          await expect(sandbox.files.stat(source)).resolves.toMatchObject({
+            kind: "file",
+            sizeBytes: Buffer.byteLength(payload),
+          });
           await new Promise<void>((resolve) =>
             server.listen(0, "127.0.0.1", resolve),
           );
@@ -1231,6 +1228,7 @@ describe("CentrifugoSandbox", () => {
           expect(removed.exitCode).toBe(0);
         }
       },
+      30_000,
     );
 
     it.each([
@@ -3899,6 +3897,50 @@ describe("CentrifugoSandbox", () => {
       });
 
       await expect(promise).resolves.toBeUndefined();
+    });
+
+    it("resolves Git Bash file and root paths once per chunked write, then refreshes the next operation", async () => {
+      const sandbox = createDesktopSandbox("/tmp/project");
+      (sandbox as any).shellKind = "bash";
+      let mount = "C:\\Users\\qa\\Temp";
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => ({
+          stdout:
+            mount +
+            (command.includes("large.txt")
+              ? "\\project\\large.txt"
+              : "\\project") +
+            "\n",
+          stderr: "",
+          exitCode: 0,
+        }));
+      const content = "x".repeat(70 * 1024);
+      for (const nextMount of [mount, "D:\\ChangedTemp"]) {
+        mount = nextMount;
+        run.mockClear();
+        const startIndex = mockSubscriptions.length;
+        const write = sandbox.files.write("large.txt", content);
+        const chunks: string[] = [];
+        for (let index = 0; index < 2; index++) {
+          await jest.advanceTimersByTimeAsync(0);
+          const sub = mockSubscriptions[startIndex + index];
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          const request = sub.publish.mock.calls[0][0];
+          expect(request).toMatchObject({
+            path: mount + "\\project\\large.txt",
+            allowedRoot: mount + "\\project",
+          });
+          chunks.push(request.content);
+          sub.emit("publication", {
+            data: { type: "file_ok", requestId: request.requestId },
+          });
+        }
+        await write;
+        expect(Buffer.from(chunks.join(""), "base64").toString()).toBe(content);
+        expect(run).toHaveBeenCalledTimes(2);
+      }
     });
 
     it("chunks large native writes into file_write then file_append requests", async () => {
