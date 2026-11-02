@@ -730,6 +730,36 @@ const getMessagesPageForBackendWithRetry = async ({
 };
 
 export async function getChatById({ id }: { id: string }) {
+  let lastRetryReason: string | undefined;
+  const reportRetryResult = (
+    outcome: "read_succeeded" | "retry_exhausted" | "non_retryable_error",
+    attempts: number,
+  ) => {
+    if (!lastRetryReason) return;
+    try {
+      // A returned read is not proof of a successful caller journey. Record no
+      // query result or error content, and keep diagnostics outside the contract.
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "chat_fetch_retry_result",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.getChatById",
+          outcome,
+          attempts,
+          retry_reason: lastRetryReason,
+          chat_id:
+            typeof id === "string" &&
+            /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)
+              ? id
+              : undefined,
+        }),
+      );
+    } catch {
+      // Optional logging must not replace the returned read or original error.
+    }
+  };
   try {
     const queryArgs = {
       serviceKey,
@@ -738,14 +768,24 @@ export async function getChatById({ id }: { id: string }) {
 
     for (let attemptIndex = 0; ; attemptIndex++) {
       try {
-        return await getConvexClient().query(api.chats.getChatById, queryArgs);
+        const chat = await getConvexClient().query(
+          api.chats.getChatById,
+          queryArgs,
+        );
+        reportRetryResult("read_succeeded", attemptIndex + 1);
+        return chat;
       } catch (error) {
         const retryReason = getRetryableGetChatErrorReason(error);
         const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
+          reportRetryResult(
+            retryReason ? "retry_exhausted" : "non_retryable_error",
+            attemptIndex + 1,
+          );
           throw error;
         }
 
+        lastRetryReason = retryReason;
         console.warn(
           JSON.stringify({
             level: "warn",
