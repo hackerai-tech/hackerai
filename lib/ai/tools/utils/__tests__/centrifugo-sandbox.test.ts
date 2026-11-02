@@ -5296,9 +5296,14 @@ describe("CentrifugoSandbox", () => {
         );
         (sandbox as any).commands.run = run;
         try {
-          await expect(
-            sandbox.files.uploadToUrl(path, url, "private/media-type"),
-          ).rejects.toThrow("Failed to upload file:");
+          const failure = await sandbox.files
+            .uploadToUrl(path, url, "private/media-type")
+            .catch((error: Error & { exitCode?: number }) => error);
+          expect(failure).toBeInstanceOf(Error);
+          expect(failure).toMatchObject({
+            message: expect.stringContaining("Failed to upload file:"),
+            exitCode: Number.isSafeInteger(exitCode) ? exitCode : undefined,
+          });
           expect(warn).toHaveBeenCalledTimes(1);
           expect(warn.mock.calls[0][0]).toBe("[centrifugo-http]");
           const serialized = warn.mock.calls[0][1] as string;

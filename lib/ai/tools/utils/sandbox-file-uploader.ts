@@ -450,6 +450,16 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   ) => {
     if (!args.onFailure) return;
     try {
+      // Native adapters carry the same bounded command outcome as the fallback.
+      // Keep TLS/read failures distinguishable from HTTP rejections in analytics.
+      if (
+        exitCode === null &&
+        error instanceof Error &&
+        "exitCode" in error &&
+        typeof error.exitCode === "number"
+      ) {
+        exitCode = error.exitCode;
+      }
       void Promise.resolve(
         args.onFailure({
           transfer_attempt_kind: kind,

@@ -568,6 +568,38 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
+  test.each([35, 22, -1, 256])(
+    "retains only a bounded native upload exit code: %s",
+    async (exitCode) => {
+      const sandbox = makeSandbox(1234, false, true);
+      const error = Object.assign(new Error("private transfer failure"), {
+        exitCode,
+      });
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+      const onTransferAttemptFailure = jest.fn();
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\owned\\report.txt",
+          onTransferAttemptFailure,
+        }),
+      ).rejects.toBe(error);
+      expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transfer_attempt_kind: "native",
+          transfer_exit_code:
+            exitCode >= 0 && exitCode <= 255 ? exitCode : null,
+          upload_reported_http_status: null,
+        }),
+      );
+      expect(JSON.stringify(onTransferAttemptFailure.mock.calls)).not.toContain(
+        "private",
+      );
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
   test.each([false, true])(
     "retains the command fallback when native transfer diagnostics fail (async: %s)",
     async (asyncFailure) => {

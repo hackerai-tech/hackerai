@@ -3052,7 +3052,14 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             path,
             nativePath,
           ]);
-          throw new Error(`Failed to upload file: ${safeStderr}`);
+          throw Object.assign(
+            new Error(`Failed to upload file: ${safeStderr}`),
+            {
+              exitCode: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : undefined,
+            },
+          );
         }
       } finally {
         await cleanupPowerShellScript?.().catch(() => undefined);
