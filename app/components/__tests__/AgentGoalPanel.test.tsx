@@ -40,47 +40,6 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
-  it.each([false, true])(
-    "links verified reply-only completion to its saved response (mobile: %s)",
-    async (isMobile) => {
-      mockIsMobile = isMobile;
-      setMockQueryResult({
-        ...goal,
-        state: "achieved",
-        judgment: {
-          verdict: "done",
-          reason: "Reply delivered",
-          responseEvidence: {
-            messageId: "reply-id",
-            text: "TEXT_ONLY_GOAL_OK",
-          },
-        },
-      });
-      render(
-        <AgentGoalPanel
-          chatId="chat"
-          exists
-          eligible
-          idle
-          send={jest.fn()}
-          settings={settings}
-        />,
-      );
-      fireEvent.click(
-        screen.getByRole("button", { name: "Show goal details" }),
-      );
-      fireEvent.click(screen.getByText("Verification and evidence"));
-      const link = screen.getByRole("link", { name: "final response" });
-      expect(link).toHaveAttribute("href", "/c/chat#message=reply-id");
-      expect(screen.queryByText("TEXT_ONLY_GOAL_OK")).not.toBeInTheDocument();
-      fireEvent.click(link);
-      await waitFor(() =>
-        expect(
-          screen.queryByRole("dialog", { name: "Goal achievement details" }),
-        ).not.toBeInTheDocument(),
-      );
-    },
-  );
   it.each(["Clear goal", "Pause goal"])(
     "saves the running response before %s and aborts when stopping fails",
     async (name) => {
@@ -387,7 +346,7 @@ describe("goal controls", () => {
     );
   });
   it.each([false, true])(
-    "shows completed goal details and saved evidence without stale progress (mobile: %s)",
+    "shows the completed objective without a verification report or stale progress (mobile: %s)",
     async (isMobile) => {
       mockIsMobile = isMobile;
       setMockQueryResult({
@@ -395,6 +354,12 @@ describe("goal controls", () => {
         state: "achieved",
         reason: "Completion verified",
         progress: "Pending independent verification",
+        judgment: {
+          verdict: "done",
+          reason: "Reply delivered",
+          responseEvidence: { messageId: "reply-id", text: "PRIVATE_EVIDENCE" },
+        },
+        verificationCommand: "test -f marker",
         evidence: [
           {
             criterion: 0,
@@ -419,15 +384,17 @@ describe("goal controls", () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Show goal details" }),
       );
-      expect(screen.getByText("Completion verified")).toBeVisible();
+      expect(screen.queryByText("Completion verified")).not.toBeInTheDocument();
       expect(
         screen.getByRole("dialog", { name: "Goal achievement details" }),
       ).toHaveTextContent("Create marker");
-      expect(screen.getByText("✓ Marker exists")).toBeVisible();
-      fireEvent.click(screen.getByText("Verification and evidence"));
       expect(
-        screen.getByRole("link", { name: "saved run evidence" }),
-      ).toHaveAttribute("href", "/c/chat#message=m1");
+        screen.queryByText("Verification and evidence"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/Completion check:/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Marker exists/)).not.toBeInTheDocument();
+      expect(screen.queryByText("PRIVATE_EVIDENCE")).not.toBeInTheDocument();
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
       expect(
         screen.queryByText(/Pending independent verification/),
       ).not.toBeInTheDocument();
@@ -447,14 +414,6 @@ describe("goal controls", () => {
       expect(
         screen.getByRole("button", { name: "Show goal details" }),
       ).toHaveFocus();
-      fireEvent.click(
-        screen.getByRole("button", { name: "Show goal details" }),
-      );
-      fireEvent.click(screen.getByText("Verification and evidence"));
-      fireEvent.click(screen.getByRole("link", { name: "saved run evidence" }));
-      await waitFor(() =>
-        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-      );
       if (isMobile)
         fireEvent.click(
           screen.getByRole("button", { name: "Show goal details" }),
@@ -474,7 +433,7 @@ describe("goal controls", () => {
   );
 
   it.each(["running", "paused", "needs_input", "budget_exhausted"])(
-    "keeps completion evidence hidden for an unfinished %s goal",
+    "keeps useful status context without verification details for an unfinished %s goal",
     async (state) => {
       setMockQueryResult({
         ...goal,
@@ -495,8 +454,10 @@ describe("goal controls", () => {
         screen.getByRole("button", { name: "Show goal details" }),
       );
       expect(
-        screen.getByText(/Evidence saved, awaiting verification/),
-      ).toBeVisible();
+        screen.queryByText(/Evidence saved, awaiting verification/),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(goal.reason)).toBeVisible();
+      expect(screen.getByText("Latest progress: Created file")).toBeVisible();
       expect(screen.queryByText(/✓/)).not.toBeInTheDocument();
       expect(
         screen.queryByText("Completion contract and evidence"),

@@ -40,10 +40,7 @@ import {
   type GoalTiming,
 } from "@/lib/goals/timing";
 import { type GoalState } from "@/lib/goals/contracts";
-import { getSourceMessageHref } from "@/lib/findings/source-message";
 import { toast } from "sonner";
-
-import { defaultGoalCriterion } from "@/lib/goals/contracts";
 
 const stateLabels: Record<GoalState, string> = {
   queued: "Queued",
@@ -408,8 +405,10 @@ export function AgentGoalPanel({
           )}
         </div>
       )}
-      <p className="whitespace-pre-wrap">{goal.objective}</p>
-      <p>{goal.reason}</p>
+      {(!isMobile || goal.state === "achieved") && (
+        <p className="whitespace-pre-wrap">{goal.objective}</p>
+      )}
+      {goal.state !== "achieved" && <p>{goal.reason}</p>}
       {goal.state !== "achieved" &&
         goal.progress &&
         goal.progress !== goal.reason && (
@@ -417,82 +416,6 @@ export function AgentGoalPanel({
             Latest progress: {goal.progress}
           </p>
         )}
-      {goal.judgment && goal.judgment.reason !== goal.reason && (
-        <p className="text-muted-foreground">
-          Completion check: {goal.judgment.reason}
-        </p>
-      )}
-      {(goal.criteria.length !== 1 ||
-        goal.criteria[0] !== defaultGoalCriterion(goal.objective)) && (
-        <ul className="space-y-1">
-          {goal.criteria.map((criterion, i) => (
-            <li key={i}>
-              {goal.state === "achieved" ? "✓ " : `${i + 1}. `}
-              {criterion}
-              {goal.state !== "achieved" &&
-                goal.evidence.some((e) => e.criterion === i) && (
-                  <span className="text-xs text-muted-foreground">
-                    {" "}
-                    · Evidence saved, awaiting verification
-                  </span>
-                )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {goal.state === "achieved" && (
-        <details>
-          <summary className="cursor-pointer">
-            Verification and evidence
-          </summary>
-          <div className="space-y-1 py-2">
-            {goal.verificationCommand && (
-              <p>
-                Verification:{" "}
-                <code className="whitespace-pre-wrap">
-                  {goal.verificationCommand}
-                </code>
-              </p>
-            )}
-            {goal.constraints && <p>Preserve: {goal.constraints}</p>}
-            {goal.boundaries && <p>Scope: {goal.boundaries}</p>}
-            {goal.stopWhen && <p>Ask for input when: {goal.stopWhen}</p>}
-            {goal.evidence.map((e) => (
-              <p key={`${e.criterion}:${e.runId}:${e.toolCallId}`}>
-                Criterion {e.criterion + 1}: {e.explanation} ·{" "}
-                <a
-                  className="underline"
-                  href={getSourceMessageHref(chatId, e.messageId ?? e.runId)}
-                  onClick={() => {
-                    setExpanded(false);
-                    setMobileOpen(false);
-                  }}
-                >
-                  saved run evidence
-                </a>
-              </p>
-            ))}
-            {goal.judgment?.responseEvidence && (
-              <p>
-                Completion verified from the{" "}
-                <a
-                  className="underline"
-                  href={getSourceMessageHref(
-                    chatId,
-                    goal.judgment.responseEvidence.messageId,
-                  )}
-                  onClick={() => {
-                    setExpanded(false);
-                    setMobileOpen(false);
-                  }}
-                >
-                  final response
-                </a>
-              </p>
-            )}
-          </div>
-        </details>
-      )}
     </div>
   );
   const goalLabel =
