@@ -141,6 +141,10 @@ RUN apt-get update && \
     zaproxy \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
+# Repair the system and Python decoders before later tools download content.
+COPY install_brotli.sh /tmp/install_brotli.sh
+RUN sh /tmp/install_brotli.sh && rm /tmp/install_brotli.sh
+
 # Kali can lag emergency trust-store/runtime releases. Verify the official
 # Debian, Node.js and Go release checksums before installing these fixed builds.
 RUN set -eux; \
@@ -447,6 +451,9 @@ RUN set -eux; \
 # Final Cleanup & Permissions
 # ============================================================================
 COPY verify_trust.py test_go_trust.py verify_trust_go_test.go /usr/local/lib/hackerai/
+COPY verify_brotli.py /usr/local/lib/hackerai/
+# Check the active decoders again after pip and tool installers can shadow them.
+RUN python3 -B /usr/local/lib/hackerai/verify_brotli.py
 # E2B dereferences certificate symlinks into its boot seed. Remove materialized
 # copies of the distrusted roots, refresh the store and seed, then test TLS.
 RUN python3 -B /usr/local/lib/hackerai/test_go_trust.py && \
