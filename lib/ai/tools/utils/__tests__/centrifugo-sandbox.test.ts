@@ -5388,6 +5388,140 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each([6, 28, 35, 124, -1])(
+      "measures connectivity once across concurrent failed uploads (exit %s)",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const probe = jest.fn(async () => ({
+          stdout:
+            "curl 8.17.0 Schannel PRIVATE\n__HACKERAI_UPLOAD_NET_V1__:virtual_hosted:000:0.01:0:0.1\n__HACKERAI_UPLOAD_NET_EXIT_V1__:virtual_hosted:35\n__HACKERAI_UPLOAD_NET_V1__:regional:403:0.01:0.02:0.03\n__HACKERAI_UPLOAD_NET_EXIT_V1__:regional:0\n",
+          stderr: "PRIVATE",
+          exitCode: 0,
+        }));
+        const run = jest.fn(async (command: string) =>
+          command.includes("--head")
+            ? probe()
+            : {
+                stdout: "",
+                stderr:
+                  exitCode === -1
+                    ? "Command timed out"
+                    : "original upload failure",
+                exitCode,
+              },
+        );
+        (sandbox as any).commands.run = run;
+        const url =
+          "https://qa-bucket.s3.us-east-1.amazonaws.com/PRIVATE?X-Amz-Signature=SECRET";
+        try {
+          const outcomes = await Promise.allSettled([
+            sandbox.files.uploadToUrl("C:/private/file.txt", url, "text/plain"),
+            sandbox.files.uploadToUrl("C:/private/file.txt", url, "text/plain"),
+          ]);
+          for (const outcome of outcomes) {
+            expect(outcome.status).toBe("rejected");
+            if (outcome.status === "rejected")
+              expect(outcome.reason).toMatchObject({
+                exitCode,
+                message: expect.stringContaining(
+                  exitCode === -1
+                    ? "Command timed out"
+                    : "original upload failure",
+                ),
+              });
+          }
+          expect(probe).toHaveBeenCalledTimes(1);
+          expect(run).toHaveBeenCalledWith(expect.stringContaining("--head"), {
+            timeoutMs: 10000,
+            displayName: "",
+          });
+          const diagnostics = warn.mock.calls
+            .map(([, value]) => JSON.parse(value as string))
+            .filter(
+              (value) =>
+                value.event === "sandbox_file_upload_network_diagnostic",
+            );
+          expect(diagnostics).toHaveLength(1);
+          expect(diagnostics[0]).toMatchObject({
+            upload_exit_code: exitCode,
+            probe_status: "complete",
+            tls_backend: "schannel",
+          });
+          expect(JSON.stringify(diagnostics)).not.toMatch(
+            /PRIVATE|SECRET|qa-bucket|private|Signature/,
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("preserves the upload failure when its one-shot connectivity probe cannot run", async () => {
+      const { sandbox } = createWindowsBashSandbox();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const run = jest.fn(async (command: string) => {
+        if (command.includes("--head"))
+          throw new Error("PRIVATE probe failure");
+        return { stdout: "", stderr: "original TLS failure", exitCode: 35 };
+      });
+      (sandbox as any).commands.run = run;
+      try {
+        for (let i = 0; i < 2; i++)
+          await expect(
+            sandbox.files.uploadToUrl(
+              "C:/private/file.txt",
+              "https://qa-bucket.s3.us-east-1.amazonaws.com/PRIVATE",
+              "text/plain",
+            ),
+          ).rejects.toMatchObject({
+            exitCode: 35,
+            message: expect.stringContaining("original TLS failure"),
+          });
+        expect(
+          run.mock.calls.filter(([cmd]) => cmd.includes("--head")),
+        ).toHaveLength(1);
+        const diagnostics = warn.mock.calls
+          .map(([, value]) => JSON.parse(value as string))
+          .find(
+            (value) => value.event === "sandbox_file_upload_network_diagnostic",
+          );
+        expect(diagnostics).toMatchObject({
+          probe_status: "unavailable",
+          command_exit_code: null,
+          probes: [],
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it.each([0, 22, 26, 56, 60, 130])(
+      "does not add connectivity probes for upload exit %s",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const run = jest.fn(async () => ({
+          stdout: "",
+          stderr: "failure",
+          exitCode,
+        }));
+        (sandbox as any).commands.run = run;
+        try {
+          await sandbox.files
+            .uploadToUrl(
+              "C:/private/file.txt",
+              "https://qa-bucket.s3.us-east-1.amazonaws.com/key",
+              "text/plain",
+            )
+            .catch(() => {});
+          expect(run).toHaveBeenCalledTimes(1);
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
     it("checks only the selected upload input and keeps paths and command output out of diagnostics", async () => {
       const { execFileSync } = jest.requireActual("node:child_process");
       const { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync } =
