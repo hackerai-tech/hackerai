@@ -230,7 +230,10 @@ export async function reconcileWorkspaceCreation(
   } catch (error) {
     try {
       const reason =
-        failureReason === "inventory_lookup_failed" && signal?.aborted
+        failureReason === "inventory_lookup_failed" &&
+        signal?.aborted &&
+        (error === signal.reason ||
+          (error instanceof Error && error.name === "AbortError"))
           ? "request_aborted"
           : failureReason === "binding_finalize_unconfirmed" &&
               error instanceof CloudWorkspaceUnavailableError

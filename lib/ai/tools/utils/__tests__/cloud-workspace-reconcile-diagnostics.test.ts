@@ -190,6 +190,40 @@ it("identifies cancellation during the provider lookup without replacing it", as
   expect(mockEval).not.toHaveBeenCalled();
 });
 
+it("keeps an unrelated lookup error distinct from a simultaneous cancellation", async () => {
+  const controller = new AbortController();
+  const failure = new Error("private-provider-response");
+  jest.mocked(Sandbox.list).mockReturnValue({
+    hasNext: false,
+    nextItems: async () => {
+      controller.abort(new Error("private-abort-reason"));
+      throw failure;
+    },
+  } as never);
+  await expect(
+    reconcileWorkspaceCreation("owner", creating, controller.signal),
+  ).rejects.toBe(failure);
+  expectReason("inventory_lookup_failed");
+  expect(mockEval).not.toHaveBeenCalled();
+});
+
+it("identifies a standard abort error during the provider lookup", async () => {
+  const controller = new AbortController();
+  const failure = new DOMException("private-abort-error", "AbortError");
+  jest.mocked(Sandbox.list).mockReturnValue({
+    hasNext: false,
+    nextItems: async () => {
+      controller.abort();
+      throw failure;
+    },
+  } as never);
+  await expect(
+    reconcileWorkspaceCreation("owner", creating, controller.signal),
+  ).rejects.toBe(failure);
+  expectReason("request_aborted");
+  expect(mockEval).not.toHaveBeenCalled();
+});
+
 it("adopts the matching completed creation without failure diagnostics", async () => {
   await expect(
     reconcileWorkspaceCreation("owner", creating),
