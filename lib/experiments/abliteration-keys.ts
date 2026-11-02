@@ -15,7 +15,19 @@ export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
 // Historical attribution only. New requests cannot enroll in this stopped experiment.
 export const ABLITERATED_PRO_THREE_STEPS_KEY = "abliterated_pro_three_steps_v1";
 
+// Historical experiment attribution; new requests use the shipped policy below.
 export const ABLITERATED_FREE_THREE_STEPS_KEY =
   "abliterated_free_three_steps_v1";
+
+// Routing attribution only, not a feature flag or a new experiment.
+export const ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY =
+  "abliterated_free_three_steps_default_v1";
+
+export function isFreeThreeStepsPolicy(key: string | undefined): boolean {
+  return (
+    key === ABLITERATED_FREE_THREE_STEPS_KEY ||
+    key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
+  );
+}
 
 export const INFERENCE_CYBER_FLAG = "inference_cyber_v1";

@@ -11,9 +11,12 @@ import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
-  ABLITERATED_FREE_THREE_STEPS_KEY,
   type AbliteratedAssignment,
 } from "@/lib/experiments/abliterated-model";
+import {
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
+  isFreeThreeStepsPolicy,
+} from "@/lib/experiments/abliteration-keys";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
@@ -118,7 +121,9 @@ export class AbliteratedModelTelemetry {
     this.properties = {
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
-      [`$feature/${args.assignment.key}`]: args.assignment.variant,
+      ...(args.assignment.key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
+        ? { routing_policy: args.assignment.key }
+        : { [`$feature/${args.assignment.key}`]: args.assignment.variant }),
       experiment_request_id: args.messageId,
       message_id: args.messageId,
       chat_id: args.chatId,
@@ -138,7 +143,7 @@ export class AbliteratedModelTelemetry {
       ...(args.assignment.key === ABLITERATED_PRO_THREE_STEPS_KEY && {
         pro_three_steps_measurement_version: 1,
       }),
-      ...(args.assignment.key === ABLITERATED_FREE_THREE_STEPS_KEY && {
+      ...(isFreeThreeStepsPolicy(args.assignment.key) && {
         free_three_steps_measurement_version: 1,
         experiment_release: args.release ?? "unknown",
       }),
@@ -241,8 +246,7 @@ export class AbliteratedModelTelemetry {
     return {
       telemetry_version: 2,
       generation_step_limit: this.generationStepLimit,
-      ...(this.properties.experiment_key ===
-        ABLITERATED_FREE_THREE_STEPS_KEY && {
+      ...(isFreeThreeStepsPolicy(String(this.properties.experiment_key)) && {
         free_three_steps_measurement_version: 1,
         experiment_release: this.properties.experiment_release,
         experiment_duration_ms: Math.max(0, Date.now() - this.startedAt),
