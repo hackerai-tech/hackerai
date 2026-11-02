@@ -62,7 +62,7 @@ afterAll(() => {
 });
 
 const slugs = [
-  "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-v4.1-flash-1017",
   "z-ai/glm-5.3-flash",
   "moonshotai/kimi-k3",
   "x-ai/grok-4.6",

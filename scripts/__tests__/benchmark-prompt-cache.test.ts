@@ -1,4 +1,7 @@
-import { summarizeCacheRows } from "../benchmark-prompt-cache";
+import {
+  summarizeCacheRows,
+  baselineCacheOptions,
+} from "../benchmark-prompt-cache";
 
 const row = {
   pair: 0,
@@ -54,4 +57,15 @@ it("keeps missing usage and cost unknown rather than reporting a miss or free wo
     costCoverage: 0,
     reportedCost: null,
   });
+});
+
+it("compares the historical DeepSeek parent and child policies separately", () => {
+  const slug = "deepseek/deepseek-v4.1-flash-1017";
+  expect(baselineCacheOptions(slug, "opaque-session", "agent")).toEqual({
+    openrouter: { session_id: "opaque-session" },
+  });
+  expect(baselineCacheOptions(slug, "opaque-session", "subagent")).toEqual({});
+  expect(
+    baselineCacheOptions("z-ai/glm-5.3-flash", "opaque-session", "agent"),
+  ).toEqual({});
 });

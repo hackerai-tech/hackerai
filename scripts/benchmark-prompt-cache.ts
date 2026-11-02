@@ -1,6 +1,6 @@
 /**
  * Synthetic, bounded provider-cache comparison. No customer data or app services.
- * pnpm benchmark:prompt-cache:live --model z-ai/glm-5.3-flash
+ * pnpm benchmark:prompt-cache:live --scope subagent --pairs 2
  * Repeat with --pairs 2 for balanced baseline/treatment ordering (12 calls).
  * Affinity is best-effort: a small sample can be inconclusive. Never infer hits
  * from latency or missing usage. Reported provider cost includes output work.
@@ -17,7 +17,10 @@ import {
 } from "../lib/ai/prompt-cache";
 import { createOpenRouterCacheSessionId } from "../lib/ai/openrouter-cache-session";
 import { isAbliterationModel } from "../lib/ai/abliteration";
-import { getOpenRouterProviderRoutingForModel } from "../lib/ai/providers";
+import {
+  getOpenRouterProviderRoutingForModel,
+  DEEPSEEK_V4_FLASH_VISION_SLUG,
+} from "../lib/ai/providers";
 
 type Row = {
   pair: number;
@@ -30,6 +33,7 @@ type Row = {
   cost: number | null;
   elapsedMs: number;
   valid: boolean;
+  generationId?: string;
   servedModel?: string;
   servedProvider?: string;
   affinityHintSent?: boolean;
@@ -64,20 +68,37 @@ export function summarizeCacheRows(rows: Row[]) {
   };
 }
 
+/** Reproduce pre-change affinity: parent DeepSeek had it; children did not. */
+export function baselineCacheOptions(
+  modelId: string,
+  sessionId: string,
+  scope: "agent" | "subagent",
+): ReturnType<typeof buildPromptCacheOptions> {
+  return scope === "agent" && modelId.startsWith("deepseek/deepseek-v4")
+    ? { openrouter: { session_id: sessionId } }
+    : {};
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const modelIndex = args.indexOf("--model");
-  const modelId = modelIndex < 0 ? "z-ai/glm-5.3-flash" : args[modelIndex + 1];
+  const modelId =
+    modelIndex < 0 ? DEEPSEEK_V4_FLASH_VISION_SLUG : args[modelIndex + 1];
+  const scopeIndex = args.indexOf("--scope");
+  const scope = scopeIndex < 0 ? "agent" : args[scopeIndex + 1];
   const pairIndex = args.indexOf("--pairs");
   const pairs = pairIndex < 0 ? 1 : Number(args[pairIndex + 1]);
   if (
     !args.includes("--live") ||
     !modelId ||
+    (scope !== "agent" && scope !== "subagent") ||
     !Number.isInteger(pairs) ||
     pairs < 1 ||
     pairs > 2
   ) {
-    throw new Error("Use --live [--model provider/model] [--pairs 1|2]");
+    throw new Error(
+      "Use --live [--model provider/model] [--scope agent|subagent] [--pairs 1|2]",
+    );
   }
   const direct = isAbliterationModel(modelId);
   const keyName = direct ? "ABLITERATION_API_KEY" : "OPENROUTER_API_KEY";
@@ -118,6 +139,7 @@ async function main() {
       JSON.stringify(
         {
           model: modelId,
+          scope,
           runId,
           pairs,
           rows,
@@ -138,7 +160,7 @@ async function main() {
       const conversationId = randomUUID();
       const sessionId = createOpenRouterCacheSessionId({
         chatId: conversationId,
-        mode: "cache-benchmark",
+        mode: `cache-benchmark-${scope}`,
         requestedModelSlug: modelId,
       });
       // A unique early prefix gives each arm an independent cold cache. Same size
@@ -161,9 +183,7 @@ async function main() {
       const cacheOptions =
         variant === "treatment"
           ? buildPromptCacheOptions(modelId, sessionId)
-          : modelId.startsWith("deepseek/deepseek-v4")
-            ? { openrouter: { session_id: sessionId } }
-            : {};
+          : baselineCacheOptions(modelId, sessionId, scope);
       const providerOptions = direct
         ? cacheOptions
         : {
@@ -227,6 +247,7 @@ async function main() {
               finite(raw?.cost) ?? finite(costDetails?.upstream_inference_cost),
             elapsedMs: Math.round(performance.now() - started),
             valid,
+            generationId: result.response.id,
             servedModel: result.response.modelId,
             servedProvider: responseBody?.provider,
             affinityHintSent: Boolean(

@@ -45,7 +45,8 @@ regressions for both streaming and non-streaming requests. It verifies provider
 namespaces, history preservation, parallel-tool marker bounds, model isolation
 and cache-usage parsing. It reports no live savings and needs no service access.
 
-`pnpm benchmark:prompt-cache:live --model z-ai/glm-5.3-flash` makes six short
+`pnpm benchmark:prompt-cache:live` defaults to the current DeepSeek vision route
+and makes six short
 synthetic calls: cold start plus two tool-result continuations in each arm. Use
 `--pairs 2` for twelve calls with reversed order in the second pair. Other models
 can be selected by their actual provider slug, including `abliterated-model-large-flash`.
@@ -64,8 +65,11 @@ reads by covered input tokens, with coverage reported separately.
 Compare per-model arms including failed calls, provider identity, write cost and
 answer checks. Separate random early prefixes prevent one arm warming the other.
 Different provider routing and output lengths can still confound a short result;
-DeepSeek has unchanged cache policy in this comparison and acts as a negative
-control for routing and cache variance.
+DeepSeek has unchanged parent cache policy and acts as a negative
+control for routing and cache variance in the default `--scope agent` comparison.
+Use `--scope subagent --pairs 2` to measure the newly added child affinity:
+its historical baseline has no session hint. Keep the two scopes separate;
+a parent comparison cannot prove a child improvement.
 A cache-rate improvement on this fixture is not a production cost estimate.
 For release acceptance, use disposable Ask and Agent chats, make two bounded tool
 calls, reload/continue and stop a running turn. Check current output and saved
