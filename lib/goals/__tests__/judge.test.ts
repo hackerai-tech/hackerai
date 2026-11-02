@@ -166,7 +166,7 @@ describe("independent goal completion check", () => {
       ),
     ).toEqual(expect.arrayContaining([62, 63]));
   });
-  it("cannot count an omitted older criterion as independently verified", async () => {
+  it("preserves a unique older criterion before filling the budget with newer proofs", async () => {
     mockPriorEvidence.mockResolvedValue([
       {
         criterion: 0,
@@ -202,12 +202,46 @@ describe("independent goal completion check", () => {
       "r1",
       jest.fn(),
     );
-    expect(decision?.verdict).toBe("continue");
+    expect(decision?.verdict).toBe("done");
     expect(
       JSON.parse(generate.mock.calls[0][0].prompt).evidence.some(
         (p: { criterion: number }) => p.criterion === 0,
       ),
-    ).toBe(false);
+    ).toBe(true);
+  });
+  it("cannot count proofs omitted when criterion coverage itself exceeds the budget", async () => {
+    mockPriorEvidence.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({
+        criterion: i,
+        runId: `prior-${i}`,
+        toolCallId: `old-${i}`,
+        explanation: "Proof",
+        result: '\"'.repeat(4000),
+      })),
+    );
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "Claim",
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const decision = await judgeGoalCompletion(
+      {
+        ...goal,
+        checkpoint: undefined,
+        criteria: Array.from({ length: 8 }, (_, i) => `Criterion ${i}`),
+      },
+      [],
+      "r1",
+      jest.fn(),
+    );
+    const input = JSON.parse(generate.mock.calls[0][0].prompt);
+    expect(JSON.stringify(input.evidence).length).toBeLessThanOrEqual(48000);
+    expect(input.evidence.length).toBeLessThan(8);
+    expect(decision?.verdict).toBe("continue");
   });
   it("uses actual results and bills the separate completion check", async () => {
     generate.mockResolvedValue({

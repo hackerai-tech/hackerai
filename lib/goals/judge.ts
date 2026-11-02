@@ -22,18 +22,31 @@ import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
 
 // Budget encoded entries, including metadata and escaping, rather than only
 // result text. Keep recent evidence intact instead of slicing proofs mid-result.
-function keepNewestJudgeResults<T extends { result: string }>(
-  results: T[],
-): T[] {
+function keepNewestJudgeResults<
+  T extends { result: string; criterion?: number },
+>(results: T[], preserveCriteria = false): T[] {
   let used = 2; // JSON array brackets
-  const kept: T[] = [];
-  for (let i = results.length - 1; i >= 0; i--) {
-    const size = JSON.stringify(results[i]).length + (kept.length ? 1 : 0);
-    if (used + size > 48_000) continue;
+  const kept = new Set<number>();
+  const include = (index: number) => {
+    if (kept.has(index)) return true;
+    const size = JSON.stringify(results[index]).length + (kept.size ? 1 : 0);
+    if (used + size > 48_000) return false;
     used += size;
-    kept.unshift(results[i]);
+    kept.add(index);
+    return true;
+  };
+  // A repeated recent stage must not crowd out the only proof of an earlier
+  // criterion. Reserve coverage first; still omit proofs that cannot fit.
+  if (preserveCriteria) {
+    const covered = new Set<number>();
+    for (let i = results.length - 1; i >= 0; i--) {
+      const criterion = results[i].criterion;
+      if (criterion !== undefined && !covered.has(criterion) && include(i))
+        covered.add(criterion);
+    }
   }
-  return kept;
+  for (let i = results.length - 1; i >= 0; i--) include(i);
+  return results.filter((_, i) => kept.has(i));
 }
 
 /** Retain only this run's assistant snapshots across separate stream callbacks. */
@@ -131,7 +144,10 @@ export async function judgeGoalCompletion(
         userId: goal.userId,
       },
     );
-    const evidence = keepNewestJudgeResults(mergeGoalEvidence(prior, proofs));
+    const evidence = keepNewestJudgeResults(
+      mergeGoalEvidence(prior, proofs),
+      true,
+    );
     const result = await generateText({
       model: myProvider.languageModel(AGENT_AUTO_REVIEW_MODEL),
       system:
