@@ -1132,9 +1132,9 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
-    windowsTest(
-      "uploads a terminal-created Windows file through the actual Git Bash tmp mount",
-      async () => {
+    windowsTest.each([false, true])(
+      "uploads a terminal-created Windows file through the actual Git Bash tmp mount (path conversion disabled=%s)",
+      async (disablePathConversion) => {
         jest.useRealTimers();
         const shell = findGitBash();
         if (!shell)
@@ -1163,6 +1163,20 @@ describe("CentrifugoSandbox", () => {
           return promisify(execFile)(shell, spec.args, {
             ...spec.options,
             timeout: 10_000,
+            env: {
+              ...Object.fromEntries(
+                Object.entries(process.env).filter(
+                  ([key]) =>
+                    !["MSYS_NO_PATHCONV", "MSYS2_ARG_CONV_EXCL"].includes(
+                      key.toUpperCase(),
+                    ),
+                ),
+              ),
+              ...(disablePathConversion && {
+                MSYS_NO_PATHCONV: "1",
+                MSYS2_ARG_CONV_EXCL: "*",
+              }),
+            },
           }).then(
             (result) => ({
               stdout: String(result.stdout),
@@ -1314,7 +1328,7 @@ describe("CentrifugoSandbox", () => {
       );
       expect(run).toHaveBeenCalledWith(
         expect.stringContaining(
-          "--data-binary @'/c/Users/qa/AppData/Local/Temp/report & notes.txt'",
+          "--data-binary @'C:/Users/qa/AppData/Local/Temp/report & notes.txt'",
         ),
         expect.anything(),
       );
@@ -5589,7 +5603,7 @@ describe("CentrifugoSandbox", () => {
       expect(runs[0]).toContain("curl -fsSL --ssl-no-revoke -X PUT");
       expect(runs[0]).toContain("-H 'Content-Type: text/plain'");
       expect(runs[0]).toContain(
-        "--data-binary @'/c/temp/hackerai-upload/report.txt'",
+        "--data-binary @'C:/temp/hackerai-upload/report.txt'",
       );
       expect(runOptions[0]).toMatchObject({
         displayName: "Uploading: report.txt",

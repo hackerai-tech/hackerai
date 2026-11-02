@@ -2974,7 +2974,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       }
 
       const fileName = getSandboxFileName(path, this.isWindows());
-      const escapedPath = escapePath(path);
+      // Both native Windows curl and MSYS curl accept C:/... paths. /c/...
+      // depends on MSYS argument conversion, which a caller can disable.
+      const uploadPath =
+        this.isWindows() && useBash ? nativePath.replace(/\\/g, "/") : path;
+      const escapedPath = escapePath(uploadPath);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
       const curlUploadFlags =
@@ -2995,7 +2999,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         command =
           this.isWindows() && !useBash
             ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
-            : buildPosixCurlUploadCommand(path, uploadUrl, contentType, {
+            : buildPosixCurlUploadCommand(uploadPath, uploadUrl, contentType, {
                 sslNoRevoke:
                   this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke,
               });
@@ -3051,6 +3055,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             rawPath,
             path,
             nativePath,
+            uploadPath,
           ]);
           throw Object.assign(
             new Error(`Failed to upload file: ${safeStderr}`),
