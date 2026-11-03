@@ -17,5 +17,6 @@ export async function getPostHogFlagWithoutExposure(
   if (!result) return undefined;
   if (result.enabled === false) return false;
   if (result.enabled !== true) return undefined;
-  return result.variant ?? true;
+  if (result.variant === undefined) return true;
+  return typeof result.variant === "string" ? result.variant : undefined;
 }

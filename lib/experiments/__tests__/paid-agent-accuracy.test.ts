@@ -117,6 +117,20 @@ it.each([{}, { enabled: "true" }, { enabled: 1 }])(
   },
 );
 
+it.each([true, 1, null, {}])(
+  "retains baseline for a non-string variant: %s",
+  async (variant) => {
+    expect(
+      await evaluatePaidAgentAccuracy({
+        ...eligible,
+        posthog: {
+          getFeatureFlagResult: async () => ({ enabled: true, variant }),
+        } as never,
+      }),
+    ).toBeUndefined();
+  },
+);
+
 it("retains baseline when analytics is absent or unavailable", async () => {
   expect(
     await evaluatePaidAgentAccuracy({ ...eligible, posthog: null }),

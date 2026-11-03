@@ -16,6 +16,11 @@ describe("PostHog assignment without exposure", () => {
             disabled: { key: "disabled", enabled: false, variant: "test" },
             malformed: { key: "malformed" },
             nonBoolean: { key: "nonBoolean", enabled: "true" },
+            booleanVariant: {
+              key: "booleanVariant",
+              enabled: true,
+              variant: true,
+            },
           },
         }),
       }),
@@ -35,6 +40,7 @@ describe("PostHog assignment without exposure", () => {
         ["missing", undefined],
         ["malformed", undefined],
         ["nonBoolean", undefined],
+        ["booleanVariant", undefined],
       ] as const) {
         await expect(
           getPostHogFlagWithoutExposure(client, key, "user", {
@@ -44,7 +50,7 @@ describe("PostHog assignment without exposure", () => {
       }
       expect(capture).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
-      expect(fetch).toHaveBeenCalledTimes(6);
+      expect(fetch).toHaveBeenCalledTimes(7);
       const options = fetch.mock.calls[0]?.[1] as { body: string };
       expect(JSON.parse(options.body)).toMatchObject({
         distinct_id: "user",
