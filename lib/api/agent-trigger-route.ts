@@ -493,6 +493,10 @@ export const finalizeStartedAgentRun = async ({
       }),
     ]);
     try {
+      const associationRejection =
+        error instanceof ChatSDKError
+          ? error.metadata?.agent_run_association
+          : undefined;
       const [sessionCleanup, runCleanup, associationCleanup] = cleanupResults;
       const clearAssociationResult =
         associationCleanup.status === "rejected"
@@ -512,6 +516,15 @@ export const finalizeStartedAgentRun = async ({
           service: "hackerai-web",
           timestamp: new Date().toISOString(),
           failure_stage: failureStage,
+          // This is the original guard rejection, not the later clear result.
+          // Null leaves the original association outcome unobserved.
+          association_rejection_reason:
+            failureStage === "associate_run" &&
+            (associationRejection === "stale" ||
+              associationRejection === "not_found" ||
+              associationRejection === "deleting")
+              ? associationRejection
+              : null,
           chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(chatId)
             ? chatId
             : undefined,
