@@ -88,6 +88,9 @@ it.each(["PRODUCTION", "STAGING", "DEVELOPMENT", "preview", "unknown"])(
     await expect(run(tool, "solve")).resolves.toEqual({
       status: "unavailable",
     });
+    await expect(run(tool, "inspect")).resolves.toEqual({
+      status: "unavailable",
+    });
     expect(getChallengeBrowser).not.toHaveBeenCalled();
     expect(solve).not.toHaveBeenCalled();
     expect(flag).not.toHaveBeenCalled();
@@ -124,12 +127,49 @@ it("detects without spending, exposes no site key and respects a disabled flag",
     demoEligible: true,
     widgets: [{ kind: "recaptcha_v2", invisible: false }],
     interstitial: false,
+    visionGuidance: expect.any(String),
   });
   expect(solve).not.toHaveBeenCalled();
   flag.mockResolvedValue(false);
   await expect(run(tool, "solve")).resolves.toEqual({ status: "unavailable" });
   expect(solve).not.toHaveBeenCalled();
 });
+
+it("offers the vision workflow for an allowlisted hCaptcha demo without a solver credential", async () => {
+  delete process.env.TWOCAPTCHA_API_KEY;
+  const { tool, evaluate, solve } = setup();
+  evaluate.mockResolvedValue({
+    ...cloneObservation(),
+    url: "https://accounts.hcaptcha.com/demo",
+    widgets: [{ ...observation.widgets[0], kind: "hcaptcha" }],
+  });
+  await expect(run(tool, "inspect")).resolves.toMatchObject({
+    status: "challenge_detected",
+    demoEligible: true,
+    widgets: [{ kind: "hcaptcha", invisible: false }],
+    visionGuidance: expect.any(String),
+  });
+  expect(solve).not.toHaveBeenCalled();
+});
+
+it.each(["other site", "invisible", "interstitial", "turnstile", "multiple"])(
+  "keeps the vision pilot confined to visible, allowlisted image challenges: %s",
+  async (variant) => {
+    const { tool, evaluate, solve } = setup();
+    const data = cloneObservation();
+    if (variant === "other site") data.url = "https://example.com/login";
+    if (variant === "invisible") data.widgets[0].invisible = true;
+    if (variant === "interstitial") data.interstitial = true;
+    if (variant === "turnstile")
+      (data.widgets[0] as { kind: string }).kind = "turnstile";
+    if (variant === "multiple") data.widgets.push({ ...data.widgets[0] });
+    evaluate.mockResolvedValue(data);
+    const result = await run(tool, "inspect");
+    expect(result).toMatchObject({ status: "challenge_detected" });
+    expect(result).not.toHaveProperty("visionGuidance");
+    expect(solve).not.toHaveBeenCalled();
+  },
+);
 
 it("requests handoff without contacting a provider when no solver key exists", async () => {
   delete process.env.TWOCAPTCHA_API_KEY;

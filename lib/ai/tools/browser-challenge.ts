@@ -17,6 +17,7 @@ import {
   isSupportedCaptchaDemo,
 } from "../captcha/detection";
 import { createTwoCaptchaSolver, type CaptchaSolver } from "../captcha/solver";
+import { CAPTCHA_VISION_GUIDANCE } from "../captcha/vision-guidance";
 
 export function createBrowserChallenge(
   context: ToolContext,
@@ -29,7 +30,7 @@ export function createBrowserChallenge(
   let active = false;
   return tool({
     description:
-      "Inspect the current owned Cloud browser for CAPTCHA widgets or a verification interstitial. When a page shows verification, call inspect before retrying browser actions. In this internal Preview pilot, solve supports only visible reCAPTCHA v2 and standalone Turnstile on allowlisted public demos. Call alone; one solver attempt per run, with a two-minute deadline. A delivered token is NOT website acceptance: submit the demo normally and verify the website result. Unsupported, failed or expired challenges need browser_handoff; never repeatedly retry or claim verification succeeded from a token alone.",
+      "Inspect the current owned Cloud browser for CAPTCHA widgets or a verification interstitial. When a page shows verification, call inspect before retrying browser actions. For user-authorized vision-only reCAPTCHA v2 or hCaptcha demo testing, inspect returns visionGuidance: follow its fresh-image and selection-feedback workflow using screenshot, file view and ordinary browser input; do not call solve. In this internal Preview pilot, solve is the separate paid adapter, supporting only visible reCAPTCHA v2 and standalone Turnstile on allowlisted public demos. Call alone; one solver attempt per run, with a two-minute deadline. A delivered token is NOT website acceptance: submit the demo normally and verify the website result. Unsupported, failed or expired challenges need browser_handoff; never repeatedly retry or claim verification succeeded from a token alone.",
     inputSchema: z.object({ action: z.enum(["inspect", "solve"]) }),
     execute: async ({ action }, options) => {
       const signals = [runSignal, options.abortSignal].filter(
@@ -105,6 +106,14 @@ export function createBrowserChallenge(
             })),
             demoEligible: isCaptchaDemo(observation.url),
             interstitial: observation.interstitial,
+            ...(isCaptchaDemo(observation.url) &&
+              !observation.interstitial &&
+              pending.length === 1 &&
+              !pending[0].invisible &&
+              (pending[0].kind === "recaptcha_v2" ||
+                pending[0].kind === "hcaptcha") && {
+                visionGuidance: CAPTCHA_VISION_GUIDANCE,
+              }),
           };
         const widget = pending[0];
         if (
