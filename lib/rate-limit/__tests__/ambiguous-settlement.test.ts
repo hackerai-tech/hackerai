@@ -98,7 +98,7 @@ it.each(["pro", "team"] as const)(
     expect(
       shouldSettleUsageMidRun({
         state,
-        currentCostDollars: 60 / 13000,
+        currentCostDollars: 60 / 12000,
         force: true,
       }),
     ).toBe(false);
@@ -109,7 +109,7 @@ it.each(["pro", "team"] as const)(
       0,
       0,
       config,
-      60 / 13000,
+      60 / 12000,
       undefined,
       0,
       organizationId,
@@ -195,7 +195,7 @@ it("retains normal final settlement after a definite insufficient-funds rejectio
     0,
     0,
     config,
-    60 / 13000,
+    60 / 12000,
     undefined,
     0,
     undefined,
