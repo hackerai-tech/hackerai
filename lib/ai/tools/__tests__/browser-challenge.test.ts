@@ -119,10 +119,11 @@ it.each([
 
 it("detects without spending, exposes no site key and respects a disabled flag", async () => {
   const { tool, solve } = setup();
-  await expect(run(tool, "inspect")).resolves.toMatchObject({
+  await expect(run(tool, "inspect")).resolves.toEqual({
     status: "challenge_detected",
     demoEligible: true,
     widgets: [{ kind: "recaptcha_v2", invisible: false }],
+    interstitial: false,
   });
   expect(solve).not.toHaveBeenCalled();
   flag.mockResolvedValue(false);
@@ -185,7 +186,7 @@ it("delivers once, accounts for cost, and never claims website acceptance or exp
   for (const value of [
     "private-provider-key",
     "private-response",
-    "public-site-key",
+    observation.widgets[0].siteKey,
     observation.url,
   ])
     expect(emitted).not.toContain(value);
