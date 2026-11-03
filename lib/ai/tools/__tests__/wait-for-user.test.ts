@@ -23,7 +23,11 @@ const context = {
 
 const execute = async (
   overrides: Record<string, unknown> = {},
-  toolOptions: { abortRun?: () => void } = {},
+  toolOptions: {
+    abortRun?: () => void;
+    beforeSuspend?: () => Promise<void>;
+    revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
+  } = {},
 ) => {
   const { createWaitForUserTool } = await import("../wait-for-user");
   const waitTool = createWaitForUserTool({ ...context, ...overrides } as any, {
@@ -117,5 +121,51 @@ describe("wait_for_user", () => {
     });
     expect(setActiveWait).toHaveBeenCalledTimes(2);
     expect(abortRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts if preparation fails before the wait starts", async () => {
+    const abortRun = jest.fn();
+    const error = new Error("could not release the free-run lock");
+    await expect(
+      execute(
+        {},
+        {
+          abortRun,
+          beforeSuspend: async () => {
+            throw error;
+          },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(abortRun).toHaveBeenCalledTimes(1);
+    expect(forToken).not.toHaveBeenCalled();
+    expect(setActiveWait).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts if Trigger rejects while suspended", async () => {
+    const abortRun = jest.fn();
+    const error = new Error("waitpoint unavailable");
+    forToken.mockRejectedValue(error);
+    await expect(execute({}, { abortRun })).rejects.toBe(error);
+    expect(abortRun).toHaveBeenCalledTimes(1);
+    expect(setActiveWait).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts if authorization changed before resuming", async () => {
+    const abortRun = jest.fn();
+    const error = new Error("entitlement changed");
+    await expect(
+      execute(
+        {},
+        {
+          abortRun,
+          revalidateAfterSuspend: async () => {
+            throw error;
+          },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(abortRun).toHaveBeenCalledTimes(1);
+    expect(setActiveWait).toHaveBeenCalledTimes(2);
   });
 });

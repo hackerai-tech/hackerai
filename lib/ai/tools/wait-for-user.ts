@@ -112,6 +112,9 @@ export const createWaitForUserTool = (
           reply: reply.text,
           note: "The user replied in this chat. Continue the same task using this answer.",
         };
+      } catch (error) {
+        options.abortRun?.();
+        throw error;
       } finally {
         if (activeTimePaused) options.resumeActiveTime?.();
         await setActiveAgentUserWait(identity).catch(() => {
