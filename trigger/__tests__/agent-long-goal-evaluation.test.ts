@@ -58,6 +58,13 @@ function setup({
         parts: [{ type: "text", text: "Which file?" }],
       },
     ],
+    messagesForAccounting: [
+      {
+        id: "user-reply",
+        role: "user",
+        parts: [{ type: "text", text: "ORCHID" }],
+      },
+    ],
     goalFinalMessageId: "r1",
     goalRunMessageIds: new Set(["r1"]),
     usageTracker,
@@ -78,6 +85,9 @@ it.each(["stop", "tool-calls"])(
     await run.settle();
     expect(run.judge).toHaveBeenCalledTimes(1);
     expect(run.judge.mock.calls[0][1]).toBe(run.messages);
+    expect((run.judge.mock.calls[0] as unknown[])[6]).toEqual([
+      expect.objectContaining({ id: "user-reply", role: "user" }),
+    ]);
     expect(run.usageTracker).toEqual({
       providerCost: 0.01,
       nonModelCost: 0.01,

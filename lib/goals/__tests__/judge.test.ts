@@ -1,4 +1,5 @@
 jest.mock("ai", () => ({
+  ...jest.requireActual("ai"),
   generateText: jest.fn(),
   Output: { object: (value: unknown) => value },
 }));
@@ -21,7 +22,7 @@ jest.mock("@/lib/provider-usage-cost", () => ({
 jest.mock("@/lib/rate-limit", () => ({
   calculateRawModelUsageCostDollars: () => 0.006,
 }));
-import { generateText } from "ai";
+import { generateText, NoObjectGeneratedError } from "ai";
 import {
   buildGoalCompletionEvidence,
   judgeGoalCompletion,
@@ -66,8 +67,205 @@ const messages = [
 ] as UIMessage[];
 describe("independent goal completion check", () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
+  });
+  it("verifies a resumed reply against the user's answer without treating history as tool proof", async () => {
+    const history = [
+      {
+        id: "ask",
+        role: "assistant",
+        parts: [{ type: "text", text: "Which word?" }],
+      },
+      { id: "answer", role: "user", parts: [{ type: "text", text: "ORCHID" }] },
+      ...messages,
+    ] as UIMessage[];
+    generate.mockImplementation(async ({ prompt, system }) => {
+      const data = JSON.parse(prompt);
+      if (system.startsWith("Classify"))
+        return { output: { responseOnly: true }, usage: {} };
+      const answer = data.conversation?.messages.find(
+        (m: { role: string }) => m.role === "user",
+      )?.text;
+      return {
+        output: {
+          verdict: answer === data.assistantResponse ? "done" : "needs_input",
+          responseOnly: true,
+          reason: "Checked requested word",
+          evidence: [],
+          waitSeconds: null,
+        },
+        usage: {},
+      };
+    });
+    const judgment = await judgeGoalCompletion(
+      {
+        ...goal,
+        objective: "Ask for a word, then reply with only that word",
+        criteria: ["Reply with the chosen word"],
+        checkpoint: undefined,
+      },
+      [
+        {
+          id: "reply",
+          role: "assistant",
+          parts: [{ type: "text", text: "ORCHID" }],
+        },
+      ],
+      "resumed",
+      jest.fn(),
+      "reply",
+      ["reply"],
+      history,
+    );
+    expect(judgment).toMatchObject({
+      verdict: "done",
+      responseEvidence: { text: "ORCHID" },
+    });
+    const input = JSON.parse(generate.mock.calls[0][0].prompt);
+    expect(input.toolResults).toEqual([]);
+    expect(JSON.stringify(input.conversation)).not.toContain("marker exists");
+    const classification = JSON.parse(generate.mock.calls[1][0].prompt);
+    expect(classification.userReplies).toEqual(["ORCHID"]);
+    expect(JSON.stringify(classification)).not.toContain("Which word?");
+  });
+  it("retries an invalid verifier response without rerunning work and accounts for failed generation", async () => {
+    generate
+      .mockRejectedValueOnce(
+        new NoObjectGeneratedError({
+          text: "invalid",
+          response: { id: "x", timestamp: new Date(), modelId: "test" },
+          usage: {} as never,
+          finishReason: "length",
+        }),
+      )
+      .mockResolvedValue({
+        output: {
+          verdict: "done",
+          reason: "Marker observed",
+          evidence: goal.checkpoint!.evidence,
+          responseOnly: false,
+        },
+        usage: {},
+      });
+    const cost = jest.fn();
+    expect(await judgeGoalCompletion(goal, messages, "r1", cost)).toMatchObject(
+      { verdict: "done" },
+    );
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(cost.mock.calls.reduce((total, [value]) => total + value, 0)).toBe(
+      0.008,
+    );
+  });
+  it("bounds unavailable verifier retries and never logs model or user content", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    generate.mockRejectedValue(
+      new NoObjectGeneratedError({
+        text: "PRIVATE MODEL CONTENT",
+        message: "PRIVATE ERROR",
+        response: { id: "x", timestamp: new Date(), modelId: "test" },
+        usage: {} as never,
+        finishReason: "stop",
+      }),
+    );
+    expect(
+      await judgeGoalCompletion(goal, messages, "r1", jest.fn()),
+    ).toMatchObject({ verdict: "blocked" });
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+      /PRIVATE|Marker exists/,
+    );
+    expect(warning).toHaveBeenCalledWith(
+      "Goal completion verification failed",
+      expect.objectContaining({
+        stage: "completion",
+        failure_class: "invalid_output",
+        attempt: 2,
+      }),
+    );
+    warning.mockRestore();
+  });
+  it("keeps a supplied answer when oversized assistant history cannot fit", async () => {
+    generate.mockResolvedValue({
+      output: { verdict: "needs_input", reason: "Waiting", evidence: [] },
+      usage: {},
+    });
+    await judgeGoalCompletion(
+      { ...goal, startedAt: 10 },
+      messages,
+      "r1",
+      jest.fn(),
+      "r1",
+      ["r1"],
+      [
+        {
+          id: "old",
+          role: "user",
+          createdAt: 1,
+          parts: [{ type: "text", text: "Unrelated earlier goal" }],
+        },
+        {
+          id: "answer",
+          role: "user",
+          createdAt: 11,
+          parts: [{ type: "text", text: "ORCHID" }],
+        },
+        {
+          id: "long",
+          role: "assistant",
+          createdAt: 12,
+          parts: [{ type: "text", text: "x".repeat(20000) }],
+        },
+      ] as UIMessage[],
+    );
+    const context = JSON.parse(generate.mock.calls[0][0].prompt).conversation;
+    expect(context).toEqual({
+      messages: [{ role: "user", text: "ORCHID" }],
+      truncated: true,
+    });
+  });
+  it("does not retry verification after the user stops the run", async () => {
+    const controller = new AbortController();
+    generate.mockImplementation(async () => {
+      controller.abort();
+      throw new DOMException("Stopped", "AbortError");
+    });
+    expect(
+      await judgeGoalCompletion(
+        goal,
+        messages,
+        "r1",
+        jest.fn(),
+        "r1",
+        ["r1"],
+        [],
+        controller.signal,
+      ),
+    ).toMatchObject({ verdict: "blocked" });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+  it("does not double charge when reading structured output throws after usage was recorded", async () => {
+    generate
+      .mockResolvedValueOnce({
+        usage: {},
+        get output() {
+          throw new NoObjectGeneratedError({
+            text: "bad",
+            response: { id: "x", timestamp: new Date(), modelId: "test" },
+            usage: {} as never,
+            finishReason: "stop",
+          });
+        },
+      })
+      .mockResolvedValueOnce({
+        output: { verdict: "continue", reason: "More work", evidence: [] },
+        usage: {},
+      });
+    const cost = jest.fn();
+    expect(await judgeGoalCompletion(goal, messages, "r1", cost)).toMatchObject(
+      { verdict: "continue" },
+    );
+    expect(cost.mock.calls.map(([value]) => value)).toEqual([0.004, 0.004]);
   });
   it("classifies a normal question without a checkpoint or tool evidence", async () => {
     generate.mockResolvedValue({
@@ -191,6 +389,8 @@ describe("independent goal completion check", () => {
     expect(JSON.parse(generate.mock.calls[1][0].prompt)).toEqual({
       objective: goal.objective,
       criteria: goal.criteria,
+      userReplies: [],
+      conversationTruncated: false,
     });
     expect(cost.mock.calls.flat().reduce((sum, n) => sum + n, 0)).toBe(0.008);
   });
@@ -499,7 +699,7 @@ describe("independent goal completion check", () => {
 });
 
 it("retains earlier-stage evidence for the same criterion when judging a later run", async () => {
-  jest.clearAllMocks();
+  jest.resetAllMocks();
   mockPriorEvidence.mockResolvedValue([
     {
       criterion: 0,

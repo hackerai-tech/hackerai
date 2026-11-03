@@ -803,6 +803,28 @@ describe("persistent goal lifecycle", () => {
         state: "running",
         activeRunId: "reply-run",
       });
+      const replyId = await db.message("reply-run", [result]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        runId: "reply-run",
+        judgment: {
+          verdict: "done",
+          reason: "Requested marker verified",
+          evidence: [{ ...proof, runId: "reply-run" }],
+        },
+      });
+      expect(db.goal()).toMatchObject({ state: "achieved", generation: 2 });
+      expect(db.goal().activeSince).toBeUndefined();
+      expect(db.goal().continuationSourceRunId).toBeUndefined();
+      expect(
+        (await db.ctx.db.get(replyId)).goal.achievedElapsedMs,
+      ).toBeGreaterThanOrEqual(0);
+      // Late completion from the blocked generation cannot rewrite the result.
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        judgment: { verdict: "blocked", reason: "Stale" },
+      });
+      expect(db.goal().state).toBe("achieved");
     },
   );
   it("does not resume on a reply if another tab paused the goal after it was read", async () => {

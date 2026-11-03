@@ -3450,6 +3450,8 @@ export const agentLongTask = task({
                         },
                         goalFinalMessageId,
                         [...goalRunMessageIds],
+                        messagesForAccounting,
+                        userStopSignal.signal,
                       );
                   })();
                   // Goal storage/verifier outages must never skip settlement of

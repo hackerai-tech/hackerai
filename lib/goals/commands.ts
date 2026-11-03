@@ -90,7 +90,7 @@ export function goalExecutionInstructions(
   goal: { objective: string; criteria: string[] },
   reply = "",
 ): string {
-  return `Resume my current saved goal. This objective replaces earlier goal objectives in this chat. Discard unfinished steps and plans for superseded objectives, even if a previous assistant promised to finish them. Only perform work needed for the current objective and criteria. Preserve existing authorization boundaries and normal usage limits.
+  return `Resume my current saved goal. This objective replaces earlier goal objectives in this chat. Discard unfinished steps and plans for superseded objectives, even if a previous assistant promised to finish them. Only perform work needed for the current objective and criteria. Continue from existing progress and use answers the user has already supplied in this conversation. Resuming does not restart completed steps or require asking the same answered question again. Preserve existing authorization boundaries and normal usage limits.
 
 Goal: ${goal.objective}
 Success criteria:
