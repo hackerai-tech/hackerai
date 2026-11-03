@@ -23,6 +23,7 @@ jest.mock("@/lib/rate-limit", () => ({
   calculateRawModelUsageCostDollars: () => 0.006,
 }));
 import { generateText, NoObjectGeneratedError } from "ai";
+import { resolveGoalOutcome } from "../contracts";
 import {
   buildGoalCompletionEvidence,
   judgeGoalCompletion,
@@ -69,6 +70,208 @@ describe("independent goal completion check", () => {
   beforeEach(() => {
     jest.resetAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
+  });
+  it.each(["continue", "uncited_done"])(
+    "rechecks %s against the completed updated goal before dispatching more work",
+    async (firstVerdict) => {
+      const updatedGoal = {
+        ...goal,
+        objective:
+          "Write UPDATED to marker.txt, read it back, and report it. No waiting.",
+        criteria: [
+          "Write UPDATED to marker.txt, read it back, and report it. No waiting.",
+        ],
+        checkpoint: undefined,
+      };
+      const completed = [
+        {
+          id: "r1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "cmd",
+              state: "output-available",
+              input: {
+                command: "printf 'UPDATED\\n' > marker.txt && cat marker.txt",
+              },
+              output: { result: { exitCode: 0, output: "UPDATED\n" } },
+            },
+            {
+              type: "text",
+              text: "marker.txt contains UPDATED followed by a newline.",
+            },
+          ],
+        },
+      ] as UIMessage[];
+      generate
+        .mockResolvedValueOnce({
+          output: {
+            verdict: firstVerdict === "continue" ? "continue" : "done",
+            reason: "Check the file again",
+            responseOnly: false,
+            evidence:
+              firstVerdict === "continue" ? goal.checkpoint!.evidence : [],
+          },
+          usage: {},
+        })
+        .mockResolvedValueOnce({
+          output: {
+            verdict: "done",
+            reason: "The write and read already succeeded",
+            responseOnly: false,
+            evidence: goal.checkpoint!.evidence,
+          },
+          usage: {},
+        });
+      const cost = jest.fn();
+      const judgment = await judgeGoalCompletion(
+        updatedGoal,
+        completed,
+        "r1",
+        cost,
+      );
+      expect(judgment).toMatchObject({
+        verdict: "done",
+        evidence: goal.checkpoint!.evidence,
+      });
+      expect(
+        resolveGoalOutcome({
+          judgment,
+          canceled: false,
+          failed: false,
+          usageExhausted: false,
+          finishReason: "stop",
+          noProgressRuns: 0,
+          allCriteriaVerified:
+            judgment?.evidence?.some((e) => e.criterion === 0) ?? false,
+        }),
+      ).toBe("achieved");
+      expect(generate).toHaveBeenCalledTimes(2);
+      const [first, second] = generate.mock.calls.map(([args]) =>
+        JSON.parse(args.prompt),
+      );
+      expect(second.toolResults).toEqual(first.toolResults);
+      expect(second.objective).toBe(updatedGoal.objective);
+      expect(cost.mock.calls.map(([value]) => value)).toEqual([0.004, 0.004]);
+    },
+  );
+  it("continues genuinely unfinished work without a redundant verification pass", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "continue",
+        reason: "The second file still needs to be created",
+        responseOnly: false,
+        evidence: goal.checkpoint!.evidence,
+      },
+      usage: {},
+    });
+    const judgment = await judgeGoalCompletion(
+      {
+        ...goal,
+        criteria: ["Marker exists", "Second file exists"],
+        checkpoint: undefined,
+      },
+      [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "Created the marker; second file remains." },
+          ],
+        },
+      ],
+      "r1",
+      jest.fn(),
+    );
+    expect(judgment).toMatchObject({
+      verdict: "continue",
+      evidence: goal.checkpoint!.evidence,
+    });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+  it.each(["unfinished", "unavailable", "canceled"])(
+    "preserves the %s boundary during the bounded continuation review",
+    async (outcome) => {
+      const controller = new AbortController();
+      generate.mockResolvedValueOnce({
+        output: {
+          verdict: "done",
+          reason: "Claim",
+          responseOnly: false,
+          evidence: [],
+        },
+        usage: {},
+      });
+      if (outcome === "unfinished")
+        generate.mockResolvedValue({
+          output: {
+            verdict: "continue",
+            reason: "The second file is missing",
+            responseOnly: false,
+            evidence: goal.checkpoint!.evidence,
+          },
+          usage: {},
+        });
+      else
+        generate.mockImplementation(async () => {
+          if (outcome === "canceled") controller.abort();
+          throw new DOMException("Verifier unavailable", "TimeoutError");
+        });
+      const judgment = await judgeGoalCompletion(
+        {
+          ...goal,
+          criteria: ["Marker exists", "Second file exists"],
+          checkpoint: undefined,
+        },
+        [
+          {
+            ...messages[0],
+            parts: [
+              ...messages[0].parts,
+              { type: "text", text: "Marker created" },
+            ],
+          },
+        ],
+        "r1",
+        jest.fn(),
+        "r1",
+        ["r1"],
+        [],
+        controller.signal,
+      );
+      expect(judgment?.verdict).toBe(
+        outcome === "unfinished" ? "continue" : "blocked",
+      );
+      expect(generate).toHaveBeenCalledTimes(2);
+      if (outcome === "unfinished")
+        expect(judgment?.evidence).toEqual(goal.checkpoint!.evidence);
+    },
+  );
+  it("records allowlisted completion diagnostics without goal or result content", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    generate.mockResolvedValue({
+      output: {
+        verdict: "done",
+        reason: "PRIVATE REASON",
+        evidence: goal.checkpoint!.evidence,
+      },
+      usage: {},
+    });
+    await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "Goal completion decision",
+      expect.objectContaining({
+        model_verdict: "done",
+        missing_criteria_count: 0,
+        rechecking: false,
+      }),
+    );
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(
+      /PRIVATE|Marker|marker exists|test -f/,
+    );
+    info.mockRestore();
   });
   it("verifies a resumed reply against the user's answer without treating history as tool proof", async () => {
     const history = [
@@ -426,7 +629,7 @@ describe("independent goal completion check", () => {
       );
       expect(judgment?.verdict).toBe("continue");
       expect(judgment?.responseEvidence).toBeUndefined();
-      expect(generate).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledTimes(kind === "tool-call" ? 2 : 1);
       expect(
         JSON.parse(generate.mock.calls[0][0].prompt).responseEvidenceAllowed,
       ).toBe(false);
