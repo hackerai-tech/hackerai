@@ -1,3 +1,4 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { NextRequest, NextResponse } from "next/server";
 import {
   Centrifuge,
@@ -16,7 +17,7 @@ import {
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
 
-export async function GET(request: NextRequest) {
+async function handlePresence(request: NextRequest) {
   let userId: string;
   try {
     userId = await getUserID(request);
@@ -193,3 +194,7 @@ export async function GET(request: NextRequest) {
     onlineCount: onlineConnectionIds.size,
   });
 }
+
+export const GET = withServiceQueryRecovery(handlePresence);
+
+export const runtime = "nodejs";

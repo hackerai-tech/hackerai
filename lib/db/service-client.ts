@@ -1,3 +1,5 @@
+import { reserveServiceQueryRecovery } from "./service-query-recovery";
+import { abortableDelay } from "../utils/abortable-delay";
 import { ConvexHttpClient } from "convex/browser";
 import { getFunctionName } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
@@ -18,6 +20,7 @@ export function createServiceFetch(
   deployment: string,
   transport: typeof fetch = globalThis.fetch,
   clientInstanceId?: string,
+  clientSignal?: AbortSignal,
 ): typeof fetch {
   return async (input, init) => {
     const url = new URL(String(input));
@@ -122,8 +125,6 @@ export function createServiceFetch(
         // Diagnostics are best effort, including when logging itself fails.
       }
     };
-    let response: Response;
-    let text: string;
     // A platform timeout can kill the request before transport rejects. Record
     // which await is still pending once, without aborting or retrying the RPC.
     const pendingWarning = setTimeout(() => {
@@ -144,11 +145,22 @@ export function createServiceFetch(
       }
     }, 10_000);
     pendingWarning.unref?.();
-    try {
-      response = await observation.run(() =>
+    const send = async (retrySignal?: AbortSignal) => {
+      retrySignal?.throwIfAborted();
+      stage = "request";
+      statusCode = undefined;
+      cfRay = undefined;
+      const response = await observation.run(() =>
         transport(input, {
           ...init,
           body: JSON.stringify(body),
+          ...(retrySignal
+            ? {
+                signal: init?.signal
+                  ? AbortSignal.any([init.signal, retrySignal])
+                  : retrySignal,
+              }
+            : {}),
         }),
       );
       statusCode = response.status;
@@ -167,14 +179,83 @@ export function createServiceFetch(
       }
       if (statusCode >= 500 && statusCode <= 599) reportFailure("http_5xx");
       stage = "response_body";
-      text = await response.text();
-    } catch (error) {
-      reportFailure("transport_error", error);
-      throw error;
+      const text = await response.text();
+      return { response, text };
+    };
+    const reportRecovery = (
+      outcome:
+        | "scheduled"
+        | "response_received"
+        | "exhausted"
+        | "canceled_or_deadline",
+      remaining: number,
+    ) => {
+      try {
+        console.info(
+          JSON.stringify({
+            event: "convex_service_query_recovery",
+            function_name: functionName,
+            outcome,
+            remaining_scope_retries: remaining,
+            max_scope_retries: 2,
+            retry_deadline_ms: 1500,
+          }),
+        );
+      } catch {
+        // Logging cannot change the original read or its recovery decision.
+      }
+    };
+    let received: Awaited<ReturnType<typeof send>>;
+    try {
+      try {
+        received = await send();
+      } catch (error) {
+        reportFailure("transport_error", error);
+        if (clientSignal?.aborted || init?.signal?.aborted) throw error;
+        const recovery = reserveServiceQueryRecovery(
+          url,
+          functionName,
+          error,
+          statusCode,
+        );
+        if (!recovery) throw error;
+        const retrySignal = AbortSignal.any([
+          recovery.signal,
+          ...(clientSignal ? [clientSignal] : []),
+          ...(init?.signal ? [init.signal] : []),
+        ]);
+        reportRecovery("scheduled", recovery.remaining);
+        try {
+          await abortableDelay(100, retrySignal);
+          retrySignal.throwIfAborted();
+          // Sign the original arguments, never a previously signed credential.
+          // A long first attempt may have used the original proof's lifetime.
+          if ("serviceKey" in args) {
+            body.args = [
+              convexToJson(
+                (await signServiceArgs(
+                  { deployment, name: body.path, type: "query" },
+                  args,
+                )) as Value,
+              ),
+            ];
+          }
+          received = await send(retrySignal);
+          // Full body received, not proof of application access or user recovery.
+          reportRecovery("response_received", recovery.remaining);
+        } catch (retryError) {
+          reportRecovery(
+            retrySignal.aborted ? "canceled_or_deadline" : "exhausted",
+            recovery.remaining,
+          );
+          throw retryError;
+        }
+      }
     } finally {
       clearTimeout(pendingWarning);
       observation.finish();
     }
+    const { response, text } = received;
     // Scrub errors and SDK log lines before the SDK can print or rethrow them.
     // Successful result values are preserved byte-for-byte.
     let result;
@@ -327,7 +408,7 @@ export function createServiceConvexClient(
       }
     : globalThis.fetch;
   const client = new ConvexHttpClient(url, {
-    fetch: createServiceFetch(url, transport, clientInstanceId),
+    fetch: createServiceFetch(url, transport, clientInstanceId, signal),
   });
   // SDK serialization happens before fetch and can echo the original arguments.
   return new Proxy(client, {

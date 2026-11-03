@@ -485,7 +485,8 @@ export const createTools = (
       browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??
       Promise.resolve(false),
     getBrowserHandoffNotes: () =>
-      browserSessions?.getExitNotes() ?? Promise.resolve([]),
+      browserSessions?.getExitNotes(runtimePolicy.signal) ??
+      Promise.resolve([]),
     cleanupBrowserSessions: () =>
       browserSessions?.cleanup() ?? Promise.resolve(),
     getSandbox,
