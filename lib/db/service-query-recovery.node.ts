@@ -61,8 +61,12 @@ export async function runWithServiceQueryRecovery<T>(
 
 export function withServiceQueryRecovery<
   Request extends { signal: AbortSignal },
+  Context extends unknown[],
   Result,
->(handler: (request: Request) => Promise<Result>) {
-  return (request: Request): Promise<Result> =>
-    runWithServiceQueryRecovery(() => handler(request), request.signal);
+>(handler: (request: Request, ...context: Context) => Promise<Result>) {
+  return (request: Request, ...context: Context): Promise<Result> =>
+    runWithServiceQueryRecovery(
+      () => handler(request, ...context),
+      request.signal,
+    );
 }
