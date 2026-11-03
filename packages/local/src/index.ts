@@ -43,7 +43,11 @@ import {
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
 import { preparePrivateArtifactStorage } from "./private-artifact-hardening";
-import { CONNECT_HELP, parseCliOptions } from "./cli-options";
+import {
+  CONNECT_HELP,
+  parseCliOptions,
+  readProtectedTokenFile,
+} from "./cli-options";
 import { commandDisplayText } from "./command-display";
 
 const CLIENT_VERSION: string = require("../package.json").version;
@@ -1346,9 +1350,11 @@ ${chalk.bold("HackerAI Local Sandbox Client")}
 
 ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
+  npx @hackerai/local --token-file PRIVATE_FILE [options]
 
 ${chalk.yellow("Options:")}
-  --token TOKEN       Included in the Remote Control connect command (required)
+  --token TOKEN       Included in the Remote Control connect command
+  --token-file PATH   Alternate private token source without a process argument
   --name NAME         Optional connection name fallback (default: hostname)
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
@@ -1374,7 +1380,7 @@ ${chalk.cyan("Auto-termination:")}
   try {
     const options = parseCliOptions(args);
     client = new LocalSandboxClient({
-      token: options.token,
+      token: options.token ?? readProtectedTokenFile(options.tokenFile!),
       name: options.name ?? os.hostname(),
       convexUrl: options.convexUrl ?? PRODUCTION_CONVEX_URL,
     });
