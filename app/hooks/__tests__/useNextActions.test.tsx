@@ -199,3 +199,38 @@ test("an aborted accepted follow-up cannot be credited to a later regenerate", a
       .mock.calls.map(([e]) => e.event),
   ).not.toContain("contextual_next_actions_followup_finished");
 });
+
+test.each(["pending", "visible"])(
+  "losing desktop eligibility revokes a %s suggestion without reviving it",
+  async (phase) => {
+    let resolve!: (value: ReturnType<typeof response>) => void;
+    jest.mocked(fetch).mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const { result, rerender } = renderHook((props) => useNextActions(props), {
+      initialProps: base(),
+    });
+    await settle();
+    const signal = jest.mocked(fetch).mock.calls[0][1]?.signal;
+    if (phase === "visible") {
+      await act(async () => resolve(response()));
+      expect(result.current.batch).not.toBeNull();
+    }
+    rerender({ ...base(), blocked: true });
+    expect(signal?.aborted).toBe(true);
+    if (phase === "pending") await act(async () => resolve(response()));
+    expect(result.current.batch).toBeNull();
+    act(() => {
+      result.current.exposed();
+      expect(result.current.accept(0, "keyboard")).toBe(false);
+    });
+    expect(setInput).not.toHaveBeenCalled();
+    expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+    rerender(base());
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.current.batch).toBeNull();
+  },
+);

@@ -25,7 +25,7 @@ const suggestions = [
   "Explain the uncertainty in this finding.",
   "Summarize the existing evidence.",
 ];
-function Harness() {
+function Harness({ blocked = false }: { blocked?: boolean }) {
   const input = useComposerInput();
   const { getInput, setInput } = useComposerActions();
   const controller = useNextActions({
@@ -34,7 +34,7 @@ function Harness() {
     completedTurn: { chatId: "chat", messageId: "answer" },
     latestMessageId: "answer",
     status: "ready",
-    blocked: false,
+    blocked,
     input,
     getInput,
     setInput,
@@ -48,7 +48,7 @@ function Harness() {
         autoFocus={false}
         onEnterSubmit={send}
         prediction={controller.batch?.suggestions[0]}
-        onAcceptPrediction={(method) => controller.accept(0, method)}
+        onAcceptPrediction={() => controller.accept(0, "keyboard")}
         onPredictionExposed={controller.exposed}
         composerFocused
         onDismissPrediction={controller.dismiss}
@@ -84,10 +84,10 @@ beforeEach(() => {
 });
 let visibilityCallback: IntersectionObserverCallback;
 afterEach(() => jest.useRealTimers());
-async function setup() {
+async function setup(blocked = false) {
   render(
     <ComposerStateProvider>
-      <Harness />
+      <Harness blocked={blocked} />
     </ComposerStateProvider>,
   );
   await act(async () => {
@@ -104,6 +104,10 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
     screen.queryByRole("group", { name: "Suggested next messages" }),
   ).toBeNull();
   expect(screen.queryByText(suggestions[1])).toBeNull();
+  expect(screen.getByText("Tab")).toHaveAttribute("aria-hidden", "true");
+  expect(
+    screen.queryByRole("button", { name: "Use suggested message" }),
+  ).toBeNull();
   textarea.focus();
   fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
   expect(textarea).toHaveValue("");
@@ -120,21 +124,18 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
   expect(send).toHaveBeenCalledTimes(1);
 });
 
-test("touch acceptance fills the inline draft without forcing focus or submitting", async () => {
-  const textarea = await setup();
-  const other = screen.getByRole("button", { name: "Next control" });
-  other.focus();
-  const accept = screen.getByRole("button", { name: "Use suggested message" });
-  const touch = new Event("pointerdown", { bubbles: true });
-  Object.defineProperty(touch, "pointerType", { value: "touch" });
-  fireEvent(accept, touch);
-  fireEvent.click(accept, {
-    detail: 1,
-  });
-  expect(textarea).toHaveValue(suggestions[0]);
-  expect(other).toHaveFocus();
+test("an ineligible composer keeps its normal placeholder and Tab navigation", async () => {
+  const textarea = await setup(true);
+  expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
+  expect(screen.queryByText("Tab")).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Use suggested message" }),
+  ).toBeNull();
+  expect(fireEvent.keyDown(textarea, { key: "Tab" })).toBe(true);
+  expect(textarea).toHaveValue("");
+  expect(fetch).not.toHaveBeenCalled();
+  expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
   expect(send).not.toHaveBeenCalled();
-  expect(fetch).toHaveBeenCalledTimes(1);
 });
 
 test("Escape restores the ordinary placeholder and preserves composer focus", async () => {
@@ -142,9 +143,7 @@ test("Escape restores the ordinary placeholder and preserves composer focus", as
   textarea.focus();
   fireEvent.keyDown(textarea, { key: "Escape" });
   expect(textarea).toHaveFocus();
-  expect(
-    screen.queryByRole("button", { name: "Use suggested message" }),
-  ).toBeNull();
+  expect(screen.queryByText("Tab")).toBeNull();
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   expect(send).not.toHaveBeenCalled();
 });
@@ -152,17 +151,13 @@ test("Escape restores the ordinary placeholder and preserves composer focus", as
 test("Escape and typing dismiss permanently without sending", async () => {
   const textarea = await setup();
   fireEvent.keyDown(textarea, { key: "Escape" });
-  expect(
-    screen.queryByRole("button", { name: "Use suggested message" }),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Tab")).not.toBeInTheDocument();
   fireEvent.change(textarea, { target: { value: "x" } });
   fireEvent.change(textarea, { target: { value: "" } });
   await act(async () => {
     await jest.advanceTimersByTimeAsync(2000);
   });
-  expect(
-    screen.queryByRole("button", { name: "Use suggested message" }),
-  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Tab")).not.toBeInTheDocument();
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -172,9 +167,7 @@ test("typing replaces the suggestion and clearing the draft does not revive it",
   expect(textarea).toHaveValue("My own request");
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   fireEvent.change(textarea, { target: { value: "" } });
-  expect(
-    screen.queryByRole("button", { name: "Use suggested message" }),
-  ).toBeNull();
+  expect(screen.queryByText("Tab")).toBeNull();
   expect(send).not.toHaveBeenCalled();
 });
 

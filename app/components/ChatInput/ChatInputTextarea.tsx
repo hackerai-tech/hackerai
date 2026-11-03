@@ -26,7 +26,7 @@ import { useCommittedRef } from "@/app/hooks/useLatestRef";
 
 export interface ChatInputTextareaProps {
   prediction?: string;
-  onAcceptPrediction?: (method: "keyboard" | "pointer") => boolean;
+  onAcceptPrediction?: () => boolean;
   onPredictionExposed?: () => void;
   composerFocused?: boolean;
   onDismissPrediction?: () => void;
@@ -68,7 +68,6 @@ export function ChatInputTextarea({
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const predictionPointerType = useRef("mouse");
   const exposed = useCommittedRef(onPredictionExposed);
   const activePrediction = input === "" && !disabled ? prediction : undefined;
   const defaultPlaceholder =
@@ -102,18 +101,13 @@ export function ChatInputTextarea({
     };
   }, [activePrediction, exposed]);
 
-  const acceptPrediction = (method: "keyboard" | "pointer", focus: boolean) => {
-    if (!onAcceptPrediction?.(method)) return false;
-    if (focus) {
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        textarea?.focus({ preventScroll: true });
-        textarea?.setSelectionRange(
-          textarea.value.length,
-          textarea.value.length,
-        );
-      });
-    }
+  const acceptPrediction = () => {
+    if (!onAcceptPrediction?.()) return false;
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      textarea?.focus({ preventScroll: true });
+      textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
     return true;
   };
 
@@ -250,7 +244,7 @@ export function ChatInputTextarea({
             activePrediction ? predictionDescriptionId : undefined
           }
           placeholder={activePrediction ?? defaultPlaceholder}
-          className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "pr-14 pointer-coarse:min-h-11 ph-no-capture ph-mask" : ""}`}
+          className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "pr-14 ph-no-capture ph-mask" : ""}`}
           minRows={minRows}
           onFocus={onFocus}
           onPointerDown={onPointerDown}
@@ -268,7 +262,7 @@ export function ChatInputTextarea({
               !e.ctrlKey &&
               !e.metaKey
             ) {
-              if (e.key === "Tab" && acceptPrediction("keyboard", true)) {
+              if (e.key === "Tab" && acceptPrediction()) {
                 e.preventDefault();
                 return;
               }
@@ -290,33 +284,12 @@ export function ChatInputTextarea({
           }}
         />
         {activePrediction && (
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label="Use suggested message"
-            aria-describedby={predictionDescriptionId}
-            className={`ph-no-capture ph-mask absolute right-0 top-0 hidden min-h-7 min-w-11 items-center justify-center rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:inline-flex pointer-coarse:min-h-11 ${composerFocused ? "pointer-fine:inline-flex" : ""}`}
-            onPointerDown={(event) => {
-              predictionPointerType.current = event.pointerType;
-              if (event.pointerType === "mouse") event.preventDefault();
-            }}
-            onClick={(event) => {
-              acceptPrediction(
-                event.detail === 0 ? "keyboard" : "pointer",
-                event.detail === 0 || predictionPointerType.current === "mouse",
-              );
-            }}
+          <kbd
+            aria-hidden="true"
+            className={`pointer-events-none absolute right-0 top-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground ${composerFocused ? "inline-flex" : "hidden"}`}
           >
-            <kbd
-              aria-hidden="true"
-              className="rounded border border-border px-1.5 py-0.5 text-[11px] pointer-coarse:hidden"
-            >
-              Tab
-            </kbd>
-            <span aria-hidden="true" className="hidden pointer-coarse:inline">
-              Use
-            </span>
-          </button>
+            Tab
+          </kbd>
         )}
       </div>
       {activePrediction && (
