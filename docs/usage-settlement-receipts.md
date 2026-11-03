@@ -33,7 +33,7 @@ Use the signed backend-only `settlementReceipts.getForBackend` query with the
 operation ID and exact user/optional organization scope. After account deletion,
 use the `__deleted_user__` sentinel for retained receipts; the original user ID
 is no longer available through this query. The query returns the
-original identity, action state/result, and a bounded set of debit receipts.
+stored operation identity, action state/result, and a bounded set of debit receipts.
 Failure diagnostics include `settlement_operation_id`; selective step IDs also
 join the existing run settlement ID and sequence.
 
@@ -68,9 +68,11 @@ policy must preserve idempotency before pruning receipt data.
 
 This contract covers Extra Usage wallet debits, including team balance/member
 counters. Included allowance lives in Redis and retains its existing behavior;
-a wallet receipt does not prove an included-bucket debit. Refunds, purchases and
-Stripe auto-reload crediting retain their existing separate idempotency records.
-The two stores are not a cross-service atomic transaction.
+a wallet receipt does not prove an included-bucket debit. Refunds retain their
+existing behavior and are outside this receipt/idempotency contract. A debit
+receipt does not prove the net charge after a later refund. Purchases and Stripe
+auto-reload crediting retain their existing separate idempotency records. The
+two stores are not a cross-service atomic transaction.
 
 Before production rollout, verify a new disposable QA operation for personal and
 team wallets, duplicate/concurrent calls, changed-amount rejection, monthly/member
