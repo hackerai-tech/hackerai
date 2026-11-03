@@ -16,6 +16,8 @@ import {
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
+  prepareAgentLoopContinuation,
+  AGENT_LOOP_CONTINUATION_PROMPT,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
@@ -2061,22 +2063,40 @@ export const createChatHandler = () => {
                       hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
                       );
+                    const loopTriggeredRetry =
+                      stoppedDueToAssistantContentLoop ||
+                      state.stoppedDueToDoomLoop;
+                    const loopContinuation = loopTriggeredRetry
+                      ? prepareAgentLoopContinuation(messages)
+                      : undefined;
                     const emptyResponseContinuation =
                       terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
+                    const loopRecoveryMessages = loopContinuation
+                      ? [...state.finalMessages, ...loopContinuation.messages]
+                      : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
-                        ? omitImageViewToolResultsForProviderRetry(messages)
-                        : { messages, omittedCount: 0 };
+                        ? omitImageViewToolResultsForProviderRetry(
+                            loopRecoveryMessages ?? messages,
+                          )
+                        : {
+                            messages: loopRecoveryMessages ?? messages,
+                            omittedCount: 0,
+                          };
                     const shouldRetryWithoutImageToolResults =
                       imageRecovery.omittedCount > 0 &&
                       !isAborted &&
                       !shouldRecoverAbliterationStreamError;
                     const hasImageAttachmentForRecovery =
-                      countFileAttachments(state.finalMessages).imageCount > 0;
+                      countFileAttachments(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      ).imageCount > 0;
                     const hasImageToolResultForRecovery =
-                      uiMessagesContainImageViewResult(state.finalMessages);
+                      uiMessagesContainImageViewResult(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      );
                     const shouldRetryWithVisionSummary =
                       directGlmVisionEnabled &&
                       !shouldRecoverAbliterationStreamError &&
@@ -2091,8 +2111,9 @@ export const createChatHandler = () => {
                       state.providerError ??
                       new Error("Direct vision route failed");
 
-                    if (
+                    primaryProviderRecovery: if (
                       !uncertainToolOutcome &&
+                      (!loopTriggeredRetry || loopContinuation !== undefined) &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||
@@ -2100,9 +2121,6 @@ export const createChatHandler = () => {
                         shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
                     ) {
-                      const loopTriggeredRetry =
-                        stoppedDueToAssistantContentLoop ||
-                        state.stoppedDueToDoomLoop;
                       const retryReason =
                         terminalEmptyResponse && emptyResponseContinuation
                           ? "empty_answer_continuation"
@@ -2185,7 +2203,7 @@ export const createChatHandler = () => {
                             await describeImageAttachmentsWithAuxiliaryVision({
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
-                                  state.finalMessages,
+                                  loopRecoveryMessages ?? state.finalMessages,
                                 ).messages,
                               requestId,
                               userId,
@@ -2306,7 +2324,54 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (
+                        if (loopContinuation) {
+                          state.finalMessages = [
+                            ...(shouldRetryWithVisionSummary
+                              ? recoveredVisionMessages!
+                              : imageRecovery.omittedCount > 0
+                                ? imageRecovery.messages
+                                : loopRecoveryMessages!),
+                            {
+                              id: generateId(),
+                              role: "user",
+                              metadata: { isAutoContinue: true },
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_LOOP_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: true,
+                          });
+                          const preservedFileIds = getFileAccumulator()
+                            .getAll()
+                            .map((file) => file.fileId);
+                          for (const message of loopContinuation.messages) {
+                            if (message.role !== "assistant") continue;
+                            await observeFinish(
+                              "save_message",
+                              () =>
+                                saveMessage({
+                                  chatId,
+                                  userId,
+                                  message:
+                                    summarizationTracker.processMessageForSave(
+                                      message,
+                                    ),
+                                  extraFileIds: preservedFileIds,
+                                  model: configuredModelId,
+                                  mode,
+                                  generationStartedAt: streamStartTime,
+                                  generationTimeMs:
+                                    fallbackStartTime - streamStartTime,
+                                }),
+                              "provider_retry",
+                            );
+                          }
+                        } else if (
                           emptyResponseContinuation ||
                           shouldRecoverAbliterationStreamError
                         ) {
@@ -2357,6 +2422,10 @@ export const createChatHandler = () => {
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
