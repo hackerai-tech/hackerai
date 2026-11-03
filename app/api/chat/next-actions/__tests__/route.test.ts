@@ -6,6 +6,7 @@ import { generateNextActions } from "@/lib/chat/next-actions/generate";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 const capture = jest.fn();
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
@@ -113,6 +114,9 @@ test("generates from owned bounded persisted context and emits no content in ana
     /Synthetic finding|missing impact evidence/,
   );
   expect(result.headers.get("cache-control")).toBe("no-store");
+  expect(enforceRegionalSubscriptionFirst).toHaveBeenCalledWith(
+    expect.objectContaining({ surface: "ask", captureExposure: false }),
+  );
 });
 
 test.each([
@@ -144,6 +148,15 @@ test.each([
       messageId: condition === "stale message" ? "old-answer" : "answer",
     }),
   );
+  const expectedStatus: Record<string, number> = {
+    "wrong owner": 404,
+    active: 409,
+    canceled: 409,
+    error: 409,
+    "stale message": 409,
+  };
+  if (expectedStatus[condition])
+    expect(result.status).toBe(expectedStatus[condition]);
   expect((await result.json()).suggestions).toEqual([]);
   expect(generateNextActions).not.toHaveBeenCalled();
 });

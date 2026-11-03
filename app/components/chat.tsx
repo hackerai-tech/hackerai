@@ -1095,6 +1095,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const [completedPredictionTurn, setCompletedPredictionTurn] =
     useState<CompletedPredictionTurn | null>(null);
+  const [interruptedPredictionTurn, setInterruptedPredictionTurn] = useState<{
+    chatId: string;
+  } | null>(null);
 
   const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
     chatId: string;
@@ -1283,6 +1286,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setCompletedPredictionTurn(
         !isAbort && !isError ? { chatId, messageId: message.id } : null,
       );
+      setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
@@ -2620,6 +2624,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   </div>
                   <ChatInput
                     completedPredictionTurn={completedPredictionTurn}
+                    interruptedPredictionTurn={interruptedPredictionTurn}
                     latestMessageId={messages.at(-1)?.id}
                     topNotice={
                       showChatLayout ? (

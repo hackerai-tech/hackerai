@@ -120,7 +120,8 @@ export async function POST(req: NextRequest) {
       userId,
       subscription,
       country: subscriptionFirstCountryFromRequest(req),
-      surface: "ask",
+      surface: mode,
+      captureExposure: false,
     });
     const redis = createRedisClient();
     if (

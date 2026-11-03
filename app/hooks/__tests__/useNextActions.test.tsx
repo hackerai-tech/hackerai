@@ -21,6 +21,7 @@ const base = () => ({
   userId: "u",
   chatId: "chat",
   completedTurn: { chatId: "chat", messageId: "answer" },
+  interruptedTurn: null as { chatId: string } | null,
   latestMessageId: "answer",
   status: "ready",
   blocked: false,
@@ -170,4 +171,31 @@ test("persistence lag retries are bounded and failures stay silent", async () =>
   expect(fetch).toHaveBeenCalledTimes(4);
   expect(result.current.batch).toBeNull();
   expect(setInput).not.toHaveBeenCalled();
+});
+
+test("an aborted accepted follow-up cannot be credited to a later regenerate", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  act(() => {
+    result.current.accept(0, "keyboard");
+    const finish = result.current.prepareSubmission();
+    input = "";
+    finish(true);
+  });
+  rerender({
+    ...base(),
+    interruptedTurn: { chatId: "chat" },
+  });
+  rerender({
+    ...base(),
+    completedTurn: { chatId: "chat", messageId: "regenerated" },
+    latestMessageId: "regenerated",
+  });
+  expect(
+    jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.map(([e]) => e.event),
+  ).not.toContain("contextual_next_actions_followup_finished");
 });

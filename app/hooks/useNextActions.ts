@@ -28,6 +28,7 @@ type Options = {
   userId?: string;
   chatId?: string;
   completedTurn?: CompletedPredictionTurn | null;
+  interruptedTurn?: { chatId: string } | null;
   latestMessageId?: string;
   status: string;
   blocked: boolean;
@@ -159,6 +160,12 @@ export function useNextActions(options: Options): NextActionsController {
     setBatch(null);
     return () => request.current?.abort();
   }, [options.chatId, options.userId]);
+
+  useEffect(() => {
+    if (options.interruptedTurn?.chatId !== options.chatId) return;
+    pending.current = null;
+    accepted.current = null;
+  }, [options.interruptedTurn, options.chatId]);
 
   useEffect(() => {
     if (!options.input && !submissionInProgress.current)

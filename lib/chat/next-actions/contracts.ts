@@ -44,7 +44,7 @@ export type PredictionSource = {
   text: string;
 };
 
-/** Recent persisted messages only. No reasoning, attachments, hidden instructions,
+/** Recent persisted messages only. No reasoning, attachments, system messages,
  * tool inputs, or arbitrary tool outputs. Existing finding results provide IDs. */
 export function buildPredictionSources(
   newestFirst: ContextMessage[],

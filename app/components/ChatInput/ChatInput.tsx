@@ -64,6 +64,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
+  interruptedPredictionTurn?: { chatId: string } | null;
   latestMessageId?: string;
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
@@ -252,6 +253,7 @@ export const ChatInput = (props: ChatInputProps) => {
 
 const ChatInputContent = ({
   completedPredictionTurn,
+  interruptedPredictionTurn,
   latestMessageId,
   onSubmit,
   onStop,
@@ -841,6 +843,7 @@ const ChatInputContent = ({
     userId: user?.id,
     chatId,
     completedTurn: completedPredictionTurn,
+    interruptedTurn: interruptedPredictionTurn,
     latestMessageId,
     status,
     input,
@@ -880,10 +883,7 @@ const ChatInputContent = ({
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
-        const accepted = await Promise.resolve(onSubmit(e)).catch((error) => {
-          finishPredictionSubmission(false);
-          throw error;
-        });
+        const accepted = await onSubmit(e);
         finishPredictionSubmission(accepted !== false);
         if (!isMountedRef.current) return;
         const unchanged =
@@ -915,6 +915,7 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
+        finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         console.error("Failed to submit message:", error);
       } finally {
@@ -1073,17 +1074,12 @@ const ChatInputContent = ({
           {nextActions.batch && (
             <NextMessagePredictions
               key={nextActions.batch.batchId}
-              controller={{
-                ...nextActions,
-                accept: (index, method) => {
-                  const accepted = nextActions.accept(index, method);
-                  if (accepted && method === "keyboard") {
-                    chatInputContainerRef.current
-                      ?.querySelector("textarea")
-                      ?.focus({ preventScroll: true });
-                  }
-                  return accepted;
-                },
+              controller={nextActions}
+              showKeyboardHint={composerFocused}
+              onFocusComposer={() => {
+                chatInputContainerRef.current
+                  ?.querySelector("textarea")
+                  ?.focus({ preventScroll: true });
               }}
             />
           )}

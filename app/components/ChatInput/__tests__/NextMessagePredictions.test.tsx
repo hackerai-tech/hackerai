@@ -42,7 +42,10 @@ function Harness() {
   });
   return (
     <>
-      <NextMessagePredictions controller={controller} />
+      <NextMessagePredictions
+        controller={controller}
+        onFocusComposer={() => screen.getByTestId("chat-input").focus()}
+      />
       <ChatInputTextarea
         draftId="chat"
         chatMode="ask"
@@ -108,20 +111,36 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
   expect(send).toHaveBeenCalledTimes(1);
 });
 
-test("pointer acceptance of an alternative preserves focus and never submits", async () => {
+test("touch acceptance of an alternative preserves focus and never submits", async () => {
   const textarea = await setup();
   const other = screen.getByRole("button", { name: "Next control" });
   other.focus();
   fireEvent.click(
     screen.getByRole("button", { name: "Show alternative suggestions" }),
   );
-  fireEvent.click(screen.getByRole("button", { name: suggestions[1] }), {
+  const alternative = screen.getByRole("button", { name: suggestions[1] });
+  const touch = new Event("pointerdown", { bubbles: true });
+  Object.defineProperty(touch, "pointerType", { value: "touch" });
+  fireEvent(alternative, touch);
+  fireEvent.click(alternative, {
     detail: 1,
   });
   expect(textarea).toHaveValue(suggestions[1]);
   expect(other).toHaveFocus();
   expect(send).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test("keyboard dismissal returns focus from the disappearing strip to the composer", async () => {
+  const textarea = await setup();
+  const dismiss = screen.getByRole("button", { name: "Dismiss suggestions" });
+  dismiss.focus();
+  fireEvent.keyDown(dismiss, { key: "Escape" });
+  expect(textarea).toHaveFocus();
+  expect(
+    screen.queryByRole("group", { name: "Suggested next messages" }),
+  ).toBeNull();
+  expect(send).not.toHaveBeenCalled();
 });
 
 test("Escape and typing dismiss permanently without sending", async () => {
