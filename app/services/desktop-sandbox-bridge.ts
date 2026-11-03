@@ -49,6 +49,7 @@ import {
 } from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import { normalizeSandboxPlatform } from "@/lib/ai/tools/utils/platform-utils";
 
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
@@ -991,12 +992,11 @@ export class DesktopSandboxBridge {
       if (result.exit_code === 0) {
         const lines = result.stdout.trim().split("\n");
         const [uname, hostname] = [lines[0] || "", lines[1] || "Desktop"];
-        const parts = uname.split(" ");
+        const parts = uname.trim().split(/\s+/);
         return {
-          platform:
-            parts[0]?.toLowerCase() === "darwin"
-              ? "darwin"
-              : parts[0]?.toLowerCase() || "unknown",
+          platform: normalizeSandboxPlatform(
+            parts[0]?.toLowerCase() || "unknown",
+          ),
           release: parts[1] || "unknown",
           arch: parts[2] || "unknown",
           hostname: hostname.trim(),

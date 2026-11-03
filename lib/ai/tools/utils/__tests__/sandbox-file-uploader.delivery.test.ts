@@ -243,16 +243,74 @@ posixDescribe(
         fullPath: path,
       });
       expect(accepted[0]).toEqual(readFileSync(path));
-      const { uploadUrl } = await generateS3UploadUrl(
-        "file",
-        "text/plain",
-        "fixture",
-        1,
-      );
+      const mismatched = adapter();
+      jest.mocked(mismatched.files.stat).mockResolvedValue({
+        type: "file_stat_result",
+        requestId: "fixture",
+        path,
+        kind: "file",
+        sizeBytes: 1,
+      });
+      const failures: unknown[] = [];
       await expect(
-        adapter().files.uploadToUrl(path, uploadUrl, "text/plain"),
+        uploadSandboxFileToConvex({
+          sandbox: mismatched,
+          userId: "fixture",
+          fullPath: path,
+          onTransferAttemptFailure: (failure) => {
+            failures.push(failure);
+          },
+        }),
       ).rejects.toThrow("403");
-      expect(statuses).toEqual([200, 403]);
+      // Preserve the existing native + command fallback; neither may claim
+      // that an HTTP rejection delivered the file.
+      expect(statuses).toEqual([200, 403, 403]);
+      expect(failures).toEqual(
+        ["native", "command"].map((kind) =>
+          expect.objectContaining({
+            transfer_attempt_kind: kind,
+            upload_reported_http_status: 403,
+            upload_reported_storage_code: "SignatureDoesNotMatch",
+            upload_storage_diagnostic_present: true,
+          }),
+        ),
+      );
+      expect(getConvexClient().action).toHaveBeenCalledTimes(1);
+      expect(generateS3UploadUrl).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-signs once when a rejected upload's source changed after metadata discovery", async () => {
+      const path = join(directory, "growing.txt");
+      writeFileSync(path, "before");
+      const updated = Buffer.from("completed report\n");
+      const sign = jest.mocked(generateS3UploadUrl).getMockImplementation()!;
+      jest
+        .mocked(generateS3UploadUrl)
+        .mockImplementationOnce(async (...args) => {
+          const result = await sign(...args);
+          writeFileSync(path, updated);
+          return result;
+        });
+      const saved = await uploadSandboxFileToConvex({
+        sandbox: adapter(),
+        userId: "fixture",
+        fullPath: path,
+        onTransferAttemptFailure: () => {
+          throw new Error("optional observer unavailable");
+        },
+      });
+      expect(statuses).toEqual([403, 403, 200]);
+      expect(accepted).toEqual([updated]);
+      expect(generateS3UploadUrl).toHaveBeenCalledTimes(2);
+      expect(
+        jest.mocked(generateS3UploadUrl).mock.calls.map((args) => args[3]),
+      ).toEqual([6, updated.length]);
+      expect(saved.sizeBytes).toBe(updated.length);
+      expect(getConvexClient().action).toHaveBeenCalledTimes(1);
+      expect(getConvexClient().action).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ size: updated.length }),
+      );
     });
 
     it.each(["copy", "write"])(
@@ -295,6 +353,8 @@ posixDescribe(
           },
         });
         expect(accepted).toEqual([bytes]);
+        const saved = jest.mocked(getConvexClient().action).mock.calls[0][1];
+        expect(saved).toMatchObject({ name: "reports\\result.txt" });
         expect(statuses).toEqual([200]);
         expect(failures).toEqual([]);
       },

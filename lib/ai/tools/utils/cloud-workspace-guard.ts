@@ -125,10 +125,14 @@ export const cloudWorkspaceStateKey = (userId: string) =>
   `cloud_workspace_migration:v1:${userId}`;
 export const activityKeyFor = (userId: string) =>
   `cloud_workspace_activity:v1:${userId}`;
+export const cloudRecoveryHistoryKey = (userId: string) =>
+  `cloud_recovery_history:v1:${userId}`;
 export const cloudRecoveryConsentKey = (userId: string) =>
   `cloud_recovery_consent:v1:${userId}`;
 export const cloudWorkspaceRegionKey = (userId: string) =>
   `cloud_workspace_region:v1:${userId}`;
+export const cloudWorkspaceSelectionHistoryKey = (userId: string) =>
+  `cloud_workspace_selection_history:v1:${userId}`;
 export const recoveryResultKeyFor = (userId: string) =>
   `cloud_workspace_recovery_result:v1:${userId}`;
 const ACTIVITY_TTL_SECONDS = 15 * 60;
@@ -317,7 +321,8 @@ export async function claimE2BDiskRecovery(args: {
   // Compare the complete prior record and require no recent normal activity.
   // A different owner, malformed record, or cleanup fence is never overwritten.
   const claimed = await redis.eval(
-    `local raw = redis.call('GET', KEYS[1]);
+    `if redis.call('HEXISTS', KEYS[5], ARGV[3]) == 1 then return 0 end
+     local raw = redis.call('GET', KEYS[1]);
      if ARGV[4] ~= '' then
        local consentRaw = redis.call('GET', KEYS[4]);
        local ok, consent = pcall(cjson.decode, consentRaw or '')
@@ -345,7 +350,8 @@ export async function claimE2BDiskRecovery(args: {
       cloudWorkspaceStateKey(args.userId),
       activityKeyFor(args.userId),
       recoveryResultKeyFor(args.userId),
-      ...(args.customerConsent ? [args.customerConsent.key] : []),
+      args.customerConsent?.key ?? cloudRecoveryConsentKey(args.userId),
+      cloudRecoveryHistoryKey(args.userId),
     ],
     [
       previous ? JSON.stringify(previous) : "",
@@ -423,9 +429,21 @@ export async function claimE2BDiskRecovery(args: {
 
 export async function readE2BDiskRecoveryResult(
   userId: string,
+  token?: string,
 ): Promise<unknown> {
   const redis = createRedisClient();
   if (!redis) throw new CloudWorkspaceUnavailableError();
+  if (token) {
+    const archived = await redis.hget<{ result?: unknown }>(
+      cloudRecoveryHistoryKey(userId),
+      token,
+    );
+    if (archived !== null) {
+      if (!archived || typeof archived !== "object" || !archived.result)
+        throw new CloudWorkspaceUnavailableError();
+      return archived.result;
+    }
+  }
   return redis.get(recoveryResultKeyFor(userId));
 }
 
@@ -447,6 +465,7 @@ export async function refreshE2BWorkspaceLease(
 export async function assertCloudWorkspaceAvailable(
   userId: string,
   sandboxId?: string,
+  region?: TriggerRunRegion,
 ): Promise<void> {
   const redis = createRedisClient();
   if (!redis) {
@@ -472,6 +491,7 @@ export async function assertCloudWorkspaceAvailable(
       local raw = redis.call('GET', KEYS[1]); if raw then
         local ok, state = pcall(cjson.decode, raw)
         if not ok or type(state) ~= 'table' or state.version ~= 1 or type(state.token) ~= 'string' or state.token == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') then return 0 end
+        if ARGV[3] ~= '' and state.region ~= ARGV[3] then return 0 end
         if state.phase == 'provisioning' then
           if state.step ~= 'reserved' or ARGV[2] ~= '' then return 0 end
         elseif state.phase ~= 'e2b' or type(state.sourceId) ~= 'string' or state.sourceId == '' or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end
@@ -482,7 +502,7 @@ export async function assertCloudWorkspaceAvailable(
         cloudRecoveryConsentKey(userId),
         recoveryResultKeyFor(userId),
       ],
-      [String(ACTIVITY_TTL_SECONDS), sandboxId ?? ""],
+      [String(ACTIVITY_TTL_SECONDS), sandboxId ?? "", region ?? ""],
     );
     if (available !== 1) {
       rejected = true;
@@ -590,9 +610,19 @@ export async function claimCloudWorkspaceCleanup(
           : JSON.stringify(observed);
       try {
         const finished = await redis.eval(
-          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end return 1`,
-          [cloudWorkspaceStateKey(userId), cloudWorkspaceRegionKey(userId)],
-          [serialized, next, success ? "1" : "0"],
+          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end return 1`,
+          [
+            cloudWorkspaceStateKey(userId),
+            cloudWorkspaceRegionKey(userId),
+            cloudWorkspaceSelectionHistoryKey(userId),
+            cloudRecoveryHistoryKey(userId),
+          ],
+          [
+            serialized,
+            next,
+            success ? "1" : "0",
+            permanent && success ? "1" : "0",
+          ],
         );
         if (finished !== 1) throw new CloudWorkspaceUnavailableError();
       } catch {

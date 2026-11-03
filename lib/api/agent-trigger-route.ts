@@ -433,6 +433,11 @@ export const finalizeStartedAgentRun = async ({
   goal?: { userId: string; generation: number };
   expectedRunId?: string | null;
 }): Promise<StartedAgentRunAccess> => {
+  let failureStage:
+    | "create_tokens"
+    | "associate_run"
+    | "cancel_previous_run"
+    | "close_previous_session" = "create_tokens";
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
@@ -451,6 +456,7 @@ export const finalizeStartedAgentRun = async ({
           : Promise.resolve(undefined),
       ]);
 
+    failureStage = "associate_run";
     // Goal startup has its own generation fence and must not reattach a worker
     // that already finished. Ordinary sends atomically replace the prior owner.
     const association = goal
@@ -487,8 +493,10 @@ export const finalizeStartedAgentRun = async ({
     if (association.previousRunId && association.previousRunId !== runId) {
       // Cancel only the owner displaced by this transaction. Its conditional
       // cleanup cannot detach the replacement, and persisted output is retained.
+      failureStage = "cancel_previous_run";
       await cancelAgentTriggerRun(association.previousRunId);
       if (association.previousApprovalSessionId !== approvalSessionId) {
+        failureStage = "close_previous_session";
         await closeAgentApprovalSession(
           association.previousApprovalSessionId ?? undefined,
           "agent-run-replaced",
@@ -520,6 +528,42 @@ export const finalizeStartedAgentRun = async ({
         clearApprovalPending: true,
       }),
     ]);
+    try {
+      const [sessionCleanup, runCleanup, associationCleanup] = cleanupResults;
+      const clearAssociationResult =
+        associationCleanup.status === "rejected"
+          ? "rejected"
+          : typeof associationCleanup.value === "string" &&
+              ["updated", "stale", "not_found", "deleting"].includes(
+                associationCleanup.value,
+              )
+            ? associationCleanup.value
+            : "unrecognized";
+      // Helper fulfillment is not proof of Trigger termination or lasting chat
+      // ownership. Keep only the conditional write's bounded acknowledgement.
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "agent_run_handoff_cleanup_result",
+          service: "hackerai-web",
+          timestamp: new Date().toISOString(),
+          failure_stage: failureStage,
+          chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(chatId)
+            ? chatId
+            : undefined,
+          trigger_run_id: /^run_[a-z0-9]{20,64}$/.test(runId)
+            ? runId
+            : undefined,
+          close_session_status: approvalSessionId
+            ? sessionCleanup.status
+            : "not_requested",
+          cancel_run_status: runCleanup.status,
+          clear_association_result: clearAssociationResult,
+        }),
+      );
+    } catch {
+      // Optional diagnostics must not replace the original handoff failure.
+    }
     for (const cleanupResult of cleanupResults) {
       if (cleanupResult.status === "rejected") {
         console.error("Failed to clean up an unreturned Agent run:", {
@@ -671,6 +715,7 @@ export const createAgentTriggerPost =
         await assertCloudWorkspaceAvailable(
           userId,
           workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+          triggerRegion,
         );
       }
 

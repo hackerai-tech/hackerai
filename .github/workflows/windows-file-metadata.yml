@@ -5,6 +5,12 @@ on:
     branches: [main]
     paths:
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
+      - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
@@ -17,6 +23,12 @@ on:
     branches: [main]
     paths:
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
+      - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
@@ -47,6 +59,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify real Windows file metadata commands
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts --runInBand --ci
+      - name: Verify native Windows curl through Git Bash
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-response.windows.test.ts --runInBand --ci
+      - name: Verify native Windows TLS connectivity diagnostics
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.test.ts lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.windows.test.ts --runInBand --ci
       - name: Verify native Windows file paths
         run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
       - name: Verify Windows shell discovery

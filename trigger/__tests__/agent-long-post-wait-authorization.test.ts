@@ -182,7 +182,10 @@ describe("agent-long post-wait authorization contract", () => {
       "await acquireFreeRunConcurrencyLock(",
       capacity,
     );
-    const cost = taskSource.indexOf("await checkFreeCostBudget(", reacquire);
+    const cost = taskSource.indexOf(
+      "await checkFreeMonthlyCostLimit(",
+      reacquire,
+    );
 
     expect(beforeSuspend).toBeGreaterThan(-1);
     expect(claimSlot).toBeGreaterThan(beforeSuspend);

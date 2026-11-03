@@ -49,9 +49,23 @@ import {
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
-import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+  getSandboxFileName,
+} from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
+import {
+  buildUploadNetworkProbeCommand,
+  parseUploadNetworkProbe,
+  type UploadProbeShell,
+} from "./sandbox-upload-network-diagnostics";
 import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
@@ -478,7 +492,8 @@ export class CentrifugoSandbox extends EventEmitter {
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const shellInfo = this.connectionInfo.isDesktop
@@ -524,6 +539,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs = 30000,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
@@ -533,7 +549,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       );
     }
 
-    return this.dispatchFileRequest<T>(input, expectedTypes, timeoutMs, signal);
+    return this.dispatchFileRequest<T>(
+      input,
+      expectedTypes,
+      timeoutMs,
+      signal,
+      nativePaths,
+    );
   }
 
   // Only the read-only acquisition probe may enter here without an advertised
@@ -543,7 +565,21 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     expectedTypes: Set<string>,
     timeoutMs: number,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
+    signal?.throwIfAborted();
+    // Resolve before subscribing so a failed/cancelled shell lookup cannot
+    // leave a pending native mutation or an unhandled subscription callback.
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(input.path),
+      signal,
+      nativePaths,
+    );
+    const allowedRoot =
+      this.workingDirectory &&
+      (input.type === "file_write" || input.type === "file_append")
+        ? await this.toNativePath(this.workingDirectory, signal, nativePaths)
+        : undefined;
     signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
     const isolated = this.supportsOperationChannels();
@@ -754,12 +790,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             ...(isolated ? { fileResponseAck: true } : {}),
             // Native metadata and mutations must name the same file as shell
             // transfers, including Windows /tmp and Git Bash drive paths.
-            path: this.toNativePath(this.resolveWorkingPath(input.path)),
+            path: nativePath,
             requestId,
-            ...(this.workingDirectory &&
-            (input.type === "file_write" || input.type === "file_append")
-              ? { allowedRoot: this.toNativePath(this.workingDirectory) }
-              : {}),
+            ...(allowedRoot ? { allowedRoot } : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
@@ -1760,19 +1793,47 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
    */
   isWindows(): boolean {
     return (
-      this.connectionInfo.osInfo?.platform === "win32" ||
-      this.shellKind === "cmd"
+      normalizeSandboxPlatform(this.connectionInfo.osInfo?.platform ?? "") ===
+        "win32" || this.shellKind === "cmd"
     );
   }
 
-  /**
-   * Convert Unix-style paths (e.g. /tmp/hackerai-upload/file.png) to
-   * Windows-native paths when running on a Windows sandbox.
-   * Paths are generated before the sandbox platform is known, so they
-   * always arrive in Unix form and need translating here.
-   */
-  private toNativePath(path: string): string {
+  /** Resolve POSIX mount paths using the same Windows shell that created them. */
+  private async toNativePath(
+    path: string,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     if (!this.isWindows()) return path;
+    if (
+      path.startsWith("/") &&
+      !path.startsWith("//") &&
+      (await this.detectShell(signal)) === "bash"
+    ) {
+      const cached = nativePaths?.get(path);
+      if (cached !== undefined) return cached;
+      // Git Bash /tmp is an MSYS mount, often the user's Windows TEMP directory.
+      // Use its installed utility, independent of PATH or project executables.
+      const result = await this.runSetupCommand(
+        `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
+        { signal },
+      );
+      const resolved = result.stdout.replace(/\r?\n$/, "");
+      if (
+        result.exitCode !== 0 ||
+        /[\r\n\0]/.test(resolved) ||
+        !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
+      ) {
+        // Never guess another file location when conversion fails.
+        throw new Error(
+          "Failed to resolve the Windows file path through Git Bash",
+        );
+      }
+      nativePaths?.set(path, resolved);
+      return resolved;
+    }
+    // cmd.exe has no MSYS mount table; preserve its established upload alias.
     if (path === "/tmp" || path.startsWith("/tmp/")) {
       return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
     }
@@ -1780,7 +1841,6 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     if (bashDrive) {
       return `${bashDrive[1].toUpperCase()}:\\${(bashDrive[2] ?? "").replace(/\//g, "\\")}`;
     }
-    // Translate any remaining absolute Unix paths to Windows-style
     return path.replace(/\//g, "\\");
   }
 
@@ -1826,7 +1886,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     // Older desktop clients did not publish osInfo. Probe those connections
     // instead of assuming Bash: a Windows cmd relay would otherwise receive
     // single-quoted signed URLs and split their `&` query fields into commands.
-    if (declaredPlatform && declaredPlatform !== "win32") {
+    if (declaredPlatform && !this.isWindows()) {
       this.shellKind = "bash";
       return "bash";
     }
@@ -1904,7 +1964,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const shell = await this.detectShell(signal);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(rawPath),
+      signal,
+    );
     const path =
       useBash && this.isWindows()
         ? CentrifugoSandbox.toBashPath(nativePath)
@@ -2051,6 +2114,64 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   }
 
   private snapCurlFallbackSelected = false;
+
+  private uploadNetworkProbeAttempted = false;
+
+  private async diagnoseUploadNetworkFailure(
+    uploadUrl: string,
+    useBash: boolean,
+    exitCode: 6 | 28 | 35 | 124 | -1,
+  ): Promise<void> {
+    try {
+      if (this.uploadNetworkProbeAttempted) return;
+      const shell: UploadProbeShell = this.isWindows()
+        ? useBash
+          ? "windows-bash"
+          : "cmd"
+        : "posix";
+      const command = buildUploadNetworkProbeCommand(
+        uploadUrl,
+        shell,
+        this.isWindows() && this.curlCaps?.sslNoRevoke === true,
+      );
+      if (!command) return;
+      // Set before awaiting: concurrent uploads share this instance's budget.
+      this.uploadNetworkProbeAttempted = true;
+      let output: string | undefined;
+      let commandExitCode: number | null = null;
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 10_000,
+          displayName: "",
+        });
+        output = result.stdout;
+        if (
+          Number.isSafeInteger(result.exitCode) &&
+          result.exitCode >= 0 &&
+          result.exitCode <= 255
+        )
+          commandExitCode = result.exitCode;
+      } catch {
+        // No retry: this measures connectivity, never repeats the upload.
+      }
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_network_diagnostic",
+          diagnostic_version: 1,
+          sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+          platform: this.isWindows() ? "windows" : "posix",
+          shell,
+          upload_exit_code: exitCode,
+          command_exit_code: commandExitCode,
+          ...parseUploadNetworkProbe(output),
+        }),
+      );
+    } catch {
+      // Even a failed probe or logging sink must preserve the original error.
+    }
+  }
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -2217,8 +2338,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     const scriptPath = this.workingDirectory
       ? scriptName
       : `/tmp/${scriptName}`;
-    const nativeScriptPath = this.toNativePath(
+    const nativeScriptPath = await this.toNativePath(
       this.resolveWorkingPath(scriptPath),
+      signal,
     );
     try {
       // files.write already chunks legacy cmd.exe writes below its command
@@ -2336,6 +2458,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
     firstChunkType: "file_write" | "file_append",
     signal?: AbortSignal,
   ): Promise<void> {
+    // Pin successful mount resolutions only for this write, including its root.
+    // This avoids per-chunk relay probes without reusing stale mounts on a later
+    // operation or replacement connection, or redirecting an append mid-write.
+    const nativePaths = new Map<string, string>();
     for (
       let offset = 0;
       offset < encodedContent.length;
@@ -2354,6 +2480,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         new Set(["file_ok"]),
         120000,
         signal,
+        nativePaths,
       );
     }
   }
@@ -2455,9 +2582,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         return;
       }
 
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escapedPath = escapePath(path);
       // Legacy Windows relays may launch Bash through cmd.exe, whose command
       // line limit applies even though the inner shell accepts POSIX syntax.
@@ -2474,9 +2601,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         throw new Error("File path exceeds the local file command limit");
       }
 
-      // Ensure parent directory exists. Pass the native (unconverted) dir
-      // so ensureDirectory re-applies its own shell-aware path handling.
-      const dir = this.parentDir(this.toNativePath(rawPath));
+      // Use the resolved parent so mkdir and the write target the same mount.
+      const dir = this.parentDir(nativePath);
       if (dir) {
         await this.ensureDirectory(dir, signal);
       }
@@ -2594,7 +2720,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       }
 
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe uses `type`, bash uses `cat`
       const command = useBash ? `cat ${escaped}` : `type ${escaped}`;
@@ -2615,7 +2741,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       options?.signal?.throwIfAborted();
       const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
       const destCtx = await this.shellContext(destRawPath, options?.signal);
-      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
       const mkdirPart = !dir
@@ -2661,7 +2787,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         rawPath,
         signal,
       );
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
       const command = useBash
@@ -2724,7 +2850,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         await this.shellContext(rawPath, signal);
       const httpClient = await this.detectHttpClient(signal);
       const dir = this.parentDir(path);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
 
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
@@ -2889,7 +3015,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, nativePath, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -2910,8 +3036,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         }
       }
 
-      const fileName = path.split(/[/\\]/).pop() || "file";
-      const escapedPath = escapePath(path);
+      const fileName = getSandboxFileName(path, this.isWindows());
+      // Both native Windows curl and MSYS curl accept C:/... paths. /c/...
+      // depends on MSYS argument conversion, which a caller can disable.
+      const uploadPath =
+        this.isWindows() && useBash ? nativePath.replace(/\\/g, "/") : path;
+      const escapedPath = escapePath(uploadPath);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
       const curlUploadFlags =
@@ -2929,7 +3059,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       let command: string;
       let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
-        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+        command =
+          this.isWindows() && !useBash
+            ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+            : buildPosixCurlUploadCommand(uploadPath, uploadUrl, contentType, {
+                sslNoRevoke:
+                  this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke,
+              });
       } else if (httpClient === "wget") {
         command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
       } else {
@@ -2962,11 +3098,29 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
               platform: this.isWindows() ? "windows" : "posix",
               http_client: httpClient,
+              ...(httpClient === "curl"
+                ? getUploadFailureDiagnostics(uploadUrl, result.stderr)
+                : {}),
               exit_code: Number.isSafeInteger(result.exitCode)
                 ? result.exitCode
                 : null,
             }),
           );
+          if (
+            httpClient === "curl" &&
+            (result.exitCode === 6 ||
+              result.exitCode === 28 ||
+              result.exitCode === 35 ||
+              result.exitCode === 124 ||
+              (result.exitCode === -1 &&
+                result.stderr.trim() === "Command timed out"))
+          ) {
+            await this.diagnoseUploadNetworkFailure(
+              uploadUrl,
+              useBash,
+              result.exitCode,
+            );
+          }
           if (
             result.exitCode === 26 &&
             httpClient === "curl" &&
@@ -2979,8 +3133,16 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             rawPath,
             path,
             nativePath,
+            uploadPath,
           ]);
-          throw new Error(`Failed to upload file: ${safeStderr}`);
+          throw Object.assign(
+            new Error(`Failed to upload file: ${safeStderr}`),
+            {
+              exitCode: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : undefined,
+            },
+          );
         }
       } finally {
         await cleanupPowerShellScript?.().catch(() => undefined);

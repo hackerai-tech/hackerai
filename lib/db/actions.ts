@@ -73,6 +73,8 @@ const UPDATE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_PROJECT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0] : [250];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
@@ -728,6 +730,36 @@ const getMessagesPageForBackendWithRetry = async ({
 };
 
 export async function getChatById({ id }: { id: string }) {
+  let lastRetryReason: string | undefined;
+  const reportRetryResult = (
+    outcome: "read_succeeded" | "retry_exhausted" | "non_retryable_error",
+    attempts: number,
+  ) => {
+    if (!lastRetryReason) return;
+    try {
+      // A returned read is not proof of a successful caller journey. Record no
+      // query result or error content, and keep diagnostics outside the contract.
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "chat_fetch_retry_result",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.getChatById",
+          outcome,
+          attempts,
+          retry_reason: lastRetryReason,
+          chat_id:
+            typeof id === "string" &&
+            /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)
+              ? id
+              : undefined,
+        }),
+      );
+    } catch {
+      // Optional logging must not replace the returned read or original error.
+    }
+  };
   try {
     const queryArgs = {
       serviceKey,
@@ -736,14 +768,24 @@ export async function getChatById({ id }: { id: string }) {
 
     for (let attemptIndex = 0; ; attemptIndex++) {
       try {
-        return await getConvexClient().query(api.chats.getChatById, queryArgs);
+        const chat = await getConvexClient().query(
+          api.chats.getChatById,
+          queryArgs,
+        );
+        reportRetryResult("read_succeeded", attemptIndex + 1);
+        return chat;
       } catch (error) {
         const retryReason = getRetryableGetChatErrorReason(error);
         const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
+          reportRetryResult(
+            retryReason ? "retry_exhausted" : "non_retryable_error",
+            attemptIndex + 1,
+          );
           throw error;
         }
 
+        lastRetryReason = retryReason;
         console.warn(
           JSON.stringify({
             level: "warn",
@@ -798,12 +840,51 @@ export async function getProjectById({
   id: string;
   userId: string;
 }) {
+  const queryArgs = { serviceKey, id, userId };
   try {
-    return await getConvexClient().query(api.projects.getProjectForBackend, {
-      serviceKey,
-      id,
-      userId,
-    });
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().query(
+          api.projects.getProjectForBackend,
+          queryArgs,
+        );
+      } catch (error) {
+        // Retry only the transport failure observed on this read. Structured
+        // guards and server errors remain authoritative on the first attempt.
+        const retryReason =
+          error instanceof TypeError && getErrorData(error) === undefined
+            ? getRetryableDatabaseErrorReason(error)
+            : undefined;
+        const retryDelayMs = GET_PROJECT_RETRY_DELAYS_MS[attemptIndex];
+        if (
+          retryReason !== "network_fetch_failed" ||
+          retryDelayMs === undefined
+        ) {
+          throw error;
+        }
+
+        try {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              event: "project_fetch_retry_scheduled",
+              service: "chat-handler",
+              timestamp: new Date().toISOString(),
+              db_operation: "projects.getProjectForBackend",
+              retry_reason: retryReason,
+              attempt: attemptIndex + 1,
+              next_attempt: attemptIndex + 2,
+              retry_delay_ms: retryDelayMs,
+              project_id: id,
+              user_id: userId,
+            }),
+          );
+        } catch {
+          // Diagnostics must not prevent the bounded read recovery.
+        }
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("projects.getProjectForBackend", error, {
       project_id: id,
@@ -1183,7 +1264,38 @@ export async function saveMessage({
     for (let attemptIndex = 0; ; attemptIndex++) {
       signal?.throwIfAborted();
       try {
-        return await client.mutation(api.messages.saveMessage, mutationArgs);
+        const result = await client.mutation(
+          api.messages.saveMessage,
+          mutationArgs,
+        );
+        if (attemptIndex > 0) {
+          try {
+            // An RPC acknowledgement can also be a fenced/no-op result; it is
+            // not proof that this invocation changed durable message contents.
+            console.info(
+              JSON.stringify({
+                level: "info",
+                event: "message_save_retry_acknowledged",
+                service: "chat-handler",
+                timestamp: new Date().toISOString(),
+                db_operation: "messages.saveMessage",
+                attempts: attemptIndex + 1,
+                acknowledgement:
+                  result === null
+                    ? "acknowledged"
+                    : result === "stale_run"
+                      ? "stale_run"
+                      : "unrecognized_ack",
+                chat_id: chatId,
+                user_id: userId,
+                message_id: message.id,
+              }),
+            );
+          } catch {
+            // Diagnostics must never retry or fail an acknowledged mutation.
+          }
+        }
+        return result;
       } catch (error) {
         signal?.throwIfAborted();
         const retryReason = getRetryableSaveMessageErrorReason(error);

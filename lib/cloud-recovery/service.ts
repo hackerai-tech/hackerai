@@ -1,4 +1,5 @@
 import { isRecoverableE2BSandboxVersion } from "@/lib/ai/tools/utils/e2b-sandbox-version";
+import { reconcileCompletedRecovery } from "./completed";
 import { createHmac } from "node:crypto";
 import {
   Sandbox,
@@ -274,22 +275,37 @@ async function assertEligible(
   )
     throw new RecoveryUnavailable();
   reportStage("provider_inventory");
-  // Inventory is read-only: an extra regional workspace is an ownership ambiguity.
+  // An exact pin distinguishes the target from retained copies. Inventory reads
+  // never connect, pause, delete or otherwise modify any of those other disks.
   const list = Sandbox.list({
     ...cluster.connectionOptions,
     requestTimeoutMs: 10000,
     query: { metadata: { userID: userId }, state: ["running", "paused"] },
   });
-  const items = await list.nextItems();
+  const items: Awaited<ReturnType<typeof list.nextItems>> = [];
+  let pages = 0;
+  do {
+    if (++pages > 10) throw new RecoveryUnavailable();
+    items.push(...(await list.nextItems()));
+  } while (list.hasNext);
   if (
-    list.hasNext ||
-    items.length !== 1 ||
-    items[0].sandboxId !== auth.sandboxId
+    items.filter((item) => item.sandboxId === auth.sandboxId).length !== 1 ||
+    (!workspace && items.length !== 1) ||
+    items.some(
+      (item) =>
+        item.metadata?.userID !== userId ||
+        item.metadata?.e2bCluster !== cluster.cluster ||
+        item.metadata?.template !== auth.expectedTemplate,
+    )
   )
     throw new RecoveryUnavailable();
+  if (items.some((item) => item.state !== "paused")) throw new RecoveryBusy();
   return auth;
 }
-async function currentRecoveryView(userId: string): Promise<RecoveryView> {
+async function currentRecoveryView(
+  userId: string,
+  reconciled = false,
+): Promise<RecoveryView> {
   if (!process.env.CLOUD_DISK_RECOVERY_TARGETS) return { status: "hidden" };
   const active = await enabled(userId);
   let consent = await readConsent(userId);
@@ -316,6 +332,18 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
     ) {
       const failures = await readFailures(userId);
       const completedAt = Date.parse(result.completedAt ?? "");
+      if (
+        active &&
+        !reconciled &&
+        failures &&
+        failures.lastFailedAt > completedAt
+      ) {
+        // New incidents need fresh eligibility and fresh owner confirmation.
+        if (await reconcileCompletedRecovery(userId))
+          return currentRecoveryView(userId, true);
+        if (await recoveryRedis().exists(activityKeyFor(userId)))
+          return { status: "waiting" };
+      }
       return {
         status:
           Number.isFinite(completedAt) &&
@@ -327,6 +355,16 @@ async function currentRecoveryView(userId: string): Promise<RecoveryView> {
     // Turning off a rollout prevents new action, but must not hide an incident
     // that already consumed consent or strand the customer without support.
     if (!active) return { status: "support" };
+    if (
+      !reconciled &&
+      consent.status === "confirmed" &&
+      Date.now() - (consent.confirmedAt ?? consent.issuedAt) > 10 * 60000
+    ) {
+      // A delayed worker cannot claim after this atomic revocation. If it won
+      // first, the executing receipt is unchanged; no provider action is retried.
+      await failConsent(userId, consent.token, Date.now() - 10 * 60000);
+      return currentRecoveryView(userId, true);
+    }
     if (consent.status === "failed") {
       if (consent.failurePhase !== "before_reboot")
         return { status: "support" };

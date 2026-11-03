@@ -1,6 +1,7 @@
 import {
   classifyPersistenceFailure,
   persistenceCommandError,
+  PersistenceError,
 } from "./persistence-failure";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -70,6 +71,15 @@ const runChecked = async (
     typeof sandbox.supportsCommandStdin !== "function" ||
     !sandbox.supportsCommandStdin()
   ) {
+    // Current POSIX clients explicitly advertise false when their private
+    // storage preparation fails. An absent capability can be an older client;
+    // neither case establishes that upgrading will repair filesystem state.
+    if (sandbox.getConnectionInfo?.().capabilities?.commandStdin === false) {
+      throw new PersistenceError(
+        "Private terminal artifact storage is unavailable on this connection. Check the local client's startup storage diagnostics, resolve the reported ownership or filesystem problem, then restart the client. Do not use sudo or remove another user's files to bypass the checks.",
+        "private_storage_unavailable",
+      );
+    }
     throw new Error(
       "Private terminal artifact storage requires an updated HackerAI local client",
     );

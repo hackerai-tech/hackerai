@@ -9,9 +9,21 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
  */
 
 import { EventEmitter } from "events";
+import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
+import {
+  buildShellSpawn,
+  findGitBash,
+  windowsSystemExecutable,
+} from "@/packages/local/src/utils";
+import { Centrifuge } from "centrifuge";
 import { win32 } from "node:path";
 import {
   existsSync,
+  statSync,
+  readFileSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -115,7 +127,24 @@ function createSandbox(
   );
 }
 
-function createDesktopSandbox(workingDirectory?: string): CentrifugoSandbox {
+// A fixed mount for tests of transfer behavior unrelated to mount discovery.
+function gitBashMountResult(command: string) {
+  const prefix = "/usr/bin/cygpath -w -- '/tmp";
+  if (!command.startsWith(prefix)) return undefined;
+  return {
+    stdout:
+      "C:\\temp" +
+      command.slice(prefix.length, -1).replaceAll("/", "\\") +
+      "\n",
+    stderr: "",
+    exitCode: 0,
+  };
+}
+
+function createDesktopSandbox(
+  workingDirectory?: string,
+  platform = "win32",
+): CentrifugoSandbox {
   return new CentrifugoSandbox(
     "user-1",
     {
@@ -123,7 +152,7 @@ function createDesktopSandbox(workingDirectory?: string): CentrifugoSandbox {
       isDesktop: true,
       capabilities: { commands: true, pty: true, files: true },
       osInfo: {
-        platform: "win32",
+        platform,
         arch: "x64",
         release: "10.0.22631",
         hostname: "WIN-DEV",
@@ -1074,6 +1103,7 @@ describe("CentrifugoSandbox", () => {
         writeFileSync(expected, "fixture");
         try {
           const sandbox = createDesktopSandbox();
+          jest.spyOn(sandbox, "detectShell").mockResolvedValue("cmd");
           const path = `/tmp/${win32.basename(directory)}/report.txt`;
           const pending = sandbox.files.stat(path);
           await jest.advanceTimersByTimeAsync(0);
@@ -1102,14 +1132,131 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    windowsTest.each([false, true])(
+      "uploads a terminal-created Windows file through the actual Git Bash tmp mount (path conversion disabled=%s)",
+      async (disablePathConversion) => {
+        jest.useRealTimers();
+        const shell = findGitBash();
+        if (!shell)
+          throw new Error("Windows mount acceptance requires Git Bash");
+        const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+        const directory = `/tmp/hackerai-mount-${randomUUID()}`;
+        const source = `${directory}/report & notes.txt`;
+        const payload = "owned terminal output λ\n";
+        const requests: Buffer[] = [];
+        const server = createServer(async (req, res) => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          requests.push(Buffer.concat(chunks));
+          res.end("ok");
+        });
+        const run = async (command: string) => {
+          const curl = windowsSystemExecutable("curl.exe").replaceAll(
+            "\\",
+            "/",
+          );
+          const spec = buildShellSpawn(
+            shell,
+            "-c",
+            `curl() { ${quote(curl)} "$@"; }\n${command}`,
+          );
+          return promisify(execFile)(shell, spec.args, {
+            ...spec.options,
+            timeout: 10_000,
+            env: {
+              ...Object.fromEntries(
+                Object.entries(process.env).filter(
+                  ([key]) =>
+                    !["MSYS_NO_PATHCONV", "MSYS2_ARG_CONV_EXCL"].includes(
+                      key.toUpperCase(),
+                    ),
+                ),
+              ),
+              ...(disablePathConversion && {
+                MSYS_NO_PATHCONV: "1",
+                MSYS2_ARG_CONV_EXCL: "*",
+              }),
+            },
+          }).then(
+            (result) => ({
+              stdout: String(result.stdout),
+              stderr: String(result.stderr),
+              exitCode: 0,
+            }),
+            (error) => ({
+              stdout: String(error.stdout ?? ""),
+              stderr: String(error.stderr ?? ""),
+              exitCode: Number(error.code) || -1,
+            }),
+          );
+        };
+        try {
+          const created = await run(
+            `mkdir -p ${quote(directory)} && printf '%s' ${quote(payload)} > ${quote(source)} && uname -s`,
+          );
+          expect(created.exitCode).toBe(0);
+          const sandbox = createDesktopSandbox(
+            undefined,
+            created.stdout.trim().toLowerCase(),
+          );
+          jest.spyOn(sandbox.commands, "run").mockImplementation(run);
+          // Only relay I/O is simulated. Both metadata and curl consume the
+          // real file produced by the command interpreter, not adapter.files.write.
+          const sub = new MockSubscription();
+          const client = new MockCentrifugeClient();
+          client.newSubscription.mockReturnValue(sub);
+          jest.mocked(Centrifuge).mockImplementationOnce(() => client as any);
+          sub.subscribe.mockImplementation(() =>
+            queueMicrotask(() => sub.emit("subscribed")),
+          );
+          sub.publish.mockImplementation(async (request) => {
+            if (request.type !== "file_stat") return;
+            const exists = existsSync(request.path);
+            if (exists)
+              expect(readFileSync(request.path)).toEqual(Buffer.from(payload));
+            queueMicrotask(() =>
+              sub.emit("publication", {
+                data: {
+                  type: "file_stat_result",
+                  requestId: FIXED_UUID,
+                  path: request.path,
+                  kind: exists ? "file" : "missing",
+                  sizeBytes: exists ? statSync(request.path).size : 0,
+                },
+              }),
+            );
+          });
+          await expect(sandbox.files.stat(source)).resolves.toMatchObject({
+            kind: "file",
+            sizeBytes: Buffer.byteLength(payload),
+          });
+          await new Promise<void>((resolve) =>
+            server.listen(0, "127.0.0.1", resolve),
+          );
+          const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}/upload`;
+          await sandbox.files.uploadToUrl(source, endpoint, "text/plain");
+          expect(requests).toEqual([Buffer.from(payload)]);
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+          const removed = await run(`rm -rf -- ${quote(directory)}`);
+          expect(removed.exitCode).toBe(0);
+        }
+      },
+      30_000,
+    );
+
     it.each([
-      ["/tmp/report.txt", "C:\\temp\\report.txt"],
-      ["/c/temp/report.txt", "C:\\temp\\report.txt"],
-      ["C:/temp/report.txt", "C:\\temp\\report.txt"],
+      ["/tmp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["/c/temp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["C:/temp/report.txt", "C:\\temp\\report.txt", "win32"],
+      ["/tmp/report.txt", "C:\\temp\\report.txt", "mingw64_nt-10.0-22631"],
+      ["/c/temp/report.txt", "C:\\temp\\report.txt", "mingw32_nt-6.1"],
+      ["C:/temp/report.txt", "C:\\temp\\report.txt", "msys_nt-10.0-22631"],
     ])(
       "stats the same Windows file used by shell transfers: %s",
-      async (input, expected) => {
-        const sandbox = createDesktopSandbox();
+      async (input, expected, platform) => {
+        const sandbox = createDesktopSandbox(undefined, platform);
+        jest.spyOn(sandbox, "detectShell").mockResolvedValue("cmd");
         const pending = sandbox.files.stat(input);
         await jest.advanceTimersByTimeAsync(0);
         const sub = mockSubscriptions[0];
@@ -1132,6 +1279,87 @@ describe("CentrifugoSandbox", () => {
           kind: "file",
           sizeBytes: 7,
         });
+      },
+    );
+
+    it("uses the active Git Bash mount for native metadata and upload of a terminal-created Windows file", async () => {
+      const sandbox = createDesktopSandbox(undefined, "mingw64_nt-10.0-22631");
+      const nativePath =
+        "C:\\Users\\qa\\AppData\\Local\\Temp\\report & notes.txt";
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => ({
+          stdout:
+            command === "echo $BASH_VERSION"
+              ? "5.2"
+              : command.startsWith("/usr/bin/cygpath ")
+                ? nativePath + "\n"
+                : "",
+          stderr: "",
+          exitCode: 0,
+        }));
+      const pending = sandbox.files.stat("/tmp/report & notes.txt");
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const request = sub.publish.mock.calls.find(
+        ([value]) => value.type === "file_stat",
+      )![0];
+      sub.emit("publication", {
+        data: {
+          type: "file_stat_result",
+          requestId: FIXED_UUID,
+          kind: request.path === nativePath ? "file" : "missing",
+          path: request.path,
+          sizeBytes: 7,
+        },
+      });
+      await expect(pending).resolves.toMatchObject({
+        kind: "file",
+        path: nativePath,
+      });
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = { sslNoRevoke: true };
+      await sandbox.files.uploadToUrl(
+        "/tmp/report & notes.txt",
+        "https://fixture.invalid/upload",
+        "text/plain",
+      );
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "--data-binary @'C:/Users/qa/AppData/Local/Temp/report & notes.txt'",
+        ),
+        expect.anything(),
+      );
+    });
+
+    it.each(["failed", "invalid", "cancelled"])(
+      "does not dispatch a native mutation after a %s Git Bash path lookup",
+      async (outcome) => {
+        const sandbox = createDesktopSandbox();
+        (sandbox as any).shellKind = "bash";
+        const controller = new AbortController();
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async () => {
+            if (outcome === "cancelled") controller.abort();
+            return {
+              stdout:
+                outcome === "invalid"
+                  ? "not-an-absolute-path\n"
+                  : "C:\\Users\\qa\\Temp\\out.txt\n",
+              stderr: "",
+              exitCode: outcome === "failed" ? 127 : 0,
+            };
+          });
+        await expect(
+          sandbox.files.write("/tmp/out.txt", "one write", {
+            signal: controller.signal,
+          }),
+        ).rejects.toThrow();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(mockSubscriptions).toHaveLength(0);
       },
     );
 
@@ -1582,6 +1810,34 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("attachment cancellation", () => {
+    it("preserves a literal POSIX backslash in the attachment staging label", async () => {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+
+      await sandbox.files.copyLocal(
+        "/tmp/source.txt",
+        "/tmp/prefix\\report.txt",
+      );
+
+      expect(run).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          displayName: "Preparing: prefix\\report.txt",
+        }),
+      );
+    });
+
     it.each(["copy", "download"])(
       "forwards Stop through %s and waits for command cancellation",
       async (operation) => {
@@ -3685,6 +3941,50 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toBeUndefined();
     });
 
+    it("resolves Git Bash file and root paths once per chunked write, then refreshes the next operation", async () => {
+      const sandbox = createDesktopSandbox("/tmp/project");
+      (sandbox as any).shellKind = "bash";
+      let mount = "C:\\Users\\qa\\Temp";
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => ({
+          stdout:
+            mount +
+            (command.includes("large.txt")
+              ? "\\project\\large.txt"
+              : "\\project") +
+            "\n",
+          stderr: "",
+          exitCode: 0,
+        }));
+      const content = "x".repeat(70 * 1024);
+      for (const nextMount of [mount, "D:\\ChangedTemp"]) {
+        mount = nextMount;
+        run.mockClear();
+        const startIndex = mockSubscriptions.length;
+        const write = sandbox.files.write("large.txt", content);
+        const chunks: string[] = [];
+        for (let index = 0; index < 2; index++) {
+          await jest.advanceTimersByTimeAsync(0);
+          const sub = mockSubscriptions[startIndex + index];
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          const request = sub.publish.mock.calls[0][0];
+          expect(request).toMatchObject({
+            path: mount + "\\project\\large.txt",
+            allowedRoot: mount + "\\project",
+          });
+          chunks.push(request.content);
+          sub.emit("publication", {
+            data: { type: "file_ok", requestId: request.requestId },
+          });
+        }
+        await write;
+        expect(Buffer.from(chunks.join(""), "base64").toString()).toBe(content);
+        expect(run).toHaveBeenCalledTimes(2);
+      }
+    });
+
     it("chunks large native writes into file_write then file_append requests", async () => {
       const sandbox = createDesktopSandbox();
       const content = "x".repeat(70 * 1024);
@@ -3996,6 +4296,8 @@ describe("CentrifugoSandbox", () => {
       const runOptions: unknown[] = [];
       (sandbox as any).commands.run = jest.fn(
         async (cmd: string, opts?: unknown) => {
+          const mount = gitBashMountResult(cmd);
+          if (mount) return mount;
           runOptions.push(opts);
           runs.push(cmd);
           return { stdout: "", stderr: "", exitCode: 0 };
@@ -4028,26 +4330,29 @@ describe("CentrifugoSandbox", () => {
       return { sandbox, runs };
     }
 
-    it("does not cache a failed shell probe or issue file mutations after it", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      const run = jest
-        .spyOn(sandbox.commands, "run")
-        .mockResolvedValueOnce({
-          stdout: "",
-          stderr: "shell unavailable",
-          exitCode: 2,
-        } as any)
-        .mockResolvedValue({
-          stdout: "$BASH_VERSION",
-          stderr: "",
-          exitCode: 0,
-        } as any);
-      await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
-        "Failed to detect local shell",
-      );
-      expect(run).toHaveBeenCalledTimes(1);
-      await expect(sandbox.detectShell()).resolves.toBe("cmd");
-    });
+    it.each(["win32", "mingw64_nt-10.0-22631"])(
+      "does not cache a failed %s shell probe or issue file mutations after it",
+      async (platform) => {
+        const sandbox = createSandbox({ osInfo: { platform } } as any);
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockResolvedValueOnce({
+            stdout: "",
+            stderr: "shell unavailable",
+            exitCode: 2,
+          } as any)
+          .mockResolvedValue({
+            stdout: "$BASH_VERSION",
+            stderr: "",
+            exitCode: 0,
+          } as any);
+        await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
+          "Failed to detect local shell",
+        );
+        expect(run).toHaveBeenCalledTimes(1);
+        await expect(sandbox.detectShell()).resolves.toBe("cmd");
+      },
+    );
 
     it("bounds Windows Bash file commands for relays launched through cmd.exe", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
@@ -4553,14 +4858,16 @@ describe("CentrifugoSandbox", () => {
       sandbox.files.write = write;
       sandbox.files.remove = remove;
       const nativeSource = "C:\\temp\\hackerai-upload\\report.txt";
-      (sandbox as any).commands.run = jest.fn(async (command: string) =>
-        command.startsWith("powershell.exe ")
-          ? {
-              stdout: "",
-              stderr: `Upload failed from ${nativeSource}`,
-              exitCode: 1,
-            }
-          : { stdout: "", stderr: "", exitCode: 0 },
+      (sandbox as any).commands.run = jest.fn(
+        async (command: string) =>
+          gitBashMountResult(command) ??
+          (command.startsWith("powershell.exe ")
+            ? {
+                stdout: "",
+                stderr: `Upload failed from ${nativeSource}`,
+                exitCode: 1,
+              }
+            : { stdout: "", stderr: "", exitCode: 0 }),
       );
 
       await expect(
@@ -4612,18 +4919,20 @@ describe("CentrifugoSandbox", () => {
       sandbox.files.write = jest.fn(async () => undefined);
       sandbox.files.remove = jest.fn(async () => undefined);
       const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
-      (sandbox as any).commands.run = jest.fn(async (command: string) =>
-        command.startsWith("powershell.exe ")
-          ? {
-              stdout: "",
-              stderr: `Download failed at ${nativeDestination}`,
-              exitCode: 1,
-            }
-          : {
-              stdout: "target_dir_exists=true",
-              stderr: "",
-              exitCode: 0,
-            },
+      (sandbox as any).commands.run = jest.fn(
+        async (command: string) =>
+          gitBashMountResult(command) ??
+          (command.startsWith("powershell.exe ")
+            ? {
+                stdout: "",
+                stderr: `Download failed at ${nativeDestination}`,
+                exitCode: 1,
+              }
+            : {
+                stdout: "target_dir_exists=true",
+                stderr: "",
+                exitCode: 0,
+              }),
       );
 
       await expect(
@@ -4953,7 +5262,7 @@ describe("CentrifugoSandbox", () => {
         "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
         "a".repeat(160) +
         "&X-Amz-Signature=secret";
-      const localPath = "/tmp/hackerai-upload/private-image.png";
+      const localPath = "C:/temp/hackerai-upload/private-image.png";
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         if (cmd.includes("target_dir_exists")) {
           return {
@@ -4995,6 +5304,7 @@ describe("CentrifugoSandbox", () => {
       { client: "curl", exitCode: Infinity, desktop: false, platform: "posix" },
       { client: "curl", exitCode: 26, desktop: false, platform: "posix" },
       { client: "curl", exitCode: 35, desktop: true, platform: "posix" },
+      { client: "curl", exitCode: 22, desktop: true, platform: "posix" },
     ])(
       "records bounded $client upload failure diagnostics without transfer details",
       async ({ client, exitCode, desktop, platform }) => {
@@ -5019,15 +5329,23 @@ describe("CentrifugoSandbox", () => {
             ? { stdout: "GNU Wget", stderr: "", exitCode: 0 }
             : {
                 stdout: `private stdout ${url}`,
-                stderr: `private stderr ${path} ${url}`,
+                stderr:
+                  exitCode === 22
+                    ? "curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:SignatureDoesNotMatch\n"
+                    : `private stderr ${path} ${url}`,
                 exitCode,
               },
         );
         (sandbox as any).commands.run = run;
         try {
-          await expect(
-            sandbox.files.uploadToUrl(path, url, "private/media-type"),
-          ).rejects.toThrow("Failed to upload file:");
+          const failure = await sandbox.files
+            .uploadToUrl(path, url, "private/media-type")
+            .catch((error: Error & { exitCode?: number }) => error);
+          expect(failure).toBeInstanceOf(Error);
+          expect(failure).toMatchObject({
+            message: expect.stringContaining("Failed to upload file:"),
+            exitCode: Number.isSafeInteger(exitCode) ? exitCode : undefined,
+          });
           expect(warn).toHaveBeenCalledTimes(1);
           expect(warn.mock.calls[0][0]).toBe("[centrifugo-http]");
           const serialized = warn.mock.calls[0][1] as string;
@@ -5037,9 +5355,20 @@ describe("CentrifugoSandbox", () => {
             sandbox_type: desktop ? "desktop" : "local",
             platform,
             http_client: client,
+            ...(client === "curl"
+              ? {
+                  upload_reported_http_status: exitCode === 22 ? 403 : null,
+                  upload_reported_storage_code:
+                    exitCode === 22 ? "SignatureDoesNotMatch" : null,
+                  upload_storage_diagnostic_present: exitCode === 22,
+                  upload_signature_age_ms: null,
+                  upload_signature_ttl_ms: null,
+                  upload_signature_remaining_ms: null,
+                }
+              : {}),
             exit_code: Number.isSafeInteger(exitCode) ? exitCode : null,
           });
-          expect(serialized.length).toBeLessThan(220);
+          expect(serialized.length).toBeLessThan(500);
           for (const sensitive of [
             path,
             url,
@@ -5053,6 +5382,140 @@ describe("CentrifugoSandbox", () => {
           expect(cleanup).toHaveBeenCalledTimes(
             client === "powershell" ? 1 : 0,
           );
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it.each([6, 28, 35, 124, -1])(
+      "measures connectivity once across concurrent failed uploads (exit %s)",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const probe = jest.fn(async () => ({
+          stdout:
+            "curl 8.17.0 Schannel PRIVATE\n__HACKERAI_UPLOAD_NET_V1__:virtual_hosted:000:0.01:0:0.1\n__HACKERAI_UPLOAD_NET_EXIT_V1__:virtual_hosted:35\n__HACKERAI_UPLOAD_NET_V1__:regional:403:0.01:0.02:0.03\n__HACKERAI_UPLOAD_NET_EXIT_V1__:regional:0\n",
+          stderr: "PRIVATE",
+          exitCode: 0,
+        }));
+        const run = jest.fn(async (command: string) =>
+          command.includes("--head")
+            ? probe()
+            : {
+                stdout: "",
+                stderr:
+                  exitCode === -1
+                    ? "Command timed out"
+                    : "original upload failure",
+                exitCode,
+              },
+        );
+        (sandbox as any).commands.run = run;
+        const url =
+          "https://qa-bucket.s3.us-east-1.amazonaws.com/PRIVATE?X-Amz-Signature=SECRET";
+        try {
+          const outcomes = await Promise.allSettled([
+            sandbox.files.uploadToUrl("C:/private/file.txt", url, "text/plain"),
+            sandbox.files.uploadToUrl("C:/private/file.txt", url, "text/plain"),
+          ]);
+          for (const outcome of outcomes) {
+            expect(outcome.status).toBe("rejected");
+            if (outcome.status === "rejected")
+              expect(outcome.reason).toMatchObject({
+                exitCode,
+                message: expect.stringContaining(
+                  exitCode === -1
+                    ? "Command timed out"
+                    : "original upload failure",
+                ),
+              });
+          }
+          expect(probe).toHaveBeenCalledTimes(1);
+          expect(run).toHaveBeenCalledWith(expect.stringContaining("--head"), {
+            timeoutMs: 10000,
+            displayName: "",
+          });
+          const diagnostics = warn.mock.calls
+            .map(([, value]) => JSON.parse(value as string))
+            .filter(
+              (value) =>
+                value.event === "sandbox_file_upload_network_diagnostic",
+            );
+          expect(diagnostics).toHaveLength(1);
+          expect(diagnostics[0]).toMatchObject({
+            upload_exit_code: exitCode,
+            probe_status: "complete",
+            tls_backend: "schannel",
+          });
+          expect(JSON.stringify(diagnostics)).not.toMatch(
+            /PRIVATE|SECRET|qa-bucket|private|Signature/,
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it("preserves the upload failure when its one-shot connectivity probe cannot run", async () => {
+      const { sandbox } = createWindowsBashSandbox();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const run = jest.fn(async (command: string) => {
+        if (command.includes("--head"))
+          throw new Error("PRIVATE probe failure");
+        return { stdout: "", stderr: "original TLS failure", exitCode: 35 };
+      });
+      (sandbox as any).commands.run = run;
+      try {
+        for (let i = 0; i < 2; i++)
+          await expect(
+            sandbox.files.uploadToUrl(
+              "C:/private/file.txt",
+              "https://qa-bucket.s3.us-east-1.amazonaws.com/PRIVATE",
+              "text/plain",
+            ),
+          ).rejects.toMatchObject({
+            exitCode: 35,
+            message: expect.stringContaining("original TLS failure"),
+          });
+        expect(
+          run.mock.calls.filter(([cmd]) => cmd.includes("--head")),
+        ).toHaveLength(1);
+        const diagnostics = warn.mock.calls
+          .map(([, value]) => JSON.parse(value as string))
+          .find(
+            (value) => value.event === "sandbox_file_upload_network_diagnostic",
+          );
+        expect(diagnostics).toMatchObject({
+          probe_status: "unavailable",
+          command_exit_code: null,
+          probes: [],
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it.each([0, 22, 26, 56, 60, 130])(
+      "does not add connectivity probes for upload exit %s",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const run = jest.fn(async () => ({
+          stdout: "",
+          stderr: "failure",
+          exitCode,
+        }));
+        (sandbox as any).commands.run = run;
+        try {
+          await sandbox.files
+            .uploadToUrl(
+              "C:/private/file.txt",
+              "https://qa-bucket.s3.us-east-1.amazonaws.com/key",
+              "text/plain",
+            )
+            .catch(() => {});
+          expect(run).toHaveBeenCalledTimes(1);
         } finally {
           warn.mockRestore();
         }
@@ -5274,7 +5737,7 @@ describe("CentrifugoSandbox", () => {
       expect(runs[0]).toContain("curl -fsSL --ssl-no-revoke -X PUT");
       expect(runs[0]).toContain("-H 'Content-Type: text/plain'");
       expect(runs[0]).toContain(
-        "--data-binary @'/c/temp/hackerai-upload/report.txt'",
+        "--data-binary @'C:/temp/hackerai-upload/report.txt'",
       );
       expect(runOptions[0]).toMatchObject({
         displayName: "Uploading: report.txt",
@@ -5368,7 +5831,7 @@ describe("CentrifugoSandbox", () => {
         const assertion = expect(
           sandbox.files.downloadFromUrl(
             "https://example.com/image.png",
-            "/tmp/hackerai-upload/image.png",
+            "C:/temp/hackerai-upload/image.png",
           ),
         ).rejects.toThrow("Failed to download file");
         await jest.advanceTimersByTimeAsync(5_000);
@@ -5438,7 +5901,7 @@ describe("CentrifugoSandbox", () => {
 
       const promise = sandbox.files.downloadFromUrl(
         "https://example.com/large.har",
-        "/tmp/hackerai-upload/large.har",
+        "C:/temp/hackerai-upload/large.har",
       );
 
       await jest.advanceTimersByTimeAsync(500);
@@ -5476,7 +5939,7 @@ describe("CentrifugoSandbox", () => {
       try {
         const promise = sandbox.files.downloadFromUrl(
           "https://example.com/large.har",
-          "/tmp/hackerai-upload/large.har",
+          "C:/temp/hackerai-upload/large.har",
         );
 
         await jest.advanceTimersByTimeAsync(500);
@@ -5611,7 +6074,7 @@ describe("CentrifugoSandbox", () => {
         await expect(
           sandbox.files.copyLocal(
             "C:\\Users\\alice\\private-report.pdf",
-            "/tmp/hackerai-upload/private-report.pdf",
+            "C:/temp/hackerai-upload/private-report.pdf",
           ),
         ).rejects.toMatchObject({
           message: `Failed to prepare local file: ${output.stderr || output.stdout || "exit status 1"}`,

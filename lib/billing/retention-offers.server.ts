@@ -1,8 +1,5 @@
 import {
-  DEFAULT_DOWNGRADE_REASON_POLICY,
-  DOWNGRADE_OFFER_FLAG_KEY,
   PAUSE_OFFER_FLAG_KEY,
-  parseDowngradeReasonPolicy,
   type DowngradeReasonPolicy,
 } from "@/lib/billing/retention-offers";
 import {
@@ -14,14 +11,14 @@ export type RetentionOfferFlagState = "enabled" | "disabled" | "unavailable";
 /** @deprecated Use RetentionOfferFlagState. */
 export type PauseOfferFlagState = RetentionOfferFlagState;
 
-export type DowngradeOfferFlag = {
+export type DowngradeOfferPolicy = {
   state: RetentionOfferFlagState;
-  /** Which cancellation reasons see the offer; the flag variant when enabled. */
+  /** Stable policy label retained in analytics after the rollout ends. */
   reasonPolicy: DowngradeReasonPolicy;
 };
 
 /**
- * Retention offers are staged through PostHog flags. The environment
+ * The pause offer is staged through a PostHog flag. The environment
  * overrides exist for local development and incident kill-switches; leave
  * them unset in production so PostHog stays the source of truth.
  *
@@ -78,51 +75,13 @@ export async function getPauseOfferFlagState(
   });
 }
 
-/**
- * The downgrade flag is multivariate: `price_reasons` (default mapping) or
- * `all_reasons` (the wider-audience test). A boolean `true` from an older flag
- * definition counts as the default policy. `DOWNGRADE_OFFER_ENABLED` accepts
- * `true`, `false`, or a policy name.
- */
-export async function getDowngradeOfferFlag(
-  userId: string,
-): Promise<DowngradeOfferFlag> {
+/** Standard offer policy; preserve explicit environment restrictions. */
+export function getDowngradeOfferPolicy(): DowngradeOfferPolicy {
   const override = process.env.DOWNGRADE_OFFER_ENABLED?.trim().toLowerCase();
-  const overridePolicy = parseDowngradeReasonPolicy(override);
-  if (override === "true" || overridePolicy) {
-    return {
-      state: "enabled",
-      reasonPolicy: overridePolicy ?? DEFAULT_DOWNGRADE_REASON_POLICY,
-    };
-  }
-  if (override === "false") {
-    return { state: "disabled", reasonPolicy: DEFAULT_DOWNGRADE_REASON_POLICY };
-  }
-
-  const value = await resolveRetentionOfferFlagValue({
-    flagKey: DOWNGRADE_OFFER_FLAG_KEY,
-    userId,
-  });
-  if (value === null) {
-    return {
-      state: "unavailable",
-      reasonPolicy: DEFAULT_DOWNGRADE_REASON_POLICY,
-    };
-  }
-  if (!value) {
-    return { state: "disabled", reasonPolicy: DEFAULT_DOWNGRADE_REASON_POLICY };
-  }
-  const policy = parseDowngradeReasonPolicy(value);
-  if (typeof value === "string" && !policy) {
-    phLogger.warn("retention_offer_flag_unknown_variant", {
-      userId,
-      flag_key: DOWNGRADE_OFFER_FLAG_KEY,
-      variant: value,
-    });
-  }
   return {
-    state: "enabled",
-    reasonPolicy: policy ?? DEFAULT_DOWNGRADE_REASON_POLICY,
+    state: override === "false" ? "disabled" : "enabled",
+    reasonPolicy:
+      override === "price_reasons" ? "price_reasons" : "all_reasons",
   };
 }
 

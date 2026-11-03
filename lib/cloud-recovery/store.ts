@@ -159,10 +159,17 @@ export async function decideConsent(
   return changed === 1;
 }
 
-export async function failConsent(userId: string, token: string) {
+export async function failConsent(
+  userId: string,
+  token: string,
+  unclaimedBefore?: number,
+) {
   await recoveryRedis().eval(
     `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end
      local current = cjson.decode(raw); if current.token ~= ARGV[1] or (current.status ~= 'confirmed' and current.status ~= 'executing') then return 0 end
+     -- Status reads may revoke an expired, unclaimed dispatch only. A worker
+     -- that already claimed wins this race and must retain its execution state.
+     if ARGV[2] and ARGV[2] ~= '' and (current.status ~= 'confirmed' or type(current.confirmedAt or current.issuedAt) ~= 'number' or (current.confirmedAt or current.issuedAt) >= tonumber(ARGV[2])) then return 0 end
      -- Claiming the durable fence atomically changes confirmed to executing.
      -- A delayed worker cannot claim this token after it has been failed.
      local safe = true
@@ -188,7 +195,7 @@ export async function failConsent(userId: string, token: string) {
       cloudWorkspaceStateKey(userId),
       recoveryResultKeyFor(userId),
     ],
-    [token],
+    [token, unclaimedBefore === undefined ? "" : String(unclaimedBefore)],
   );
 }
 

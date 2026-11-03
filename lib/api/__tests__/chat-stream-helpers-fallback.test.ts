@@ -161,7 +161,12 @@ describe("Abliteration reasoning by selected tier", () => {
               cacheSessionId: "private-session",
               ignoredProviderSlugs: ["together"],
             }),
-          ).toEqual({ abliteration: { reasoningEffort: effort } });
+          ).toEqual({
+            abliteration: {
+              reasoningEffort: effort,
+              prompt_cache_key: "private-session",
+            },
+          });
         }
       }
     },
@@ -691,7 +696,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
-  it("adds a sticky cache session only to DeepSeek requests", () => {
+  it("adds a sticky cache session to DeepSeek and other OpenRouter requests", () => {
     const deepSeek = buildProviderOptions(
       false,
       "user-1",
@@ -708,7 +713,7 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
       { cacheSessionId: "hackerai-cache-v1-test" },
     );
-    expect(grok.openrouter).not.toHaveProperty("session_id");
+    expect(grok.openrouter.session_id).toBe("hackerai-cache-v1-test");
   });
 
   it("can keep later PDF steps on the Cloudflare parser", () => {

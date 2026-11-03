@@ -10,10 +10,6 @@ import {
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
-  freeAgentBudgetProperties,
-  type FreeAgentBudgetAssignment,
-} from "@/lib/experiments/free-agent-budget";
-import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsPolicy,
 } from "@/lib/rate-limit/regional-free-limits";
@@ -63,7 +59,7 @@ import {
   ABLITERATED_PAID_THREE_STEPS_KEY,
   ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_PRO_THREE_STEPS_KEY,
-  ABLITERATED_FREE_THREE_STEPS_KEY,
+  isFreeThreeStepsPolicy,
 } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -1421,7 +1417,6 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
-  freeAgentBudget?: FreeAgentBudgetAssignment;
   upstreamProvider?: string;
   providerErrorProvider?: string;
   providerErrorCategory?: string;
@@ -1483,7 +1478,6 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
-  freeAgentBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1803,7 +1797,6 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }
@@ -1820,7 +1813,6 @@ export function captureAgentCompletionAnalytics(
         properties: {
           ...getExperimentAnalyticsProperties(args.experiment),
           ...args.usageMeasurement,
-          ...freeAgentBudgetProperties(args.freeAgentBudget),
           chat_id: args.chatId,
           message_id: args.responseMessageId ?? args.experiment.requestId,
           mode,
@@ -1903,7 +1895,7 @@ export function captureAgentCompletionAnalytics(
     args.experiment?.key ===
       ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ||
     args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY ||
-    args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY
+    isFreeThreeStepsPolicy(args.experiment?.key)
   ) {
     try {
       posthog?.capture({
@@ -1912,31 +1904,32 @@ export function captureAgentCompletionAnalytics(
         properties: {
           ...args.abliteratedProviderSummary,
           ...getExperimentAnalyticsProperties(args.experiment),
-          ...(args.experiment?.key === ABLITERATED_FREE_THREE_STEPS_KEY && {
-            ...args.usageMeasurement,
-            message_id: args.responseMessageId ?? args.experiment.requestId,
-            trigger_run_id: args.triggerRunId,
-            natural_completion:
-              outcome === "success" &&
-              args.hasResponseContent &&
-              !args.stepLimitTelemetry?.stepLimitReached &&
-              args.finishReason !== "length" &&
-              args.finishReason !== "error",
-            request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
-            active_model_stream_duration_ms: args.activeModelStreamDurationMs,
-            approval_wait_duration_ms: args.approvalWaitDurationMs,
-            handled_tool_failure_count: args.handledToolFailureCount,
-            attachment_count: args.attachmentCount,
-            image_attachment_count: args.imageAttachmentCount,
-            sandbox_type: sandboxInfo?.type,
-            sandbox_provider: sandboxInfo?.provider,
-            trigger_total_cost_usd: args.triggerTotalCostUsd,
-            provider_error_category: args.providerErrorCategory,
-            provider_error_status_code: args.providerErrorStatusCode,
-            ...(args.experiment.requestId && {
-              $insert_id: `${args.experiment.requestId}:free-three-step-outcome`,
+          ...(isFreeThreeStepsPolicy(args.experiment?.key) &&
+            args.experiment && {
+              ...args.usageMeasurement,
+              message_id: args.responseMessageId ?? args.experiment.requestId,
+              trigger_run_id: args.triggerRunId,
+              natural_completion:
+                outcome === "success" &&
+                args.hasResponseContent &&
+                !args.stepLimitTelemetry?.stepLimitReached &&
+                args.finishReason !== "length" &&
+                args.finishReason !== "error",
+              request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+              active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+              approval_wait_duration_ms: args.approvalWaitDurationMs,
+              handled_tool_failure_count: args.handledToolFailureCount,
+              attachment_count: args.attachmentCount,
+              image_attachment_count: args.imageAttachmentCount,
+              sandbox_type: sandboxInfo?.type,
+              sandbox_provider: sandboxInfo?.provider,
+              trigger_total_cost_usd: args.triggerTotalCostUsd,
+              provider_error_category: args.providerErrorCategory,
+              provider_error_status_code: args.providerErrorStatusCode,
+              ...(args.experiment.requestId && {
+                $insert_id: `${args.experiment.requestId}:free-three-step-outcome`,
+              }),
             }),
-          }),
           chat_id: args.chatId,
           mode,
           subscription_tier: subscription,
@@ -2020,7 +2013,6 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
-    freeAgentBudget: args.freeAgentBudget,
     upstreamProvider: args.upstreamProvider,
     providerErrorProvider: args.providerErrorProvider,
     providerErrorCategory: args.providerErrorCategory,
@@ -2059,7 +2051,6 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
-  freeAgentBudget,
   regionalFreeLimits,
   triggerRunId,
 }: {
@@ -2093,7 +2084,6 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
-  freeAgentBudget?: FreeAgentBudgetAssignment;
   regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
 }) {
@@ -2207,7 +2197,6 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...freeAgentBudgetProperties(freeAgentBudget),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
@@ -2237,7 +2226,6 @@ export function captureUsageSettlement({
   deduction,
   forced,
   experiment,
-  freeAgentBudget,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -2257,7 +2245,6 @@ export function captureUsageSettlement({
   deduction: UsageDeductionResult;
   forced: boolean;
   experiment?: ExperimentAnalyticsContext;
-  freeAgentBudget?: FreeAgentBudgetAssignment;
 }) {
   if (!posthog) return;
   const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
@@ -2310,7 +2297,6 @@ export function captureUsageSettlement({
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
       settlement_event_version: 2,
       ...getExperimentAnalyticsProperties(experiment),
-      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }

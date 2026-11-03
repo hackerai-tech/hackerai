@@ -39,6 +39,9 @@ jobs:
       - name: Test pip bootstrap integrity
         run: python3 -B -m unittest discover -s docker -p 'test_pip_bootstrap.py' -v
 
+      - name: Test sandbox decoder package integrity
+        run: python3 -B -m unittest discover -s docker -p 'test_brotli.py' -v
+
       - name: Type check
         run: pnpm typecheck
 
@@ -52,7 +55,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y redis-server
           node scripts/verify-paid-usage-ledger.mjs
-          node scripts/verify-free-agent-daily-budget.mjs
           node scripts/verify-cloud-recovery-admission.mjs
           pnpm exec jest --runInBand --testMatch "**/cloud-workspace-identity.integration.ts"
 

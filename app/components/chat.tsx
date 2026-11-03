@@ -572,8 +572,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
-    surveyActivation,
-    setSurveyActivation,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
@@ -2633,36 +2631,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-  useEffect(() => {
-    // Only a new submission arms the survey. Mounting/reconnecting an old
-    // streaming response must not be treated as a fresh activation.
-    const submittedMessage = messages.at(-1);
-    if (
-      status !== "submitted" ||
-      submittedMessage?.role !== "user" ||
-      submittedMessage.metadata?.isAutoContinue
-    )
-      return;
-    setSurveyActivation({
-      chatId,
-      userMessageId: submittedMessage.id,
-      mode: chatMode === "agent" ? "agent" : "ask",
-    });
-  }, [chatId, chatMode, messages, status, setSurveyActivation]);
-  const lastMessage = messages.at(-1);
-  const acquisitionSurveyEligible =
-    surveyActivation?.chatId === chatId &&
-    status === "ready" &&
-    !hasManuallyStoppedRef.current &&
-    !error &&
-    !chatDataForCurrentChat?.active_stream_id &&
-    !chatDataForCurrentChat?.active_trigger_run_id &&
-    chatDataForCurrentChat?.finish_reason === "stop" &&
-    lastMessage?.role === "assistant" &&
-    lastMessage.parts.some(
-      (part) => part.type === "text" && part.text.trim().length > 0,
-    ) &&
-    messages.some((message) => message.id === surveyActivation.userMessageId);
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
@@ -2851,14 +2819,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}
-                      acquisitionSurvey={
-                        acquisitionSurveyEligible && lastMessage
-                          ? {
-                              messageId: lastMessage.id,
-                              mode: surveyActivation!.mode,
-                            }
-                          : undefined
-                      }
                       setMessages={setMessages}
                       onRegenerate={handleRegenerate}
                       onRetry={handleRetry}

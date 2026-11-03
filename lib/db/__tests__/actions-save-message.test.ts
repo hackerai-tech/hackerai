@@ -54,6 +54,7 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
+    getProjectById,
     getMessagesByChatId,
     getNotes,
     handleInitialChatAndUserMessage,
@@ -68,6 +69,7 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
+    getProjectById,
     getMessagesByChatId,
     getNotes,
     handleInitialChatAndUserMessage,
@@ -83,6 +85,315 @@ const loadSaveMessageWithMocks = async () => {
     updateChatTitle,
   };
 };
+
+describe("getChatById retry result diagnostics", () => {
+  it.each([
+    ["00000000-0000-4000-8000-000000000001", { privateResult: "do not log" }],
+    ["private request value", null],
+  ])(
+    "reports a returned read after an existing retry: %s",
+    async (id, result) => {
+      const { getChatById, mockQuery, mockMutation } =
+        await loadSaveMessageWithMocks();
+      mockQuery
+        .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+        .mockResolvedValueOnce(result as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await expect(getChatById({ id })).resolves.toBe(result);
+        expect(mockQuery).toHaveBeenCalledTimes(2);
+        expect(mockQuery.mock.calls[0][1]).toBe(mockQuery.mock.calls[1][1]);
+        expect(mockMutation).not.toHaveBeenCalled();
+        expect(info).toHaveBeenCalledTimes(1);
+        const event = JSON.parse(String(info.mock.calls[0][0]));
+        expect(event).toMatchObject({
+          event: "chat_fetch_retry_result",
+          db_operation: "chats.getChatById",
+          outcome: "read_succeeded",
+          attempts: 2,
+          retry_reason: "network_fetch_failed",
+        });
+        expect(event.chat_id).toBe(id.startsWith("00000000") ? id : undefined);
+        expect(Object.keys(event).sort()).toEqual(
+          [
+            "level",
+            "event",
+            "service",
+            "timestamp",
+            "db_operation",
+            "outcome",
+            "attempts",
+            "retry_reason",
+            ...(result === null ? [] : ["chat_id"]),
+          ].sort(),
+        );
+        expect(JSON.stringify(event)).not.toMatch(
+          /private request value|privateResult|do not log|serviceKey|fetch failed/,
+        );
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("never serializes an object that coerces to an identifier", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    const id = {
+      toString: () => "00000000-0000-4000-8000-000000000001",
+      privateContent: "do not log",
+    };
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        getChatById({ id: id as unknown as string }),
+      ).resolves.toBeNull();
+      expect(info).toHaveBeenCalledTimes(1);
+      const event = JSON.parse(String(info.mock.calls[0][0]));
+      expect(event).not.toHaveProperty("chat_id");
+      expect(JSON.stringify(event)).not.toMatch(/privateContent|do not log/);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("reports exhaustion once without adding attempts or replacing the database error", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(new TypeError("fetch failed") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: {
+          db_operation: "chats.getChatById",
+          db_retry_reason: "network_fetch_failed",
+        },
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(info.mock.calls[0][0]))).toMatchObject({
+        event: "chat_fetch_retry_result",
+        outcome: "retry_exhausted",
+        attempts: 3,
+      });
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("distinguishes a later authorization rejection without retrying it", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("private guard"), {
+          data: { code: "CHAT_UNAUTHORIZED" },
+        }) as never,
+      );
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).rejects.toMatchObject({
+        type: "forbidden",
+        surface: "chat",
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(info.mock.calls[0][0]))).toMatchObject({
+        outcome: "non_retryable_error",
+        attempts: 2,
+      });
+      expect(String(info.mock.calls[0][0])).not.toContain("private guard");
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("keeps first-attempt reads quiet", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValueOnce(null as never);
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).resolves.toBeNull();
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it.each([true, false])(
+    "preserves the read outcome when diagnostic logging throws: recovered=%s",
+    async (recovered) => {
+      const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+      mockQuery.mockRejectedValue(new TypeError("fetch failed") as never);
+      if (recovered)
+        mockQuery
+          .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+          .mockResolvedValueOnce(null as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {
+        throw new Error("diagnostic unavailable");
+      });
+      try {
+        const read = getChatById({ id: "chat-1" });
+        if (recovered) await expect(read).resolves.toBeNull();
+        else
+          await expect(read).rejects.toMatchObject({
+            type: "offline",
+            surface: "database",
+          });
+        expect(mockQuery).toHaveBeenCalledTimes(recovered ? 2 : 3);
+        expect(info).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
+});
+
+describe("saveMessage retry acknowledgement diagnostics", () => {
+  it.each([
+    [null, "acknowledged"],
+    ["stale_run", "stale_run"],
+    [{ privateResult: "do not log" }, "unrecognized_ack"],
+  ])(
+    "reports one bounded acknowledgement after retries: %s",
+    async (result, acknowledgement) => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation
+        .mockRejectedValueOnce(
+          new Error("[Request ID: abc] Server Error") as never,
+        )
+        .mockRejectedValueOnce(
+          new Error("[Request ID: def] Server Error") as never,
+        )
+        .mockResolvedValueOnce(result as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await expect(
+          saveMessage({
+            chatId: "chat-1",
+            userId: "user-1",
+            message: {
+              id: "message-1",
+              role: "user",
+              parts: [{ type: "text", text: "private message" }],
+            },
+            usage: { privateUsage: "do not log" },
+          }),
+        ).resolves.toBe(result);
+        expect(mockMutation).toHaveBeenCalledTimes(3);
+        expect(info).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(info.mock.calls[0][0]))).toEqual({
+          level: "info",
+          event: "message_save_retry_acknowledged",
+          service: "chat-handler",
+          timestamp: expect.any(String),
+          db_operation: "messages.saveMessage",
+          attempts: 3,
+          acknowledgement,
+          chat_id: "chat-1",
+          user_id: "user-1",
+          message_id: "message-1",
+        });
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("keeps an acknowledged mutation successful when diagnostic logging throws", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation
+      .mockRejectedValueOnce(
+        new Error("[Request ID: abc] Server Error") as never,
+      )
+      .mockResolvedValueOnce(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {
+      throw new Error("logger offline");
+    });
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).resolves.toBeNull();
+      expect(mockMutation).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("keeps first-attempt acknowledgements quiet", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockResolvedValueOnce(null as never);
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).resolves.toBeNull();
+      expect(info).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("does not report acknowledgement when retries are exhausted", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(
+      new Error("[Request ID: abc] Server Error") as never,
+    );
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: { id: "message-1", role: "user", parts: [] },
+        }),
+      ).rejects.toMatchObject({ surface: "database" });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+});
 
 describe("fenceAndGetActiveAgentResourcesForUser", () => {
   it("distinguishes unavailable notes from a successful empty snapshot for strict callers", async () => {
@@ -309,6 +620,146 @@ describe("saveChat", () => {
     } finally {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("getProjectById", () => {
+  it("recovers a project lookup after one transient network failure with unchanged arguments", async () => {
+    const { getProjectById, mockQuery, mockMutation } =
+      await loadSaveMessageWithMocks();
+    const project = {
+      id: "project-1",
+      user_id: "user-1",
+      folder_path: "/private-fixture",
+    };
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(project as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        getProjectById({ id: "project-1", userId: "user-1" }),
+      ).resolves.toBe(project);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(mockQuery.mock.calls[0][1] === mockQuery.mock.calls[1][1]).toBe(
+        true,
+      );
+      expect(mockMutation).not.toHaveBeenCalled();
+      const event = JSON.parse(String(warn.mock.calls[0][0]));
+      expect(event).toMatchObject({
+        event: "project_fetch_retry_scheduled",
+        project_id: "project-1",
+        user_id: "user-1",
+        retry_reason: "network_fetch_failed",
+        attempt: 1,
+        next_attempt: 2,
+      });
+      expect(JSON.stringify(event)).not.toContain("/private-fixture");
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("does not retry a structured project guard even when its message mentions fetch failure", async () => {
+    const { getProjectById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(
+      Object.assign(new TypeError("fetch failed"), {
+        data: { code: "PROJECT_ACCESS_DENIED", message: "fetch failed" },
+      }) as never,
+    );
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        getProjectById({ id: "project-1", userId: "user-1" }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it.each([new Error("fetch failed"), new TypeError("invalid query argument")])(
+    "does not retry a non-transport error: %p",
+    async (failure) => {
+      const { getProjectById, mockQuery } = await loadSaveMessageWithMocks();
+      mockQuery.mockRejectedValue(failure as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(
+          getProjectById({ id: "project-1", userId: "user-1" }),
+        ).rejects.toBeInstanceOf(Error);
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("keeps a missing project authoritative without retrying", async () => {
+    const { getProjectById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValue(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        getProjectById({ id: "project-1", userId: "user-1" }),
+      ).resolves.toBeNull();
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("exhausts exactly one retry before preserving the database failure contract", async () => {
+    const { getProjectById, mockQuery, mockMutation } =
+      await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(new TypeError("fetch failed") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        getProjectById({ id: "project-1", userId: "user-1" }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        metadata: { db_operation: "projects.getProjectForBackend" },
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("does not let retry diagnostics prevent a successful project read", async () => {
+    const { getProjectById, mockQuery } = await loadSaveMessageWithMocks();
+    const project = { id: "project-1", user_id: "user-1" };
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(project as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("diagnostic sink unavailable");
+    });
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        getProjectById({ id: "project-1", userId: "user-1" }),
+      ).resolves.toBe(project);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
     }
   });
 });

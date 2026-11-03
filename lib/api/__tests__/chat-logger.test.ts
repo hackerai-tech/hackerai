@@ -1084,9 +1084,14 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
-  it.each(["ask", "agent"] as const)(
-    "retains Free %s comparison and cost coverage after an aborted fallback",
-    (mode) => {
+  it.each([
+    ["ask", "abliterated_free_three_steps_v1"],
+    ["agent", "abliterated_free_three_steps_v1"],
+    ["ask", "abliterated_free_three_steps_default_v1"],
+    ["agent", "abliterated_free_three_steps_default_v1"],
+  ] as const)(
+    "retains Free %s %s cost coverage after an aborted fallback",
+    (mode, key) => {
       const capture = jest.fn();
       captureAgentCompletionAnalytics({
         hasResponseContent: false,
@@ -1120,7 +1125,7 @@ describe("captureAgentCompletionAnalytics", () => {
         sandboxInfo: null,
         chatLogger: undefined,
         experiment: {
-          key: "abliterated_free_three_steps_v1",
+          key,
           variant: "test",
           requestId: "original",
         },

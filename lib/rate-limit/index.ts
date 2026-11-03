@@ -110,9 +110,6 @@ export {
   type PaidDailyFreeAllowanceCostRecordResult,
 } from "./paid-daily-free-allowance";
 
-export { checkFreeCostBudget } from "./free-cost-budget";
-import { checkFreeCostBudget } from "./free-cost-budget";
-
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";
 import {
@@ -151,16 +148,6 @@ export const checkRateLimit = async (
   // Free users: fixed daily window
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
-    if (isAgentMode(mode) && freeLimits?.agentDailyBudget) {
-      const snapshot = await checkFreeCostBudget(quotaSubject, freeLimits);
-      return {
-        freeDailyCost: true,
-        limit: snapshot.monthlyLimitPoints,
-        remaining: snapshot.monthlyRemainingAtStart,
-        resetTime: snapshot.monthlyResetTime,
-        rateLimitSkipped: snapshot.rateLimitSkipped,
-      };
-    }
     if (isAgentMode(mode)) {
       // Free agent mode shares the daily free budget and consumes 1 unit.
       return checkFreeAgentRateLimit(quotaSubject, freeLimits);
@@ -195,16 +182,6 @@ export const checkRateLimitCapacity = async (
 ): Promise<RateLimitInfo> => {
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
-    if (isAgentMode(mode) && freeLimits?.agentDailyBudget) {
-      const snapshot = await checkFreeCostBudget(quotaSubject, freeLimits);
-      return {
-        freeDailyCost: true,
-        limit: snapshot.monthlyLimitPoints,
-        remaining: snapshot.monthlyRemainingAtStart,
-        resetTime: snapshot.monthlyResetTime,
-        rateLimitSkipped: snapshot.rateLimitSkipped,
-      };
-    }
     return isAgentMode(mode)
       ? checkFreeAgentRateLimitCapacity(quotaSubject, freeLimits)
       : checkFreeUserRateLimitCapacity(quotaSubject, undefined, freeLimits);

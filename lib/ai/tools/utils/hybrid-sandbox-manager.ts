@@ -36,7 +36,10 @@ import {
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { getPlatformDisplayName } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  normalizeSandboxPlatform,
+} from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import {
@@ -120,7 +123,8 @@ export function isSameLocalMachine(
   return (
     current.name === candidate.name &&
     current.isDesktop === candidate.isDesktop &&
-    current.osInfo.platform === candidate.osInfo.platform &&
+    normalizeSandboxPlatform(current.osInfo.platform) ===
+      normalizeSandboxPlatform(candidate.osInfo.platform) &&
     current.osInfo.arch === candidate.osInfo.arch &&
     current.osInfo.release === candidate.osInfo.release &&
     current.osInfo.hostname === candidate.osInfo.hostname
@@ -1089,7 +1093,8 @@ export class HybridSandboxManager implements SandboxManager {
     const { osInfo } = connection;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const uploadPath =

@@ -204,8 +204,9 @@ The customer path is deliberately narrower than the operator CLI. It requires:
 
 - A current cloud-enabled subscription, access gates, explicit PostHog assignment,
   and a server-owned target manifest matching the web and worker environments.
-- Exact user, sandbox, cluster, template and supported version identity; one
-  workspace in that regional inventory; only recognized metadata (extra metadata
+- Exact user, sandbox, cluster, template and supported version identity; a complete regional
+  inventory containing that exact workspace (legacy unpinned incidents still
+  require a single workspace); only recognized metadata (extra metadata
   may represent a preservation hold).
 - No active parent/child Agent resources, recent workspace activity, migration,
   cleanup, unresolved recovery or uncertain provider action. Cloud Agent admission,
@@ -242,9 +243,17 @@ Unconsumed offers expire for confirmation after ten minutes and can be refreshed
 an atomic compare-and-set and never resets confirmed, executing or failed
 receipts. Only the winner of atomic confirmation dispatches a task; the atomic
 workspace claim consumes confirmed consent before any provider mutation.
-Execution must begin within ten minutes of confirmation. A newer failure after
-successful recovery routes to support without authorizing another reboot. Task
-retries are disabled. Lost dispatch, interruption or uncertain provider mutation
+Execution must begin within ten minutes of confirmation. A newer failure after successful recovery can receive a fresh warning only after
+atomic reconciliation archives the verified success, preserves newer failure
+evidence, and fresh eligibility checks pass. The archived token can never claim
+another reboot. Reconciliation requires the exact matching binding and result,
+no preservation fields, no recent activity and no active parent or child tasks;
+concurrent changes abort it. It never changes the pinned workspace or contacts
+the provider. Workspace management also performs this reconciliation so a
+completed recovery does not permanently block the chooser. Task
+retries are disabled. An expired confirmation that was never claimed can be
+atomically revoked by a status check. A concurrent executing worker wins and
+remains untouched. Only proven pre-reboot failure can offer fresh confirmation. Lost dispatch, interruption or uncertain provider mutation
 requires reconciliation, never a customer reset or automatic retry.
 
 The worker rechecks environment/region, assignment, eligibility, billing-backed
@@ -332,3 +341,13 @@ recent lease, concurrent recovery, backup/readback failure, probe mismatch and w
 interruption. These must refuse recovery or retain the exact fence and require
 support. Unit tests and a synthetic browser component harness do not establish
 provider or authenticated Preview acceptance. Do not test customer sandboxes.
+
+### Self-service management and automatic checks
+
+Cloud management shows the same recovery controls directly. Status reads are
+bounded and pause in hidden tabs; customers can restart checks manually. They
+never confirm, reboot or replay a task automatically. A busy provider is not
+presented as proof that a customer task is still running. Retained paused copies
+do not disqualify an exactly pinned recovery target; they remain untouched.
+Unknown provider outcomes, missing backups, identity conflicts and preservation
+holds continue to require reconciliation before any additional provider work.

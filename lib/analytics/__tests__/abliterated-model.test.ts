@@ -5,6 +5,7 @@ import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authoriza
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
   ABLITERATED_FREE_THREE_STEPS_KEY,
+  ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
@@ -90,13 +91,17 @@ describe("Abliteration stream telemetry", () => {
       mode: "ask",
       subscription: "pro",
     });
-  it.each(["control", "test"] as const)(
-    "measures Free %s exposure, retries and tools without exporting content",
-    async (variant) => {
+  it.each([
+    [ABLITERATED_FREE_THREE_STEPS_KEY, "control"],
+    [ABLITERATED_FREE_THREE_STEPS_KEY, "test"],
+    [ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY, "test"],
+  ] as const)(
+    "measures Free %s %s routing, retries and tools without exporting content",
+    async (key, variant) => {
       capture.mockClear();
       const telemetry = new AbliteratedModelTelemetry({ capture }, "free", {
         assignment: {
-          key: ABLITERATED_FREE_THREE_STEPS_KEY,
+          key,
           variant,
           modelKey:
             variant === "test" ? "model-abliterated" : "ask-model-free-glm",
@@ -110,6 +115,15 @@ describe("Abliteration stream telemetry", () => {
         release: "qa-commit",
       });
       expect(events("abliterated_model_eligible")).toHaveLength(1);
+      const eligible = events("abliterated_model_eligible")[0].properties;
+      expect(eligible.experiment_key).toBe(key);
+      if (key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY) {
+        expect(eligible.routing_policy).toBe(key);
+        expect(eligible).not.toHaveProperty(`$feature/${key}`);
+        expect(eligible).not.toHaveProperty(
+          `$feature/${ABLITERATED_FREE_THREE_STEPS_KEY}`,
+        );
+      }
       expect(events("abliterated_model_exposed")).toHaveLength(0);
       await expect(consume(telemetry, model([], true), 0)).rejects.toThrow();
       await consume(
