@@ -56,7 +56,6 @@ import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
@@ -347,7 +346,6 @@ const ChatInputContent = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
-  const hasCoarsePointer = useMediaQuery("(pointer: coarse)");
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
@@ -855,7 +853,6 @@ const ChatInputContent = ({
       getDraftAttachmentsById(draftId).length > 0,
     blocked:
       isMobile !== false ||
-      hasCoarsePointer ||
       isOffline ||
       !!effectiveSendDisabledReason ||
       isResolvingInitialState ||

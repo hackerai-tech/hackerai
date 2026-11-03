@@ -201,7 +201,7 @@ test("an aborted accepted follow-up cannot be credited to a later regenerate", a
 });
 
 test.each(["pending", "visible"])(
-  "losing desktop eligibility revokes a %s suggestion without reviving it",
+  "losing large-screen eligibility revokes a %s suggestion without reviving it",
   async (phase) => {
     let resolve!: (value: ReturnType<typeof response>) => void;
     jest.mocked(fetch).mockReturnValue(
