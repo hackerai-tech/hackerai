@@ -108,6 +108,17 @@ function renderNotice(
 }
 
 describe("FinishReasonNotice", () => {
+  it("explains a repetition halt without offering to repeat the same work", () => {
+    const onContinue = jest.fn();
+    renderNotice({ finishReason: "doom-loop", mode: "agent", onContinue });
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /repeating work without progress.*new instruction.*change the approach/i,
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
   it("shows automatic continuation status without a manual Continue button", () => {
     const onContinue = jest.fn();
     renderNotice(
