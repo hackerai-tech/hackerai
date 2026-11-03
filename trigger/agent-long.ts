@@ -2797,7 +2797,14 @@ export const agentLongTask = task({
                           : undefined,
                       pauseActiveTime: runtimeBudget.pause,
                       resumeActiveTime: runtimeBudget.resume,
-                      revalidateAfterSuspend: revalidateAfterUserWait,
+                      revalidateAfterSuspend: async (toolCallId) => {
+                        try {
+                          await revalidateAfterUserWait(toolCallId);
+                        } catch (error) {
+                          userStopSignal.abort();
+                          throw error;
+                        }
+                      },
                     }),
                   }),
                   ...(subagentsEnabled
