@@ -39,7 +39,7 @@ type ListedWorkspace = Awaited<
   ReturnType<ReturnType<typeof Sandbox.list>["nextItems"]>
 >[number];
 
-export function isOwnedWorkspace(
+export function hasWorkspaceOwnerAndLocation(
   item: ListedWorkspace,
   cluster: E2BClusterConfig,
   userId: string,
@@ -48,13 +48,23 @@ export function isOwnedWorkspace(
     !!item.sandboxId &&
     ["running", "paused"].includes(item.state) &&
     item.metadata?.userID === userId &&
-    item.metadata?.template === cluster.template &&
     (item.metadata?.e2bCluster === cluster.cluster ||
       (cluster.cluster === "us" && item.metadata?.e2bCluster === undefined))
   );
 }
 
-/** Complete discovery is required before adoption or first creation. Never wake files. */
+export function isOwnedWorkspace(
+  item: ListedWorkspace,
+  cluster: E2BClusterConfig,
+  userId: string,
+) {
+  return (
+    hasWorkspaceOwnerAndLocation(item, cluster, userId) &&
+    item.metadata?.template === cluster.template
+  );
+}
+
+/** Include incompatible owned workspaces: their existence must still prevent creation. */
 export async function listWorkspaceInventory(
   userId: string,
   signal?: AbortSignal,
@@ -77,7 +87,11 @@ export async function listWorkspaceInventory(
           if (++pages > 100) throw new CloudWorkspaceUnavailableError();
           items.push(...(await pager.nextItems({ signal })));
         } while (pager.hasNext);
-        if (items.some((item) => !isOwnedWorkspace(item, cluster, userId)))
+        if (
+          items.some(
+            (item) => !hasWorkspaceOwnerAndLocation(item, cluster, userId),
+          )
+        )
           throw new CloudWorkspaceUnavailableError();
         return items.map((item) => ({ item, cluster }));
       }),

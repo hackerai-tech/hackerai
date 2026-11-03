@@ -291,7 +291,7 @@ describe("direct vision and summary recovery contracts", () => {
       );
       expect(
         source.match(
-          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+          /omitImageViewToolResultsForProviderRetry\(\s*(?:loopRecoveryMessages \?\? )?state\.finalMessages,?\s*\)\.messages/g,
         ),
       ).toHaveLength(2);
       expect(source).toMatch(
@@ -1797,7 +1797,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
     );
     expect(chatHandlerSrc).toMatch(
-      /if \(\s*!uncertainToolOutcome &&\s*\(shouldRecoverAbliterationStreamError/,
+      /if \(\s*!uncertainToolOutcome &&\s*\(!loopTriggeredRetry \|\| loopContinuation !== undefined\) &&\s*\(shouldRecoverAbliterationStreamError/,
     );
   });
 
@@ -2304,17 +2304,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
           expect(afterSurvey).toMatch(
             /if \(\s*shouldAttemptProviderRetry &&\s*!visionSummaryRecoveryFailure &&\s*!userStopSignal\.signal\.aborted\s*\) \{/,
           );
-          if (source === taskSrc) {
-            // Trigger also persists completed work inside the recovery block.
-            expect(afterSurvey).toMatch(
-              /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
-            );
-          } else {
-            // No later async work may open a cancellation race after this guard.
-            expect(afterSurvey.slice(afterSurvey.indexOf(") {"))).not.toMatch(
-              /\bawait\b/,
-            );
-          }
+          // Both callers can persist completed work inside the recovery block.
+          expect(afterSurvey).toMatch(
+            /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
+          );
         }
       }
     }

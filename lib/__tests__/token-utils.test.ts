@@ -68,10 +68,39 @@ describe("empty whole-message projection diagnostics", () => {
 });
 
 describe("getMaxTokensForSubscription", () => {
-  it("uses the 128k cap for free users", () => {
-    expect(MAX_TOKENS_FREE).toBe(128000);
-    expect(getMaxTokensForSubscription("free")).toBe(128000);
-  });
+  it.each(["ask", "agent"] as const)(
+    "uses the 276k budget for 256k before compaction for free %s",
+    (mode) => {
+      expect(MAX_TOKENS_FREE).toBe(276_000);
+      expect(getMaxTokensForSubscription("free", { mode })).toBe(276_000);
+    },
+  );
+
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "retains 240k tokens of %s history that exceeded the previous cap",
+    (subscription) => {
+      const messages = ["older", "newer"].map((id) => ({
+        id,
+        role: "user",
+        parts: [{ type: "file", fileId: id }],
+      })) as unknown as UIMessage[];
+      const fileTokens = { older: 120_000, newer: 120_000 } as Record<
+        Id<"files">,
+        number
+      >;
+
+      expect(
+        truncateMessagesToTokenLimit(
+          messages,
+          fileTokens,
+          getMaxTokensForSubscription(subscription),
+        ),
+      ).toEqual(messages);
+      expect(
+        truncateMessagesToTokenLimit(messages, fileTokens, 200_000),
+      ).toEqual([messages[1]]);
+    },
+  );
 
   it("uses the paid cap for paid users and unknown subscriptions", () => {
     expect(getMaxTokensForSubscription("pro")).toBe(MAX_TOKENS_PAID);

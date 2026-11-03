@@ -29,6 +29,25 @@ beforeEach(() => {
   global.fetch = fetchMock;
 });
 
+it("explains retained unavailable workspaces without selecting or starting anything", async () => {
+  fetchMock.mockResolvedValue(response({ ...options, unavailableCount: 2 }));
+  const retry = jest.fn();
+  render(<CloudWorkspaceRegionChoice onRetry={retry} />);
+  expect(
+    await screen.findByText(/Some saved workspaces cannot be selected here/),
+  ).toHaveTextContent(/files will be kept unchanged/);
+  expect(
+    screen
+      .getAllByRole("radio")
+      .every((radio) => !(radio as HTMLInputElement).checked),
+  ).toBe(true);
+  expect(
+    screen.getByRole("button", { name: "Use this workspace" }),
+  ).toBeDisabled();
+  expect(fetchMock.mock.calls.every(([, init]) => !init.method)).toBe(true);
+  expect(retry).not.toHaveBeenCalled();
+});
+
 it("resumes a due status check after returning to a hidden tab without replaying work", async () => {
   jest.useFakeTimers();
   const visibility = jest

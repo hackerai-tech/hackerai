@@ -289,6 +289,8 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   AGENT_FINISH_CONTINUATION_PROMPT,
+  AGENT_LOOP_CONTINUATION_PROMPT,
+  prepareAgentLoopContinuation,
   appendAgentFinishContinuationLimit,
   appendProviderEmptyResponseFailure,
   classifyAgentRetryFinalization,
@@ -308,6 +310,7 @@ import {
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
+import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import {
   ProviderTerminalError,
   getProviderDisconnectIgnoredSlugs,
@@ -4509,21 +4512,54 @@ export const agentLongTask = task({
                         hasUncertainProviderToolOutcome(
                           lastAssistantMessageParts,
                         );
+                      const normalizedFinishedMessages = finishedMessages
+                        .map((message) =>
+                          message.role === "assistant"
+                            ? stripAgentLongHeartbeatParts(message)
+                            : message,
+                        )
+                        .filter(
+                          (message) =>
+                            message.role !== "assistant" ||
+                            (message.parts?.length ?? 0) > 0,
+                        );
+                      const loopTriggeredRetry =
+                        stoppedDueToAssistantContentLoop ||
+                        state.stoppedDueToDoomLoop;
+                      const loopContinuation = loopTriggeredRetry
+                        ? prepareAgentLoopContinuation(
+                            normalizedFinishedMessages,
+                          )
+                        : undefined;
+                      const loopRecoveryMessages = loopContinuation
+                        ? [...state.finalMessages, ...loopContinuation.messages]
+                        : undefined;
+                      const loopRecoverySourceMessageId =
+                        loopContinuation?.messages.findLast(
+                          (message) => message.role === "assistant",
+                        )?.id;
                       const imageRecovery =
                         state.providerRejectedMultimodalToolResults
                           ? omitImageViewToolResultsForProviderRetry(
-                              finishedMessages,
+                              loopRecoveryMessages ?? finishedMessages,
                             )
-                          : { messages: finishedMessages, omittedCount: 0 };
+                          : {
+                              messages:
+                                loopRecoveryMessages ?? finishedMessages,
+                              omittedCount: 0,
+                            };
                       const shouldRetryWithoutImageToolResults =
                         imageRecovery.omittedCount > 0 &&
                         !isAborted &&
                         !shouldRecoverAbliterationStreamError;
                       const hasImageAttachmentForRecovery =
-                        countFileAttachments(state.finalMessages).imageCount >
-                        0;
+                        countFileAttachments(
+                          loopRecoveryMessages ?? state.finalMessages,
+                        ).imageCount > 0;
                       const hasImageToolResultForRecovery =
-                        uiMessagesContainImageViewResult(state.finalMessages);
+                        uiMessagesContainImageViewResult(
+                          loopRecoveryMessages ?? state.finalMessages,
+                        );
                       const shouldRetryWithVisionSummary =
                         directGlmVisionEnabled &&
                         !shouldRecoverAbliterationStreamError &&
@@ -4538,17 +4574,6 @@ export const agentLongTask = task({
                         streamError ??
                         state.providerError ??
                         new Error("Direct vision route failed");
-                      const normalizedFinishedMessages = finishedMessages
-                        .map((message) =>
-                          message.role === "assistant"
-                            ? stripAgentLongHeartbeatParts(message)
-                            : message,
-                        )
-                        .filter(
-                          (message) =>
-                            message.role !== "assistant" ||
-                            (message.parts?.length ?? 0) > 0,
-                        );
                       const finishContinuation =
                         mode === "agent" &&
                         !isAborted &&
@@ -4608,6 +4633,8 @@ export const agentLongTask = task({
                         hasCandidate:
                           !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
+                          (!loopTriggeredRetry ||
+                            loopContinuation !== undefined) &&
                           (shouldRecoverAbliterationStreamError ||
                             shouldRetryWithFallback ||
                             shouldRetryWithoutImageToolResults ||
@@ -4647,7 +4674,7 @@ export const agentLongTask = task({
                             await describeImageAttachmentsWithAuxiliaryVision({
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
-                                  state.finalMessages,
+                                  loopRecoveryMessages ?? state.finalMessages,
                                 ).messages,
                               requestId: ctx.run.id,
                               userId,
@@ -4746,9 +4773,6 @@ export const agentLongTask = task({
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
                       ) {
-                        const loopTriggeredRetry =
-                          stoppedDueToAssistantContentLoop ||
-                          state.stoppedDueToDoomLoop;
                         const retryReason = finishContinuation
                           ? `agent_finish_${finishContinuation.reason}`
                           : terminalEmptyResponse &&
@@ -4881,6 +4905,28 @@ export const agentLongTask = task({
                               ],
                             },
                           ];
+                        } else if (loopContinuation) {
+                          state.finalMessages = [
+                            ...(shouldRetryWithVisionSummary
+                              ? recoveredVisionMessages!
+                              : imageRecovery.omittedCount > 0
+                                ? imageRecovery.messages
+                                : loopRecoveryMessages!),
+                            {
+                              id: generateId(),
+                              role: "user",
+                              metadata: { isAutoContinue: true },
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_LOOP_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: true,
+                          });
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
                           usageTracker.prepareModelRetry({
@@ -4924,19 +4970,28 @@ export const agentLongTask = task({
                         }
                         if (
                           finishContinuation ||
+                          loopContinuation ||
                           providerDisconnectContinuation
                         ) {
                           const preservedFileIds = getFileAccumulator()
                             .getAll()
                             .map((file) => file.fileId);
                           for (const message of (finishContinuation ??
+                            loopContinuation ??
                             providerDisconnectContinuation)!.messages) {
                             if (message.role !== "assistant") continue;
                             await saveMessage({
                               chatId,
                               userId,
                               triggerRunId: ctx.run.id,
-                              message,
+                              message:
+                                loopContinuation &&
+                                message.id === loopRecoverySourceMessageId
+                                  ? markLoopRecoveryCheckpoint(
+                                      message,
+                                      retryMessageId,
+                                    )
+                                  : message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
                               mode,
@@ -4970,6 +5025,10 @@ export const agentLongTask = task({
                                     mode,
                                     createdAt: fallbackStartTime,
                                     generationStartedAt: fallbackStartTime,
+                                    ...(loopRecoverySourceMessageId && {
+                                      recoverySourceMessageId:
+                                        loopRecoverySourceMessageId,
+                                    }),
                                   };
                                 }
 

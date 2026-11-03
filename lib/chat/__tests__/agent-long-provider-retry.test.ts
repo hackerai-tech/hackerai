@@ -4,6 +4,7 @@ import {
   classifyAgentRetryFinalization,
   appendProviderEmptyResponseFailure,
   prepareAgentFinishContinuation,
+  prepareAgentLoopContinuation,
   createAssistantContentLoopMonitor,
   decideProviderRecovery,
   getProviderOutputDiagnostics,
@@ -18,7 +19,7 @@ import {
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
-import type { UIMessage } from "ai";
+import { convertToModelMessages, type UIMessage } from "ai";
 
 describe("prepareAgentFinishContinuation", () => {
   const completedTool = {
@@ -1111,8 +1112,8 @@ describe("Agent Max final recovery admission", () => {
       );
     },
   );
-  it.each([180000, 180001])(
-    "keeps the control group's existing context threshold for %s estimated tokens",
+  it.each([256_000, 256_001])(
+    "enforces the 256k compaction threshold for %s estimated tokens",
     (requiredContextTokens) => {
       expect(
         getNextProviderDisconnectRetryModel({
@@ -1122,7 +1123,7 @@ describe("Agent Max final recovery admission", () => {
           selectedModelOverride: "hackerai-max",
           requiredContextTokens,
         }),
-      ).toBe(requiredContextTokens === 180000 ? "model-grok-4.6" : undefined);
+      ).toBe(requiredContextTokens === 256_000 ? "model-grok-4.6" : undefined);
     },
   );
   it("never starts a third recovery or returns to Kimi", () => {
@@ -1168,4 +1169,120 @@ it("allows an explicitly enabled empty pre-stream recovery but never drops an un
       { allowEmptyResponse: true },
     ),
   ).toBeUndefined();
+});
+
+describe("prepareAgentLoopContinuation", () => {
+  const write = {
+    type: "tool-file_write",
+    toolCallId: "write-once",
+    state: "output-available",
+    input: { path: "/tmp/fixture.txt", text: "fixture\n" },
+    output: { success: true },
+  };
+  const missing = {
+    type: "tool-file_read",
+    toolCallId: "read-missing",
+    state: "output-error",
+    input: { path: "/tmp/missing" },
+    errorText: "File not found",
+  };
+  const assistant = (parts: unknown[]) =>
+    [{ id: "primary", role: "assistant", parts }] as UIMessage[];
+
+  it("keeps completed actions and failed attempts exactly once in the fallback provider request", async () => {
+    const messages = assistant([
+      { type: "step-start" },
+      write,
+      { type: "text", text: "Repeating prose" },
+      { type: "step-start" },
+      missing,
+      { type: "reasoning", text: "Repeating reasoning" },
+    ]);
+    const before = JSON.parse(JSON.stringify(messages));
+    const continuation = prepareAgentLoopContinuation(messages)!;
+    expect(messages).toEqual(before);
+    expect(continuation.messages).toEqual(
+      assistant([
+        { type: "step-start" },
+        write,
+        { type: "step-start" },
+        missing,
+      ]),
+    );
+    const providerMessages = await convertToModelMessages(
+      continuation.messages,
+    );
+    const parts = providerMessages.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    expect(
+      parts
+        .filter((part) => part.type === "tool-call")
+        .map((part) => part.toolCallId),
+    ).toEqual(["write-once", "read-missing"]);
+    expect(
+      parts
+        .filter((part) => part.type === "tool-result")
+        .map((part) => part.toolCallId),
+    ).toEqual(["write-once", "read-missing"]);
+    expect(JSON.stringify(providerMessages)).not.toContain("Repeating");
+    expect(JSON.stringify(providerMessages)).toContain("File not found");
+  });
+
+  it.each([
+    { ...write, output: undefined, state: "input-available" },
+    { ...write, output: undefined, state: "input-streaming" },
+    { ...write, output: { executionOutcome: "unknown" } },
+    { ...write, output: { result: { executionOutcome: "unknown" } } },
+    { ...write, type: "dynamic-tool", toolName: "file_write" },
+    { ...write, providerExecuted: true },
+  ])(
+    "blocks fallback rather than erasing an uncertain action: %j",
+    (uncertain) => {
+      expect(
+        prepareAgentLoopContinuation([
+          ...assistant([uncertain]),
+          { id: "later", role: "assistant", parts: [write] } as UIMessage,
+        ]),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not pass provider item IDs or signatures into the replacement model", async () => {
+    const continuation = prepareAgentLoopContinuation(
+      assistant([
+        {
+          ...write,
+          callProviderMetadata: { openai: { itemId: "old-provider-item" } },
+          resultProviderMetadata: {
+            openrouter: { reasoning_details: "old-signature" },
+          },
+        },
+      ]),
+    )!;
+    expect(continuation.messages[0].parts).toEqual([write]);
+    expect(
+      JSON.stringify(await convertToModelMessages(continuation.messages)),
+    ).not.toMatch(/old-provider-item|old-signature/);
+  });
+
+  it("permits a bounded clean replacement for a prose-only loop", () => {
+    expect(
+      prepareAgentLoopContinuation(
+        assistant([
+          { type: "text", text: "looping text" },
+          { type: "reasoning", text: "looping reasoning" },
+        ]),
+      ),
+    ).toEqual({ messages: [] });
+  });
+
+  it("keeps transaction order across multiple assistant messages", () => {
+    expect(
+      prepareAgentLoopContinuation([
+        ...assistant([write]),
+        { id: "second", role: "assistant", parts: [missing] } as UIMessage,
+      ])?.messages.map((message) => message.id),
+    ).toEqual(["primary", "second"]);
+  });
 });

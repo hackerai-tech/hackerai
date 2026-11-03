@@ -541,6 +541,7 @@ export type MessageMetadata = {
   createdAt?: number;
   generationStartedAt?: number;
   generationTimeMs?: number;
+  recoverySourceMessageId?: string;
 };
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
