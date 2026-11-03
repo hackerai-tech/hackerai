@@ -161,7 +161,7 @@ export class BrowserSessions {
           },
         );
         try {
-          signal.throwIfAborted();
+          await assertOwned();
           await withCancellation(handle.sendStdin(script), signal);
           await withCancellation(handle.closeStdin(), signal);
           const result = await withCancellation(handle.wait(), signal);

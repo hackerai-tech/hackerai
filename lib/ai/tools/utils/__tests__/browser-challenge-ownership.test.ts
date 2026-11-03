@@ -129,6 +129,29 @@ it("does not restart an idle browser", async () => {
   expect(run.mock.calls.every(([, options]) => !options.background)).toBe(true);
 });
 
+it("does not send a token when ownership changes while the eval process starts", async () => {
+  const { sessions, run, handle } = await owner();
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+  );
+  run.mockImplementation(async (_command, options) => {
+    if (options.background) {
+      mockQuery.mockResolvedValue({ runActive: true, state: "claiming" });
+      return handle;
+    }
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        success: true,
+        data: { connected: true, port: 9223 },
+      }),
+    };
+  });
+  await expect(browser.evaluate("must-not-deliver")).rejects.toThrow();
+  expect(handle.sendStdin).not.toHaveBeenCalled();
+  expect(handle.kill).toHaveBeenCalledTimes(1);
+});
+
 it("kills a pending private eval on Stop instead of accepting a late result", async () => {
   const { sessions, handle } = await owner();
   const controller = new AbortController();
