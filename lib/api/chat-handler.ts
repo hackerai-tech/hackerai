@@ -200,6 +200,10 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
+import {
+  evaluatePaidAgentAccuracy,
+  createPaidAgentAccuracyExposureRecorder,
+} from "@/lib/experiments/paid-agent-accuracy";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -656,6 +660,22 @@ export const createChatHandler = () => {
       const requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
+      const accuracyModel = await evaluatePaidAgentAccuracy({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        hasAttachments:
+          requestHasImages ||
+          countFileAttachments(fetched.truncatedMessages).totalFiles > 0,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
+      if (accuracyModel) selectedModel = accuracyModel;
       const flashRoutingAssignment = await evaluateFlashRouting({
         posthog,
         userId,
@@ -831,6 +851,15 @@ export const createChatHandler = () => {
         userId,
         mode,
         subscription,
+        requestId: assistantMessageId,
+      });
+      const recordAccuracyExposure = createPaidAgentAccuracyExposureRecorder({
+        posthog,
+        enabled: !!accuracyModel,
+        selectedModel,
+        userId,
+        subscription,
+        selectedModelOverride,
         requestId: assistantMessageId,
       });
       const routingExperimentContext = activeAbliteratedExperiment
@@ -1719,6 +1748,7 @@ export const createChatHandler = () => {
                 }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
+                recordAccuracyExposure(configuredModel);
               },
               trackedProvider,
               currentSystemPrompt,

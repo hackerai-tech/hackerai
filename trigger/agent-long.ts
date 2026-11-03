@@ -202,6 +202,10 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
+import {
+  evaluatePaidAgentAccuracy,
+  createPaidAgentAccuracyExposureRecorder,
+} from "@/lib/experiments/paid-agent-accuracy";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2181,6 +2185,22 @@ export const agentLongTask = task({
       const requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
+      const accuracyModel = await evaluatePaidAgentAccuracy({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        selectedModel,
+        selectedModelOverride,
+        hasAttachments:
+          requestHasImages ||
+          countFileAttachments(messagesForProcessing).totalFiles > 0,
+        limitRescue: Boolean(limitRescue),
+        modelPolicyActive: Boolean(
+          abliteratedExperiment || deepSeekV4Pro0813Experiment,
+        ),
+      });
+      if (accuracyModel) selectedModel = accuracyModel;
       const flashRoutingAssignment = await evaluateFlashRouting({
         posthog,
         userId,
@@ -2540,6 +2560,16 @@ export const agentLongTask = task({
                 userId,
                 mode,
                 subscription,
+                requestId: assistantMessageId,
+              });
+            const recordAccuracyExposure =
+              createPaidAgentAccuracyExposureRecorder({
+                posthog,
+                enabled: !!accuracyModel,
+                selectedModel,
+                userId,
+                subscription,
+                selectedModelOverride,
                 requestId: assistantMessageId,
               });
             const routingExperimentContext = activeAbliteratedExperiment
@@ -3816,6 +3846,7 @@ export const agentLongTask = task({
                 }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
+                recordAccuracyExposure(configuredModel);
               },
               trackedProvider,
               currentSystemPrompt,
