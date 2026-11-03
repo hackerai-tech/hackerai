@@ -478,6 +478,114 @@ async function options() {
   return view;
 }
 
+it("requires an explicit compatible choice in a mixed-template inventory and keeps every saved workspace", async () => {
+  inventory = [item("current", "us"), item("historical", "us")];
+  inventory[1].metadata.template = "different-environment-template";
+  await expect(acquire()).rejects.toMatchObject({
+    cause: expect.stringContaining("Choose which existing Cloud workspace"),
+  });
+  expect(await state()).toBeNull();
+  const view = await options();
+  expect(view.choices.map((choice) => choice.id)).toEqual(["current"]);
+  expect(view).toMatchObject({ unavailableCount: 1 });
+  await expect(
+    chooseWorkspace(owner, "historical", view.token),
+  ).rejects.toThrow();
+  expect(await state()).toBeNull();
+  await chooseWorkspace(owner, "current", view.token);
+  expect((await acquire()).sandbox.sandboxId).toBe("current");
+  expect(inventory.map(({ files }) => files)).toEqual([
+    "retained-current",
+    "retained-historical",
+  ]);
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+
+it("never treats an entirely incompatible inventory as an empty account", async () => {
+  inventory = [item("historical", "eu")];
+  inventory[0].metadata.template = "different-environment-template";
+  await expect(acquire()).rejects.toThrow();
+  expect(await workspaceOptions(owner, true)).toEqual({
+    status: "protected",
+    reason: "identity",
+  });
+  expect(await state()).toBeNull();
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+
+it("invalidates the choice when an incompatible workspace changes", async () => {
+  inventory = [item("current", "eu"), item("historical", "us")];
+  inventory[1].metadata.template = "older-template";
+  const view = await options();
+  inventory[1].metadata.template = "another-template";
+  await expect(chooseWorkspace(owner, "current", view.token)).rejects.toThrow();
+  expect(await state()).toBeNull();
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+});
+
+it.each(["owner", "cluster"])(
+  "blocks all choices when a listed workspace has a conflicting %s",
+  async (field) => {
+    inventory = [item("current", "us"), item("historical", "us")];
+    inventory[1].metadata.template = "older-template";
+    const list = jest.mocked(Sandbox.list).getMockImplementation()!;
+    jest.mocked(Sandbox.list).mockImplementation((args: any) => {
+      const pager = list(args);
+      return {
+        ...pager,
+        nextItems: async (...params: any[]) =>
+          (await pager.nextItems(params[0])).map((entry) =>
+            entry.sandboxId !== "historical"
+              ? entry
+              : {
+                  ...entry,
+                  metadata: {
+                    ...entry.metadata,
+                    ...(field === "owner"
+                      ? { userID: "another-owner" }
+                      : { e2bCluster: "eu" }),
+                  },
+                },
+          ),
+      } as never;
+    });
+    await expect(acquire()).rejects.toThrow();
+    await expect(workspaceOptions(owner, true)).rejects.toThrow();
+    expect(await state()).toBeNull();
+    expect(Sandbox.create).not.toHaveBeenCalled();
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);
+
+it("preserves a pinned incompatible workspace instead of offering a replacement", async () => {
+  inventory = [item("current", "us"), item("historical", "us")];
+  inventory[1].metadata.template = "older-template";
+  const binding = workspaceBinding("historical", "us-east-1", "selected");
+  mockCommand("SET", cloudWorkspaceStateKey(owner), binding);
+  mockCommand("SET", cloudWorkspaceRegionKey(owner), binding.region);
+  expect(await workspaceOptions(owner, true)).toEqual({
+    status: "protected",
+    reason: "identity",
+  });
+  expect(await state()).toEqual(binding);
+  expect(Sandbox.connect).not.toHaveBeenCalled();
+});
+
+it("waits for running incompatible workspaces too", async () => {
+  inventory = [item("current", "eu"), item("historical", "us")];
+  inventory[1].metadata.template = "older-template";
+  inventory[1].state = "running";
+  expect(await workspaceOptions(owner, true)).toEqual({
+    status: "waiting",
+    reason: "running_workspace",
+  });
+  expect(await state()).toBeNull();
+});
+
 it("lets an owner select among same-region copies, switch back, and retain all files and prior bindings", async () => {
   inventory = [
     item("one", "us", false),
