@@ -222,6 +222,44 @@ describe("durable wallet settlement receipts", () => {
       }),
     ).rejects.toThrow("input mismatch");
   });
+  it("rejects new claims after deletion starts without inserting a receipt", async () => {
+    ctx.tables.set("user_deletion_fences", [{ user_id: identity.user_id }]);
+    await expect(start(ctx)).rejects.toThrow("deletion is in progress");
+    expect(ctx.tables.get("usage_settlement_operations")).toBeUndefined();
+  });
+  it("rejects a new debit and reload linkage when deletion starts after the claim", async () => {
+    await start(ctx);
+    ctx.tables.set("user_deletion_fences", [{ user_id: identity.user_id }]);
+    const execute = jest.fn(async () => applyDebit(ctx, 80));
+    await expect(recordWalletDebit(ctx, identity, 0, execute)).rejects.toThrow(
+      "deletion is in progress",
+    );
+    await expect(
+      (linkAutoReload as any).handler(ctx, {
+        ...identity,
+        auto_reload_operation_id: "reload-1",
+      }),
+    ).rejects.toThrow("deletion is in progress");
+    expect(execute).not.toHaveBeenCalled();
+    expect(ctx.tables.get("extra_usage")[0].balance_points).toBe(100);
+    expect((await read(ctx)).debits).toHaveLength(0);
+  });
+  it("preserves applied evidence under the anonymized scope without resuming the action", async () => {
+    await start(ctx);
+    await recordWalletDebit(ctx, identity, 0, async () => applyDebit(ctx, 80));
+    ctx.tables.get("usage_settlement_operations")[0].user_id =
+      "__deleted_user__";
+    ctx.tables.get("usage_settlement_debits")[0].user_id = "__deleted_user__";
+    await expect(
+      (finish as any).handler(ctx, { ...identity, result }),
+    ).rejects.toThrow("input mismatch");
+    const retained = await read(ctx, {
+      ...identity,
+      user_id: "__deleted_user__",
+    });
+    expect(retained.status).toBe("pending");
+    expect(retained.debits[0].outcome).toBe("applied");
+  });
   it("requires service authorization for receipt reads", async () => {
     await expect(
       (getForBackend as any).handler(ctx, { ...identity, serviceKey: "wrong" }),
@@ -262,13 +300,17 @@ describe("action-level financial fences", () => {
     const gate = new Promise<void>((r) => {
       release = r;
     });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const first = runWalletSettlement(ctx, args, async () => {
+      entered();
       await gate;
       return result;
     });
-    // Wait until the claim is durable before the duplicate enters.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Observe the original executor after its durable claim, without assuming microtask timing.
+    await started;
     await expect(
       runWalletSettlement(ctx, args, async () => result),
     ).rejects.toThrow("outcome unknown");

@@ -49,6 +49,7 @@ describe("usageLogs", () => {
     await (logUsage as any).handler(ctx, {
       serviceKey: "test-service-key",
       usage_settlement_id: "settlement-123",
+      admission_operation_id: "admission-123",
       user_id: "user_1",
       assistant_message_id: "assistant-message-123",
       model: "model-opus-4.6",
@@ -82,6 +83,7 @@ describe("usageLogs", () => {
     expect(inserted.uncovered_points).toBe(30000);
     expect(inserted.usage_deduction_failure_reason).toBe("insufficient_funds");
     expect(inserted.usage_deduction_outcome_unknown).toBe(true);
+    expect(inserted.admission_operation_id).toBe("admission-123");
     expect(inserted).not.toHaveProperty("total_tokens");
     expect(inserted).not.toHaveProperty("usage_deduction_failed");
 
@@ -149,6 +151,17 @@ describe("usageLogs", () => {
           uncovered_points: 25,
           usage_deduction_failure_reason: "insufficient_funds",
         },
+        {
+          _id: "unknown-usage-id",
+          _creationTime: 2,
+          model: "model-default",
+          type: "extra",
+          input_tokens: 0,
+          output_tokens: 0,
+          cost_dollars: 0,
+          uncovered_points: 0,
+          usage_deduction_outcome_unknown: true,
+        },
       ],
       isDone: true,
       continueCursor: "",
@@ -177,5 +190,6 @@ describe("usageLogs", () => {
       total_tokens: 150,
       usage_deduction_failed: true,
     });
+    expect(result.page[1].usage_deduction_failed).toBe(true);
   });
 });

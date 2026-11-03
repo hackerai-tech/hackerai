@@ -1382,6 +1382,7 @@ export default defineSchema({
 
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    admission_operation_id: v.optional(v.string()),
     usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),

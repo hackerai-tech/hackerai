@@ -39,6 +39,7 @@ export const logUsage = mutation({
   args: {
     serviceKey: v.string(),
     usage_settlement_id: v.optional(v.string()),
+    admission_operation_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
@@ -143,6 +144,7 @@ export const logUsage = mutation({
 
     await ctx.db.insert("usage_logs", {
       usage_settlement_id: args.usage_settlement_id,
+      admission_operation_id: args.admission_operation_id,
       user_id: args.user_id,
       organization_id: args.organization_id,
       chat_id: args.chat_id,
@@ -308,7 +310,8 @@ export const getUserUsageLogs = query({
         uncovered_points: log.uncovered_points,
         usage_deduction_failed:
           (log.uncovered_points ?? 0) > 0 ||
-          log.usage_deduction_failure_reason !== undefined,
+          log.usage_deduction_failure_reason !== undefined ||
+          log.usage_deduction_outcome_unknown === true,
         usage_deduction_failure_reason: log.usage_deduction_failure_reason,
         model_cost_dollars: log.model_cost_dollars,
         non_model_cost_dollars: log.non_model_cost_dollars,

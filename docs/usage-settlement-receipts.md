@@ -5,7 +5,8 @@ commits. A completed Agent task or a usage-log row cannot prove that application
 New personal and team wallet calls carry a per-operation identity, separate from
 the run's settlement ID. Selective Ask/Agent steps use distinct sequence-based
 identities; finalization has another identity. Admission/other callers generate
-an operation UUID once before sending the action.
+an operation UUID once before sending the action. Admission retains that ID in
+`RateLimitInfo` and joins it to the final usage row as `admission_operation_id`.
 
 The operation claims its execution before reads, debits or auto-reload work. A
 completed duplicate returns the original action result. A pending duplicate
@@ -29,7 +30,9 @@ unchanged.
 ## Reconcile without replay
 
 Use the signed backend-only `settlementReceipts.getForBackend` query with the
-operation ID and exact user/optional organization scope. The query returns the
+operation ID and exact user/optional organization scope. After account deletion,
+use the `__deleted_user__` sentinel for retained receipts; the original user ID
+is no longer available through this query. The query returns the
 original identity, action state/result, and a bounded set of debit receipts.
 Failure diagnostics include `settlement_operation_id`; selective step IDs also
 join the existing run settlement ID and sequence.
@@ -54,8 +57,12 @@ Request-time cost/pricing telemetry remains the calculation evidence.
 
 Receipts and pending fences are retained without a TTL. Account deletion
 anonymizes their direct user ID while preserving the financial evidence and
-no-replay protection. Any future retention policy must preserve idempotency
-before pruning receipt data.
+no-replay protection. New claims, debit writes and reload linkage check the
+deletion fence before writing. Cleanup may leave an already running action
+pending after anonymization; its original identity cannot resume it. The saved
+debit and linked reload IDs remain available under the anonymized scope. Do not
+hold account erasure indefinitely for a pending operation. Any future retention
+policy must preserve idempotency before pruning receipt data.
 
 ## Boundaries and acceptance
 

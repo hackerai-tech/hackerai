@@ -637,6 +637,7 @@ export class UsageTracker {
     const usage = this.createUsageCostRecord(args);
     logUsageRecord({
       usageSettlementId: this.usageSettlementId,
+      admissionOperationId: args.rateLimitInfo.extraUsageAdmissionOperationId,
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,

@@ -1,3 +1,4 @@
+import { isUserDeletionFenced } from "./userDeletionFence";
 import type { Infer } from "convex/values";
 import type { MutationCtx } from "./serviceFunctions";
 import {
@@ -74,6 +75,8 @@ export async function recordWalletDebit<T extends WalletDebitResult>(
   if (prior) return prior.result as T;
   if (operation.status !== "pending")
     throw new Error("Settlement operation already completed");
+  if (await isUserDeletionFenced(ctx.db, identity.user_id))
+    throw new Error("User deletion is in progress");
   const getBalance = async () =>
     identity.organization_id !== undefined
       ? ((

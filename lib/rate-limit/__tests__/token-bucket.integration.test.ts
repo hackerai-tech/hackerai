@@ -532,7 +532,10 @@ describe("token-bucket async functions", () => {
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
         expect.any(Number),
+        undefined,
+        result.extraUsageAdmissionOperationId,
       );
+      expect(result.extraUsageAdmissionOperationId).toEqual(expect.any(String));
       expect(result.pointsDeducted).toBe(0);
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
       expect(result.remaining).toBe(10000);

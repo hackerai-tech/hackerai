@@ -2712,6 +2712,7 @@ export async function getNotes({
 
 export async function logUsageRecord({
   usageSettlementId,
+  admissionOperationId,
   userId,
   organizationId,
   chatId,
@@ -2739,6 +2740,7 @@ export async function logUsageRecord({
   costSource,
 }: {
   usageSettlementId?: string;
+  admissionOperationId?: string;
   userId: string;
   organizationId?: string;
   chatId?: string;
@@ -2769,6 +2771,7 @@ export async function logUsageRecord({
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       usage_settlement_id: usageSettlementId,
+      admission_operation_id: admissionOperationId,
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,

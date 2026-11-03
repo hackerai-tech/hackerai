@@ -1,3 +1,4 @@
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { internalMutation, query } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
@@ -30,6 +31,8 @@ export const begin = internalMutation({
       assertSettlementIdentity(existing, args);
       return { claimed: false, result: existing.result ?? null };
     }
+    if (await isUserDeletionFenced(ctx.db, args.user_id))
+      throw new Error("User deletion is in progress");
     await ctx.db.insert("usage_settlement_operations", {
       ...args,
       status: "pending",
@@ -81,6 +84,8 @@ export const linkAutoReload = internalMutation({
     assertSettlementIdentity(operation, args);
     if (operation.status !== "pending")
       throw new Error("Settlement operation already completed");
+    if (await isUserDeletionFenced(ctx.db, args.user_id))
+      throw new Error("User deletion is in progress");
     const ids = operation.auto_reload_operation_ids ?? [];
     if (!ids.includes(args.auto_reload_operation_id)) {
       if (ids.length >= 2) throw new Error("Settlement reload limit exceeded");
