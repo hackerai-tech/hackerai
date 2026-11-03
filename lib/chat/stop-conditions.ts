@@ -46,10 +46,11 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToPostSummarizationIncomplete: boolean;
   stoppedDueToStepLimit?: boolean;
 }): AgentAutoContinueStopSource | null {
-  // A hard step ceiling must win over overlapping context/compaction flags.
+  // Hard stops must win over overlapping context/compaction flags.
   if (
     state.stoppedDueToStepLimit ||
-    state.finishReason === STEP_LIMIT_FINISH_REASON
+    state.finishReason === STEP_LIMIT_FINISH_REASON ||
+    state.finishReason === DOOM_LOOP_FINISH_REASON
   )
     return null;
   if (state.stoppedDueToTokenExhaustion) {
