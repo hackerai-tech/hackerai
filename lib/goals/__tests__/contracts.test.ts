@@ -139,43 +139,46 @@ describe("goal completion and limits", () => {
       ),
     ).toBe(false);
   });
-  it("checks the exact verification command and follows only its own terminal session", () => {
-    expect(verificationGatePassed([terminal()], "pnpm test")).toBe(true);
-    expect(verificationGatePassed([terminal()], "pnpm build")).toBe(false);
-    expect(verificationGatePassed([terminal(1)], "pnpm test")).toBe(false);
-    expect(verificationGatePassed([terminal(), terminal(1)], "pnpm test")).toBe(
-      false,
-    );
-    expect(verificationGatePassed([terminal(1), terminal()], "pnpm test")).toBe(
-      true,
-    );
-    const started = { ...terminal(), output: { result: { session: "s1" } } };
-    const wait = {
-      type: "tool-interact_with_terminal",
-      toolCallId: "wait",
-      state: "output-available",
-      input: { session: "s1", action: "wait" },
-      output: { result: { exited: { exitCode: 0 } } },
-    };
-    expect(verificationGatePassed([started, wait], "pnpm test")).toBe(true);
-    expect(verificationGatePassed([wait, started], "pnpm test")).toBe(false);
-    expect(
-      verificationGatePassed(
-        [
-          started,
-          wait,
-          { ...wait, output: { result: { exited: { exitCode: 1 } } } },
-        ],
-        "pnpm test",
-      ),
-    ).toBe(false);
-    expect(
-      verificationGatePassed(
-        [started, { ...wait, input: { session: "other", action: "wait" } }],
-        "pnpm test",
-      ),
-    ).toBe(false);
-  });
+  it.each(["tool-interact_terminal_session", "tool-interact_with_terminal"])(
+    "checks exact commands and the matching %s wait",
+    (toolType) => {
+      expect(verificationGatePassed([terminal()], "pnpm test")).toBe(true);
+      expect(verificationGatePassed([terminal()], "pnpm build")).toBe(false);
+      expect(verificationGatePassed([terminal(1)], "pnpm test")).toBe(false);
+      expect(
+        verificationGatePassed([terminal(), terminal(1)], "pnpm test"),
+      ).toBe(false);
+      expect(
+        verificationGatePassed([terminal(1), terminal()], "pnpm test"),
+      ).toBe(true);
+      const started = { ...terminal(), output: { result: { session: "s1" } } };
+      const wait = {
+        type: toolType,
+        toolCallId: "wait",
+        state: "output-available",
+        input: { session: "s1", action: "wait" },
+        output: { result: { exited: { exitCode: 0 } } },
+      };
+      expect(verificationGatePassed([started, wait], "pnpm test")).toBe(true);
+      expect(verificationGatePassed([wait, started], "pnpm test")).toBe(false);
+      expect(
+        verificationGatePassed(
+          [
+            started,
+            wait,
+            { ...wait, output: { result: { exited: { exitCode: 1 } } } },
+          ],
+          "pnpm test",
+        ),
+      ).toBe(false);
+      expect(
+        verificationGatePassed(
+          [started, { ...wait, input: { session: "other", action: "wait" } }],
+          "pnpm test",
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("goal commands and contract validation", () => {

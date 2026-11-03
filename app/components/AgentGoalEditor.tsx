@@ -214,8 +214,8 @@ export function AgentGoalEditor({
         }
         onClose();
         if (shouldContinue) {
-          // send resolves when streaming ends. Close the editor immediately so
-          // another edit is possible while the replacement run is working.
+          // Close immediately while admission is pending so the user can
+          // keep working. A rejected admission is reported separately.
           if (!Number.isSafeInteger(saved.generation)) {
             toast.error(
               "Goal saved. Could not continue; reload and Resume when ready.",
@@ -227,6 +227,7 @@ export function AgentGoalEditor({
               ...fields,
               generation: saved.generation,
             }).catch((cause) => {
+              if (cause instanceof Error && cause.name === "AbortError") return;
               toast.error(
                 `Goal saved. Could not continue: ${cause instanceof Error ? cause.message : "Check the chat and Resume when ready."}`,
               );

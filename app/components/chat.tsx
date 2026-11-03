@@ -2700,7 +2700,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         resetAutoContinueCount();
         if (!isExistingChat)
           window.history.replaceState({}, "", `/c/${chatId}`);
-        await sendMessage(message, options);
+        await sendGoalMessage(message, options);
       }}
       settings={{
         sandboxPreference,
@@ -2955,7 +2955,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       throw new Error(computerSendDisabledReason);
                     hasManuallyStoppedRef.current = false;
                     resetAutoContinueCount();
-                    await sendMessage(
+                    await sendGoalMessage(
                       { text: goalResumeMessage(goal) },
                       {
                         body: {

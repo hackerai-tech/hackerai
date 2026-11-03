@@ -240,7 +240,7 @@ export function AgentGoalPanel({
             agentPermissionMode: goal.permissionMode,
             selectedModel: goal.selectedModel,
             mode: "agent",
-            goal: { action: "resume" },
+            goal: { action: "resume", expectedGeneration: goal.generation },
           },
         },
       );
@@ -249,6 +249,7 @@ export function AgentGoalPanel({
       });
       setReply("");
     } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
       const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);
       toast.error(message);

@@ -276,6 +276,11 @@ jest.mock("../ChatInput", () => ({
   ),
 }));
 
+let mockContinueGoal: NonNullable<
+  Parameters<
+    typeof import("../ComputerSidebar").ComputerSidebar
+  >[0]["continueGoal"]
+>;
 let mockBrowserContinue: (message: {
   id: string;
   text: string;
@@ -283,10 +288,13 @@ let mockBrowserContinue: (message: {
 jest.mock("../ComputerSidebar", () => ({
   ComputerSidebar: ({
     onBrowserContinue,
+    continueGoal,
   }: {
     onBrowserContinue: typeof mockBrowserContinue;
+    continueGoal: typeof mockContinueGoal;
   }) => {
     mockBrowserContinue = onBrowserContinue;
+    mockContinueGoal = continueGoal;
     const [draft, setDraft] = useState("");
     return (
       <div data-testid="computer-sidebar">
@@ -1164,6 +1172,141 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it.each([false, true])(
+      "keeps a rejected panel resume reply on mobile=%s",
+      async (mobile) => {
+        const toastError = jest.spyOn(toast, "error");
+        require("@/hooks/use-mobile").useIsMobile.mockReturnValue(mobile);
+        mockDesktopState = {
+          chatMode: "agent",
+          subscription: "pro",
+          sandboxPreference: "e2b",
+        };
+        mockRouteParams = { id: "goal-chat" };
+        mockRestoredChat = { id: "goal-chat", default_model_slug: "agent" };
+        mockSavedGoal = {
+          _id: "goal",
+          state: "blocked",
+          generation: 4,
+          objective: "Use my chosen color",
+          criteria: [],
+          evidence: [],
+          runs: 1,
+          sandboxPreference: "e2b",
+          permissionMode: "full_access",
+          selectedModel: "auto",
+        };
+        global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+          ok: true,
+          json: async () => ({ enabled: true }),
+        } as Response);
+        require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+        mockSendMessage.mockImplementationOnce(async () => {
+          const options = mockUseChat.mock.calls.at(-1)![0] as {
+            onError: (error: Error) => void;
+          };
+          const { ChatSDKError } = require("@/lib/errors");
+          options.onError(
+            new ChatSDKError(
+              "bad_request:chat",
+              "The goal changed. Reload before resuming.",
+            ),
+          );
+        });
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        const openDetails = () => {
+          if (mobile) {
+            fireEvent.click(
+              screen.getByRole("button", { name: "Show goal controls" }),
+            );
+            fireEvent.click(screen.getByRole("button", { name: /Details/ }));
+          } else
+            fireEvent.click(
+              screen.getByRole("button", { name: "Show goal details" }),
+            );
+        };
+        openDetails();
+        fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
+          target: { value: "Use blue" },
+        });
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "Resume goal" }),
+          ).toBeEnabled(),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Resume goal" }));
+        await waitFor(() =>
+          expect(toastError).toHaveBeenCalledWith(
+            "The goal changed. Reload before resuming.",
+          ),
+        );
+        if (mobile)
+          fireEvent.click(
+            screen.getByRole("button", { name: "Show goal controls" }),
+          );
+        expect(screen.getByRole("textbox", { name: "Goal reply" })).toHaveValue(
+          "Use blue",
+        );
+        expect(screen.getByRole("alert")).toHaveTextContent("The goal changed");
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            id: expect.any(String),
+            role: "user",
+            parts: [
+              {
+                type: "text",
+                text: "Resume goal: Use my chosen color\n\nUse blue",
+              },
+            ],
+          }),
+          expect.objectContaining({
+            body: expect.objectContaining({
+              goal: { action: "resume", expectedGeneration: 4 },
+            }),
+          }),
+        );
+        expect(mockClearError).toHaveBeenCalled();
+        toastError.mockRestore();
+      },
+    );
+
+    it("reports rejected editor continuation through goal admission", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      await screen.findByTestId("computer-sidebar");
+      await act(async () => {
+        await expect(
+          mockContinueGoal({
+            objective: "Use blue",
+            generation: 4,
+            sandboxPreference: "e2b",
+            permissionMode: "full_access",
+            selectedModel: "auto",
+          }),
+        ).rejects.toThrow("Goal could not start");
+      });
+      expect(mockClearError).toHaveBeenCalled();
+    });
+
     it("dismisses completed goals from saved user messages, not optimistic sends or assistant updates", async () => {
       const convexReact = require("convex/react");
       mockRouteParams = { id: "goal-chat" };

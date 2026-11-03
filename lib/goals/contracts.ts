@@ -313,7 +313,8 @@ export function verificationGatePassed(
     .slice(index + 1)
     .findLast(
       (n) =>
-        n.type === "tool-interact_with_terminal" &&
+        (n.type === "tool-interact_terminal_session" ||
+          n.type === "tool-interact_with_terminal") &&
         n.input?.session === result.session &&
         n.input?.action === "wait",
     );

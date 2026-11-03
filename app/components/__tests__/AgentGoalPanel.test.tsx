@@ -20,6 +20,7 @@ const settings = {
 };
 const goal = {
   _id: "goal",
+  generation: 4,
   state: "budget_exhausted",
   objective: "Create marker",
   criteria: ["Marker exists"],
@@ -39,6 +40,42 @@ describe("goal controls", () => {
     global.fetch = jest
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
+  });
+  it("keeps the reply without an error when resume admission is stopped", async () => {
+    const { toast } = require("sonner");
+    toast.error.mockClear();
+    setMockQueryResult({ ...goal, state: "blocked" });
+    const send = jest
+      .fn()
+      .mockRejectedValue(
+        new DOMException("Goal submission stopped", "AbortError"),
+      );
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={send}
+        settings={settings}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
+      target: { value: "Use blue" },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Resume goal" })).toBeEnabled(),
+    );
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Resume goal" })),
+    );
+    expect(send).toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Goal reply" })).toHaveValue(
+      "Use blue",
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
   it.each(["Clear goal", "Pause goal"])(
     "saves the running response before %s and aborts when stopping fails",
@@ -182,7 +219,7 @@ describe("goal controls", () => {
         }),
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume" },
+            goal: { action: "resume", expectedGeneration: goal.generation },
           }),
         }),
       ),
@@ -235,7 +272,7 @@ describe("goal controls", () => {
             sandboxPreference: "desktop",
             agentPermissionMode: "ask_approval",
             selectedModel: "standard",
-            goal: { action: "resume" },
+            goal: { action: "resume", expectedGeneration: goal.generation },
           },
         },
       ),
@@ -274,7 +311,7 @@ describe("goal controls", () => {
         { text: "Resume goal: New marker" },
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume" },
+            goal: { action: "resume", expectedGeneration: goal.generation },
           }),
         }),
       ),
@@ -313,7 +350,11 @@ describe("goal controls", () => {
         "/api/agent-goal",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ chatId: "chat", action: "pause" }),
+          body: JSON.stringify({
+            chatId: "chat",
+            action: "pause",
+            generation: goal.generation,
+          }),
         }),
       ),
     );
@@ -340,7 +381,11 @@ describe("goal controls", () => {
         "/api/agent-goal",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ chatId: "chat", action: "pause" }),
+          body: JSON.stringify({
+            chatId: "chat",
+            action: "pause",
+            generation: goal.generation,
+          }),
         }),
       ),
     );
@@ -424,7 +469,11 @@ describe("goal controls", () => {
           "/api/agent-goal",
           expect.objectContaining({
             method: "POST",
-            body: JSON.stringify({ chatId: "chat", action: "clear" }),
+            body: JSON.stringify({
+              chatId: "chat",
+              action: "clear",
+              generation: goal.generation,
+            }),
           }),
         ),
       );
@@ -612,7 +661,7 @@ describe("goal controls", () => {
         expect.anything(),
         expect.objectContaining({
           body: expect.objectContaining({
-            goal: { action: "resume" },
+            goal: { action: "resume", expectedGeneration: goal.generation },
           }),
         }),
       ),
