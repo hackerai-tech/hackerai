@@ -188,7 +188,8 @@ class ProductBackend:
         return {"subscription": entitlement["subscription"],
                 "workspaceStatus": workspace["status"], "triggerHealth": trigger_health}
 
-    def start(self, chat_id: str, message: str, *, automatic: bool = False) -> dict:
+    def start(self, chat_id: str, message: str, *, automatic: bool = False,
+              todos: list[dict] | None = None) -> dict:
         response = self.json("POST", "/api/agent", {
             "chatId": chat_id,
             "agentRunRequestId": uuid.uuid4().hex,
@@ -197,7 +198,8 @@ class ProductBackend:
             "sandboxPreference": "e2b",
             "agentPermissionMode": "full_access",
             "selectedModel": "hackerai-pro",
-            **({"isAutoContinue": True, "isAutomaticContinuation": True} if automatic else {}),
+            **({"isAutoContinue": True, "isAutomaticContinuation": True,
+                "todos": todos or []} if automatic else {}),
         })
         if (response.get("chatId") != chat_id or not isinstance(response.get("runId"), str)
                 or not isinstance(response.get("publicAccessToken"), str)):
@@ -251,6 +253,35 @@ def latest_assistant_text(events: list[dict]) -> str | None:
                 if isinstance(part, dict) and part.get("type") == "text"
             )
     return None
+
+
+def latest_saved_todos(events: list[dict]) -> list[dict]:
+    """Carry the product UI's latest todo-write state into automatic continuation."""
+    for event in reversed(events):
+        if event.get("type") != "data-appendMessage":
+            continue
+        message = event.get("data")
+        try:
+            message = json.loads(message) if isinstance(message, str) else message
+        except ValueError:
+            continue
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for part in reversed(message.get("parts") or []):
+            if (not isinstance(part, dict) or part.get("type") != "tool-todo_write"
+                    or part.get("state") != "output-available"):
+                continue
+            output = part.get("output")
+            current = output.get("currentTodos") if isinstance(output, dict) else None
+            if not isinstance(current, list) or any(
+                not isinstance(todo, dict) or not isinstance(todo.get("id"), str)
+                or not isinstance(todo.get("content"), str)
+                or todo.get("status") not in ("pending", "in_progress", "completed", "cancelled")
+                for todo in current
+            ):
+                raise BackendError("Saved todo state was invalid for automatic continuation")
+            return current
+    return []
 
 
 def parse_findings_text(text: str) -> bytes:
@@ -389,7 +420,10 @@ async def run_target(client: ProductBackend, slug: str, entry: dict, upstream: P
         # answer. Hold scoring until the client continuation contract is
         # captured; this runner must not silently skip a user-visible step.
         if observed.get("autoContinue"):
-            handle = await asyncio.to_thread(client.start, chat_id, AUTO_CONTINUE_PROMPT, automatic=True)
+            todos = latest_saved_todos(await asyncio.to_thread(client.events, chat_id))
+            handle = await asyncio.to_thread(
+                client.start, chat_id, AUTO_CONTINUE_PROMPT, automatic=True, todos=todos,
+            )
             run_id = handle["runId"]
             state.update(phase="continuing", continuationRunId=run_id)
             atomic_json(state_path, state)

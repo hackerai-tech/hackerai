@@ -157,6 +157,33 @@ class ProductBackendContractTests(unittest.TestCase):
             "runId": "run-1", "publicAccessToken": "ephemeral-test-token",
         })
 
+    def test_auto_continuation_carries_saved_todos_into_product_request(self):
+        todos = [{"id": "task-1", "content": "Review source", "status": "in_progress"}]
+        message = {"role": "assistant", "parts": [{
+            "type": "tool-todo_write", "state": "output-available",
+            "output": {"currentTodos": todos},
+        }]}
+        events = [{"type": "data-appendMessage", "data": json.dumps(message)}]
+        self.assertEqual(backend.latest_saved_todos(events), todos)
+
+        client = object.__new__(backend.ProductBackend)
+        payloads = []
+
+        def start(_method, _path, payload):
+            payloads.append(payload)
+            return {"chatId": "chat-1", "runId": "run-2", "publicAccessToken": "test-token"}
+
+        client.json = start
+        client.start("chat-1", backend.AUTO_CONTINUE_PROMPT, automatic=True,
+                     todos=backend.latest_saved_todos(events))
+        self.assertEqual(payloads[0]["todos"], todos)
+        self.assertTrue(payloads[0]["messages"][0]["metadata"]["isAutoContinue"])
+        self.assertTrue(payloads[0]["isAutomaticContinuation"])
+
+        message["parts"][0]["output"] = {"currentTodos": [{"id": "task-1", "status": "pending"}]}
+        with self.assertRaises(backend.BackendError):
+            backend.latest_saved_todos([{"type": "data-appendMessage", "data": json.dumps(message)}])
+
     def test_existing_vercel_session_cookie_reaches_only_preview_origin(self):
         client = backend.ProductBackend(
             "https://hackerai-git-test.vercel.app", "sealed-test-session",

@@ -66,7 +66,9 @@ its results as isolated-adapter, never product-backend parity.
 The driver observes the same durable Trigger `ui` stream as the product Agent
 transport. The saved-chat stream is used only to read the final persisted answer;
 its replay does not prove that live Agent work or an automatic continuation was
-observed. The Agent receives a generic source-review instruction and the pinned target
+observed. When the product signals automatic continuation, the driver carries
+the latest saved todo-write state into the follow-up request without logging it.
+The Agent receives a generic source-review instruction and the pinned target
 repository URL and commit. It returns a bounded JSON array:
 each item has repository-relative `path`, one-based `line`, one `cwe`,
 `severity`, and concise `evidence`. `[]` is an explicit no-finding result.
