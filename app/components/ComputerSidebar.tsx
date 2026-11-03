@@ -1472,7 +1472,7 @@ export const ComputerSidebar: React.FC<{
   } = useGlobalState();
 
   const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
-  const keepGoalDraft = useCallback((draft: GoalEditorDraft) => {
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft | undefined) => {
     setGoalDraft(draft);
   }, []);
   const closeGoalEditor = useCallback(() => {

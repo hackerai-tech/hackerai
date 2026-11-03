@@ -190,12 +190,145 @@ describe("simple goal sidebar editor", () => {
       expect(
         screen.getByRole("button", { name: "Save", exact: true }),
       ).toBeDisabled();
-      expect(screen.getByRole("status")).toHaveTextContent(
-        "changed or was cleared",
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /The goal has changed|This goal was cleared/,
       );
       expect(fetch).not.toHaveBeenCalled();
     },
   );
+  it("automatically follows a replacement goal when the editor has no unsaved changes", async () => {
+    const close = jest.fn();
+    const view = () => (
+      <>
+        <button>Composer</button>
+        <AgentGoalEditor chatId="chat" onClose={close} />
+      </>
+    );
+    const { rerender } = render(view());
+    expect(await screen.findByRole("textbox")).toHaveValue("Original goal");
+    screen.getByRole("button", { name: "Composer" }).focus();
+    setMockQueryResult({ ...goal, state: "achieved", activeRunId: undefined });
+    rerender(view());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    setMockQueryResult({
+      ...goal,
+      generation: 4,
+      startedAt: 200,
+      objective: "New goal",
+      criteria: ["New goal"],
+    });
+    rerender(view());
+    expect(screen.getByRole("textbox")).toHaveValue("New goal");
+    expect(screen.getByRole("button", { name: "Composer" })).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(close).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("clears an untouched deleted goal and follows the next goal without reopening", async () => {
+    const onDraftChange = jest.fn();
+    const view = () => (
+      <AgentGoalEditor
+        chatId="chat"
+        onClose={jest.fn()}
+        onDraftChange={onDraftChange}
+      />
+    );
+    const { rerender } = render(view());
+    expect(await screen.findByRole("textbox")).toHaveValue("Original goal");
+    setMockQueryResult(null);
+    rerender(view());
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(onDraftChange).toHaveBeenLastCalledWith(undefined);
+    setMockQueryResult({ ...goal, startedAt: 200, objective: "Next goal" });
+    rerender(view());
+    expect(screen.getByRole("textbox")).toHaveValue("Next goal");
+    expect(screen.getByRole("textbox")).toBeEnabled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("restores a preserved draft after the sidebar remounts", async () => {
+    render(
+      <AgentGoalEditor
+        chatId="chat"
+        onClose={jest.fn()}
+        draft={{
+          chatId: "chat",
+          original: goal as any,
+          text: goal.objective,
+          previousText: "Preserved edit",
+        }}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Restore my draft" }),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("Preserved edit");
+    expect(screen.getByRole("textbox")).toHaveFocus();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("keeps an unsaved draft and can load and edit the current goal without closing", async () => {
+    const close = jest.fn();
+    const keep = jest.fn();
+    const view = () => (
+      <AgentGoalEditor chatId="chat" onClose={close} onDraftChange={keep} />
+    );
+    const { rerender } = render(view());
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "My unsaved work" },
+    });
+    const replacement = {
+      ...goal,
+      generation: 4,
+      startedAt: 200,
+      state: "paused",
+      activeRunId: undefined,
+      objective: "New goal",
+      criteria: ["New goal"],
+    };
+    setMockQueryResult(replacement);
+    rerender(view());
+    expect(screen.getByRole("textbox")).toHaveValue("My unsaved work");
+    expect(
+      screen.getByRole("button", { name: "Save", exact: true }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Load current goal" }));
+    expect(screen.getByRole("textbox")).toHaveValue("New goal");
+    expect(screen.getByRole("textbox")).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(keep).toHaveBeenLastCalledWith({
+      chatId: "chat",
+      original: replacement,
+      text: "New goal",
+      previousText: "My unsaved work",
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    jest.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ goal: replacement }),
+    } as Response);
+    fireEvent.click(screen.getByRole("button", { name: "Restore my draft" }));
+    expect(screen.getByRole("textbox")).toHaveValue("My unsaved work");
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Updated new goal" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    await waitFor(() => expect(close).toHaveBeenCalled());
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agent-goal",
+      expect.objectContaining({
+        body: JSON.stringify({
+          objective: "Updated new goal",
+          criteria: ["Updated new goal"],
+          action: "update",
+          chatId: "chat",
+          generation: 4,
+        }),
+      }),
+    );
+  });
+
   it("checks fresh state before stopping and rejects a change not yet delivered to the browser", async () => {
     jest.mocked(fetch).mockResolvedValue({
       ok: true,

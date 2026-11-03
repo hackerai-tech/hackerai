@@ -14,7 +14,12 @@ import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { toast } from "sonner";
 
 type Goal = Doc<"agent_goals">;
-export type GoalEditorDraft = { chatId: string; original: Goal; text: string };
+export type GoalEditorDraft = {
+  chatId: string;
+  original: Goal;
+  text: string;
+  previousText?: string;
+};
 
 export function AgentGoalEditor({
   chatId,
@@ -28,7 +33,7 @@ export function AgentGoalEditor({
   onClose: () => void;
   stopRunBeforeControl?: (runId: string) => Promise<boolean>;
   draft?: GoalEditorDraft;
-  onDraftChange?: (draft: GoalEditorDraft) => void;
+  onDraftChange?: (draft: GoalEditorDraft | undefined) => void;
   continueGoal?: (goal: Goal) => Promise<void>;
 }) {
   const goal = useQuery(api.agentGoals.get, { chatId });
@@ -36,6 +41,8 @@ export function AgentGoalEditor({
     draft?.original ?? null,
   );
   const [text, setText] = useState(draft?.text ?? "");
+  const [previousText, setPreviousText] = useState(draft?.previousText);
+  const initiallyFocused = useRef(false);
   const [saving, setSaving] = useState(false);
   const [settling, setSettling] = useState(false);
   const [error, setError] = useState("");
@@ -50,18 +57,24 @@ export function AgentGoalEditor({
     };
   }, []);
   useEffect(() => {
-    if (goal && !original) {
-      setOriginal(goal);
-      setText(goal.objective);
+    if (original && !initiallyFocused.current) {
+      initiallyFocused.current = true;
+      input.current?.focus();
     }
-  }, [goal, original]);
-  useEffect(() => {
-    if (original) input.current?.focus();
   }, [original]);
 
   useEffect(() => {
-    if (original) onDraftChange?.({ chatId, original, text });
-  }, [chatId, original, text, onDraftChange]);
+    onDraftChange?.(
+      original
+        ? {
+            chatId,
+            original,
+            text,
+            ...(previousText !== undefined ? { previousText } : {}),
+          }
+        : undefined,
+    );
+  }, [chatId, original, text, previousText, onDraftChange]);
 
   // Worker continuations advance the generation without changing the user's
   // objective. Retain the draft across those updates, but reject other edits.
@@ -74,6 +87,26 @@ export function AgentGoalEditor({
     goalEditText(current) === goalEditText(original);
   const stale =
     !saving && !!original && goal !== undefined && !matchesOriginal(goal);
+  const pristine = !!original && text === original.objective;
+  useEffect(() => {
+    // Follow replacements only when there is no user text to lose. Completion
+    // and worker generation changes alone keep the same editing baseline.
+    if (saving || goal === undefined || (original && !(pristine && stale)))
+      return;
+    setOriginal(goal && !goal.deletedAt ? goal : null);
+    setText(goal && !goal.deletedAt ? goal.objective : "");
+    setError("");
+  }, [goal, original, pristine, stale, saving]);
+
+  function loadCurrentGoal() {
+    if (!goal || goal.deletedAt || saving) return;
+    setPreviousText(text);
+    setOriginal(goal);
+    setText(goal.objective);
+    setError("");
+    input.current?.focus();
+  }
+
   // This is a plain-text editor, not a slash-command parser. Retain legacy
   // explicit constraints; only the implicit criterion follows a revised request.
   const objective = text.trim();
@@ -113,9 +146,7 @@ export function AgentGoalEditor({
       throw new Error("Could not check the current goal. Try again.");
     const current = (await response.json()).goal as Goal | null;
     if (!matchesOriginal(current))
-      throw new Error(
-        "The goal changed or was cleared. Copy your draft if needed, then close and reopen Edit.",
-      );
+      throw new Error("The goal changed or was cleared. Your draft is kept.");
     return current!;
   }
   async function waitForSavedGoal(generation: number): Promise<Goal | null> {
@@ -307,7 +338,7 @@ export function AgentGoalEditor({
         {settling
           ? "Waiting for the previous run to stop before continuing with your saved goal…"
           : stale
-            ? "The goal changed or was cleared. Your unsaved draft is kept in the editor."
+            ? "Review the current goal before saving."
             : !original
               ? goal === undefined
                 ? "Loading goal…"
@@ -323,16 +354,54 @@ export function AgentGoalEditor({
                   ? "Saving reopens this goal and resets its completion check. Resume when ready."
                   : "Save changes, then Resume to pursue the updated goal."}
       </p>
-      {(error || validation || stale) && (
+      {stale ? (
+        <div className="mt-3 flex shrink-0 flex-col items-start gap-2 rounded-lg border border-border bg-muted/30 p-3">
+          <p
+            id={errorId}
+            role="alert"
+            className="text-sm text-muted-foreground"
+          >
+            {goal && !goal.deletedAt
+              ? "The goal has changed. Your unsaved draft is kept. Load the current goal to continue editing."
+              : "This goal was cleared. Your unsaved draft is kept; you can copy it to start a new goal."}
+          </p>
+          {goal && !goal.deletedAt && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-11 desktop:min-h-0"
+              onClick={loadCurrentGoal}
+            >
+              Load current goal
+            </Button>
+          )}
+        </div>
+      ) : error || validation ? (
         <p
           id={errorId}
           role="alert"
           className="mt-2 shrink-0 text-sm text-destructive"
         >
-          {stale
-            ? "The goal changed or was cleared. Copy your draft if needed, then close and reopen Edit."
-            : error || validation}
+          {error || validation}
         </p>
+      ) : null}
+      {!stale && pristine && previousText !== undefined && !saving && (
+        <div className="mt-2 flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>Your previous draft is available.</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="min-h-11 desktop:min-h-0"
+            onClick={() => {
+              setText(previousText);
+              setPreviousText(undefined);
+              setError("");
+              input.current?.focus();
+            }}
+          >
+            Restore my draft
+          </Button>
+        </div>
       )}
       <Textarea
         ref={input}
