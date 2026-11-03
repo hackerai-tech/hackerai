@@ -179,6 +179,34 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).not.toThrow();
   });
 
+  test.each(["us-east-1", "us-west-2", "eu-central-1"] as const)(
+    "accepts Trigger placement metadata for a deployed %s run",
+    (requestedRegion) => {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion,
+          actualRegion: `${requestedRegion}:v2:ondemand:fresh:container:stable`,
+          environmentType: "PREVIEW",
+        }),
+      ).not.toThrow();
+    },
+  );
+
+  test("rejects placement metadata for a different region or malformed suffix", () => {
+    for (const actualRegion of [
+      "us-east-1:v2:ondemand:fresh:container:stable",
+      "eu-central-1:unknown:ondemand",
+    ]) {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion: "eu-central-1",
+          actualRegion,
+          environmentType: "PREVIEW",
+        }),
+      ).toThrow(expect.objectContaining({ code: "TRIGGER_REGION_MISMATCH" }));
+    }
+  });
+
   test("fails a deployed European run when Trigger reports another region", () => {
     expect(() =>
       assertTriggerRunRegion({

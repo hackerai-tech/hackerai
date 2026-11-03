@@ -293,7 +293,13 @@ export function assertTriggerRunRegion(options: {
     return;
   }
 
-  if (options.actualRegion !== options.requestedRegion) {
+  // Trigger's deployed run metadata can append placement details to the AWS
+  // region (for example, us-east-1:v2:ondemand:...). Keep the region boundary
+  // explicit so a different AWS region never passes this check.
+  const actualRegionMatches =
+    options.actualRegion === options.requestedRegion ||
+    options.actualRegion?.startsWith(`${options.requestedRegion}:v2:`);
+  if (!actualRegionMatches) {
     throw new TriggerRegionMismatchError(
       options.requestedRegion,
       options.actualRegion,
