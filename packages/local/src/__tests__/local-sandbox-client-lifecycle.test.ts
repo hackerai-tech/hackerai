@@ -1,6 +1,11 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
 const mockSpawn = jest.fn();
+const mockCommandIdentity = jest.fn();
+
+jest.mock("../command-identity", () => ({
+  commandIdentityFromEnvironment: () => mockCommandIdentity(),
+}));
 
 jest.mock("child_process", () => ({
   ...jest.requireActual("child_process"),
@@ -42,7 +47,54 @@ const config = {
 describe("LocalSandboxClient cleanup", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCommandIdentity.mockReset();
     mockConfirmProcessTermination.mockResolvedValue(true);
+  });
+
+  it("runs streamed and background Agent commands as the isolated user", async () => {
+    mockCommandIdentity.mockReturnValue({
+      uid: 65534,
+      gid: 65534,
+      home: "/home/hackerai-agent",
+    });
+    const streamed = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    mockSpawn.mockReturnValueOnce(streamed).mockReturnValueOnce({
+      pid: 1234,
+      unref: jest.fn(),
+    });
+    const client = new LocalSandboxClient(config);
+    const privateClient = client as unknown as {
+      streamCommand: (
+        id: string,
+        command: string,
+        timeout: number,
+        show: boolean,
+        label: string,
+      ) => Promise<void>;
+      spawnBackground: (command: string) => Promise<number>;
+      publishToChannel: jest.Mock;
+    };
+    privateClient.publishToChannel = jest.fn().mockResolvedValue(undefined);
+    const running = privateClient.streamCommand(
+      "isolated",
+      "id",
+      0,
+      false,
+      "id",
+    );
+    streamed.emit("close", 0, null);
+    await running;
+    await privateClient.spawnBackground("id");
+    for (const call of mockSpawn.mock.calls.slice(0, 2)) {
+      expect(call[2]).toMatchObject({
+        uid: 65534,
+        gid: 65534,
+        env: { HOME: "/home/hackerai-agent" },
+      });
+    }
   });
 
   it("stops process resources exactly once across repeated cleanup", async () => {
