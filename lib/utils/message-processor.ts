@@ -170,8 +170,11 @@ export const normalizeMessages = (
         (toolPart.state === "approval-requested" ||
           toolPart.state === "approval-responded")
       ) {
+        // The SDK serializes approval metadata even on output-error parts.
+        // A canceled request must not ask for approval again on the next turn.
+        const { approval: _approval, ...stoppedPart } = part;
         processedParts.push({
-          ...part,
+          ...stoppedPart,
           state: "output-error",
           errorText: getIncompleteToolErrorText(undefined, true),
         });

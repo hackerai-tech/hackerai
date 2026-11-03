@@ -1,23 +1,28 @@
 import { normalizeMessages } from "../message-processor";
 import { INTERRUPTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
 import type { ChatMessage } from "@/types/chat";
+import { convertToModelMessages, validateUIMessages } from "ai";
 
 describe("normalizeMessages", () => {
   it.each(["approval-requested", "approval-responded"])(
     "only settles %s tool parts when the user stops",
-    (state) => {
+    async (state) => {
       const pending = {
         type: "tool-file_write",
         toolCallId: "write-1",
         state,
         input: { path: "/tmp/qa.txt", text: "qa" },
-        approval: { id: "approval-1", approved: true },
+        approval: {
+          id: "approval-1",
+          ...(state === "approval-responded" ? { approved: true } : {}),
+        },
         providerMetadata: { provider: { signature: "test-signature" } },
       };
       const completed = {
         ...pending,
         toolCallId: "write-completed",
         state: "output-available",
+        approval: undefined,
         output: "File written: /tmp/qa.txt",
       };
       const messages = [
@@ -25,8 +30,40 @@ describe("normalizeMessages", () => {
       ] as unknown as ChatMessage[];
       expect(normalizeMessages(messages).messages).toEqual(messages);
       const result = normalizeMessages(messages, { userInitiatedAbort: true });
+      await expect(
+        validateUIMessages({ messages: result.messages }),
+      ).resolves.toBeDefined();
+      const modelMessages = await convertToModelMessages(result.messages);
+      const modelParts = modelMessages.flatMap((message) =>
+        Array.isArray(message.content) ? message.content : [],
+      );
+      expect(
+        modelParts.some(
+          (part) =>
+            part.type === "tool-approval-request" ||
+            part.type === "tool-approval-response",
+        ),
+      ).toBe(false);
+      expect(modelParts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "tool-call",
+            toolCallId: "write-1",
+            input: pending.input,
+          }),
+          expect.objectContaining({
+            type: "tool-result",
+            toolCallId: "write-1",
+            output: expect.objectContaining({
+              type: "error-text",
+              value: "Stopped by user before the tool completed.",
+            }),
+          }),
+        ]),
+      );
+      const { approval: _approval, ...stopped } = pending;
       expect(result.messages[0].parts[0]).toEqual({
-        ...pending,
+        ...stopped,
         state: "output-error",
         errorText: "Stopped by user before the tool completed.",
       });
