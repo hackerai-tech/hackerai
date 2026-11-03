@@ -33,7 +33,8 @@ Use an isolated worktree with its own dependencies and approved Development
 configuration. Keep raw results outside Git. Supply a protected JSON record
 through standard input with `workosSealedSession` for the existing Preview Pro
 QA account and, when Preview is Vercel protected, a short-lived
-`vercelOidcToken`. Never put either credential in an argument or log. Confirm
+`vercelOidcToken` or the QA browser's existing `vercelAuthCookie`. Never put
+credentials in an argument or log. Confirm
 the exact Vercel Preview and Trigger deployment identities before the run. One account has one cloud workspace, so
 this driver runs targets sequentially. The target is cloned at its pinned
 commit by the real Agent; the host independently fetches the same revision to

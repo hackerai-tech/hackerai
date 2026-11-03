@@ -89,7 +89,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ProductBackend:
-    def __init__(self, origin: str, sealed_session: str, vercel_oidc_token: str | None = None):
+    def __init__(self, origin: str, sealed_session: str, vercel_oidc_token: str | None = None,
+                 vercel_auth_cookie: str | None = None):
         self.origin = preview_url(origin)
         if not sealed_session or "\n" in sealed_session or "\r" in sealed_session:
             raise ValueError("A single sealed Preview session is required")
@@ -101,6 +102,16 @@ class ProductBackend:
             path_specified=True, secure=True, expires=None, discard=True,
             comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
         ))
+        if vercel_auth_cookie:
+            if "\n" in vercel_auth_cookie or "\r" in vercel_auth_cookie:
+                raise ValueError("A single Vercel session cookie is required")
+            self.cookies.set_cookie(http.cookiejar.Cookie(
+                version=0, name="_vercel_jwt", value=vercel_auth_cookie,
+                port=None, port_specified=False, domain=urlparse(origin).hostname or "",
+                domain_specified=True, domain_initial_dot=False, path="/",
+                path_specified=True, secure=True, expires=None, discard=True,
+                comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
+            ))
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect(),
         )
@@ -453,7 +464,10 @@ async def main() -> None:
     token = credentials.get("vercelOidcToken")
     if token is not None and not isinstance(token, str):
         parser.error("vercelOidcToken must be a string when supplied")
-    client = ProductBackend(origin, credentials["workosSealedSession"], token)
+    vercel_cookie = credentials.get("vercelAuthCookie")
+    if vercel_cookie is not None and not isinstance(vercel_cookie, str):
+        parser.error("vercelAuthCookie must be a string when supplied")
+    client = ProductBackend(origin, credentials["workosSealedSession"], token, vercel_cookie)
     upstream = args.upstream.resolve()
     hackerai_revision = clean_revision(ROOT)
     upstream_revision = clean_revision(upstream)

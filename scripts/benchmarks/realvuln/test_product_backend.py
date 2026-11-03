@@ -146,6 +146,18 @@ class ProductBackendContractTests(unittest.TestCase):
         self.assertEqual(client.request("GET", "/api/entitlements"), b"{}")
         self.assertEqual(client.opener.seen_header, "short-lived-test-token")
 
+    def test_existing_vercel_session_cookie_reaches_only_preview_origin(self):
+        client = backend.ProductBackend(
+            "https://hackerai-git-test.vercel.app", "sealed-test-session",
+            vercel_auth_cookie="short-lived-test-cookie",
+        )
+        same_origin = backend.urllib.request.Request("https://hackerai-git-test.vercel.app/api/entitlements")
+        different_origin = backend.urllib.request.Request("https://another.example/api/entitlements")
+        client.cookies.add_cookie_header(same_origin)
+        client.cookies.add_cookie_header(different_origin)
+        self.assertIn("_vercel_jwt=short-lived-test-cookie", same_origin.get_header("Cookie"))
+        self.assertIsNone(different_origin.get_header("Cookie"))
+
     def test_protected_backend_requests_do_not_follow_redirects(self):
         self.assertIsNone(backend.NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.example"))
 
