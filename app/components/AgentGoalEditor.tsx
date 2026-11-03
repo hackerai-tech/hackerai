@@ -88,23 +88,21 @@ export function AgentGoalEditor({
   const stale =
     !saving && !!original && goal !== undefined && !matchesOriginal(goal);
   const pristine = !!original && text === original.objective;
-  useEffect(() => {
-    // Follow replacements only when there is no user text to lose. Completion
-    // and worker generation changes alone keep the same editing baseline.
-    if (saving || goal === undefined || (original && !(pristine && stale)))
-      return;
-    if ((!goal || goal.deletedAt) && previousText !== undefined) {
-      // A loaded goal may be cleared before the user restores their old draft.
-      // Keep that draft editable and retained across sidebar remounts.
+  // Reconcile before committing a stale editor frame or publishing its draft.
+  // Completion and worker generations alone retain the editing baseline.
+  if (!saving && goal !== undefined && (!original || (pristine && stale))) {
+    const next = goal && !goal.deletedAt ? goal : null;
+    if (!next && previousText !== undefined) {
+      // Clearing a loaded goal must not discard the backed-up unsaved draft.
       setText(previousText);
       setPreviousText(undefined);
       setError("");
-      return;
+    } else if (next !== original) {
+      setOriginal(next);
+      setText(next?.objective ?? "");
+      setError("");
     }
-    setOriginal(goal && !goal.deletedAt ? goal : null);
-    setText(goal && !goal.deletedAt ? goal.objective : "");
-    setError("");
-  }, [goal, original, pristine, stale, saving, previousText]);
+  }
 
   function loadCurrentGoal() {
     if (!goal || goal.deletedAt || saving) return;
