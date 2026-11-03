@@ -19,7 +19,9 @@ export function getConvexUrl(): string {
   return url;
 }
 
-export function getConvexClient(): ConvexHttpClient {
+export function getConvexClient(signal?: AbortSignal): ConvexHttpClient {
+  // A scoped reader must not change the singleton's fetch/cancellation options.
+  if (signal) return createServiceConvexClient(getConvexUrl(), { signal });
   if (!client) {
     client = createServiceConvexClient(getConvexUrl());
   }
