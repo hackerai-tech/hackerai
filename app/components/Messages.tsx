@@ -287,10 +287,14 @@ export const Messages = ({
   const lastUserMessageIndex = useMemo(() => {
     return findLastUserMessageIndex(visibleMessages);
   }, [visibleMessages]);
-  const lastUserMessageId =
+  const lastUserMessage =
     lastUserMessageIndex === undefined
       ? undefined
-      : visibleMessages[lastUserMessageIndex]?.id;
+      : visibleMessages[lastUserMessageIndex];
+  // Goal objectives are updated in their sidebar, never by replaying a message.
+  const editableMessageId = lastUserMessage?.metadata?.goal?.sent
+    ? undefined
+    : lastUserMessage?.id;
 
   // Check if last assistant message has any content (text or files)
   const lastAssistantHasContent = useMemo(() => {
@@ -449,16 +453,16 @@ export const Messages = ({
   // Memoized edit handlers to prevent unnecessary re-renders
   const handleStartEdit = useCallback(
     (messageId: string) => {
-      if (messageId === lastUserMessageId) {
+      if (messageId === editableMessageId) {
         setEditingMessageId(messageId);
       }
     },
-    [lastUserMessageId],
+    [editableMessageId],
   );
 
   const handleSaveEdit = useCallback(
     async (newContent: string, remainingFileIds: string[]) => {
-      if (editingMessageId && editingMessageId === lastUserMessageId) {
+      if (editingMessageId && editingMessageId === editableMessageId) {
         try {
           await onEditMessage(editingMessageId, newContent, remainingFileIds);
           setEditingMessageId(null);
@@ -470,7 +474,7 @@ export const Messages = ({
         }
       }
     },
-    [editingMessageId, lastUserMessageId, onEditMessage],
+    [editingMessageId, editableMessageId, onEditMessage],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -808,9 +812,9 @@ export const Messages = ({
               lastAssistantMessageIndex={lastAssistantMessageIndex}
               lastUserMessageIndex={lastUserMessageIndex}
               status={status}
-              canEdit={row.messageIndex === lastUserMessageIndex}
+              canEdit={row.message.id === editableMessageId}
               isEditing={
-                editingMessageId === lastUserMessageId &&
+                editingMessageId === editableMessageId &&
                 editingMessageId === row.message.id
               }
               isMobile={isMobile}
@@ -909,7 +913,7 @@ export const Messages = ({
       isAutoResuming,
       chatId,
       lastAssistantMessageIndex,
-      lastUserMessageId,
+      editableMessageId,
       lastUserMessageIndex,
       mode,
       onBranchMessage,

@@ -278,6 +278,66 @@ describe("Messages virtualized row invalidation", () => {
     );
   });
 
+  it.each([false, true])(
+    "does not edit sent goals but allows the latest normal message (mobile=%s)",
+    (isMobile) => {
+      const goalMessage: ChatMessage = {
+        ...messages[0],
+        metadata: { goal: { sent: true } },
+      };
+      const props = {
+        chatId: "chat-1",
+        setMessages: jest.fn(),
+        onRegenerate: jest.fn(),
+        onRetry: jest.fn(),
+        onEditMessage: jest.fn(),
+        status: "ready" as const,
+        error: null,
+        scrollRef: createRef<HTMLElement>(),
+        contentRef: createRef<HTMLElement>(),
+        isMobile,
+      };
+      const { rerender } = render(
+        <DataStreamProvider>
+          <Messages {...props} messages={[goalMessage, messages[1]]} />
+        </DataStreamProvider>,
+      );
+      expect(
+        screen.queryByRole("button", { name: "Edit message" }),
+      ).not.toBeInTheDocument();
+      const followup = { ...messages[0], id: "followup" };
+      rerender(
+        <DataStreamProvider>
+          <Messages
+            {...props}
+            messages={[goalMessage, messages[1], followup]}
+          />
+        </DataStreamProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+      expect(screen.getByTestId("message-editor")).toHaveTextContent(
+        "Editing followup",
+      );
+      // Late metadata must also revoke an already open inline editor.
+      rerender(
+        <DataStreamProvider>
+          <Messages
+            {...props}
+            messages={[
+              goalMessage,
+              messages[1],
+              { ...followup, metadata: { goal: { sent: true } } },
+            ]}
+          />
+        </DataStreamProvider>,
+      );
+      expect(screen.queryByTestId("message-editor")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Edit message" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("keeps the editor open after rejection and closes after a successful retry", async () => {
     const onEditMessage = jest
       .fn()

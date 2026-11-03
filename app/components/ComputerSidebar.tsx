@@ -1503,6 +1503,7 @@ export const ComputerSidebar: React.FC<{
         chatId: string;
         id: string;
         startedAt?: number;
+        state: string;
       }
     | undefined
   >(undefined);
@@ -1531,7 +1532,20 @@ export const ComputerSidebar: React.FC<{
       chatId: editorChatId,
       id: editorGoal._id,
       startedAt: editorGoal.startedAt,
+      state: editorGoal.state,
     };
+    if (
+      editorGoal.state === "achieved" &&
+      previous?.state !== "achieved" &&
+      previous?.chatId === editorChatId &&
+      previous.id === editorGoal._id &&
+      previous.startedAt === editorGoal.startedAt &&
+      (!goalDraft ||
+        (goalDraft.chatId === editorChatId &&
+          goalDraft.original._id === editorGoal._id &&
+          goalDraft.original.startedAt === editorGoal.startedAt))
+    )
+      closeSidebar();
   }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
 
   if (editorChatId) {

@@ -178,9 +178,14 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(mockCloseSidebar).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
   });
-  it.each([false, true])(
-    "closes the viewed goal editor after deletion (overlay=%s)",
-    (overlay) => {
+  it.each([
+    [false, "deleted"],
+    [true, "deleted"],
+    [false, "achieved"],
+    [true, "achieved"],
+  ] as const)(
+    "closes the viewed goal editor (overlay=%s, outcome=%s)",
+    (overlay, outcome) => {
       mockComputerSidebarOverlay = overlay;
       mockSidebarContent = { kind: "goal", chatId: "chat" };
       const goal = {
@@ -207,10 +212,14 @@ describe("ComputerSidebar reconnect behavior", () => {
       mockUseQuery.mockReturnValue(undefined);
       rerender(view());
       expect(mockCloseSidebar).not.toHaveBeenCalled();
-      mockUseQuery.mockReturnValue({ ...goal, state: "achieved" });
-      rerender(view());
-      expect(mockCloseSidebar).not.toHaveBeenCalled();
-      mockUseQuery.mockReturnValue(null);
+      for (const state of ["paused", "blocked"]) {
+        mockUseQuery.mockReturnValue({ ...goal, state });
+        rerender(view());
+        expect(mockCloseSidebar).not.toHaveBeenCalled();
+      }
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted" ? null : { ...goal, state: "achieved" },
+      );
       rerender(view());
       expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
       mockSidebarContent = null;
@@ -227,37 +236,47 @@ describe("ComputerSidebar reconnect behavior", () => {
       ).toHaveValue("New goal");
     },
   );
-  it("keeps an older draft open when a different replacement goal is cleared", () => {
-    mockSidebarContent = { kind: "goal", chatId: "chat" };
-    const goal = {
-      _id: "goal",
-      startedAt: 100,
-      objective: "Original",
-      criteria: ["Original"],
-      generation: 1,
-      state: "running",
-    };
-    mockUseQuery.mockReturnValue(goal);
-    const view = () => (
-      <ComputerSidebar chatId="chat" messages={[]} status="ready" />
-    );
-    const { rerender } = render(view());
-    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
-      target: { value: "Older draft" },
-    });
-    mockUseQuery.mockReturnValue({
-      ...goal,
-      startedAt: 200,
-      objective: "Replacement",
-    });
-    rerender(view());
-    mockUseQuery.mockReturnValue(null);
-    rerender(view());
-    expect(mockCloseSidebar).not.toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
-      "Older draft",
-    );
-  });
+  it.each(["deleted", "achieved"])(
+    "keeps an older draft open when a different replacement goal is %s",
+    (outcome) => {
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      const goal = {
+        _id: "goal",
+        startedAt: 100,
+        objective: "Original",
+        criteria: ["Original"],
+        generation: 1,
+        state: "running",
+      };
+      mockUseQuery.mockReturnValue(goal);
+      const view = () => (
+        <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+      );
+      const { rerender } = render(view());
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+        {
+          target: { value: "Older draft" },
+        },
+      );
+      mockUseQuery.mockReturnValue({
+        ...goal,
+        startedAt: 200,
+        objective: "Replacement",
+      });
+      rerender(view());
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted"
+          ? null
+          : { ...goal, startedAt: 200, state: "achieved" },
+      );
+      rerender(view());
+      expect(mockCloseSidebar).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+      ).toHaveValue("Older draft");
+    },
+  );
   it("does not close a terminal panel when the goal is cleared", () => {
     mockSidebarContent = { kind: "goal", chatId: "chat" };
     mockUseQuery.mockReturnValue({
