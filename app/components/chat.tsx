@@ -1,4 +1,5 @@
 "use client";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
@@ -1092,6 +1093,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }),
   );
 
+  const [completedPredictionTurn, setCompletedPredictionTurn] =
+    useState<CompletedPredictionTurn | null>(null);
+
   const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
     chatId: string;
     sequence: number;
@@ -1269,13 +1273,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort, isError }) => {
+    onFinish: ({ isAbort, isError, message }) => {
       performanceTracker.setOutcome(
         isError ? "error" : isAbort ? "aborted" : "completed",
       );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
+      setCompletedPredictionTurn(
+        !isAbort && !isError ? { chatId, messageId: message.id } : null,
+      );
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
@@ -1328,6 +1335,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     () => normalizeStreamedRecoveryMessages(streamedMessages),
     [streamedMessages],
   );
+
+  useEffect(() => {
+    if (status === "submitted" || status === "streaming" || status === "error")
+      setCompletedPredictionTurn(null);
+  }, [chatId, status]);
 
   useChatPerformance({
     tracker: performanceTracker,
@@ -2607,6 +2619,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     />
                   </div>
                   <ChatInput
+                    completedPredictionTurn={completedPredictionTurn}
+                    latestMessageId={messages.at(-1)?.id}
                     topNotice={
                       showChatLayout ? (
                         <BrowserHandoffEntry

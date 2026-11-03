@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -24,6 +24,10 @@ import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
+  prediction?: string;
+  onAcceptPrediction?: () => boolean;
+  onDismissPrediction?: () => void;
+  onDraftInteraction?: () => void;
   draftId: string;
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
@@ -37,6 +41,10 @@ export interface ChatInputTextareaProps {
 }
 
 export function ChatInputTextarea({
+  prediction,
+  onAcceptPrediction,
+  onDismissPrediction,
+  onDraftInteraction,
   draftId,
   chatMode,
   onEnterSubmit,
@@ -48,6 +56,7 @@ export function ChatInputTextarea({
   onPointerDown,
   onBlur,
 }: ChatInputTextareaProps) {
+  const predictionDescriptionId = useId();
   const input = useComposerInput();
   const { setInput, getInput } = useComposerActions();
   const { subscription } = useGlobalState();
@@ -183,7 +192,11 @@ export function ChatInputTextarea({
       <TextareaAutosize
         ref={textareaRef}
         value={input}
-        onChange={(e) => setInput(e.target.value)}
+        onChange={(e) => {
+          onDraftInteraction?.();
+          setInput(e.target.value);
+        }}
+        aria-describedby={prediction ? predictionDescriptionId : undefined}
         placeholder={
           placeholder !== undefined
             ? placeholder
@@ -200,6 +213,26 @@ export function ChatInputTextarea({
         data-testid="chat-input"
         onKeyDown={(e) => {
           if (
+            prediction &&
+            getInput() === "" &&
+            !e.nativeEvent.isComposing &&
+            e.nativeEvent.keyCode !== 229 &&
+            !e.shiftKey &&
+            !e.altKey &&
+            !e.ctrlKey &&
+            !e.metaKey
+          ) {
+            if (e.key === "Tab" && onAcceptPrediction?.()) {
+              e.preventDefault();
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onDismissPrediction?.();
+              return;
+            }
+          }
+          if (
             e.key === "Enter" &&
             !e.shiftKey &&
             !e.nativeEvent.isComposing &&
@@ -210,6 +243,15 @@ export function ChatInputTextarea({
           }
         }}
       />
+      {prediction && (
+        <span
+          id={predictionDescriptionId}
+          className="sr-only ph-no-capture ph-mask"
+        >
+          Suggested next message: {prediction}. Press Tab to add it to the
+          composer, or Escape to dismiss. Review and send when ready.
+        </span>
+      )}
     </div>
   );
 }

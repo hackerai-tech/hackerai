@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNextActions } from "@/app/hooks/useNextActions";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
+import { NextMessagePredictions } from "./NextMessagePredictions";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -60,6 +63,8 @@ import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
+  completedPredictionTurn?: CompletedPredictionTurn | null;
+  latestMessageId?: string;
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
@@ -246,6 +251,8 @@ export const ChatInput = (props: ChatInputProps) => {
 };
 
 const ChatInputContent = ({
+  completedPredictionTurn,
+  latestMessageId,
   onSubmit,
   onStop,
   onReconnect,
@@ -830,6 +837,29 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
+  const nextActions = useNextActions({
+    userId: user?.id,
+    chatId,
+    completedTurn: completedPredictionTurn,
+    latestMessageId,
+    status,
+    input,
+    getInput,
+    setInput,
+    hasAttachments: () =>
+      getUploadedFiles().length > 0 ||
+      getDraftAttachmentsById(draftId).length > 0,
+    blocked:
+      isOffline ||
+      !!effectiveSendDisabledReason ||
+      isResolvingInitialState ||
+      isUploadingFiles ||
+      uploadedFiles.length > 0 ||
+      !!approvalRequest ||
+      !!editingQueuedMessageId ||
+      messageQueue.length > 0,
+  });
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
@@ -844,12 +874,17 @@ const ChatInputContent = ({
 
     if (canSubmit) {
       isSubmittingRef.current = true;
+      const finishPredictionSubmission = nextActions.prepareSubmission();
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
-        const accepted = await onSubmit(e);
+        const accepted = await Promise.resolve(onSubmit(e)).catch((error) => {
+          finishPredictionSubmission(false);
+          throw error;
+        });
+        finishPredictionSubmission(accepted !== false);
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
@@ -1035,6 +1070,24 @@ const ChatInputContent = ({
             </div>
           )}
 
+          {nextActions.batch && (
+            <NextMessagePredictions
+              key={nextActions.batch.batchId}
+              controller={{
+                ...nextActions,
+                accept: (index, method) => {
+                  const accepted = nextActions.accept(index, method);
+                  if (accepted && method === "keyboard") {
+                    chatInputContainerRef.current
+                      ?.querySelector("textarea")
+                      ?.focus({ preventScroll: true });
+                  }
+                  return accepted;
+                },
+              }}
+            />
+          )}
+
           {user && (
             <div
               className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
@@ -1112,6 +1165,10 @@ const ChatInputContent = ({
             }}
           >
             <ChatInputTextarea
+              prediction={nextActions.batch?.suggestions[0]}
+              onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
+              onDismissPrediction={nextActions.dismiss}
+              onDraftInteraction={nextActions.invalidate}
               draftId={draftId}
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
