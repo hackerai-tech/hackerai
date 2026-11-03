@@ -994,7 +994,6 @@ export const deductWithAutoReload = action({
           ) {
             autoReloadTriggered = true;
             const operationId = claim.operationId;
-            await linkWalletReload(ctx, args, operationId);
             const executorId = claim.executorId;
             const amountDollars = claim.amountDollars;
             const releaseOperation = async () =>
@@ -1021,6 +1020,13 @@ export const deductWithAutoReload = action({
               operationId === candidateOperationId && !claim.stripeInvoiceId
                 ? await releaseOperation()
                 : await releaseExecutor();
+
+            try {
+              await linkWalletReload(ctx, args, operationId);
+            } catch (error) {
+              await releasePreCharge();
+              throw error;
+            }
 
             const creditOperation = async ({
               invoiceId,

@@ -611,6 +611,48 @@ describe("token-bucket async functions", () => {
       }
     });
 
+    it.each(["denied", "throws"])(
+      "retains the admission receipt ID when the included debit %s",
+      async (failure) => {
+        const { checkTokenBucketLimit } = getIsolatedModule();
+        mockLimitFn.mockResolvedValueOnce({
+          success: true,
+          remaining: 3,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+        if (failure === "denied") {
+          mockLimitFn.mockResolvedValueOnce({
+            success: false,
+            remaining: 0,
+            reset: Date.now() + 3600000,
+            limit: 250000,
+          });
+        } else {
+          mockLimitFn.mockRejectedValueOnce(
+            new Error("Redis acknowledgement lost"),
+          );
+        }
+        const error = await checkTokenBucketLimit("user-123", "pro", 1000, {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+        }).catch((error) => error);
+        const debit = mockDeductFromBalance.mock.calls[0];
+        expect(debit).toBeDefined();
+        expect(error.metadata.extraUsageAdmissionOperationId).toBe(debit[3]);
+        expect(debit[3]).toEqual(expect.any(String));
+        if (failure === "denied") {
+          expect(mockRefundToBalance).toHaveBeenCalledWith(
+            "user-123",
+            debit[1],
+          );
+        } else {
+          expect(mockRefundToBalance).not.toHaveBeenCalled();
+        }
+      },
+    );
+
     it("should throw monthly cap exceeded error when extra usage cap hit", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 

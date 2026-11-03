@@ -658,7 +658,6 @@ export const deductWithAutoReloadForTeam = action({
           ) {
             autoReloadTriggered = true;
             const operationId = claim.operationId;
-            await linkWalletReload(ctx, args, operationId);
             const executorId = claim.executorId;
             const amountDollars = claim.amountDollars;
             const completeOperation = (
@@ -679,6 +678,13 @@ export const deductWithAutoReloadForTeam = action({
                   failureReason,
                 },
               );
+            try {
+              await linkWalletReload(ctx, args, operationId);
+            } catch (error) {
+              await completeOperation("executor_released");
+              throw error;
+            }
+
             const releasePreCharge = () =>
               completeOperation(
                 operationId === candidateOperationId && !claim.stripeInvoiceId

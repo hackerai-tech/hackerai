@@ -957,6 +957,7 @@ export const checkTokenBucketLimit = async (
     };
   }
 
+  let admissionOperationId: string | undefined;
   try {
     // For team users: detect new bucket so we can apply seat debt after creation
     if (subscription === "team" && !organizationId) {
@@ -1035,7 +1036,11 @@ export const checkTokenBucketLimit = async (
       return new ChatSDKError(
         "rate_limit:chat",
         `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`,
-        limitMetadata(reset, "monthly_exhausted"),
+        limitMetadata(reset, "monthly_exhausted", {
+          ...(admissionOperationId && {
+            extraUsageAdmissionOperationId: admissionOperationId,
+          }),
+        }),
       );
     };
 
@@ -1103,7 +1108,7 @@ export const checkTokenBucketLimit = async (
         // Team users draw from the org's shared pool with per-member caps;
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
-        const admissionOperationId = crypto.randomUUID();
+        admissionOperationId = crypto.randomUUID();
         const deductResult = isTeamPool
           ? await deductFromTeamBalance(
               organizationId!,
@@ -1276,10 +1281,21 @@ export const checkTokenBucketLimit = async (
 
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
-    if (error instanceof ChatSDKError) throw error;
+    if (error instanceof ChatSDKError) {
+      if (admissionOperationId) {
+        error.metadata = {
+          ...error.metadata,
+          extraUsageAdmissionOperationId: admissionOperationId,
+        };
+      }
+      throw error;
+    }
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+      admissionOperationId
+        ? { extraUsageAdmissionOperationId: admissionOperationId }
+        : undefined,
     );
   }
 };
