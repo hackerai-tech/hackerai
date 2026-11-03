@@ -1374,32 +1374,42 @@ export const useChatHandlers = ({
       | undefined;
     const editStopGeneration = stopGenerationRef.current;
     if (editsGoal) {
-      const response = await fetch(
-        `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
-        { cache: "no-store" },
-      );
-      const data = await response.json();
-      if (
-        !response.ok ||
-        !data.enabled ||
-        !data.goal ||
-        data.goal.deletedAt ||
-        data.goal.activeRunId ||
-        !Number.isInteger(data.goal.generation) ||
-        expectedGoalGeneration === undefined ||
-        data.goal.generation !== expectedGoalGeneration
-      ) {
-        throw new Error(
-          "The goal changed or is unavailable. Reopen it before editing.",
+      const deadline = Date.now() + 10_000;
+      while (!savedGoal) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+          throw new Error(
+            "The previous run is still stopping. Try saving your edit again shortly.",
+          );
+        const response = await fetch(
+          `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+          { cache: "no-store", signal: AbortSignal.timeout(remaining) },
         );
+        const data = await response.json();
+        if (
+          !response.ok ||
+          !data.enabled ||
+          !data.goal ||
+          data.goal.deletedAt ||
+          !Number.isInteger(data.goal.generation) ||
+          expectedGoalGeneration === undefined ||
+          data.goal.generation !== expectedGoalGeneration
+        ) {
+          throw new Error(
+            "The goal changed or is unavailable. Reopen it before editing.",
+          );
+        }
+        if (
+          currentChatIdRef.current !== chatId ||
+          stopGenerationRef.current !== editStopGeneration
+        )
+          throw new Error("The task changed. Your edit has not been sent.");
+        if (data.goal.activeRunId) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          continue;
+        }
+        savedGoal = data.goal;
       }
-      if (
-        currentChatIdRef.current !== chatId ||
-        stopGenerationRef.current !== editStopGeneration
-      ) {
-        throw new Error("The task changed. Your edit has not been sent.");
-      }
-      savedGoal = data.goal;
     }
     let editedGoalGeneration: number | undefined;
 

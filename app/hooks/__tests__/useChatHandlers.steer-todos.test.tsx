@@ -1829,7 +1829,7 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
-  it.each(["achieved", "paused", "cleared", "stale"])(
+  it.each(["achieved", "paused", "settling", "cleared", "stale"])(
     "reruns an edited goal with its saved settings and fresh generation (%s)",
     async (state) => {
       const mockRegenerate = jest.fn();
@@ -1848,6 +1848,15 @@ describe("useChatHandlers steer todo handoff", () => {
           goal: state === "cleared" ? null : saved,
         }),
       } as Response);
+      if (state === "settling") {
+        jest.mocked(globalThis.fetch).mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            enabled: true,
+            goal: { ...saved, activeRunId: "old-run" },
+          }),
+        } as Response);
+      }
       mockRegenerateWithNewContent.mockResolvedValueOnce({ goalGeneration: 6 });
       const { result } = renderHook(() =>
         useChatHandlers({

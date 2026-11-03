@@ -55,7 +55,6 @@ import {
   getChatTimelineRowType,
   stabilizeChatTimelineRows,
   type ChatTimelineRow,
-  type StableChatTimelineRowsState,
 } from "./message-timeline-rows";
 import { CHAT_TIMELINE_ANCHOR_OFFSET } from "../hooks/useMessageScroll";
 
@@ -391,19 +390,22 @@ export const Messages = ({
     status,
     visibleMessages,
   ]);
-  const stableTimelineRowsRef = useRef<StableChatTimelineRowsState | null>(
-    null,
-  );
-  const stableTimelineRowsState = useMemo(
-    () =>
-      stabilizeChatTimelineRows(
-        rawTimelineRows,
-        stableTimelineRowsRef.current ?? createStableChatTimelineRowsState(),
-      ),
-    [rawTimelineRows],
-  );
+  const [stableRows, setStableRows] = useState(() => ({
+    source: rawTimelineRows,
+    state: stabilizeChatTimelineRows(
+      rawTimelineRows,
+      createStableChatTimelineRowsState(),
+    ),
+  }));
+  let stableTimelineRowsState = stableRows.state;
+  if (stableRows.source !== rawTimelineRows) {
+    stableTimelineRowsState = stabilizeChatTimelineRows(
+      rawTimelineRows,
+      stableRows.state,
+    );
+    setStableRows({ source: rawTimelineRows, state: stableTimelineRowsState });
+  }
   useLayoutEffect(() => {
-    stableTimelineRowsRef.current = stableTimelineRowsState;
     restoredAgentMessageStore.commit(
       chatId,
       stableTimelineRowsState.result,
@@ -459,11 +461,12 @@ export const Messages = ({
       if (editingMessageId && editingMessageId === lastUserMessageId) {
         try {
           await onEditMessage(editingMessageId, newContent, remainingFileIds);
+          setEditingMessageId(null);
         } catch (error) {
           console.error("Failed to edit message:", error);
-          toast.error("Failed to edit message. Please try again.");
-        } finally {
-          setEditingMessageId(null);
+          toast.error(
+            "Could not save your edit. Your draft is kept; please try again.",
+          );
         }
       }
     },
@@ -561,6 +564,8 @@ export const Messages = ({
         ":scope > .legend-list-content-container",
       ) ?? null;
 
+    // These DOM nodes exist only after LegendList commits; connect bottom-follow before paint.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTimelineElements((current) =>
       current.scroll === scrollElement && current.content === contentElement
         ? current
@@ -984,7 +989,7 @@ export const Messages = ({
           estimatedItemSize={48}
           recycleItems={false}
           initialScrollAtEnd
-          {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+          anchoredEndSpace={anchoredEndSpace}
           contentInsetEndAdjustment={contentInsetEndAdjustment}
           maintainVisibleContentPosition={{ data: true, size: true }}
           style={{ height: "100%", minHeight: 0 }}
