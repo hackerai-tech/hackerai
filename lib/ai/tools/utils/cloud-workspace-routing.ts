@@ -1,4 +1,5 @@
 import {
+  hasWorkspaceOwnerAndLocation,
   isOwnedWorkspace,
   reconcileWorkspaceCreation,
   reserveWorkspace,
@@ -40,6 +41,7 @@ export async function resolveCloudWorkspaceRegion({
       | "stored_region_conflict"
       | "inventory_unconfigured"
       | "inventory_owner_mismatch"
+      | "inventory_template_mismatch"
       | "inventory_incomplete"
       | "inventory_multiple_clusters"
       | "claimed_region_invalid"
@@ -198,7 +200,11 @@ export async function resolveCloudWorkspaceRegion({
           if (items.some((item) => item.metadata?.userID !== userId))
             throw unavailable("inventory_owner_mismatch");
           if (list.hasNext) throw unavailable("inventory_incomplete");
-          if (items.some((item) => !isOwnedWorkspace(item, cluster, userId)))
+          if (
+            items.some(
+              (item) => !hasWorkspaceOwnerAndLocation(item, cluster, userId),
+            )
+          )
             throw unavailable("inventory_owner_mismatch");
           return items.map((item) => ({ item, cluster }));
         } catch (error) {
@@ -211,6 +217,16 @@ export async function resolveCloudWorkspaceRegion({
       }),
     );
     const inventory = occupied.flat();
+    if (
+      inventory.some(
+        ({ item, cluster }) => !isOwnedWorkspace(item, cluster, userId),
+      )
+    ) {
+      // Never silently adopt another workspace or create around historical files.
+      // The picker can offer compatible identities after an explicit choice.
+      unavailable("inventory_template_mismatch");
+      throw new CloudWorkspaceSelectionRequiredError();
+    }
     // A prior region choice identifies a workspace only when that region has
     // exactly one candidate. Never use inventory order or the current IP.
     const preferred =

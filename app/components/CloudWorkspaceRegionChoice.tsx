@@ -53,6 +53,10 @@ async function request(
     view.choices.length > 0 &&
     view.choices.length <= 100 &&
     view.choices.every(validChoice) &&
+    (view.unavailableCount === undefined ||
+      (Number.isInteger(view.unavailableCount) &&
+        view.unavailableCount >= 0 &&
+        view.unavailableCount + view.choices.length <= 100)) &&
     new Set(view.choices.map((choice: CloudWorkspaceOption) => choice.id))
       .size === view.choices.length &&
     (view.currentId === undefined ||
@@ -387,6 +391,12 @@ export function CloudWorkspaceRegionChoice({
             The last-started time doesn’t tell you which workspace has your
             files.
           </p>
+          {!!view.unavailableCount && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Some saved workspaces cannot be selected here. They and their
+              files will be kept unchanged when you choose a workspace.
+            </p>
+          )}
         </>
       )}
       <div role="status">
