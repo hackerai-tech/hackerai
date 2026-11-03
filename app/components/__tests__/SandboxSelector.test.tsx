@@ -1,5 +1,11 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 let mockIsMobile: boolean | undefined = false;
@@ -44,26 +50,25 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
-  it("opens cloud workspace management without changing the selected computer", async () => {
+  it("keeps routine cloud selection free of workspace management", () => {
     mockGlobalState.subscription = "pro";
     const onChange = jest.fn();
-    render(<SandboxSelector value="environment:remote" onChange={onChange} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: /Selected computer unavailable/ }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Manage workspaces" }),
-    );
+    render(<SandboxSelector value="e2b" onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+
     expect(
-      await screen.findByRole("dialog", { name: "Cloud workspaces" }),
-    ).toBeVisible();
-    expect(onChange).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(fetch).toHaveBeenCalledWith(
-        "/api/sandbox/workspaces?manage=1",
-        expect.any(Object),
-      ),
+      screen.queryByRole("button", { name: "Manage workspaces" }),
+    ).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/sandbox/workspaces?manage=1",
+      expect.any(Object),
     );
+
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Cloud" }),
+    );
+    expect(onChange).toHaveBeenCalledWith("e2b");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it.each([true, false])(
     "closes the menu when the mobile layout changes from %s",
