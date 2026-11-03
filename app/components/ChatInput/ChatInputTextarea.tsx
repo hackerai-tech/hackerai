@@ -22,10 +22,13 @@ import {
 import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { useCommittedRef } from "@/app/hooks/useLatestRef";
 
 export interface ChatInputTextareaProps {
   prediction?: string;
-  onAcceptPrediction?: () => boolean;
+  onAcceptPrediction?: (method: "keyboard" | "pointer") => boolean;
+  onPredictionExposed?: () => void;
+  composerFocused?: boolean;
   onDismissPrediction?: () => void;
   onDraftInteraction?: () => void;
   draftId: string;
@@ -43,6 +46,8 @@ export interface ChatInputTextareaProps {
 export function ChatInputTextarea({
   prediction,
   onAcceptPrediction,
+  onPredictionExposed,
+  composerFocused = false,
   onDismissPrediction,
   onDraftInteraction,
   draftId,
@@ -63,11 +68,54 @@ export function ChatInputTextarea({
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const predictionPointerType = useRef("mouse");
+  const exposed = useCommittedRef(onPredictionExposed);
+  const activePrediction = input === "" && !disabled ? prediction : undefined;
+  const defaultPlaceholder =
+    placeholder ??
+    (chatMode === "agent" ? "Do anything" : "Ask, learn, brainstorm");
   const inputRef = useRef(input);
   const prevDraftIdRef = useRef(draftId);
   useEffect(() => {
     inputRef.current = input;
   });
+
+  useEffect(() => {
+    if (!activePrediction || !textareaRef.current) return;
+    let visible = false;
+    const record = () => {
+      if (visible && document.visibilityState === "visible")
+        exposed.current?.();
+    };
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        visible = entry.isIntersecting && entry.intersectionRatio >= 0.5;
+        record();
+      },
+      { threshold: 0.5 },
+    );
+    observer.observe(textareaRef.current);
+    document.addEventListener("visibilitychange", record);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", record);
+    };
+  }, [activePrediction, exposed]);
+
+  const acceptPrediction = (method: "keyboard" | "pointer", focus: boolean) => {
+    if (!onAcceptPrediction?.(method)) return false;
+    if (focus) {
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        textarea?.focus({ preventScroll: true });
+        textarea?.setSelectionRange(
+          textarea.value.length,
+          textarea.value.length,
+        );
+      });
+    }
+    return true;
+  };
 
   useEffect(() => {
     // Mobile composition starts with an explicit tap, without opening its
@@ -189,66 +237,94 @@ export function ChatInputTextarea({
 
   return (
     <div className="overflow-y-auto pl-4 pr-2">
-      <TextareaAutosize
-        ref={textareaRef}
-        value={input}
-        onChange={(e) => {
-          onDraftInteraction?.();
-          setInput(e.target.value);
-        }}
-        aria-describedby={prediction ? predictionDescriptionId : undefined}
-        placeholder={
-          placeholder !== undefined
-            ? placeholder
-            : chatMode === "agent"
-              ? "Do anything"
-              : "Ask, learn, brainstorm"
-        }
-        className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
-        minRows={minRows}
-        onFocus={onFocus}
-        onPointerDown={onPointerDown}
-        onBlur={onBlur}
-        disabled={disabled}
-        data-testid="chat-input"
-        onKeyDown={(e) => {
-          if (
-            prediction &&
-            getInput() === "" &&
-            !e.nativeEvent.isComposing &&
-            e.nativeEvent.keyCode !== 229 &&
-            !e.shiftKey &&
-            !e.altKey &&
-            !e.ctrlKey &&
-            !e.metaKey
-          ) {
-            if (e.key === "Tab" && onAcceptPrediction?.()) {
-              e.preventDefault();
-              return;
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              onDismissPrediction?.();
-              return;
-            }
+      <div className="relative">
+        <TextareaAutosize
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => {
+            onDraftInteraction?.();
+            setInput(e.target.value);
+          }}
+          aria-label={defaultPlaceholder}
+          aria-describedby={
+            activePrediction ? predictionDescriptionId : undefined
           }
-          if (
-            e.key === "Enter" &&
-            !e.shiftKey &&
-            !e.nativeEvent.isComposing &&
-            e.nativeEvent.keyCode !== 229
-          ) {
-            e.preventDefault();
-            onEnterSubmit(e);
-          }
-        }}
-      />
-      {prediction && (
+          placeholder={activePrediction ?? defaultPlaceholder}
+          className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "pr-14 pointer-coarse:min-h-11 ph-no-capture ph-mask" : ""}`}
+          minRows={minRows}
+          onFocus={onFocus}
+          onPointerDown={onPointerDown}
+          onBlur={onBlur}
+          disabled={disabled}
+          data-testid="chat-input"
+          onKeyDown={(e) => {
+            if (
+              activePrediction &&
+              getInput() === "" &&
+              !e.nativeEvent.isComposing &&
+              e.nativeEvent.keyCode !== 229 &&
+              !e.shiftKey &&
+              !e.altKey &&
+              !e.ctrlKey &&
+              !e.metaKey
+            ) {
+              if (e.key === "Tab" && acceptPrediction("keyboard", true)) {
+                e.preventDefault();
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                onDismissPrediction?.();
+                return;
+              }
+            }
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing &&
+              e.nativeEvent.keyCode !== 229
+            ) {
+              e.preventDefault();
+              onEnterSubmit(e);
+            }
+          }}
+        />
+        {activePrediction && (
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Use suggested message"
+            aria-describedby={predictionDescriptionId}
+            className={`ph-no-capture ph-mask absolute right-0 top-0 hidden min-h-7 min-w-11 items-center justify-center rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:inline-flex pointer-coarse:min-h-11 ${composerFocused ? "pointer-fine:inline-flex" : ""}`}
+            onPointerDown={(event) => {
+              predictionPointerType.current = event.pointerType;
+              if (event.pointerType === "mouse") event.preventDefault();
+            }}
+            onClick={(event) => {
+              acceptPrediction(
+                event.detail === 0 ? "keyboard" : "pointer",
+                event.detail === 0 || predictionPointerType.current === "mouse",
+              );
+            }}
+          >
+            <kbd
+              aria-hidden="true"
+              className="rounded border border-border px-1.5 py-0.5 text-[11px] pointer-coarse:hidden"
+            >
+              Tab
+            </kbd>
+            <span aria-hidden="true" className="hidden pointer-coarse:inline">
+              Use
+            </span>
+          </button>
+        )}
+      </div>
+      {activePrediction && (
         <span
           id={predictionDescriptionId}
           className="sr-only ph-no-capture ph-mask"
         >
-          Suggested next message: {prediction}. Press Tab to add it to the
+          Suggested next message: {activePrediction}. Press Tab to add it to the
           composer, or Escape to dismiss. Review and send when ready.
         </span>
       )}

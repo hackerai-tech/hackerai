@@ -3,7 +3,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
-import { NextMessagePredictions } from "./NextMessagePredictions";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -1046,19 +1045,6 @@ const ChatInputContent = ({
             />
           )}
 
-          {nextActions.batch && (
-            <NextMessagePredictions
-              key={nextActions.batch.batchId}
-              controller={nextActions}
-              showKeyboardHint={composerFocused}
-              onFocusComposer={() => {
-                chatInputContainerRef.current
-                  ?.querySelector("textarea")
-                  ?.focus({ preventScroll: true });
-              }}
-            />
-          )}
-
           {/* Hidden selectors take no space; the bottom-anchored composer stays
               in place while the panels above it use the available height. */}
           {user && isAgent && !showAgentApprovalPrompt && (
@@ -1162,7 +1148,9 @@ const ChatInputContent = ({
           >
             <ChatInputTextarea
               prediction={nextActions.batch?.suggestions[0]}
-              onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
+              onAcceptPrediction={(method) => nextActions.accept(0, method)}
+              onPredictionExposed={nextActions.exposed}
+              composerFocused={composerFocused}
               onDismissPrediction={nextActions.dismiss}
               onDraftInteraction={nextActions.invalidate}
               draftId={draftId}

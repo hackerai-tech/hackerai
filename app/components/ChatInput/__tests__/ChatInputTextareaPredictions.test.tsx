@@ -6,7 +6,7 @@ import {
 } from "@/app/contexts/ComposerState";
 import { useNextActions } from "@/app/hooks/useNextActions";
 import { ChatInputTextarea } from "../ChatInputTextarea";
-import { NextMessagePredictions } from "../NextMessagePredictions";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ subscription: "pro" }),
@@ -42,17 +42,15 @@ function Harness() {
   });
   return (
     <>
-      <NextMessagePredictions
-        controller={controller}
-        onFocusComposer={() => screen.getByTestId("chat-input").focus()}
-      />
       <ChatInputTextarea
         draftId="chat"
         chatMode="ask"
         autoFocus={false}
         onEnterSubmit={send}
         prediction={controller.batch?.suggestions[0]}
-        onAcceptPrediction={() => controller.accept(0, "keyboard")}
+        onAcceptPrediction={(method) => controller.accept(0, method)}
+        onPredictionExposed={controller.exposed}
+        composerFocused
         onDismissPrediction={controller.dismiss}
         onDraftInteraction={controller.invalidate}
       />
@@ -76,11 +74,15 @@ beforeEach(() => {
     }),
   });
   global.IntersectionObserver = class {
+    constructor(callback: IntersectionObserverCallback) {
+      visibilityCallback = callback;
+    }
     observe() {}
     disconnect() {}
     unobserve() {}
   } as unknown as typeof IntersectionObserver;
 });
+let visibilityCallback: IntersectionObserverCallback;
 afterEach(() => jest.useRealTimers());
 async function setup() {
   render(
@@ -96,6 +98,12 @@ async function setup() {
 
 test("Tab only accepts into the empty focused composer; explicit Enter sends", async () => {
   const textarea = await setup();
+  expect(textarea).toHaveAttribute("placeholder", suggestions[0]);
+  expect(textarea).toHaveAccessibleName("Ask, learn, brainstorm");
+  expect(
+    screen.queryByRole("group", { name: "Suggested next messages" }),
+  ).toBeNull();
+  expect(screen.queryByText(suggestions[1])).toBeNull();
   textarea.focus();
   fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
   expect(textarea).toHaveValue("");
@@ -103,6 +111,7 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
   expect(textarea).toHaveValue("");
   fireEvent.keyDown(textarea, { key: "Tab" });
   expect(textarea).toHaveValue(suggestions[0]);
+  expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   expect(textarea).toHaveFocus();
   expect(send).not.toHaveBeenCalled();
   fireEvent.change(textarea, { target: { value: "My edited follow-up" } });
@@ -111,35 +120,32 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
   expect(send).toHaveBeenCalledTimes(1);
 });
 
-test("touch acceptance of an alternative preserves focus and never submits", async () => {
+test("touch acceptance fills the inline draft without forcing focus or submitting", async () => {
   const textarea = await setup();
   const other = screen.getByRole("button", { name: "Next control" });
   other.focus();
-  fireEvent.click(
-    screen.getByRole("button", { name: "Show alternative suggestions" }),
-  );
-  const alternative = screen.getByRole("button", { name: suggestions[1] });
+  const accept = screen.getByRole("button", { name: "Use suggested message" });
   const touch = new Event("pointerdown", { bubbles: true });
   Object.defineProperty(touch, "pointerType", { value: "touch" });
-  fireEvent(alternative, touch);
-  fireEvent.click(alternative, {
+  fireEvent(accept, touch);
+  fireEvent.click(accept, {
     detail: 1,
   });
-  expect(textarea).toHaveValue(suggestions[1]);
+  expect(textarea).toHaveValue(suggestions[0]);
   expect(other).toHaveFocus();
   expect(send).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("keyboard dismissal returns focus from the disappearing strip to the composer", async () => {
+test("Escape restores the ordinary placeholder and preserves composer focus", async () => {
   const textarea = await setup();
-  const dismiss = screen.getByRole("button", { name: "Dismiss suggestions" });
-  dismiss.focus();
-  fireEvent.keyDown(dismiss, { key: "Escape" });
+  textarea.focus();
+  fireEvent.keyDown(textarea, { key: "Escape" });
   expect(textarea).toHaveFocus();
   expect(
-    screen.queryByRole("group", { name: "Suggested next messages" }),
+    screen.queryByRole("button", { name: "Use suggested message" }),
   ).toBeNull();
+  expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -147,7 +153,7 @@ test("Escape and typing dismiss permanently without sending", async () => {
   const textarea = await setup();
   fireEvent.keyDown(textarea, { key: "Escape" });
   expect(
-    screen.queryByRole("group", { name: "Suggested next messages" }),
+    screen.queryByRole("button", { name: "Use suggested message" }),
   ).not.toBeInTheDocument();
   fireEvent.change(textarea, { target: { value: "x" } });
   fireEvent.change(textarea, { target: { value: "" } });
@@ -155,7 +161,52 @@ test("Escape and typing dismiss permanently without sending", async () => {
     await jest.advanceTimersByTimeAsync(2000);
   });
   expect(
-    screen.queryByRole("group", { name: "Suggested next messages" }),
+    screen.queryByRole("button", { name: "Use suggested message" }),
   ).not.toBeInTheDocument();
   expect(send).not.toHaveBeenCalled();
+});
+
+test("typing replaces the suggestion and clearing the draft does not revive it", async () => {
+  const textarea = await setup();
+  fireEvent.change(textarea, { target: { value: "My own request" } });
+  expect(textarea).toHaveValue("My own request");
+  expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
+  fireEvent.change(textarea, { target: { value: "" } });
+  expect(
+    screen.queryByRole("button", { name: "Use suggested message" }),
+  ).toBeNull();
+  expect(send).not.toHaveBeenCalled();
+});
+
+test("exposure waits for the inline placeholder to be visible and is deduplicated", async () => {
+  await setup();
+  const observe = (ratio: number) =>
+    act(() =>
+      visibilityCallback(
+        [
+          {
+            isIntersecting: ratio > 0,
+            intersectionRatio: ratio,
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      ),
+    );
+  observe(0.2);
+  expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+  observe(1);
+  observe(1);
+  expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledTimes(1);
+  expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "contextual_next_actions_exposed",
+      properties: expect.objectContaining({
+        shown_count: 1,
+        presentation: "inline_composer",
+      }),
+    }),
+  );
+  expect(
+    JSON.stringify(jest.mocked(captureQueuedAuthenticatedEvent).mock.calls),
+  ).not.toContain(suggestions[0]);
 });

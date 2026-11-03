@@ -122,6 +122,7 @@ export function useNextActions(options: Options): NextActionsController {
           chat_id: current.current.chatId,
           message_id: source.messageId,
           mode: source.mode,
+          presentation: "inline_composer",
           ...extra,
         },
       });
@@ -286,6 +287,7 @@ export function useNextActions(options: Options): NextActionsController {
       remember(exposedIds.current, source.batchId);
       capture("exposed", source, {
         suggestion_count: source.suggestions.length,
+        shown_count: 1,
       });
     },
     accept: (index, method) => {
