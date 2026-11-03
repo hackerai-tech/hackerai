@@ -116,6 +116,7 @@ describe("get_terminal_files", () => {
     );
     const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
     expect(fields).toMatchObject({
+      abort_signal_aborted: null,
       sandbox_type: "cloud",
       observed_sandbox_type_version: 1,
       observed_sandbox_types: ["desktop"],
@@ -241,9 +242,11 @@ describe("get_terminal_files", () => {
     jest
       .mocked(context.sandboxManager.getSandboxInfo)
       .mockReturnValue({ type: "cloud" });
-    const result = await runTool(createGetTerminalFiles(context), {
-      files: ["recovered.txt", "missing.txt", "/failed-upload.txt"],
-    });
+    const result = await runTool(
+      createGetTerminalFiles(context),
+      { files: ["recovered.txt", "missing.txt", "/failed-upload.txt"] },
+      new AbortController().signal,
+    );
 
     expect(result).toMatchObject({
       files: [{ path: "recovered.txt" }],
@@ -252,6 +255,7 @@ describe("get_terminal_files", () => {
     expect(logger.warn).not.toHaveBeenCalled();
     const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
     expect(fields).toMatchObject({
+      abort_signal_aborted: false,
       delivered_file_count: 1,
       failed_file_count: 2,
       file_delivery_diagnostic_version: 1,
@@ -1118,6 +1122,7 @@ describe("get_terminal_files", () => {
       expect(phLogger.event).toHaveBeenLastCalledWith(
         "agent_file_delivery_completed",
         expect.objectContaining({
+          abort_signal_aborted: true,
           delivered_file_count: 1,
           failed_file_count: 2,
         }),
@@ -1151,6 +1156,15 @@ describe("get_terminal_files", () => {
     expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
     expect(context.fileAccumulator.add).toHaveBeenCalledTimes(1);
     expect(context.writer.write).toHaveBeenCalledTimes(1);
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        abort_signal_aborted: true,
+        delivered_file_count: 1,
+        failed_file_count: 1,
+        failure_phase_counts: { unknown: 1 },
+      }),
+    );
   });
 
   it("does not acquire a sandbox for a delivery canceled before execution", async () => {
@@ -1170,6 +1184,14 @@ describe("get_terminal_files", () => {
     });
     expect(context.sandboxManager.getSandbox).not.toHaveBeenCalled();
     expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        abort_signal_aborted: true,
+        delivered_file_count: 0,
+        failed_file_count: 2,
+      }),
+    );
   });
   it("does not carry a native metadata reason across a relay recovery attempt", async () => {
     const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };

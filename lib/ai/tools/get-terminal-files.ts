@@ -139,6 +139,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             requested_file_count: files.length,
             delivered_file_count: delivered,
             failed_file_count: failed,
+            abort_signal_aborted: abortSignal?.aborted ?? null,
             file_delivery_diagnostic_version: 1,
             failure_phase_counts: failurePhaseCounts,
             transfer_failure_diagnostic_version: 1,
