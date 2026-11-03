@@ -189,13 +189,13 @@ class ProductBackend:
                 "workspaceStatus": workspace["status"], "triggerHealth": trigger_health}
 
     def start(self, chat_id: str, message: str, *, automatic: bool = False,
-              todos: list[dict] | None = None) -> dict:
+              todos: list[dict] | None = None, sandbox_preference: str = "e2b") -> dict:
         response = self.json("POST", "/api/agent", {
             "chatId": chat_id,
             "agentRunRequestId": uuid.uuid4().hex,
             "messages": [{"id": str(uuid.uuid4()), "role": "user", "parts": [{"type": "text", "text": message}],
                           **({"metadata": {"isAutoContinue": True}} if automatic else {})}],
-            "sandboxPreference": "e2b",
+            "sandboxPreference": sandbox_preference,
             "agentPermissionMode": "full_access",
             "selectedModel": "hackerai-pro",
             **({"isAutoContinue": True, "isAutomaticContinuation": True,

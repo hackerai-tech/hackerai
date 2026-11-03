@@ -184,6 +184,19 @@ class ProductBackendContractTests(unittest.TestCase):
         with self.assertRaises(backend.BackendError):
             backend.latest_saved_todos([{"type": "data-appendMessage", "data": json.dumps(message)}])
 
+    def test_product_request_can_select_an_authenticated_remote_connection(self):
+        client = object.__new__(backend.ProductBackend)
+        payloads = []
+
+        def start(_method, _path, payload):
+            payloads.append(payload)
+            return {"chatId": "chat-1", "runId": "run-1", "publicAccessToken": "test-token"}
+
+        client.json = start
+        client.start("chat-1", "bounded task", sandbox_preference="connection-1")
+        self.assertEqual(payloads[0]["sandboxPreference"], "connection-1")
+        self.assertEqual(payloads[0]["selectedModel"], "hackerai-pro")
+
     def test_existing_vercel_session_cookie_reaches_only_preview_origin(self):
         client = backend.ProductBackend(
             "https://hackerai-git-test.vercel.app", "sealed-test-session",

@@ -1,4 +1,5 @@
 import * as os from "os";
+import type { CommandIdentity } from "./command-identity";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -40,6 +41,8 @@ interface PtyModule {
       rows: number;
       cwd: string;
       env: Record<string, string>;
+      uid?: number;
+      gid?: number;
     },
   ): PtyProcess;
 }
@@ -89,6 +92,7 @@ function loadPty(): PtyModule {
 // ---------------------------------------------------------------------------
 
 export class ProcessRunner {
+  constructor(private readonly commandIdentity?: CommandIdentity) {}
   private readonly activeProcesses: Map<string, PtyProcess> = new Map();
   private readonly outputBuffers: Map<string, string> = new Map();
   private readonly pendingOutput = new Set<string>();
@@ -134,6 +138,7 @@ export class ProcessRunner {
     if (opts.env) {
       Object.assign(env, opts.env);
     }
+    if (this.commandIdentity) env.HOME = this.commandIdentity.home;
 
     const pty = loadPty();
     const proc = pty.spawn(shell, ["-l", "-c", command], {
@@ -142,6 +147,10 @@ export class ProcessRunner {
       rows,
       cwd,
       env,
+      ...(this.commandIdentity && {
+        uid: this.commandIdentity.uid,
+        gid: this.commandIdentity.gid,
+      }),
     });
 
     this.activeProcesses.set(sessionId, proc);

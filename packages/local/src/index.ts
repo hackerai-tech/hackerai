@@ -43,8 +43,13 @@ import {
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
 import { preparePrivateArtifactStorage } from "./private-artifact-hardening";
-import { CONNECT_HELP, parseCliOptions } from "./cli-options";
+import {
+  CONNECT_HELP,
+  parseCliOptions,
+  readProtectedTokenFile,
+} from "./cli-options";
 import { commandDisplayText } from "./command-display";
+import { commandIdentityFromEnvironment } from "./command-identity";
 
 const CLIENT_VERSION: string = require("../package.json").version;
 
@@ -309,6 +314,7 @@ export class LocalSandboxClient {
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
   private processRunner: ProcessRunner;
+  private readonly commandIdentity = commandIdentityFromEnvironment();
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
   private operationRouter?: OperationChannelRouter<Subscription>;
@@ -325,7 +331,7 @@ export class LocalSandboxClient {
   ) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
-    this.processRunner = new ProcessRunner();
+    this.processRunner = new ProcessRunner(this.commandIdentity);
     this.setupProcessRunnerListeners();
   }
 
@@ -996,6 +1002,11 @@ export class LocalSandboxClient {
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         detached: os.platform() !== "win32",
+        ...(this.commandIdentity && {
+          uid: this.commandIdentity.uid,
+          gid: this.commandIdentity.gid,
+          env: { ...process.env, HOME: this.commandIdentity.home },
+        }),
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
@@ -1168,6 +1179,11 @@ export class LocalSandboxClient {
     const child = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
       detached: os.platform() !== "win32",
       stdio: "ignore",
+      ...(this.commandIdentity && {
+        uid: this.commandIdentity.uid,
+        gid: this.commandIdentity.gid,
+        env: { ...process.env, HOME: this.commandIdentity.home },
+      }),
       ...spawnSpec.options,
     });
     child.unref();
@@ -1346,9 +1362,11 @@ ${chalk.bold("HackerAI Local Sandbox Client")}
 
 ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
+  npx @hackerai/local --token-file PRIVATE_FILE [options]
 
 ${chalk.yellow("Options:")}
-  --token TOKEN       Included in the Remote Control connect command (required)
+  --token TOKEN       Included in the Remote Control connect command
+  --token-file PATH   Alternate private token source without a process argument
   --name NAME         Optional connection name fallback (default: hostname)
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
@@ -1374,7 +1392,7 @@ ${chalk.cyan("Auto-termination:")}
   try {
     const options = parseCliOptions(args);
     client = new LocalSandboxClient({
-      token: options.token,
+      token: options.token ?? readProtectedTokenFile(options.tokenFile!),
       name: options.name ?? os.hostname(),
       convexUrl: options.convexUrl ?? PRODUCTION_CONVEX_URL,
     });
