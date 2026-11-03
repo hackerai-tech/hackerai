@@ -1,6 +1,7 @@
 import type { PostHog } from "posthog-node";
 import type { ModelName } from "@/lib/ai/providers";
 import { DEEPSEEK_1017_MODEL_KEY } from "./paid-deepseek-1017";
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_ACCURACY_KEY = "paid_agent_accuracy_grok_v1";
@@ -19,7 +20,7 @@ export async function evaluatePaidAgentAccuracy({
   limitRescue = false,
   modelPolicyActive = false,
 }: {
-  posthog: Pick<PostHog, "evaluateFlags"> | null;
+  posthog: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
   mode: ChatMode;
   subscription: SubscriptionTier;
@@ -44,10 +45,13 @@ export async function evaluatePaidAgentAccuracy({
   )
     return;
   try {
-    const flags = await posthog.evaluateFlags(userId, {
-      flagKeys: [PAID_AGENT_ACCURACY_KEY],
-    });
-    if (flags.getFlag(PAID_AGENT_ACCURACY_KEY) === true)
+    if (
+      (await getPostHogFlagWithoutExposure(
+        posthog,
+        PAID_AGENT_ACCURACY_KEY,
+        userId,
+      )) === true
+    )
       return PAID_AGENT_ACCURACY_MODEL;
   } catch {
     // A flag outage retains the admitted baseline rather than blocking chat.

@@ -19,7 +19,14 @@ const eligible = {
   hasAttachments: false,
 };
 const flags = (value: unknown) => ({
-  evaluateFlags: jest.fn(async () => ({ getFlag: () => value })),
+  getFeatureFlagResult: jest.fn(async () =>
+    value === undefined
+      ? undefined
+      : {
+          enabled: value !== false,
+          ...(typeof value === "string" ? { variant: value } : {}),
+        },
+  ),
 });
 
 it("uses the candidate's real provider configuration and higher model cost", async () => {
@@ -52,9 +59,13 @@ it.each(["auto", "hackerai-standard", "hackerai-pro"] as const)(
         posthog: posthog as never,
       }),
     ).toBe(PAID_AGENT_ACCURACY_MODEL);
-    expect(posthog.evaluateFlags).toHaveBeenCalledWith(eligible.userId, {
-      flagKeys: [PAID_AGENT_ACCURACY_KEY],
-    });
+    expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith(
+      PAID_AGENT_ACCURACY_KEY,
+      eligible.userId,
+      {
+        sendFeatureFlagEvents: false,
+      },
+    );
   },
 );
 
@@ -78,7 +89,7 @@ it.each([
         posthog: posthog as never,
       }),
     ).toBeUndefined();
-    expect(posthog.evaluateFlags).not.toHaveBeenCalled();
+    expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
   },
 );
 
@@ -102,7 +113,7 @@ it("retains baseline when analytics is absent or unavailable", async () => {
     await evaluatePaidAgentAccuracy({
       ...eligible,
       posthog: {
-        evaluateFlags: async () => {
+        getFeatureFlagResult: async () => {
           throw Error("unavailable");
         },
       } as never,
