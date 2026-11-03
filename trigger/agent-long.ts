@@ -4511,35 +4511,6 @@ export const agentLongTask = task({
                         hasUncertainProviderToolOutcome(
                           lastAssistantMessageParts,
                         );
-                      const imageRecovery =
-                        state.providerRejectedMultimodalToolResults
-                          ? omitImageViewToolResultsForProviderRetry(
-                              finishedMessages,
-                            )
-                          : { messages: finishedMessages, omittedCount: 0 };
-                      const shouldRetryWithoutImageToolResults =
-                        imageRecovery.omittedCount > 0 &&
-                        !isAborted &&
-                        !shouldRecoverAbliterationStreamError;
-                      const hasImageAttachmentForRecovery =
-                        countFileAttachments(state.finalMessages).imageCount >
-                        0;
-                      const hasImageToolResultForRecovery =
-                        uiMessagesContainImageViewResult(state.finalMessages);
-                      const shouldRetryWithVisionSummary =
-                        directGlmVisionEnabled &&
-                        !shouldRecoverAbliterationStreamError &&
-                        !visionSummaryRecovery.isEnabled() &&
-                        !providerContentBlocked &&
-                        hasTerminalProviderStreamError &&
-                        (shouldRetryWithFallback ||
-                          shouldRetryWithoutImageToolResults) &&
-                        (hasImageAttachmentForRecovery ||
-                          hasImageToolResultForRecovery);
-                      const visionSummaryRecoveryError =
-                        streamError ??
-                        state.providerError ??
-                        new Error("Direct vision route failed");
                       const normalizedFinishedMessages = finishedMessages
                         .map((message) =>
                           message.role === "assistant"
@@ -4559,6 +4530,45 @@ export const agentLongTask = task({
                             normalizedFinishedMessages,
                           )
                         : undefined;
+                      const loopRecoveryMessages = loopContinuation
+                        ? [...state.finalMessages, ...loopContinuation.messages]
+                        : undefined;
+                      const imageRecovery =
+                        state.providerRejectedMultimodalToolResults
+                          ? omitImageViewToolResultsForProviderRetry(
+                              loopRecoveryMessages ?? finishedMessages,
+                            )
+                          : {
+                              messages:
+                                loopRecoveryMessages ?? finishedMessages,
+                              omittedCount: 0,
+                            };
+                      const shouldRetryWithoutImageToolResults =
+                        imageRecovery.omittedCount > 0 &&
+                        !isAborted &&
+                        !shouldRecoverAbliterationStreamError;
+                      const hasImageAttachmentForRecovery =
+                        countFileAttachments(
+                          loopRecoveryMessages ?? state.finalMessages,
+                        ).imageCount > 0;
+                      const hasImageToolResultForRecovery =
+                        uiMessagesContainImageViewResult(
+                          loopRecoveryMessages ?? state.finalMessages,
+                        );
+                      const shouldRetryWithVisionSummary =
+                        directGlmVisionEnabled &&
+                        !shouldRecoverAbliterationStreamError &&
+                        !visionSummaryRecovery.isEnabled() &&
+                        !providerContentBlocked &&
+                        hasTerminalProviderStreamError &&
+                        (shouldRetryWithFallback ||
+                          shouldRetryWithoutImageToolResults) &&
+                        (hasImageAttachmentForRecovery ||
+                          hasImageToolResultForRecovery);
+                      const visionSummaryRecoveryError =
+                        streamError ??
+                        state.providerError ??
+                        new Error("Direct vision route failed");
                       const finishContinuation =
                         mode === "agent" &&
                         !isAborted &&
@@ -4659,7 +4669,7 @@ export const agentLongTask = task({
                             await describeImageAttachmentsWithAuxiliaryVision({
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
-                                  state.finalMessages,
+                                  loopRecoveryMessages ?? state.finalMessages,
                                 ).messages,
                               requestId: ctx.run.id,
                               userId,
@@ -4892,8 +4902,11 @@ export const agentLongTask = task({
                           ];
                         } else if (loopContinuation) {
                           state.finalMessages = [
-                            ...state.finalMessages,
-                            ...loopContinuation.messages,
+                            ...(shouldRetryWithVisionSummary
+                              ? recoveredVisionMessages!
+                              : imageRecovery.omittedCount > 0
+                                ? imageRecovery.messages
+                                : loopRecoveryMessages!),
                             {
                               id: generateId(),
                               role: "user",

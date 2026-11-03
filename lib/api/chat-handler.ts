@@ -2073,18 +2073,30 @@ export const createChatHandler = () => {
                       terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
+                    const loopRecoveryMessages = loopContinuation
+                      ? [...state.finalMessages, ...loopContinuation.messages]
+                      : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
-                        ? omitImageViewToolResultsForProviderRetry(messages)
-                        : { messages, omittedCount: 0 };
+                        ? omitImageViewToolResultsForProviderRetry(
+                            loopRecoveryMessages ?? messages,
+                          )
+                        : {
+                            messages: loopRecoveryMessages ?? messages,
+                            omittedCount: 0,
+                          };
                     const shouldRetryWithoutImageToolResults =
                       imageRecovery.omittedCount > 0 &&
                       !isAborted &&
                       !shouldRecoverAbliterationStreamError;
                     const hasImageAttachmentForRecovery =
-                      countFileAttachments(state.finalMessages).imageCount > 0;
+                      countFileAttachments(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      ).imageCount > 0;
                     const hasImageToolResultForRecovery =
-                      uiMessagesContainImageViewResult(state.finalMessages);
+                      uiMessagesContainImageViewResult(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      );
                     const shouldRetryWithVisionSummary =
                       directGlmVisionEnabled &&
                       !shouldRecoverAbliterationStreamError &&
@@ -2191,7 +2203,7 @@ export const createChatHandler = () => {
                             await describeImageAttachmentsWithAuxiliaryVision({
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
-                                  state.finalMessages,
+                                  loopRecoveryMessages ?? state.finalMessages,
                                 ).messages,
                               requestId,
                               userId,
@@ -2314,8 +2326,11 @@ export const createChatHandler = () => {
                         resetServedModelTelemetryForRetry(state);
                         if (loopContinuation) {
                           state.finalMessages = [
-                            ...state.finalMessages,
-                            ...loopContinuation.messages,
+                            ...(shouldRetryWithVisionSummary
+                              ? recoveredVisionMessages!
+                              : imageRecovery.omittedCount > 0
+                                ? imageRecovery.messages
+                                : loopRecoveryMessages!),
                             {
                               id: generateId(),
                               role: "user",

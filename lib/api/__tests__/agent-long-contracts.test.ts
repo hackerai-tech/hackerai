@@ -291,7 +291,7 @@ describe("direct vision and summary recovery contracts", () => {
       );
       expect(
         source.match(
-          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+          /omitImageViewToolResultsForProviderRetry\(\s*(?:loopRecoveryMessages \?\? )?state\.finalMessages,?\s*\)\.messages/g,
         ),
       ).toHaveLength(2);
       expect(source).toMatch(
