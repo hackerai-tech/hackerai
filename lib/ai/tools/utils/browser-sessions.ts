@@ -83,7 +83,11 @@ export class BrowserSessions {
     const sandbox = session.sandbox;
     const name = (
       await withCancellation(
-        sandbox.files.read(`${session.directory}/active-session`),
+        sandbox.files.read(`${session.directory}/active-session`, {
+          user: "root",
+          requestTimeoutMs: 8000,
+          signal,
+        }),
         signal,
       )
     ).trim();
@@ -105,7 +109,11 @@ export class BrowserSessions {
         throw new Error("Browser is unavailable or waiting for human control.");
       const currentName = (
         await withCancellation(
-          sandbox.files.read(`${session.directory}/active-session`),
+          sandbox.files.read(`${session.directory}/active-session`, {
+            user: "root",
+            requestTimeoutMs: 8000,
+            signal,
+          }),
           signal,
         )
       ).trim();

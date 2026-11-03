@@ -63,7 +63,7 @@ it("requires an already-owned browser and never acquires or opens a new one", as
 });
 
 it("passes response material only through stdin and returns the bounded result", async () => {
-  const { sessions, run, handle } = await owner();
+  const { sessions, run, handle, read } = await owner();
   const browser = await sessions.getChallengeBrowser(
     new AbortController().signal,
   );
@@ -71,6 +71,14 @@ it("passes response material only through stdin and returns the bounded result",
     status: "token_delivered",
   });
   expect(handle.sendStdin).toHaveBeenCalledWith("private-response-script");
+  expect(read).toHaveBeenCalledWith(
+    expect.stringMatching(/\/active-session$/),
+    expect.objectContaining({
+      user: "root",
+      requestTimeoutMs: 8000,
+      signal: expect.any(AbortSignal),
+    }),
+  );
   const calls = JSON.stringify(run.mock.calls);
   expect(calls).not.toContain("private-response-script");
   expect(calls).not.toContain("private-service-key");
