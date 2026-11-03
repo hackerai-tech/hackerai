@@ -1111,8 +1111,8 @@ describe("Agent Max final recovery admission", () => {
       );
     },
   );
-  it.each([180000, 180001])(
-    "keeps the control group's existing context threshold for %s estimated tokens",
+  it.each([236_000, 236_001])(
+    "enforces the 256k baseline compaction threshold for %s estimated tokens",
     (requiredContextTokens) => {
       expect(
         getNextProviderDisconnectRetryModel({
@@ -1122,7 +1122,7 @@ describe("Agent Max final recovery admission", () => {
           selectedModelOverride: "hackerai-max",
           requiredContextTokens,
         }),
-      ).toBe(requiredContextTokens === 180000 ? "model-grok-4.6" : undefined);
+      ).toBe(requiredContextTokens === 236_000 ? "model-grok-4.6" : undefined);
     },
   );
   it("never starts a third recovery or returns to Kimi", () => {

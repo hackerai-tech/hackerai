@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage } from "ai";
+import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 
 const loadSaveMessageWithMocks = async () => {
   jest.resetModules();
@@ -1757,7 +1758,7 @@ describe("getMessagesByChatId", () => {
               toolCallId: "test-call",
               state: "output-available",
               input: {},
-              output: { text: "\u0001".repeat(70_001) },
+              output: { text: "\u0001".repeat(90_001) },
             },
           ],
         },
@@ -1807,7 +1808,7 @@ describe("getMessagesByChatId", () => {
                 toolCallId: "test-call",
                 state: "output-available",
                 input: {},
-                output: { text: "\u0001".repeat(70_001) },
+                output: { text: "\u0001".repeat(90_001) },
               },
             ],
           },
@@ -1849,7 +1850,9 @@ describe("getMessagesByChatId", () => {
           {
             id: "oversized-user",
             role: "user",
-            parts: [{ type: "text", text: "\u0001".repeat(200_000) }],
+            parts: [
+              { type: "text", text: "\u0001".repeat(MAX_TOKENS_PAID + 1) },
+            ],
           },
         ],
         isDone: true,
@@ -1905,7 +1908,7 @@ describe("getMessagesByChatId", () => {
           state: "output-available",
           input: { command: "synthetic read-only fixture" },
           output: {
-            stdout: "\u0001".repeat(1_200),
+            stdout: "\u0001".repeat(1_600),
             ...(index === 0 && {
               result: { session: "term_fixture_123", pid: 12345 },
             }),
@@ -2340,7 +2343,7 @@ describe("getMessagesByChatId", () => {
               toolCallId: "private-call",
               state: "output-available",
               input: {},
-              output: { text: "\u0001".repeat(70_001) },
+              output: { text: "\u0001".repeat(90_001) },
             },
             { untyped: "private-shape-canary" },
           ],
@@ -2430,7 +2433,7 @@ describe("getMessagesByChatId", () => {
             projection_reason: reason,
             ...(reason === "token_projection_empty"
               ? {
-                  projection_budget_tokens: 200_000,
+                  projection_budget_tokens: MAX_TOKENS_PAID,
                   projection_blocked_message_tokens:
                     mode === "agent" ? expect.any(Number) : 1_000_000,
                   projection_blocked_message_role:
