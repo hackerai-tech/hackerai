@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { ChatSDKError } from "@/lib/errors";
 
 class MockResponse {
   readonly status: number;
@@ -844,6 +845,83 @@ describe("Agent trigger route lifecycle", () => {
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
   });
 
+  it.each(["stale", "not_found", "deleting"])(
+    "records the original association rejection separately from cleanup: %s",
+    async (reason) => {
+      mockReplaceActiveTriggerRun.mockResolvedValueOnce(reason);
+      mockSetActiveTriggerRun.mockResolvedValueOnce("stale");
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalizeStartedAgentRun({
+            chatId: "chat-1",
+            runId: "run-1",
+            approvalSessionId: "approval-session-1",
+          }),
+        ).rejects.toMatchObject({
+          metadata: { agent_run_association: reason },
+        });
+        expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+          failure_stage: "associate_run",
+          association_rejection_reason: reason,
+          clear_association_result: "stale",
+        });
+        expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it.each(["private target", { private: "association details" }])(
+    "does not log an unrecognized association reason: %p",
+    async (reason) => {
+      const failure = new ChatSDKError("bad_request:api", "private cause", {
+        agent_run_association: reason,
+      });
+      mockReplaceActiveTriggerRun.mockRejectedValueOnce(failure);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          finalizeStartedAgentRun({
+            chatId: "chat-1",
+            runId: "run-1",
+            approvalSessionId: undefined,
+          }),
+        ).rejects.toBe(failure);
+        const event = JSON.parse(String(warn.mock.calls[0][0]));
+        expect(event.association_rejection_reason).toBeNull();
+        expect(JSON.stringify(event)).not.toMatch(/private|details|cause/);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("does not attribute a token failure to an association rejection", async () => {
+    const failure = new ChatSDKError("bad_request:api", undefined, {
+      agent_run_association: "stale",
+    });
+    mockCreatePublicToken.mockReset().mockRejectedValueOnce(failure);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        finalizeStartedAgentRun({
+          chatId: "chat-1",
+          runId: "run-1",
+          approvalSessionId: undefined,
+        }),
+      ).rejects.toBe(failure);
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        failure_stage: "create_tokens",
+        association_rejection_reason: null,
+      });
+      expect(mockReplaceActiveTriggerRun).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each(["updated", "stale"])(
     "records the actual conditional cleanup acknowledgement: %s",
     async (clearResult) => {
@@ -869,6 +947,7 @@ describe("Agent trigger route lifecycle", () => {
           close_session_status: "fulfilled",
           cancel_run_status: "fulfilled",
           clear_association_result: clearResult,
+          association_rejection_reason: null,
         });
         expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
           chatId: "00000000-0000-4000-8000-000000000001",

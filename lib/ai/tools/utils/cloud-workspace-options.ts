@@ -12,6 +12,7 @@ import {
   readCloudWorkspaceState,
 } from "./cloud-workspace-guard";
 import {
+  isOwnedWorkspace,
   listWorkspaceInventory,
   workspaceBinding,
 } from "./cloud-workspace-identity";
@@ -28,6 +29,7 @@ export type CloudWorkspaceOptions =
       choices: CloudWorkspaceOption[];
       token: string;
       currentId?: string;
+      unavailableCount?: number;
     }
   | {
       status: "waiting";
@@ -116,6 +118,9 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
   if (activity !== null)
     return finish({ status: "waiting", reason: "recent_activity" });
   const inventory = await listWorkspaceInventory(userId, signal);
+  const selectable = inventory.filter(({ item, cluster }) =>
+    isOwnedWorkspace(item, cluster, userId),
+  );
   if (inventory.some(({ item }) => item.state === "running"))
     return finish({ status: "waiting", reason: "running_workspace" });
   if (
@@ -123,20 +128,20 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
     new Set(inventory.map(({ item }) => item.sandboxId)).size !==
       inventory.length ||
     (binding?.phase === "e2b" &&
-      !inventory.some(
+      !selectable.some(
         ({ item, cluster }) =>
           item.sandboxId === binding.destinationId &&
           cluster.cluster === (binding.region === "eu-central-1" ? "eu" : "us"),
       ))
   )
     return finish({ status: "protected", reason: "identity" });
-  if (!inventory.length)
+  if (!selectable.length)
     return finish(
-      saved === null && binding === null
+      !inventory.length && saved === null && binding === null
         ? { status: "empty" }
         : { status: "protected", reason: "identity" },
     );
-  const choices = inventory
+  const choices = selectable
     .map(({ item, cluster }): CloudWorkspaceOption => {
       const started = new Date(String(item.startedAt));
       return {
@@ -156,11 +161,19 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
   const token = createHmac("sha256", secret)
     .update(
       JSON.stringify([
-        "cloud-workspace-options-v1",
+        "cloud-workspace-options-v2",
         userId,
         saved,
         existing,
         choices.map(({ id, region }) => ({ id, region })),
+        // A stale choice must not silently ignore changes to excluded workspaces.
+        inventory
+          .map(({ item, cluster }) => ({
+            id: item.sandboxId,
+            cluster: cluster.cluster,
+            template: item.metadata?.template ?? null,
+          }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
       ]),
     )
     .digest("hex");
@@ -168,6 +181,9 @@ async function inspect(userId: string, manage: boolean, signal?: AbortSignal) {
     status: "selection_required",
     choices,
     token,
+    ...(inventory.length > selectable.length && {
+      unavailableCount: inventory.length - selectable.length,
+    }),
     ...(binding?.phase === "e2b" ? { currentId: binding.destinationId } : {}),
   });
 }

@@ -200,6 +200,24 @@ describe("tokenExhaustedAfterSummarization", () => {
 });
 
 describe("getAgentAutoContinueStopSource", () => {
+  it.each([
+    { stoppedDueToTokenExhaustion: true },
+    { stoppedDueToElapsedTimeout: true },
+    { stoppedDueToPostSummarizationIncomplete: true },
+  ])(
+    "does not restart a repetition halt with overlapping flags (%j)",
+    (flags) => {
+      expect(
+        getAgentAutoContinueStopSource({
+          finishReason: "doom-loop",
+          stoppedDueToTokenExhaustion: false,
+          stoppedDueToPostSummarizationIncomplete: false,
+          ...flags,
+        }),
+      ).toBeNull();
+    },
+  );
+
   it.each(["tool-calls", "context-limit", "length", STEP_LIMIT_FINISH_REASON])(
     "never auto-continues a hard step stop with overlapping flags (%s)",
     (finishReason) => {

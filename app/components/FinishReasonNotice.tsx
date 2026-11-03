@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  DOOM_LOOP_FINISH_REASON,
   STEP_LIMIT_FINISH_REASON,
   CLIENT_SAVED_FINISH_REASON,
   OUTPUT_LIMIT_FINISH_REASON,
@@ -78,6 +79,15 @@ export const FinishReasonNotice = ({
   }
 
   const getNoticeContent = () => {
+    if (finishReason === DOOM_LOOP_FINISH_REASON) {
+      return (
+        <>
+          Agent stopped after repeating work without progress. Send a new
+          instruction to change the approach.
+        </>
+      );
+    }
+
     if (
       finishReason === STEP_LIMIT_FINISH_REASON ||
       finishReason === "tool-calls"
@@ -132,12 +142,13 @@ export const FinishReasonNotice = ({
 
   if (!content) return null;
 
-  const showContinue = !!onContinue;
+  // Replaying an unchanged request can restart the cycle that was just halted.
+  const showContinue = !!onContinue && finishReason !== DOOM_LOOP_FINISH_REASON;
   const continueButtonLabel =
     finishReason === CLIENT_SAVED_FINISH_REASON ? "Resume task" : "Continue";
 
   return (
-    <div className="mt-2 w-full">
+    <div className="mt-2 w-full" role="status">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span>{content}</span>
         {showContinue && (

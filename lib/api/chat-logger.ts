@@ -1805,6 +1805,13 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  // Operational success only means the run finished without an unhandled error.
+  // A guardrail halt, limit, or unknown finish reason is not a natural completion.
+  const naturalCompletion =
+    outcome === "success" &&
+    args.hasResponseContent &&
+    !args.stepLimitTelemetry?.stepLimitReached &&
+    args.finishReason === "stop";
   if (args.experiment?.key === PAID_DEEPSEEK_1017_KEY) {
     try {
       posthog?.capture({
@@ -1819,12 +1826,8 @@ export function captureAgentCompletionAnalytics(
           subscription_tier: subscription,
           outcome,
           has_response_content: args.hasResponseContent,
-          natural_completion:
-            outcome === "success" &&
-            args.hasResponseContent &&
-            !args.stepLimitTelemetry?.stepLimitReached &&
-            args.finishReason !== "length" &&
-            args.finishReason !== "error",
+          natural_completion: naturalCompletion,
+          natural_completion_version: 2,
           duration_ms:
             args.experiment.startedAt === undefined
               ? undefined
@@ -1909,12 +1912,8 @@ export function captureAgentCompletionAnalytics(
               ...args.usageMeasurement,
               message_id: args.responseMessageId ?? args.experiment.requestId,
               trigger_run_id: args.triggerRunId,
-              natural_completion:
-                outcome === "success" &&
-                args.hasResponseContent &&
-                !args.stepLimitTelemetry?.stepLimitReached &&
-                args.finishReason !== "length" &&
-                args.finishReason !== "error",
+              natural_completion: naturalCompletion,
+              natural_completion_version: 2,
               request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
               active_model_stream_duration_ms: args.activeModelStreamDurationMs,
               approval_wait_duration_ms: args.approvalWaitDurationMs,

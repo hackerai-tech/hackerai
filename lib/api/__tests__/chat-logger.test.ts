@@ -2843,6 +2843,13 @@ it.each([
   ["agent", "error", false, "error", false, false],
   ["agent", "aborted", true, "stop", false, false],
   ["agent", "success", true, "length", false, false],
+  ["agent", "success", true, "doom-loop", false, false],
+  ["agent", "success", true, "compaction-incomplete", false, false],
+  ["agent", "success", true, "context-limit", false, false],
+  ["agent", "success", true, "budget-exhausted", false, false],
+  ["agent", "success", true, "tool-calls", false, false],
+  ["agent", "success", true, "content-filter", false, false],
+  ["agent", "success", true, undefined, false, false],
   ["agent", "success", true, "stop", true, false],
 ] as const)(
   "records paid experiment terminal outcome (%s %s)",
@@ -2895,6 +2902,7 @@ it.each([
       outcome,
       has_response_content: hasResponseContent,
       natural_completion: naturalCompletion,
+      natural_completion_version: 2,
       fallback_served: true,
       response_model: "z-ai/glm-5.3-flash",
       time_to_first_chunk_ms: 50,
@@ -3015,3 +3023,50 @@ it("does not attribute a handoff read failure to the preceding provider request"
     phWarn.mockRestore();
   }
 });
+
+// These events use separate branches in the shared reporter. Both must reject
+// interrupted work even when earlier steps produced usable assistant text.
+it.each(["ask", "agent"] as const)(
+  "classifies Free %s natural completions using the final stop reason",
+  (mode) => {
+    for (const finishReason of [
+      "stop",
+      "doom-loop",
+      "timeout",
+      "step-limit",
+      undefined,
+    ]) {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "fixture-user",
+        chatId: "fixture-chat",
+        endpoint: "/api/chat",
+        mode,
+        subscription: "free",
+        outcome: "success",
+        hasResponseContent: true,
+        finishReason,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        abliteratedProviderSummary: undefined,
+        selectedModel: "model-abliterated",
+        experiment: {
+          key: "abliterated_free_three_steps_default_v1",
+          variant: "test",
+          requestId: "fixture-request",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            outcome: "success",
+            natural_completion: finishReason === "stop",
+            natural_completion_version: 2,
+          }),
+        }),
+      );
+    }
+  },
+);
