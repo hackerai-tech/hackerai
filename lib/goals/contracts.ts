@@ -161,6 +161,10 @@ export function isGoalEvidencePart(part: unknown, toolCallId: string): boolean {
       "tool-send_message_to_agent",
       "tool-delegate_task",
       "tool-continue_agent",
+      "tool-wait_for_agents",
+      "tool-cancel_agent",
+      "tool-search_skills",
+      "tool-load_skill",
     ].includes(p.type) ||
     p.state !== "output-available" ||
     p.output == null ||

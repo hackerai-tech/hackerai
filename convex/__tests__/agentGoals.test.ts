@@ -753,6 +753,72 @@ describe("persistent goal lifecycle", () => {
       objective: "Replacement",
     });
   });
+  it.each([
+    "tool-wait_for_agents",
+    "tool-cancel_agent",
+    "tool-search_skills",
+    "tool-load_skill",
+  ])(
+    "blocks %s-only runs, then resumes to verified completion",
+    async (type) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const runId = `bookkeeping-${attempt}`;
+        expect(
+          await invoke(claimRun, db.ctx, {
+            ...owner,
+            generation: attempt,
+            runId,
+          }),
+        ).not.toBeNull();
+        await db.message(runId, [{ ...result, type }]);
+        await invoke(finish, db.ctx, {
+          ...terminal,
+          runId,
+          judgment: {
+            verdict: "done",
+            reason: "Claimed marker without external work",
+            evidence: [{ ...proof, runId }],
+          },
+        });
+        expect(db.goal().evidence).toEqual([]);
+        expect(db.goal().noProgressRuns).toBe(attempt);
+        expect(db.goal().state).toBe(attempt === 1 ? "queued" : "blocked");
+        db.chat().active_trigger_run_id = undefined;
+      }
+      expect(db.goal().continuationSourceRunId).toBeUndefined();
+      await invoke(control, db.ctx, {
+        ...owner,
+        action: "resume",
+        generation: 2,
+        resumeOnReply: true,
+      });
+      await invoke(claimRun, db.ctx, {
+        ...owner,
+        generation: 3,
+        runId: "recovered",
+      });
+      const id = await db.message("recovered", [result]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        runId: "recovered",
+        judgment: {
+          verdict: "done",
+          reason: "Marker observed",
+          evidence: [{ ...proof, runId: "recovered" }],
+        },
+      });
+      expect(db.goal()).toMatchObject({
+        state: "achieved",
+        generation: 3,
+        noProgressRuns: 0,
+      });
+      expect(
+        (await db.ctx.db.get(id)).goal.achievedElapsedMs,
+      ).toBeGreaterThanOrEqual(0);
+    },
+  );
   it.each(["needs_input", "blocked"])(
     "settles %s without scheduling work until the user replies",
     async (outcome) => {
