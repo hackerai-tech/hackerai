@@ -11,6 +11,8 @@ import {
 // NODE_OPTIONS=--conditions=react-server pnpm exec tsx scripts/benchmark-agent-tool-fidelity.ts [--live] [--provider=slug] [--model=glm]
 // Uses only this checkout's approved Development credentials. No tools execute,
 // no customer histories are read, and no feature flags are evaluated or changed.
+class UsageError extends Error {}
+
 async function main() {
   const args = process.argv.slice(2);
   if (
@@ -21,7 +23,9 @@ async function main() {
         !/^--provider=[a-z0-9/-]+$/.test(arg),
     )
   )
-    throw Error("Unsupported argument");
+    throw new UsageError(
+      "Unsupported argument. Use --live, --provider=slug, or --model=glm.",
+    );
   const provider = args
     .find((arg) => arg.startsWith("--provider="))
     ?.slice("--provider=".length);
@@ -45,7 +49,9 @@ async function main() {
   }
   config({ path: ".env.local", quiet: true, override: true });
   if (!process.env.OPENROUTER_API_KEY)
-    throw Error("Missing Development provider configuration");
+    throw new UsageError(
+      "Missing Development provider configuration in .env.local.",
+    );
   const { myProvider } = await import("../lib/ai/providers");
   const { DEEPSEEK_1017_MODEL_KEY } =
     await import("../lib/experiments/paid-deepseek-1017");
@@ -225,6 +231,12 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.name : "benchmark_failed");
+  console.error(
+    error instanceof UsageError
+      ? error.message
+      : error instanceof Error
+        ? error.name
+        : "benchmark_failed",
+  );
   process.exitCode = 1;
 });
