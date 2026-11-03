@@ -93,10 +93,18 @@ export function AgentGoalEditor({
     // and worker generation changes alone keep the same editing baseline.
     if (saving || goal === undefined || (original && !(pristine && stale)))
       return;
+    if ((!goal || goal.deletedAt) && previousText !== undefined) {
+      // A loaded goal may be cleared before the user restores their old draft.
+      // Keep that draft editable and retained across sidebar remounts.
+      setText(previousText);
+      setPreviousText(undefined);
+      setError("");
+      return;
+    }
     setOriginal(goal && !goal.deletedAt ? goal : null);
     setText(goal && !goal.deletedAt ? goal.objective : "");
     setError("");
-  }, [goal, original, pristine, stale, saving]);
+  }, [goal, original, pristine, stale, saving, previousText]);
 
   function loadCurrentGoal() {
     if (!goal || goal.deletedAt || saving) return;

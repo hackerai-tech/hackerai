@@ -247,6 +247,35 @@ describe("simple goal sidebar editor", () => {
     expect(screen.getByRole("textbox")).toBeEnabled();
     expect(fetch).not.toHaveBeenCalled();
   });
+  it("recovers the previous draft if a loaded goal is subsequently cleared", async () => {
+    const keep = jest.fn();
+    const view = (draft?: Parameters<typeof AgentGoalEditor>[0]["draft"]) => (
+      <AgentGoalEditor
+        chatId="chat"
+        onClose={jest.fn()}
+        draft={draft}
+        onDraftChange={keep}
+      />
+    );
+    const { rerender, unmount } = render(view());
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "Keep this draft" },
+    });
+    setMockQueryResult({ ...goal, startedAt: 200, objective: "Replacement" });
+    rerender(view());
+    fireEvent.click(screen.getByRole("button", { name: "Load current goal" }));
+    setMockQueryResult(null);
+    rerender(view());
+    expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This goal was cleared",
+    );
+    const retained = keep.mock.calls.at(-1)[0];
+    unmount();
+    render(view(retained));
+    expect(screen.getByRole("textbox")).toHaveValue("Keep this draft");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("restores a preserved draft after the sidebar remounts", async () => {
     render(
       <AgentGoalEditor
