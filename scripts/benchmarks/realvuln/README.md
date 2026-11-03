@@ -30,10 +30,11 @@ integrity.
 ## Setup and run
 
 Use an isolated worktree with its own dependencies and approved Development
-configuration. Keep raw results outside Git. Supply a sealed session for the
-existing Preview Pro QA account through protected standard input; never put it
-in a command argument or log. Confirm the exact Vercel Preview and Trigger
-deployment identities before the run. One account has one cloud workspace, so
+configuration. Keep raw results outside Git. Supply a protected JSON record
+through standard input with `workosSealedSession` for the existing Preview Pro
+QA account and, when Preview is Vercel protected, a short-lived
+`vercelOidcToken`. Never put either credential in an argument or log. Confirm
+the exact Vercel Preview and Trigger deployment identities before the run. One account has one cloud workspace, so
 this driver runs targets sequentially. The target is cloned at its pinned
 commit by the real Agent; the host independently fetches the same revision to
 validate report paths and score with the pinned upstream.
@@ -42,7 +43,7 @@ validate report paths and score with the pinned upstream.
 python3 scripts/benchmarks/realvuln/run.py \
   --base-url https://YOUR-PREVIEW.vercel.app \
   --upstream /private/pinned/realvuln/upstream \
-  --results-dir /private/unique-results-dir < /private/session-stdin
+  --results-dir /private/unique-results-dir < /private/credentials-json-stdin
 ```
 
 By default the product-backend runner audits four human-authored projects.

@@ -75,9 +75,28 @@ class ProductBackendContractTests(unittest.TestCase):
         client.origin = "https://hackerai-git-test.vercel.app"
         client.lock = threading.Lock()
         client.opener = Opener()
+        client.access_headers = {}
         with self.assertRaises(backend.BackendError) as raised:
             client.request("GET", "/api/entitlements")
         self.assertTrue(raised.exception.retryable)
+
+    def test_preview_protection_header_reaches_backend_requests(self):
+        class Opener:
+            seen_header = None
+
+            def open(self, request, timeout):
+                self.seen_header = request.get_header("X-vercel-trusted-oidc-idp-token")
+                return io.BytesIO(b"{}")
+
+        client = backend.ProductBackend(
+            "https://hackerai-git-test.vercel.app", "sealed-test-session", "short-lived-test-token",
+        )
+        client.opener = Opener()
+        self.assertEqual(client.request("GET", "/api/entitlements"), b"{}")
+        self.assertEqual(client.opener.seen_header, "short-lived-test-token")
+
+    def test_protected_backend_requests_do_not_follow_redirects(self):
+        self.assertIsNone(backend.NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.example"))
 
     def test_empty_replay_backs_off_before_reconnecting(self):
         class Response(io.BytesIO):
@@ -100,6 +119,7 @@ class ProductBackendContractTests(unittest.TestCase):
         client.origin = "https://hackerai-git-test.vercel.app"
         client.lock = threading.Lock()
         client.opener = Opener()
+        client.access_headers = {}
         stop = Stop()
         client.observe("chat", stop, {})
         self.assertEqual(stop.waits, 1)
@@ -128,6 +148,7 @@ class ProductBackendContractTests(unittest.TestCase):
         client.origin = "https://example.vercel.app"
         client.lock = threading.Lock()
         client.opener = Opener()
+        client.access_headers = {}
         observed = {}
         client.observe("chat", threading.Event(), observed)
         self.assertEqual(observed.get("agentWork"), True)

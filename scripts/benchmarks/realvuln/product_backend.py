@@ -82,8 +82,14 @@ class BackendError(Exception):
         self.retryable = retryable
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        # Never forward the short-lived Vercel header to a redirected origin.
+        return None
+
+
 class ProductBackend:
-    def __init__(self, origin: str, sealed_session: str):
+    def __init__(self, origin: str, sealed_session: str, vercel_oidc_token: str | None = None):
         self.origin = preview_url(origin)
         if not sealed_session or "\n" in sealed_session or "\r" in sealed_session:
             raise ValueError("A single sealed Preview session is required")
@@ -95,14 +101,23 @@ class ProductBackend:
             path_specified=True, secure=True, expires=None, discard=True,
             comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
         ))
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies))
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect(),
+        )
         self.lock = threading.Lock()
+        if vercel_oidc_token and ("\n" in vercel_oidc_token or "\r" in vercel_oidc_token):
+            raise ValueError("A single Vercel access token is required")
+        self.access_headers = (
+            {"x-vercel-trusted-oidc-idp-token": vercel_oidc_token}
+            if vercel_oidc_token else {}
+        )
 
     def request(self, method: str, path: str, payload: dict | None = None, *, timeout: int = 45) -> bytes:
         body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
         request = urllib.request.Request(
             self.origin + path, data=body, method=method,
-            headers={"Accept": "application/json", **({"Content-Type": "application/json"} if body else {})},
+            headers={"Accept": "application/json", **self.access_headers,
+                     **({"Content-Type": "application/json"} if body else {})},
         )
         try:
             # WorkOS can rotate the sealed cookie. Serialize requests sharing it.
@@ -178,7 +193,9 @@ class ProductBackend:
     def observe(self, chat_id: str, stop: threading.Event, observed: dict) -> None:
         """Watch the live saved stream for the UI's continuation signal."""
         while not stop.is_set():
-            request = urllib.request.Request(self.origin + f"/api/chat/{chat_id}/stream")
+            request = urllib.request.Request(
+                self.origin + f"/api/chat/{chat_id}/stream", headers=self.access_headers,
+            )
             try:
                 with self.lock:
                     response = self.opener.open(request, timeout=40)
@@ -397,10 +414,18 @@ async def main() -> None:
     if sys.stdin.isatty():
         parser.error("Supply the sealed Preview session through protected, non-interactive stdin")
     origin = preview_url(args.base_url)
-    # The sealed cookie is supplied through protected stdin, never argv or a
-    # diagnostic log. The runner does not persist it.
-    cookie = sys.stdin.readline(16384).strip()
-    client = ProductBackend(origin, cookie)
+    # Both credentials arrive in one protected stdin record. Neither enters
+    # arguments, logs, manifests, or the Agent's benchmark prompt.
+    try:
+        credentials = json.loads(sys.stdin.readline(16384))
+    except (ValueError, UnicodeDecodeError):
+        parser.error("Supply a JSON credential record through protected stdin")
+    if not isinstance(credentials, dict) or not isinstance(credentials.get("workosSealedSession"), str):
+        parser.error("The protected input requires workosSealedSession")
+    token = credentials.get("vercelOidcToken")
+    if token is not None and not isinstance(token, str):
+        parser.error("vercelOidcToken must be a string when supplied")
+    client = ProductBackend(origin, credentials["workosSealedSession"], token)
     upstream = args.upstream.resolve()
     hackerai_revision = clean_revision(ROOT)
     upstream_revision = clean_revision(upstream)
