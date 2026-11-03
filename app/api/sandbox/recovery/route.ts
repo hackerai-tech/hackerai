@@ -3,6 +3,7 @@ import { tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { ChatSDKError } from "@/lib/errors";
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   confirmRecovery,
@@ -12,6 +13,7 @@ import {
 import { failConsent } from "@/lib/cloud-recovery/store";
 import type { cloudWorkspaceRecoveryTask } from "@/trigger/cloud-workspace-recovery";
 export const maxDuration = 60;
+export const runtime = "nodejs";
 const bodySchema = z.union([
   z.object({ token: z.string().uuid(), confirmed: z.boolean() }).strict(),
   z.object({ token: z.string().uuid(), reopen: z.literal(true) }).strict(),
@@ -44,13 +46,13 @@ function failure(error: unknown) {
     409,
   );
 }
-export async function GET(request: NextRequest) {
+export const GET = withServiceQueryRecovery(async (request: NextRequest) => {
   try {
     return json(await recoveryView((await owner(request)).userId));
   } catch (error) {
     return failure(error);
   }
-}
+});
 export async function POST(request: NextRequest) {
   try {
     if (request.headers.get("origin") !== new URL(request.url).origin)
