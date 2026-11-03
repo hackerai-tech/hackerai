@@ -26,6 +26,7 @@ import uuid
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 HERE = Path(__file__).resolve().parent
 ARTIFACTS = ROOT / ".artifacts" / "realvuln"
 UPSTREAM_REVISION = "7a710251f55c17d32d3adcb13d37468e2e3b9e4a"
@@ -484,4 +485,14 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if "--isolated-adapter" in sys.argv:
+        sys.argv.remove("--isolated-adapter")
+        asyncio.run(main())
+    else:
+        # The default must go through the authenticated product backend. Keep
+        # the old six-tool Docker adapter only as an explicitly labeled
+        # diagnostic protocol; it cannot measure user-accessible skills,
+        # delegation, or account-backed Agent behavior.
+        from scripts.benchmarks.realvuln import product_backend
+
+        asyncio.run(product_backend.main())
