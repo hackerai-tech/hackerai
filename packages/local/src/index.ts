@@ -49,6 +49,7 @@ import {
   readProtectedTokenFile,
 } from "./cli-options";
 import { commandDisplayText } from "./command-display";
+import { commandIdentityFromEnvironment } from "./command-identity";
 
 const CLIENT_VERSION: string = require("../package.json").version;
 
@@ -313,6 +314,7 @@ export class LocalSandboxClient {
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
   private processRunner: ProcessRunner;
+  private readonly commandIdentity = commandIdentityFromEnvironment();
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
   private operationRouter?: OperationChannelRouter<Subscription>;
@@ -329,7 +331,7 @@ export class LocalSandboxClient {
   ) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
-    this.processRunner = new ProcessRunner();
+    this.processRunner = new ProcessRunner(this.commandIdentity);
     this.setupProcessRunnerListeners();
   }
 
@@ -1000,6 +1002,11 @@ export class LocalSandboxClient {
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         detached: os.platform() !== "win32",
+        ...(this.commandIdentity && {
+          uid: this.commandIdentity.uid,
+          gid: this.commandIdentity.gid,
+          env: { ...process.env, HOME: this.commandIdentity.home },
+        }),
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
@@ -1172,6 +1179,11 @@ export class LocalSandboxClient {
     const child = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
       detached: os.platform() !== "win32",
       stdio: "ignore",
+      ...(this.commandIdentity && {
+        uid: this.commandIdentity.uid,
+        gid: this.commandIdentity.gid,
+        env: { ...process.env, HOME: this.commandIdentity.home },
+      }),
       ...spawnSpec.options,
     });
     child.unref();
