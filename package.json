@@ -85,7 +85,7 @@
     "@legendapp/list": "3.7.1",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
-    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/api": "1.9.1",
     "@posthog/ai": "8.18.2",
     "@radix-ui/react-alert-dialog": "1.1.23",
     "@radix-ui/react-avatar": "1.3.1",
@@ -282,7 +282,8 @@
       "follow-redirects@<1.16.2": "1.16.2",
       "@hono/node-server@>=1.19.10 <2.1.3": "2.1.6",
       "glob@>=9.0.0 <14.0.2": "14.0.3",
-      "minimatch@>=9.0.0 <11.0.1": "11.0.4"
+      "minimatch@>=9.0.0 <11.0.1": "11.0.4",
+      "@opentelemetry/api": "$@opentelemetry/api"
     },
     "patchedDependencies": {
       "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",
