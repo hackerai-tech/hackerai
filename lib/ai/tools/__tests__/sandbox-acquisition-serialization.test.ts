@@ -5,6 +5,10 @@ const mockIsE2BSandbox = jest.fn();
 const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
 const mockNetworkQuery = jest.fn();
+const mockCaptchaSolve = jest.fn();
+jest.mock("../../captcha/solver", () => ({
+  createTwoCaptchaSolver: () => ({ solve: mockCaptchaSolve }),
+}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockNetworkQuery }),
 }));
@@ -66,6 +70,7 @@ jest.mock("../utils/sandbox-fallback", () => ({
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn() },
+  getPostHogBooleanFlagDecisionForUser: jest.fn(async () => true),
 }));
 jest.mock("@/lib/logger", () => ({
   logger: { warn: (...args: unknown[]) => mockLoggerWarn(...args) },
@@ -73,8 +78,77 @@ jest.mock("@/lib/logger", () => ({
 
 import { createTools } from "..";
 import { E2B_COST_PER_MS } from "../utils/e2b-cost";
+import { BrowserSessions } from "../utils/browser-sessions";
+import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
 
 describe("sandbox acquisition serialization", () => {
+  it("retains the CAPTCHA attempt budget across provider fallback and excludes Production", async () => {
+    const originalEnv = process.env;
+    process.env = {
+      ...originalEnv,
+      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "user-1",
+      TWOCAPTCHA_API_KEY: "test-provider-key",
+    };
+    const evaluator = jest
+      .spyOn(BrowserSessions.prototype, "getChallengeBrowser")
+      .mockResolvedValue({
+        identity: "owner:default",
+        evaluate: async (script) =>
+          script === DETECT_CHALLENGES_SCRIPT
+            ? {
+                url: "https://www.google.com/recaptcha/api2/demo",
+                documentId: "1",
+                interstitial: false,
+                widgets: [
+                  {
+                    kind: "recaptcha_v2",
+                    siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
+                    invisible: false,
+                    tokenPresent: false,
+                  },
+                ],
+              }
+            : { status: "token_delivered" },
+      });
+    mockCaptchaSolve.mockResolvedValue({
+      token: "test-response",
+      costDollars: 0.003,
+    });
+    try {
+      const args: Parameters<typeof createTools> = [
+        "user-1",
+        "chat-1",
+        {} as never,
+        "agent",
+        {} as never,
+      ];
+      args[20] = "run-1";
+      args[22] = { environment: "PREVIEW" };
+      const preview = createTools(...args);
+      expect(preview.tools.browser_challenge).toBeDefined();
+      await expect(
+        preview.tools.browser_challenge.execute!(
+          { action: "solve" },
+          { toolCallId: "first", messages: [] },
+        ),
+      ).resolves.toMatchObject({ status: "token_delivered" });
+      await expect(
+        preview.getToolsForModel("fallback-model").browser_challenge.execute!(
+          { action: "solve" },
+          { toolCallId: "fallback", messages: [] },
+        ),
+      ).resolves.toMatchObject({ reason: "attempt_limit" });
+      expect(mockCaptchaSolve).toHaveBeenCalledTimes(1);
+      args[22] = { environment: "PRODUCTION" };
+      expect(createTools(...args).tools.browser_challenge).toBeUndefined();
+      args[22] = { environment: "PREVIEW", browserAgentId: "child-1" };
+      expect(createTools(...args).tools.browser_challenge).toBeUndefined();
+    } finally {
+      evaluator.mockRestore();
+      process.env = originalEnv;
+    }
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockResetSandbox.mockResolvedValue(undefined);

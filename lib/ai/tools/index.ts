@@ -1,6 +1,8 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
+import { createBrowserChallenge } from "./browser-challenge";
+import { isCaptchaPreviewEligible } from "../captcha/policy";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -305,6 +307,19 @@ export const createTools = (
     auxiliaryVision,
   };
 
+  // Keep attempt accounting across model fallback/schema rebuilds in this run.
+  const browserChallenge =
+    browserSessions &&
+    !requestToolApproval &&
+    (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
+    isCaptchaPreviewEligible(runtimePolicy.environment, userID)
+      ? createBrowserChallenge(
+          context,
+          runtimePolicy.environment,
+          runtimePolicy.signal,
+        )
+      : undefined;
+
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
     // one-time object so model-specific tool schemas can be rebuilt for
@@ -316,6 +331,7 @@ export const createTools = (
           runtimePolicy.signal,
         ),
       }),
+      ...(browserChallenge && { browser_challenge: browserChallenge }),
       run_terminal_cmd: createRunTerminalCmd(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),

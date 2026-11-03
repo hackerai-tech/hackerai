@@ -8,6 +8,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
+import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -62,6 +63,112 @@ export class BrowserSessions {
 
   hasHandoffScope(): boolean {
     return !!this.handoffScope;
+  }
+
+  /** Pin a CAPTCHA operation to an already-open browser owned by this run.
+   * JavaScript (including any solver response) goes over stdin, never argv,
+   * terminal streaming, checkpoint files or the model's tool result.
+   */
+  async getChallengeBrowser(signal: AbortSignal): Promise<{
+    identity: string;
+    evaluate: (script: string) => Promise<unknown>;
+  }> {
+    signal.throwIfAborted();
+    const scope = this.handoffScope;
+    const session = [...this.sessions.values()].findLast((s) => s.registered);
+    if (!scope || !session || !isE2BSandbox(session.sandbox) || this.closed)
+      throw new Error(
+        "Open an owned Cloud browser before inspecting challenges.",
+      );
+    const sandbox = session.sandbox;
+    const name = (
+      await withCancellation(
+        sandbox.files.read(`${session.directory}/active-session`),
+        signal,
+      )
+    ).trim();
+    if (!name || name.length > 80 || /[/\x00\r\n]/.test(name))
+      throw new Error("Browser session identity is unavailable.");
+    const assertOwned = async () => {
+      signal.throwIfAborted();
+      if (this.closed || Date.now() >= this.expiresAt)
+        throw new Error("Browser session ownership has ended.");
+      const state = await withCancellation(
+        getConvexClient().query(api.browserHandoffs.getForBackend, {
+          serviceKey: scope.serviceKey,
+          userId: scope.userId,
+          sessionId: session.sessionId,
+        }),
+        signal,
+      );
+      if (!state?.runActive || state.state !== "agent")
+        throw new Error("Browser is unavailable or waiting for human control.");
+      const currentName = (
+        await withCancellation(
+          sandbox.files.read(`${session.directory}/active-session`),
+          signal,
+        )
+      ).trim();
+      if (currentName !== name)
+        throw new Error("The active browser session changed.");
+    };
+    await assertOwned();
+    return {
+      identity: `${session.sessionId}:${name}`,
+      evaluate: async (script) => {
+        await assertOwned();
+        // A status probe never starts a daemon. Refuse eval after idle shutdown.
+        const status = await withCancellation(
+          sandbox.commands.run(
+            browserSessionCommand("status", session.directory, this.expiresAt),
+            { ...buildSandboxCommandOptions(sandbox), timeoutMs: 5000 },
+          ),
+          signal,
+        );
+        const probe = JSON.parse(status.stdout);
+        if (
+          status.exitCode !== 0 ||
+          probe.success !== true ||
+          (probe.data ?? probe).connected !== true
+        )
+          throw new Error("The owned browser is no longer connected.");
+        const env = await this.prepare(sandbox);
+        signal.throwIfAborted();
+        const gateBin = `/tmp/${session.directory.split("/").at(-1)}/bin`;
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        const handle = await sandbox.commands.run(
+          `${gateBin}/agent-browser --session ${quote(name)} eval --stdin --json`,
+          {
+            ...buildSandboxCommandOptions(sandbox, undefined, {
+              AGENT_BROWSER_SOCKET_DIR: env.AGENT_BROWSER_SOCKET_DIR,
+              AGENT_BROWSER_CONFIG: env.AGENT_BROWSER_CONFIG,
+              AGENT_BROWSER_SESSION: name,
+              AGENT_BROWSER_IDLE_TIMEOUT_MS: String(
+                AGENT_BROWSER_IDLE_TIMEOUT_MS,
+              ),
+            }),
+            stdin: true,
+            background: true,
+            timeoutMs: 10_000,
+          },
+        );
+        try {
+          signal.throwIfAborted();
+          await withCancellation(handle.sendStdin(script), signal);
+          await withCancellation(handle.closeStdin(), signal);
+          const result = await withCancellation(handle.wait(), signal);
+          signal.throwIfAborted();
+          if (result.stdout.length > 32768) throw new Error();
+          const parsed = JSON.parse(result.stdout);
+          if (parsed.success !== true) throw new Error();
+          return parsed.data?.result;
+        } catch {
+          await handle.kill().catch(() => false);
+          signal.throwIfAborted();
+          throw new Error("Browser challenge inspection or delivery failed.");
+        }
+      },
+    };
   }
 
   /** A completion repair may only wait on this owner's already-live browser. */

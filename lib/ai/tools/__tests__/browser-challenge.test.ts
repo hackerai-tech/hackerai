@@ -1,0 +1,303 @@
+import type { ToolContext } from "@/types";
+import { createBrowserChallenge } from "../browser-challenge";
+import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
+import {
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
+
+jest.mock("@/lib/posthog/server", () => ({
+  getPostHogBooleanFlagDecisionForUser: jest.fn(),
+  phLogger: { event: jest.fn() },
+}));
+const flag = jest.mocked(getPostHogBooleanFlagDecisionForUser);
+const observation = {
+  url: "https://www.google.com/recaptcha/api2/demo",
+  documentId: "document-1",
+  widgets: [
+    {
+      kind: "recaptcha_v2" as const,
+      siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
+      tokenPresent: false,
+      invisible: false,
+    },
+  ],
+  interstitial: false,
+};
+const originalEnv = process.env;
+const originalFetch = global.fetch;
+const cloneObservation = () => ({
+  ...observation,
+  widgets: observation.widgets.map((widget) => ({ ...widget })),
+});
+function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
+  const evaluate = jest.fn(async (script: string) =>
+    script === DETECT_CHALLENGES_SCRIPT
+      ? cloneObservation()
+      : { status: "token_delivered" },
+  );
+  const getChallengeBrowser = jest.fn(async () => ({
+    identity: "owner:default",
+    evaluate,
+  }));
+  const onToolCost = jest.fn();
+  const context = {
+    userID: "internal-user",
+    triggerRunId: "run-1",
+    browserSessions: { getChallengeBrowser },
+    onToolCost,
+    ...overrides,
+  } as unknown as ToolContext;
+  const solve = jest.fn(async () => ({
+    token: "private-response",
+    costDollars: 0.003,
+  }));
+  const tool = createBrowserChallenge(context, environment, undefined, () => ({
+    solve,
+  }));
+  return { tool, context, solve, evaluate, getChallengeBrowser, onToolCost };
+}
+const run = (
+  tool: ReturnType<typeof createBrowserChallenge>,
+  action: "inspect" | "solve",
+  abortSignal?: AbortSignal,
+) =>
+  tool.execute!({ action }, { toolCallId: "test", messages: [], abortSignal });
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  flag.mockResolvedValue(true);
+  process.env = {
+    ...originalEnv,
+    HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+    CAPTCHA_SOLVER_PREVIEW_USER_IDS: "internal-user",
+    TWOCAPTCHA_API_KEY: "private-provider-key",
+  };
+});
+afterEach(() => {
+  global.fetch = originalFetch;
+  process.env = originalEnv;
+  jest.useRealTimers();
+  jest.restoreAllMocks();
+});
+
+it.each(["PRODUCTION", "STAGING", "DEVELOPMENT", "preview", "unknown"])(
+  "never inspects a browser or contacts a solver in %s",
+  async (environment) => {
+    const { tool, getChallengeBrowser, solve } = setup(environment);
+    await expect(run(tool, "solve")).resolves.toEqual({
+      status: "unavailable",
+    });
+    expect(getChallengeBrowser).not.toHaveBeenCalled();
+    expect(solve).not.toHaveBeenCalled();
+    expect(flag).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  "not allowlisted",
+  "explicit enablement missing",
+  "approval mode",
+  "Ask mode",
+])("preserves the eligibility boundary: %s", async (reason) => {
+  if (reason === "not allowlisted")
+    process.env.CAPTCHA_SOLVER_PREVIEW_USER_IDS = "another-user";
+  if (reason === "explicit enablement missing")
+    delete process.env.HACKERAI_CAPTCHA_SOLVER_PREVIEW;
+  const { tool, solve, getChallengeBrowser } = setup(
+    "PREVIEW",
+    reason === "approval mode"
+      ? { requestToolApproval: jest.fn() }
+      : reason === "Ask mode"
+        ? { triggerRunId: undefined }
+        : {},
+  );
+  await expect(run(tool, "solve")).resolves.toEqual({ status: "unavailable" });
+  expect(getChallengeBrowser).not.toHaveBeenCalled();
+  expect(solve).not.toHaveBeenCalled();
+});
+
+it("detects without spending, exposes no site key and respects a disabled flag", async () => {
+  const { tool, solve } = setup();
+  await expect(run(tool, "inspect")).resolves.toMatchObject({
+    status: "challenge_detected",
+    demoEligible: true,
+    widgets: [{ kind: "recaptcha_v2", invisible: false }],
+  });
+  expect(solve).not.toHaveBeenCalled();
+  flag.mockResolvedValue(false);
+  await expect(run(tool, "solve")).resolves.toEqual({ status: "unavailable" });
+  expect(solve).not.toHaveBeenCalled();
+});
+
+it("requests handoff without contacting a provider when no solver key exists", async () => {
+  delete process.env.TWOCAPTCHA_API_KEY;
+  const { tool, solve } = setup();
+  await expect(run(tool, "solve")).resolves.toEqual({
+    status: "handoff_required",
+    reason: "solver_not_configured",
+  });
+  expect(solve).not.toHaveBeenCalled();
+});
+
+it("reports uncertain delivery separately from a provider failure", async () => {
+  const { tool, evaluate, onToolCost } = setup();
+  evaluate.mockImplementation(async (script) => {
+    if (script === DETECT_CHALLENGES_SCRIPT) return cloneObservation();
+    throw new Error("private-response ambiguous delivery");
+  });
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    status: "handoff_required",
+    reason: "delivery_outcome_unknown",
+  });
+  expect(onToolCost).toHaveBeenCalledWith(0.003);
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({
+      outcome: "delivery_outcome_unknown",
+      charge_status: "recorded",
+    }),
+  );
+});
+
+it("fails closed after a one-second flag timeout", async () => {
+  jest.useFakeTimers();
+  flag.mockReturnValue(new Promise(() => {}));
+  const { tool, getChallengeBrowser } = setup();
+  const pending = run(tool, "solve");
+  await jest.advanceTimersByTimeAsync(1000);
+  await expect(pending).resolves.toEqual({ status: "unavailable" });
+  expect(getChallengeBrowser).not.toHaveBeenCalled();
+});
+
+it("delivers once, accounts for cost, and never claims website acceptance or exposes secrets", async () => {
+  const { tool, solve, onToolCost, evaluate } = setup();
+  const result = await run(tool, "solve");
+  expect(result).toMatchObject({
+    status: "token_delivered",
+    websiteAccepted: false,
+  });
+  expect(onToolCost).toHaveBeenCalledWith(0.003);
+  const emitted = JSON.stringify([
+    result,
+    jest.mocked(phLogger.event).mock.calls,
+  ]);
+  for (const value of [
+    "private-provider-key",
+    "private-response",
+    "public-site-key",
+    observation.url,
+  ])
+    expect(emitted).not.toContain(value);
+  expect(evaluate).toHaveBeenCalledTimes(2);
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("does not retry an ambiguous paid failure, and hands off with a sanitized result", async () => {
+  const { tool, solve } = setup();
+  solve.mockRejectedValue(new Error("private-provider-key private-response"));
+  await expect(run(tool, "solve")).resolves.toEqual({
+    status: "handoff_required",
+    reason: "challenge_operation_failed",
+  });
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("blocks concurrent calls instead of creating duplicate paid tasks", async () => {
+  const { tool, solve } = setup();
+  let resolve!: (value: { token: string; costDollars: number }) => void;
+  let started!: () => void;
+  const admitted = new Promise<void>((done) => {
+    started = done;
+  });
+  solve.mockImplementation(() => {
+    started();
+    return new Promise((done) => {
+      resolve = done;
+    });
+  });
+  const pending = run(tool, "solve");
+  await admitted;
+  await expect(run(tool, "solve")).resolves.toMatchObject({ status: "busy" });
+  resolve({ token: "private-response", costDollars: 0.003 });
+  await pending;
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("does not deliver a late response after Stop", async () => {
+  const { tool, solve, evaluate } = setup();
+  const controller = new AbortController();
+  solve.mockImplementation(async () => {
+    controller.abort(new Error("stopped"));
+    return { token: "private-response", costDollars: 0.003 };
+  });
+  await expect(run(tool, "solve", controller.signal)).rejects.toThrow(
+    "stopped",
+  );
+  expect(evaluate).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  "non-demo",
+  "hcaptcha",
+  "interstitial",
+  "multiple widgets",
+  "invisible",
+  "foreign site key",
+])(
+  "hands off unsupported challenges without provider work: %s",
+  async (variant) => {
+    const { tool, solve, evaluate } = setup();
+    const data = cloneObservation();
+    if (variant === "non-demo") data.url = "https://customer.test/login";
+    if (variant === "hcaptcha")
+      (data.widgets[0] as { kind: string }).kind = "hcaptcha";
+    if (variant === "interstitial") data.interstitial = true;
+    if (variant === "multiple widgets")
+      data.widgets.push({ ...data.widgets[0] });
+    if (variant === "invisible") data.widgets[0].invisible = true;
+    if (variant === "foreign site key")
+      data.widgets[0].siteKey = "foreign-customer-key";
+    evaluate.mockResolvedValue(data);
+    await expect(run(tool, "solve")).resolves.toEqual({
+      status: "handoff_required",
+      reason: "unsupported_challenge",
+    });
+    expect(solve).not.toHaveBeenCalled();
+  },
+);
+
+it("uses the real solver adapter through HTTP polling and private browser delivery", async () => {
+  jest.useFakeTimers();
+  const { context, evaluate, onToolCost } = setup();
+  const fetch = jest.fn();
+  global.fetch = fetch;
+  fetch.mockResolvedValueOnce({
+    ok: true,
+    json: async () => ({ errorId: 0, taskId: 123 }),
+  });
+  fetch.mockResolvedValueOnce({
+    ok: true,
+    json: async () => ({
+      errorId: 0,
+      status: "ready",
+      solution: { gRecaptchaResponse: "private-response" },
+      cost: "0.003",
+    }),
+  });
+  const tool = createBrowserChallenge(context, "PREVIEW");
+  const pending = run(tool, "solve");
+  await jest.advanceTimersByTimeAsync(5000);
+  await expect(pending).resolves.toMatchObject({
+    status: "token_delivered",
+    websiteAccepted: false,
+  });
+  expect(onToolCost).toHaveBeenCalledTimes(1);
+  expect(evaluate).toHaveBeenCalledTimes(2);
+});
