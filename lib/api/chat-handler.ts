@@ -1,4 +1,5 @@
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
+import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
 import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
@@ -2069,6 +2070,10 @@ export const createChatHandler = () => {
                     const loopContinuation = loopTriggeredRetry
                       ? prepareAgentLoopContinuation(messages)
                       : undefined;
+                    const loopRecoverySourceMessageId =
+                      loopContinuation?.messages.findLast(
+                        (message) => message.role === "assistant",
+                      )?.id;
                     const emptyResponseContinuation =
                       terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
@@ -2359,7 +2364,12 @@ export const createChatHandler = () => {
                                   userId,
                                   message:
                                     summarizationTracker.processMessageForSave(
-                                      message,
+                                      message.id === loopRecoverySourceMessageId
+                                        ? markLoopRecoveryCheckpoint(
+                                            message,
+                                            retryMessageId,
+                                          )
+                                        : message,
                                     ),
                                   extraFileIds: preservedFileIds,
                                   model: configuredModelId,
@@ -2443,6 +2453,10 @@ export const createChatHandler = () => {
                                   mode,
                                   createdAt: fallbackStartTime,
                                   generationStartedAt: fallbackStartTime,
+                                  ...(loopRecoverySourceMessageId && {
+                                    recoverySourceMessageId:
+                                      loopRecoverySourceMessageId,
+                                  }),
                                 };
                               }
 
