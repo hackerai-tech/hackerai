@@ -161,6 +161,24 @@ export const normalizeMessages = (
         return;
       }
 
+      // Stop saves directly to Convex. Leaving an approval state here makes
+      // its historical tool card register a live prompt again after reload,
+      // even though the run and its approval session have been canceled.
+      if (
+        options?.userInitiatedAbort &&
+        toolPart.type?.startsWith("tool-") &&
+        (toolPart.state === "approval-requested" ||
+          toolPart.state === "approval-responded")
+      ) {
+        processedParts.push({
+          ...part,
+          state: "output-error",
+          errorText: getIncompleteToolErrorText(undefined, true),
+        });
+        messageChanged = true;
+        return;
+      }
+
       // Check if this is a terminal tool that needs transformation
       // Terminal tools need frontend handling to collect streaming output from data-terminal parts
       // Other incomplete tools are handled by backend (chat-processor.ts)

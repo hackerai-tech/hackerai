@@ -3,6 +3,38 @@ import { INTERRUPTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
 import type { ChatMessage } from "@/types/chat";
 
 describe("normalizeMessages", () => {
+  it.each(["approval-requested", "approval-responded"])(
+    "only settles %s tool parts when the user stops",
+    (state) => {
+      const pending = {
+        type: "tool-file_write",
+        toolCallId: "write-1",
+        state,
+        input: { path: "/tmp/qa.txt", text: "qa" },
+        approval: { id: "approval-1", approved: true },
+        providerMetadata: { provider: { signature: "test-signature" } },
+      };
+      const completed = {
+        ...pending,
+        toolCallId: "write-completed",
+        state: "output-available",
+        output: "File written: /tmp/qa.txt",
+      };
+      const messages = [
+        { id: "assistant-1", role: "assistant", parts: [pending, completed] },
+      ] as unknown as ChatMessage[];
+      expect(normalizeMessages(messages).messages).toEqual(messages);
+      const result = normalizeMessages(messages, { userInitiatedAbort: true });
+      expect(result.messages[0].parts[0]).toEqual({
+        ...pending,
+        state: "output-error",
+        errorText: "Stopped by user before the tool completed.",
+      });
+      expect(result.messages[0].parts[1]).toBe(completed);
+      expect(pending.state).toBe(state);
+    },
+  );
+
   it.each([
     [
       "tool-shell",

@@ -867,6 +867,55 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it.each(["tool-run_terminal_cmd", "tool-file_write"])(
+    "persists a stopped %s approval instead of resurrecting it on reload",
+    async (type) => {
+      const stoppedTool = {
+        type,
+        toolCallId: "pending-tool",
+        state: "approval-requested",
+        approval: { id: "approval-1" },
+        input:
+          type === "tool-file_write"
+            ? { path: "/tmp/qa.txt", text: "qa" }
+            : { command: "sleep 45" },
+      };
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: [
+            { id: "run-pending", role: "assistant", parts: [stoppedTool] },
+          ] as ChatMessage[],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: "run-pending" },
+        }),
+      );
+      await act(async () => {
+        await result.current.handleStop();
+      });
+      expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "run-pending",
+          parts: [
+            expect.objectContaining({
+              toolCallId: "pending-tool",
+              input: stoppedTool.input,
+              state: "output-error",
+              errorText: "Stopped by user before the tool completed.",
+            }),
+          ],
+        }),
+      );
+    },
+  );
+
   it("starts native cancellation without waiting for an offline server", async () => {
     let finishCancel!: (response: Response) => void;
     (globalThis.fetch as jest.Mock<typeof fetch>).mockImplementationOnce(
