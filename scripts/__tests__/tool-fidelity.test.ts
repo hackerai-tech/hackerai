@@ -3,6 +3,52 @@ import {
   toolFidelityFixtures,
 } from "../fixtures/tool-fidelity";
 
+it("rejects execution-changing extra flags while accepting terminal defaults", () => {
+  const expected = {
+    kind: "tool" as const,
+    name: "run_terminal_cmd",
+    input: {
+      command: "agent-browser snapshot -i",
+      interactive: false,
+      is_background: false,
+    },
+  };
+  const result = {
+    text: "",
+    finishReason: "tool-calls",
+    toolCalls: [
+      {
+        toolName: expected.name,
+        input: {
+          ...expected.input,
+          timeout: 60,
+          brief: "Read the snapshot.",
+          justification: "Inspect the current page.",
+          prefix_rule: ["agent-browser", "snapshot"],
+        },
+      },
+    ],
+  };
+  expect(scoreToolFidelity(expected, result)).toBe(true);
+  for (const extra of [
+    { interactive: true },
+    { is_background: true },
+    { unexpected: "change execution" },
+  ]) {
+    expect(
+      scoreToolFidelity(expected, {
+        ...result,
+        toolCalls: [
+          {
+            toolName: expected.name,
+            input: { ...result.toolCalls[0].input, ...extra },
+          },
+        ],
+      }),
+    ).toBe(false);
+  }
+});
+
 it("rejects plausible but changed answers, extra tools and truncated answers", () => {
   const expected = { kind: "text" as const, text: "HANDOFF_abc123" };
   const result = { text: expected.text, finishReason: "stop", toolCalls: [] };

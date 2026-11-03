@@ -13,6 +13,7 @@ import {
 // no customer histories are read, and no feature flags are evaluated or changed.
 class UsageError extends Error {}
 
+/** Runs synthetic model checks only with explicit live opt-in; tools never execute. */
 async function main() {
   const args = process.argv.slice(2);
   if (

@@ -127,7 +127,11 @@ export function toolFidelityFixtures(nonce: string): FidelityFixture[] {
       expected: {
         kind: "tool",
         name: "run_terminal_cmd",
-        input: { command: "agent-browser snapshot -i" },
+        input: {
+          command: "agent-browser snapshot -i",
+          interactive: false,
+          is_background: false,
+        },
       },
     },
     {
@@ -200,6 +204,7 @@ export function toolFidelityFixtures(nonce: string): FidelityFixture[] {
   ];
 }
 
+/** Requires one intended action and exact content, allowing display/approval metadata and wait budgets. */
 export function scoreToolFidelity(
   expected: FidelityFixture["expected"],
   result: {
@@ -230,7 +235,17 @@ export function scoreToolFidelity(
   )
     return false;
   const input = call.input as Record<string, unknown>;
-  // Display briefs and timing defaults may vary; identifiers and content may not.
+  // Approval metadata is required by the gated terminal schema. Its permission
+  // policy is tested by the approval layer, not this execution-fidelity scorer.
+  const allowedKeys = new Set([
+    ...Object.keys(expected.input),
+    "brief",
+    "timeout",
+    ...(expected.name === "run_terminal_cmd"
+      ? ["justification", "prefix_rule"]
+      : []),
+  ]);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) return false;
   return Object.entries(expected.input).every(
     ([key, value]) => input[key] === value,
   );
