@@ -105,6 +105,18 @@ it.each([false, undefined, "true", "test"])(
   },
 );
 
+it.each([{}, { enabled: "true" }, { enabled: 1 }])(
+  "retains baseline when the SDK result has no boolean enabled value: %s",
+  async (result) => {
+    expect(
+      await evaluatePaidAgentAccuracy({
+        ...eligible,
+        posthog: { getFeatureFlagResult: async () => result } as never,
+      }),
+    ).toBeUndefined();
+  },
+);
+
 it("retains baseline when analytics is absent or unavailable", async () => {
   expect(
     await evaluatePaidAgentAccuracy({ ...eligible, posthog: null }),

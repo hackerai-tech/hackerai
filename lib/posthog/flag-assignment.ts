@@ -7,7 +7,7 @@ export async function getPostHogFlagWithoutExposure(
   userId: string,
   personProperties?: Record<string, string>,
 ): Promise<boolean | string | undefined> {
-  // posthog-node 5.54.1's evaluateFlags().getFlag() always records access and
+  // posthog-node's evaluateFlags().getFlag() always records access and
   // does not accept sendFeatureFlagEvents. Keep deferred exposure on the
   // supported result API until the snapshot API can preserve that contract.
   const result = await client.getFeatureFlagResult(flagKey, userId, {
@@ -15,5 +15,7 @@ export async function getPostHogFlagWithoutExposure(
     ...(personProperties && { personProperties }),
   });
   if (!result) return undefined;
-  return result.enabled === false ? false : (result.variant ?? true);
+  if (result.enabled === false) return false;
+  if (result.enabled !== true) return undefined;
+  return result.variant ?? true;
 }
