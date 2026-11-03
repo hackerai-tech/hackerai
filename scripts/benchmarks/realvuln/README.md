@@ -30,8 +30,8 @@ integrity.
 ## Setup and run
 
 Use an isolated worktree with its own dependencies and approved Development
-configuration. Keep raw results outside Git. Supply a protected JSON record
-through standard input with `workosSealedSession` for the existing Preview Pro
+configuration. Keep raw results outside Git. Supply one protected, single-line
+JSON record through standard input with `workosSealedSession` for the existing Preview Pro
 QA account and, when Preview is Vercel protected, a short-lived
 `vercelOidcToken` or the QA browser's existing `vercelAuthCookie`. Never put
 credentials in an argument or log. Confirm
@@ -63,7 +63,10 @@ For a separate offline diagnostic, use `--isolated-adapter` with the previous
 `--agent-model-context-variant`, `--docker-host`, and concurrency options. Label
 its results as isolated-adapter, never product-backend parity.
 
-The Agent receives a generic source-review instruction and the pinned target
+The driver observes the same durable Trigger `ui` stream as the product Agent
+transport. The saved-chat stream is used only to read the final persisted answer;
+its replay does not prove that live Agent work or an automatic continuation was
+observed. The Agent receives a generic source-review instruction and the pinned target
 repository URL and commit. It returns a bounded JSON array:
 each item has repository-relative `path`, one-based `line`, one `cwe`,
 `severity`, and concise `evidence`. `[]` is an explicit no-finding result.

@@ -188,19 +188,21 @@ class ProductBackend:
         return {"subscription": entitlement["subscription"],
                 "workspaceStatus": workspace["status"], "triggerHealth": trigger_health}
 
-    def start(self, chat_id: str, message: str, *, automatic: bool = False) -> str:
+    def start(self, chat_id: str, message: str, *, automatic: bool = False) -> dict:
         response = self.json("POST", "/api/agent", {
             "chatId": chat_id,
             "agentRunRequestId": uuid.uuid4().hex,
-            "messages": [{"id": str(uuid.uuid4()), "role": "user", "parts": [{"type": "text", "text": message}]}],
+            "messages": [{"id": str(uuid.uuid4()), "role": "user", "parts": [{"type": "text", "text": message}],
+                          **({"metadata": {"isAutoContinue": True}} if automatic else {})}],
             "sandboxPreference": "e2b",
             "agentPermissionMode": "full_access",
             "selectedModel": "hackerai-pro",
             **({"isAutoContinue": True, "isAutomaticContinuation": True} if automatic else {}),
         })
-        if response.get("chatId") != chat_id or not isinstance(response.get("runId"), str):
+        if (response.get("chatId") != chat_id or not isinstance(response.get("runId"), str)
+                or not isinstance(response.get("publicAccessToken"), str)):
             raise BackendError("Agent start response did not identify the requested chat/run")
-        return response["runId"]
+        return {"runId": response["runId"], "publicAccessToken": response["publicAccessToken"]}
 
     def status(self, chat_id: str, run_id: str) -> dict:
         response = self.json("POST", "/api/agent/status", {"chatId": chat_id, "runId": run_id})
@@ -226,50 +228,6 @@ class ProductBackend:
             if isinstance(value, dict):
                 events.append(value)
         return events
-
-    def observe(self, chat_id: str, stop: threading.Event, observed: dict) -> None:
-        """Watch the live saved stream for the UI's continuation signal."""
-        while not stop.is_set():
-            request = urllib.request.Request(
-                self.origin + f"/api/chat/{chat_id}/stream", headers=self.access_headers,
-            )
-            try:
-                with self.lock:
-                    response = self.opener.open(request, timeout=40)
-                with response:
-                    if response.status == 204:
-                        stop.wait(0.5)
-                        continue
-                    observed["connected"] = True
-                    connection_work = False
-                    for line in response:
-                        if stop.is_set():
-                            return
-                        if not line.startswith(b"data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == b"[DONE]":
-                            if connection_work:
-                                observed["done"] = True
-                                return
-                            # The endpoint can replay an empty or prior stream
-                            # before this run's producer attaches.
-                            stop.wait(0.5)
-                            break
-                        try:
-                            event = json.loads(data)
-                        except (ValueError, UnicodeDecodeError):
-                            continue
-                        if isinstance(event, dict) and event.get("type") == "data-auto-continue":
-                            observed["autoContinue"] = True
-                        if isinstance(event, dict) and event.get("type") in (
-                            "text-delta", "tool-input-available", "tool-output-available",
-                        ):
-                            observed["agentWork"] = True
-                            connection_work = True
-            except (OSError, urllib.error.HTTPError, urllib.error.URLError, http.client.HTTPException):
-                stop.wait(0.5)
-
 
 def latest_assistant_text(events: list[dict]) -> str | None:
     for event in reversed(events):
@@ -328,6 +286,49 @@ def task_prompt(entry: dict) -> str:
     )
 
 
+async def observe_trigger(client: ProductBackend, chat_id: str, handle: dict, limit_seconds: int) -> dict:
+    """Subscribe to the product's durable Trigger UI stream without logging content or tokens."""
+    observer = ROOT / "scripts" / "benchmarks" / "realvuln" / "product_stream_observer.ts"
+    tsx = ROOT / "node_modules" / ".bin" / "tsx"
+    process = await asyncio.create_subprocess_exec(
+        str(tsx), str(observer), cwd=ROOT, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    try:
+        process.stdin.write((json.dumps({
+            "runId": handle["runId"], "publicAccessToken": handle["publicAccessToken"],
+            "limitSeconds": limit_seconds,
+        }) + "\n").encode())
+        await process.stdin.drain()
+        while True:
+            line = await asyncio.wait_for(process.stdout.readline(), timeout=limit_seconds + 90)
+            if not line or len(line) > 4096:
+                raise BackendError("Trigger stream observer did not return a bounded result")
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                raise BackendError("Trigger stream observer returned invalid JSON") from None
+            if not isinstance(event, dict):
+                raise BackendError("Trigger stream observer returned invalid shape")
+            if event.get("event") == "refresh":
+                resumed = await asyncio.to_thread(client.json, "GET", f"/api/agent/resume?chatId={chat_id}")
+                if resumed.get("runId") != handle["runId"] or not isinstance(resumed.get("publicAccessToken"), str):
+                    raise BackendError("Trigger token refresh identified a different run")
+                process.stdin.write((json.dumps({"token": resumed["publicAccessToken"]}) + "\n").encode())
+                await process.stdin.drain()
+                continue
+            if event.get("event") == "result":
+                await asyncio.wait_for(process.wait(), timeout=10)
+                if process.returncode != 0:
+                    raise BackendError("Trigger stream observer exited unsuccessfully")
+                return {key: bool(event.get(key)) for key in ("agentWork", "finish", "autoContinue")}
+            raise BackendError("Trigger stream observer failed")
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+
+
 async def wait_run(client: ProductBackend, chat_id: str, run_id: str, deadline: float) -> str:
     transient_failures = 0
     while time.monotonic() < deadline:
@@ -367,49 +368,42 @@ async def run_target(client: ProductBackend, slug: str, entry: dict, upstream: P
     chat_id = str(uuid.uuid4())
     state = {"chatId": chat_id, "phase": "starting", "target": slug, "startedAt": datetime.now(timezone.utc).isoformat()}
     atomic_json(state_path, state)
-    observed: dict = {}
-    stop_observer = threading.Event()
-    observer = threading.Thread(target=client.observe, args=(chat_id, stop_observer, observed), daemon=True)
-    observer.start()
+    observer_task: asyncio.Task | None = None
     try:
-        run_id = await asyncio.to_thread(client.start, chat_id, task_prompt(entry))
+        handle = await asyncio.to_thread(client.start, chat_id, task_prompt(entry))
+        run_id = handle["runId"]
         state.update(phase="running", runId=run_id)
         atomic_json(state_path, state)
+        observer_task = asyncio.create_task(observe_trigger(client, chat_id, handle, limit_seconds))
         status = await wait_run(client, chat_id, run_id, time.monotonic() + limit_seconds)
-        # DETACHED can precede the final SSE frame because the Trigger task
-        # clears its active-run association when it persists the answer.
-        await asyncio.to_thread(observer.join, 20)
-        stop_observer.set()
-        if observer.is_alive():
-            await asyncio.to_thread(observer.join, 5)
         state.update(phase="terminal", backendStatus=status)
         atomic_json(state_path, state)
         if status not in ("COMPLETED", "DETACHED"):
             raise BackendError(f"Agent ended with {status}")
-        if not observed.get("agentWork") or not observed.get("done"):
-            raise BackendError("Live stream was not observed through completion; continuation is unknown")
+        observed = await asyncio.wait_for(observer_task, timeout=45)
+        state["streamObservation"] = observed
+        atomic_json(state_path, state)
+        if not observed.get("agentWork") or not observed.get("finish"):
+            raise BackendError("Trigger UI stream was not observed through completion; continuation is unknown")
         # A backend continuation signal cannot be inferred from the final
         # answer. Hold scoring until the client continuation contract is
         # captured; this runner must not silently skip a user-visible step.
         if observed.get("autoContinue"):
-            observed = {}
-            stop_observer = threading.Event()
-            observer = threading.Thread(target=client.observe, args=(chat_id, stop_observer, observed), daemon=True)
-            observer.start()
-            run_id = await asyncio.to_thread(client.start, chat_id, AUTO_CONTINUE_PROMPT, automatic=True)
+            handle = await asyncio.to_thread(client.start, chat_id, AUTO_CONTINUE_PROMPT, automatic=True)
+            run_id = handle["runId"]
             state.update(phase="continuing", continuationRunId=run_id)
             atomic_json(state_path, state)
+            observer_task = asyncio.create_task(observe_trigger(client, chat_id, handle, limit_seconds))
             status = await wait_run(client, chat_id, run_id, time.monotonic() + limit_seconds)
-            await asyncio.to_thread(observer.join, 20)
-            stop_observer.set()
-            if observer.is_alive():
-                await asyncio.to_thread(observer.join, 5)
             state.update(phase="terminal", continuationStatus=status)
             atomic_json(state_path, state)
             if status not in ("COMPLETED", "DETACHED"):
                 raise BackendError(f"Agent continuation ended with {status}")
-            if not observed.get("agentWork") or not observed.get("done"):
-                raise BackendError("Continuation stream was not observed through completion")
+            observed = await asyncio.wait_for(observer_task, timeout=45)
+            state["continuationStreamObservation"] = observed
+            atomic_json(state_path, state)
+            if not observed.get("agentWork") or not observed.get("finish"):
+                raise BackendError("Continuation Trigger UI stream was not observed through completion")
         text = await saved_answer(client, chat_id)
         raw = parse_findings_text(text)
         target = target_dir / "source"
@@ -426,8 +420,9 @@ async def run_target(client: ProductBackend, slug: str, entry: dict, upstream: P
                 "wallElapsedMs": round((time.monotonic() - started) * 1000),
                 "automaticContinuations": int("continuationRunId" in state), "modelCostDollars": None}
     except (BackendError, ValueError, OSError, RuntimeError) as error:
-        stop_observer.set()
-        await asyncio.to_thread(observer.join, 5)
+        if observer_task and not observer_task.done():
+            observer_task.cancel()
+            await asyncio.gather(observer_task, return_exceptions=True)
         if state.get("phase") in ("starting", "running", "continuing"):
             state.update(phase="needs_intervention", errorClass=type(error).__name__)
             atomic_json(state_path, state)

@@ -146,6 +146,17 @@ class ProductBackendContractTests(unittest.TestCase):
         self.assertEqual(client.request("GET", "/api/entitlements"), b"{}")
         self.assertEqual(client.opener.seen_header, "short-lived-test-token")
 
+    def test_agent_start_requires_trigger_stream_access_for_scoring(self):
+        client = object.__new__(backend.ProductBackend)
+        response = {"chatId": "chat-1", "runId": "run-1"}
+        client.json = lambda *_args, **_kwargs: response
+        with self.assertRaises(backend.BackendError):
+            client.start("chat-1", "bounded test")
+        response["publicAccessToken"] = "ephemeral-test-token"
+        self.assertEqual(client.start("chat-1", "bounded test"), {
+            "runId": "run-1", "publicAccessToken": "ephemeral-test-token",
+        })
+
     def test_existing_vercel_session_cookie_reaches_only_preview_origin(self):
         client = backend.ProductBackend(
             "https://hackerai-git-test.vercel.app", "sealed-test-session",
@@ -161,96 +172,12 @@ class ProductBackendContractTests(unittest.TestCase):
     def test_protected_backend_requests_do_not_follow_redirects(self):
         self.assertIsNone(backend.NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.example"))
 
-    def test_empty_replay_backs_off_before_reconnecting(self):
-        class Response(io.BytesIO):
-            status = 200
-
-        class Opener:
-            def open(self, _request, timeout):
-                return Response(b"data: [DONE]\n\n")
-
-        class Stop:
-            waits = 0
-
-            def is_set(self):
-                return self.waits > 0
-
-            def wait(self, _seconds):
-                self.waits += 1
-
-        client = object.__new__(backend.ProductBackend)
-        client.origin = "https://hackerai-git-test.vercel.app"
-        client.lock = threading.Lock()
-        client.opener = Opener()
-        client.access_headers = {}
-        stop = Stop()
-        client.observe("chat", stop, {})
-        self.assertEqual(stop.waits, 1)
-
-    def test_replay_done_cannot_complete_a_dropped_live_stream(self):
-        class Response(io.BytesIO):
-            status = 200
-
-        class Opener:
-            calls = 0
-
-            def open(self, _request, timeout):
-                self.calls += 1
-                if self.calls == 1:
-                    return Response(b'data: {"type":"text-delta","delta":"work"}\n\n')
-                return Response(b'data: {"type":"data-appendMessage","data":"{}"}\n\ndata: [DONE]\n\n')
-
-        class Stop:
-            stopped = False
-
-            def is_set(self):
-                return self.stopped
-
-            def wait(self, _seconds):
-                self.stopped = True
-
-        client = object.__new__(backend.ProductBackend)
-        client.origin = "https://hackerai-git-test.vercel.app"
-        client.lock = threading.Lock()
-        client.opener = Opener()
-        client.access_headers = {}
-        observed = {}
-        client.observe("chat", Stop(), observed)
-        self.assertTrue(observed.get("agentWork"))
-        self.assertFalse(observed.get("done", False))
-        self.assertEqual(client.opener.calls, 2)
-
     def test_official_scorecard_shape_must_be_valid_before_scoring(self):
         card = {"tp": 1, "fp": 2, "fn": 3, "f2_score": 41.7, "f3_score": 35.0}
         self.assertEqual(backend.official_score_fields(card), card)
         for invalid in ({**card, "fn": None}, {**card, "tp": True}, {**card, "f2_score": 121}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 backend.official_score_fields(invalid)
-
-    def test_live_stream_records_product_continuation_signal(self):
-        class Response(io.BytesIO):
-            status = 200
-
-        class Opener:
-            def open(self, _request, timeout):
-                self.timeout = timeout
-                return Response(
-                    b'data: {"type":"text-delta","delta":"work"}\n\n'
-                    b'data: {"type":"data-auto-continue","data":{}}\n\n'
-                    b'data: [DONE]\n\n'
-                )
-
-        client = object.__new__(backend.ProductBackend)
-        client.origin = "https://example.vercel.app"
-        client.lock = threading.Lock()
-        client.opener = Opener()
-        client.access_headers = {}
-        observed = {}
-        client.observe("chat", threading.Event(), observed)
-        self.assertEqual(observed.get("agentWork"), True)
-        self.assertEqual(observed.get("autoContinue"), True)
-        self.assertEqual(observed.get("done"), True)
-
 
 class ProductBackendRunTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_poll_recovers_from_two_transient_read_failures(self):
@@ -277,19 +204,20 @@ class ProductBackendRunTests(unittest.IsolatedAsyncioTestCase):
 
             def start(self, _chat_id, _message):
                 self.starts += 1
-                return "run-1"
+                return {"runId": "run-1", "publicAccessToken": "test-token"}
 
             def status(self, _chat_id, _run_id):
                 return {"status": "COMPLETED", "terminal": True}
 
-            def observe(self, _chat_id, _stop, _observed):
-                return None
-
         client = FakeClient()
+        async def missing_stream(*_args):
+            return {"agentWork": False, "finish": False, "autoContinue": False}
+
         with tempfile.TemporaryDirectory() as directory:
             results = Path(directory)
             entry = {"repo_url": "https://github.com/example/source", "commit_sha": "a" * 40}
-            row = await backend.run_target(client, "realvuln-test", entry, results, results, 60)
+            with patch.object(backend, "observe_trigger", missing_stream):
+                row = await backend.run_target(client, "realvuln-test", entry, results, results, 60)
             self.assertEqual(row["agentStatus"], "unscored_backend_or_protocol_error")
             self.assertFalse((results / "realvuln-test" / "scorecard.json").exists())
             with self.assertRaises(FileExistsError):
@@ -300,9 +228,6 @@ class ProductBackendRunTests(unittest.IsolatedAsyncioTestCase):
         class FakeClient:
             def start(self, _chat_id, _message):
                 raise backend.BackendError("start response lost")
-
-            def observe(self, _chat_id, _stop, _observed):
-                return None
 
         with tempfile.TemporaryDirectory() as directory:
             results = Path(directory)
