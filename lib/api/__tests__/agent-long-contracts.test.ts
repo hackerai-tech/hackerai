@@ -2418,7 +2418,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       taskSrc.match(
         /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(5); // Includes revalidation after wait_for_user resumes.
     expect(taskSrc).not.toMatch(
       /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
     );

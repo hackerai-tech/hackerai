@@ -17,11 +17,13 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   compactAgentControls?: boolean;
   onAttachClick: () => void;
+  attachmentsDisabled?: boolean;
 }
 
 export function ChatInputToolbar({
   compactAgentControls = false,
   onAttachClick,
+  attachmentsDisabled = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -55,7 +57,7 @@ export function ChatInputToolbar({
         <div className="shrink-0">
           <AttachmentButton
             onAttachClick={onAttachClick}
-            disabled={!isOnline}
+            disabled={!isOnline || attachmentsDisabled}
           />
         </div>
         {user &&

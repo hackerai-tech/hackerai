@@ -56,6 +56,22 @@ function renderButton(
 }
 
 describe("SubmitStopButton paid mode colors", () => {
+  it("allows a text reply to resume a paused Agent during streaming", () => {
+    render(
+      <TooltipProvider>
+        <SubmitStopButton
+          {...defaultProps}
+          chatMode="agent"
+          status="streaming"
+          isReplyingToAgent
+        />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByLabelText("Send reply and resume agent")).toBeEnabled();
+    expect(screen.queryByLabelText("Stop generation")).not.toBeInTheDocument();
+  });
+
   it("disables sending while offline without hiding the composer action", () => {
     render(
       <TooltipProvider>

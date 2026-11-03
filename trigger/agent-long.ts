@@ -41,6 +41,9 @@ import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
+import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
+import { AGENT_WAIT_FOR_USER_FLAG } from "@/lib/experiments/agent-wait-for-user";
+import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
 import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -2521,6 +2524,81 @@ export const agentLongTask = task({
                 releaseFreeRunLock = lock.release;
               }
             };
+            const revalidateAfterUserWait = async (toolCallId: string) => {
+              await assertUserCanMakeCostIncurringRequest(userId);
+              const currentEntitlement =
+                await getCurrentAgentEntitlementContext({
+                  userId,
+                  organizationId,
+                });
+              if (
+                currentEntitlement.subscription !== subscription ||
+                currentEntitlement.organizationId !== organizationId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the run start.",
+                );
+              }
+              const currentChat = await getChatById({ id: chatId });
+              if (
+                !currentChat ||
+                currentChat.user_id !== userId ||
+                currentChat.active_trigger_run_id !== ctx.run.id ||
+                currentChat.active_agent_user_wait?.toolCallId !== toolCallId ||
+                currentChat.active_agent_user_wait?.status !== "submitting"
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer waiting for this reply.",
+                );
+              }
+              const currentUserCustomization = await getUserCustomization({
+                userId,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId,
+                subscription: currentEntitlement.subscription,
+                userCustomization: currentUserCustomization,
+                organizationId: currentEntitlement.organizationId,
+                failClosedOnLookupError: true,
+              });
+              const currentlyAllowedModel = normalizeMaxModelForSubscription(
+                selectedModelOverride,
+                currentEntitlement.subscription,
+                { extraUsageConfig: currentExtraUsageConfig },
+              );
+              if (currentlyAllowedModel !== selectedModelOverride) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The selected model is no longer authorized.",
+                );
+              }
+              const currentModelExtraUsageConfig =
+                withExtraUsageBillingForModel(
+                  currentExtraUsageConfig,
+                  currentlyAllowedModel,
+                  currentEntitlement.subscription,
+                );
+              await checkRateLimitCapacity(
+                userId,
+                mode,
+                currentEntitlement.subscription,
+                currentModelExtraUsageConfig,
+                selectedModel,
+                currentEntitlement.organizationId,
+                freeQuotaSubject,
+                freeLimits,
+              );
+              if (currentEntitlement.subscription === "free") {
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
+                const lock = await acquireFreeRunConcurrencyLock(
+                  freeUsageSubject,
+                  FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
+                );
+                releaseFreeRunLock = lock.release;
+              }
+            };
             const revalidateAfterAutoReview = async ({
               approvalId: _approvalId,
               toolCallId: _toolCallId,
@@ -2658,6 +2736,10 @@ export const agentLongTask = task({
               onPostWaitAuthorizationDenied: () => userStopSignal.abort(),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
+            const waitForUserEnabled = await getPostHogFeatureFlagForUser(
+              AGENT_WAIT_FOR_USER_FLAG,
+              userId,
+            );
             const {
               tools,
               ensureSandbox,
@@ -2706,9 +2788,20 @@ export const agentLongTask = task({
                 triggerRegion,
                 environment: ctx.environment.type,
                 keepE2BLeaseAliveForRun: true,
-                ...(subagentsEnabled
-                  ? {
-                      additionalTools: (toolContext) => ({
+                additionalTools: (toolContext) => ({
+                  ...(waitForUserEnabled && {
+                    wait_for_user: createWaitForUserTool(toolContext, {
+                      beforeSuspend:
+                        subscription === "free"
+                          ? releaseFreeRunLockOnce
+                          : undefined,
+                      pauseActiveTime: runtimeBudget.pause,
+                      resumeActiveTime: runtimeBudget.resume,
+                      revalidateAfterSuspend: revalidateAfterUserWait,
+                    }),
+                  }),
+                  ...(subagentsEnabled
+                    ? {
                         delegate_task: createDelegateTaskTool(toolContext, {
                           organizationId,
                           sandboxPreference,
@@ -2744,9 +2837,9 @@ export const agentLongTask = task({
                         cancel_agent: createCancelAgentTool(toolContext),
                         search_skills: createSearchSkillsTool(),
                         load_skill: createLoadSkillTool(),
-                      }),
-                    }
-                  : {}),
+                      }
+                    : {}),
+                }),
               },
             );
             finishE2BIdleLeaseRelease = async () => {

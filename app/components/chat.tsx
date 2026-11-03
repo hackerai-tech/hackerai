@@ -29,6 +29,7 @@ import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
+import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
@@ -802,6 +803,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const storedPendingUserWait = (chatDataForCurrentChat as any)
+    ?.active_agent_user_wait as ActiveAgentUserWait | undefined;
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -2073,10 +2076,35 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleDrop,
   });
 
+  // The stream may show the wait tool before the Convex chat subscription
+  // publishes its pending field. Keep that immediate reply out of the queue.
+  const lastVisibleMessage = messages.at(-1);
+  const lastWaitPart =
+    lastVisibleMessage?.role === "assistant" &&
+    Array.isArray(lastVisibleMessage.parts)
+      ? (lastVisibleMessage.parts as any[])
+          .slice()
+          .reverse()
+          .find((part) => part?.type === "tool-wait_for_user")
+      : undefined;
+  const pendingUserWait: ActiveAgentUserWait | undefined =
+    storedPendingUserWait ??
+    (lastWaitPart?.state === "input-available" &&
+    typeof lastWaitPart.toolCallId === "string" &&
+    (agentLongRunId || activeTriggerRunId)
+      ? {
+          runId: (agentLongRunId || activeTriggerRunId)!,
+          toolCallId: lastWaitPart.toolCallId,
+          status: "waiting",
+        }
+      : undefined);
+  const hasPendingUserWait = !!pendingUserWait;
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
       status === "ready" &&
+      !hasPendingUserWait &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       editingQueuedMessageId === null &&
@@ -2118,6 +2146,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    hasPendingUserWait,
     messageQueue,
     editingQueuedMessageId,
     computerSendDisabledReason,
@@ -2165,7 +2194,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
-    sendDisabledReason: computerSendDisabledReason,
+    sendDisabledReason: pendingUserWait
+      ? undefined
+      : computerSendDisabledReason,
+    pendingUserWait,
   });
 
   const handleScrollToBottom = useCallback(() => {
@@ -2430,6 +2462,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                               handleDismissRateLimitWarning
                             }
                             storedApprovalRequest={storedAgentApprovalRequest}
+                            pendingUserWait={pendingUserWait}
                           />
                         </div>
                       )}
@@ -2468,6 +2501,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
+                    pendingUserWait={pendingUserWait}
                   />
                 </ComposerOverlay>
               ) : null}

@@ -16,6 +16,7 @@ import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
 import { SubagentToolHandler } from "./tools/SubagentToolHandler";
 import { SubagentSkillToolHandler } from "./tools/SubagentSkillToolHandler";
+import { WaitForUserToolHandler } from "./tools/WaitForUserToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -304,6 +305,9 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
+
+    case "tool-wait_for_user":
+      return <WaitForUserToolHandler part={part} status={status} />;
 
     case "tool-delegate_task":
     case "tool-create_agent":

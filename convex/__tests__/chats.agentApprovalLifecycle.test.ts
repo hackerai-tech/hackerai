@@ -58,6 +58,8 @@ const {
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveAgentApprovalPending,
+  setActiveAgentUserWait,
+  claimAgentUserWaitReply,
   setActiveTriggerRun,
 } = require("../chats") as typeof import("../chats");
 
@@ -115,6 +117,87 @@ describe("Agent approval lifecycle guards", () => {
         },
         expectedRunId: "parent-run",
         expectedApprovalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("busy");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("does not let a stale run register a user reply wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "new-run",
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "old-run",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("accepts only one reply to a current user wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      }),
+    ).resolves.toBe("claimed");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_agent_user_wait: expect.objectContaining({
+          status: "submitting",
+          replyId: "reply-1",
+        }),
+      }),
+    );
+  });
+
+  it("rejects a different reply after the first delivery is claimed", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "submitting",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-2",
+        replyHash: "hash-2",
       }),
     ).resolves.toBe("busy");
     expect(patch).not.toHaveBeenCalled();

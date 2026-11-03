@@ -75,6 +75,7 @@ export interface SubmitStopButtonProps {
   useNeutralAgentStyle?: boolean;
   isOnline?: boolean;
   sendDisabledReason?: string;
+  isReplyingToAgent?: boolean;
 }
 
 export function SubmitStopButton({
@@ -91,6 +92,7 @@ export function SubmitStopButton({
   useNeutralAgentStyle = false,
   isOnline = true,
   sendDisabledReason,
+  isReplyingToAgent = false,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -99,13 +101,13 @@ export function SubmitStopButton({
       onStop();
     },
     {
-      enabled: isGenerating && !hideStop,
+      enabled: (isGenerating || isReplyingToAgent) && !hideStop,
       enableOnFormTags: true,
       enableOnContentEditable: true,
       preventDefault: true,
       description: "Stop AI generation",
     },
-    [isGenerating, onStop],
+    [isGenerating, isReplyingToAgent, onStop],
   );
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
@@ -144,13 +146,19 @@ export function SubmitStopButton({
                 disabled={
                   !!sendDisabledReason ||
                   !isOnline ||
-                  status !== "ready" ||
+                  (status !== "ready" && !isReplyingToAgent) ||
                   isUploadingFiles ||
-                  (!input.trim() && uploadedFiles.length === 0)
+                  (isReplyingToAgent
+                    ? !input.trim() || uploadedFiles.length > 0
+                    : !input.trim() && uploadedFiles.length === 0)
                 }
                 variant="default"
                 className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
-                aria-label="Send message"
+                aria-label={
+                  isReplyingToAgent
+                    ? "Send reply and resume agent"
+                    : "Send message"
+                }
                 data-testid="send-button"
               >
                 <ArrowUp size={15} strokeWidth={3} />
@@ -159,12 +167,14 @@ export function SubmitStopButton({
           </TooltipTrigger>
           <TooltipContent>
             <p>
-              {getSendButtonTooltip(
-                isOnline,
-                uploadedFiles.some((f) => f.error),
-                isUploadingFiles,
-                sendDisabledReason,
-              )}
+              {isReplyingToAgent && !sendDisabledReason
+                ? "Reply and resume (⏎)"
+                : getSendButtonTooltip(
+                    isOnline,
+                    uploadedFiles.some((f) => f.error),
+                    isUploadingFiles,
+                    sendDisabledReason,
+                  )}
             </p>
           </TooltipContent>
         </TooltipPrimitive.Root>

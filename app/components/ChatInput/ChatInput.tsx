@@ -38,6 +38,11 @@ import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
+import {
+  WaitingForReplyBanner,
+  WAITING_FOR_REPLY_DESCRIPTION_ID,
+} from "./WaitingForReplyBanner";
+import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import type { UploadedFileState } from "@/types/file";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -59,6 +64,7 @@ import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-san
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -80,6 +86,7 @@ interface ChatInputProps {
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
+  pendingUserWait?: ActiveAgentUserWait | null;
   offlineProtection?: boolean;
   sendDisabledReason?: string;
   isResolvingInitialState?: boolean;
@@ -267,6 +274,7 @@ const ChatInputContent = ({
   autoFocus,
   restoreDraftAttachments = true,
   storedApprovalRequest,
+  pendingUserWait,
   offlineProtection = true,
   sendDisabledReason,
   isResolvingInitialState = false,
@@ -340,6 +348,18 @@ const ChatInputContent = ({
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
+  const isWaitingForReply =
+    !!user && !!pendingUserWait && !showAgentApprovalPrompt;
+  const exposedUserWaitsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isWaitingForReply || !pendingUserWait) return;
+    const key = `${pendingUserWait.runId}:${pendingUserWait.toolCallId}`;
+    if (exposedUserWaitsRef.current.has(key)) return;
+    exposedUserWaitsRef.current.add(key);
+    captureAuthenticatedEvent("agent_wait_for_user_exposed", {
+      definition_version: 1,
+    });
+  }, [isWaitingForReply, pendingUserWait]);
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -363,10 +383,20 @@ const ChatInputContent = ({
   }, []);
 
   useEffect(() => {
-    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
+    if (
+      !isGenerating &&
+      !isWaitingForReply &&
+      !activeToolApprovalRequest &&
+      !storedApprovalRequest
+    ) {
       setIsStoppingAgent(false);
     }
-  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
+  }, [
+    activeToolApprovalRequest,
+    isGenerating,
+    isWaitingForReply,
+    storedApprovalRequest,
+  ]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -766,18 +796,23 @@ const ChatInputContent = ({
     selectedComputerUnavailable,
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
-  const effectiveSendDisabledReason =
-    sendDisabledReason ??
-    (user
-      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
-      : undefined);
+  const effectiveSendDisabledReason = isWaitingForReply
+    ? uploadedFiles.length > 0
+      ? "Remove attachments to reply"
+      : undefined
+    : (sendDisabledReason ??
+      (user
+        ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+        : undefined));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isOffline || effectiveSendDisabledReason) return;
 
     const canSubmit =
-      (status === "ready" || status === "streaming") &&
+      (status === "ready" ||
+        status === "streaming" ||
+        (isWaitingForReply && status === "submitted")) &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
@@ -914,11 +949,19 @@ const ChatInputContent = ({
           />
         )}
 
+        <span className="sr-only" aria-live="polite" aria-atomic="true">
+          {isWaitingForReply
+            ? pendingUserWait?.status === "submitting"
+              ? "Sending your reply"
+              : "Agent paused. Waiting for your reply"
+            : ""}
+        </span>
+
         {user && (
           <div className="flex flex-col [&>*+*]:rounded-t-none">
             <TodoPanel status={status} />
 
-            {messageQueue.length > 0 && (
+            {messageQueue.length > 0 && !isWaitingForReply && (
               <QueuedMessagesPanel
                 messages={messageQueue}
                 onSendNow={onSendNow}
@@ -928,6 +971,16 @@ const ChatInputContent = ({
                 isStreaming={status === "streaming"}
                 queueBehavior={queueBehavior}
                 onQueueBehaviorChange={setQueueBehavior}
+              />
+            )}
+
+            {isWaitingForReply && (
+              <WaitingForReplyBanner
+                submitting={pendingUserWait?.status === "submitting"}
+                stopping={isStoppingAgent}
+                hasAttachments={uploadedFiles.length > 0}
+                hideStop={hideStop}
+                onStop={() => void handleAgentStop()}
               />
             )}
           </div>
@@ -970,13 +1023,20 @@ const ChatInputContent = ({
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
-              placeholder={placeholder}
+              placeholder={
+                isWaitingForReply ? "Reply to continue the Agent…" : placeholder
+              }
               autoFocus={autoFocus}
+              describedBy={
+                isWaitingForReply ? WAITING_FOR_REPLY_DESCRIPTION_ID : undefined
+              }
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
-              isGenerating={isGenerating}
+              isGenerating={isGenerating && !isWaitingForReply}
+              isReplyingToAgent={isWaitingForReply}
+              attachmentsDisabled={isWaitingForReply}
               hideStop={hideStop}
               onStop={() => void handleAgentStop()}
               onSubmit={handleSubmit}

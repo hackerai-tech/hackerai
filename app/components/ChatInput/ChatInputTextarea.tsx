@@ -31,6 +31,7 @@ export interface ChatInputTextareaProps {
   minRows?: number;
   placeholder?: string;
   autoFocus?: boolean;
+  describedBy?: string;
 }
 
 export function ChatInputTextarea({
@@ -41,6 +42,7 @@ export function ChatInputTextarea({
   minRows = 1,
   placeholder,
   autoFocus = true,
+  describedBy,
 }: ChatInputTextareaProps) {
   const input = useComposerInput();
   const { setInput } = useComposerActions();
@@ -180,6 +182,7 @@ export function ChatInputTextarea({
         minRows={minRows}
         autoFocus={autoFocus}
         disabled={disabled}
+        aria-describedby={describedBy}
         data-testid="chat-input"
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {

@@ -1,11 +1,15 @@
-import { RefObject } from "react";
+import { RefObject, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
-import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import {
+  AGENT_CANCEL_ENDPOINT,
+  AGENT_REPLY_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
+import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
@@ -45,6 +49,7 @@ import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
   sendDisabledReason?: string;
+  pendingUserWait?: ActiveAgentUserWait | null;
   chatId: string;
   messages: ChatMessage[];
   sendMessage: (
@@ -109,7 +114,9 @@ export const useChatHandlers = ({
   onStopCallback,
   resetAutoContinueCount,
   sendDisabledReason,
+  pendingUserWait,
 }: UseChatHandlersProps) => {
+  const isSubmittingReplyRef = useRef(false);
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
@@ -516,6 +523,61 @@ export const useChatHandlers = ({
     const hasValidFiles = uploadedFiles.some(isSendableUploadedFile);
     if (!input.trim() && !hasValidFiles) {
       return false;
+    }
+
+    if (pendingUserWait) {
+      if (isSubmittingReplyRef.current) return false;
+      if (uploadedFiles.length > 0) {
+        toast.info("Replies are text only for now", {
+          description:
+            "Remove attachments before replying to the paused Agent.",
+        });
+        return false;
+      }
+      const replyText = input.trim();
+      if (!replyText) return false;
+      isSubmittingReplyRef.current = true;
+      try {
+        const body = JSON.stringify({
+          chatId,
+          runId: pendingUserWait.runId,
+          toolCallId: pendingUserWait.toolCallId,
+          text: replyText,
+        });
+        let response: Response | undefined;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          response = await fetch(AGENT_REPLY_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+          if (response.status !== 425 || attempt === 3) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, 250 * (attempt + 1)),
+          );
+        }
+        if (!response) return false;
+        if (!response.ok) {
+          toast.error("Could not send your reply", {
+            description:
+              response.status === 409
+                ? "This wait has ended. Reconnect the chat before sending again."
+                : response.status === 425
+                  ? "The Agent is still preparing to wait. Your draft is saved; try again shortly."
+                  : "Your draft is saved. Retry the same reply.",
+          });
+          return false;
+        }
+        clearInput();
+        return true;
+      } catch {
+        toast.error("Could not send your reply", {
+          description: "Your draft is saved. Retry the same reply.",
+        });
+        return false;
+      } finally {
+        isSubmittingReplyRef.current = false;
+      }
     }
 
     const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
