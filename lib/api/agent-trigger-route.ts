@@ -769,7 +769,9 @@ export const createAgentTriggerPost =
         goalRequest &&
         (subscription === "free" ||
           limitRescue ||
-          regenerate ||
+          (regenerate &&
+            (goalRequest.action !== "resume" ||
+              goalRequest.expectedGeneration === undefined)) ||
           !(await goalEnabled(userId, subscription)))
       )
         throw new ChatSDKError(

@@ -4,6 +4,8 @@ A goal keeps an objective and completion contract attached to one chat across bo
 
 The completion contract has one to eight success criteria and optional verification command, constraints to preserve, scope boundaries, and conditions requiring user input. Multiline commands accept `criterion:`, `verify:`, `preserve:`, `scope:`, and `stop when:` fields. The goal bar sits above the composer. Editing opens the Computer sidebar on desktop and its full-screen overlay on mobile, with a single goal text editor. Saving preserves elapsed work time and clears evidence for the old objective. A goal saved while running or queued continues automatically with the revised objective; a paused, completed, waiting, or approval-pending goal stays paused until explicit Resume.
 
+Editing and resending the latest goal message starts a fresh attempt: the message and saved objective change atomically, elapsed time and progress reset, and the previous completion receipt is removed with the regenerated response. The saved sandbox, model, permissions, and explicit completion requirements are preserved. If admission fails, the revised goal remains paused for Resume. This differs from refining a goal through the sidebar, which preserves accumulated work time.
+
 Goal messages retain a sent-as-goal receipt. Verified completion saves cumulative active goal time on the final assistant message. Pauses and waiting are excluded; resuming continues from the saved duration. These receipts survive reload, goal deletion, and replacement; ordinary completed runs receive no achievement receipt. Older goals without a recorded start time do not receive an invented duration.
 
 ## Limits and completion

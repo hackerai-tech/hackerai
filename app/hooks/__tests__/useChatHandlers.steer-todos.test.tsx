@@ -35,7 +35,9 @@ jest.mock("@/app/services/desktop-command-cancellation", () => ({
 const mockCancelStream = jest.fn(async () => null);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
-const mockRegenerateWithNewContent = jest.fn(async () => null);
+const mockRegenerateWithNewContent = jest.fn<
+  () => Promise<null | { goalGeneration: number }>
+>(async () => null);
 const mockRemoveQueuedMessage = jest.fn();
 const mockQueueMessage = jest.fn();
 const mockSendMessage = jest.fn(async () => undefined);
@@ -1826,6 +1828,77 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
   });
+
+  it.each(["achieved", "paused", "cleared", "stale"])(
+    "reruns an edited goal with its saved settings and fresh generation (%s)",
+    async (state) => {
+      const mockRegenerate = jest.fn();
+      mockMessageQueue = [];
+      const saved = {
+        generation: state === "stale" ? 5 : 4,
+        state,
+        sandboxPreference: "e2b",
+        permissionMode: "ask_approval",
+        selectedModel: "auto",
+      };
+      jest.mocked(globalThis.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          enabled: true,
+          goal: state === "cleared" ? null : saved,
+        }),
+      } as Response);
+      mockRegenerateWithNewContent.mockResolvedValueOnce({ goalGeneration: 6 });
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: messages.map((m) =>
+            m.id === "user-1"
+              ? { ...m, metadata: { goal: { sent: true } } }
+              : m,
+          ),
+          sendMessage: mockSendMessage,
+          regenerate: mockRegenerate,
+          stop: mockStop,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          goalState: state,
+          goalGeneration: 4,
+        }),
+      );
+      if (state === "cleared" || state === "stale") {
+        await act(async () => {
+          await expect(
+            result.current.handleEditMessage("user-1", "Updated goal"),
+          ).rejects.toThrow();
+        });
+        expect(mockRegenerateWithNewContent).not.toHaveBeenCalled();
+        expect(mockRegenerate).not.toHaveBeenCalled();
+      } else {
+        await act(async () => {
+          await result.current.handleEditMessage("user-1", "Updated goal");
+        });
+        expect(mockRegenerateWithNewContent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            newContent: "Updated goal",
+            goalGeneration: 4,
+          }),
+        );
+        expect(mockRegenerate).toHaveBeenCalledWith({
+          body: expect.objectContaining({
+            regenerate: true,
+            goal: { action: "resume", expectedGeneration: 6 },
+            agentPermissionMode: "ask_approval",
+            selectedModel: "auto",
+          }),
+        });
+      }
+      mockRegenerateWithNewContent.mockReset();
+    },
+  );
 
   it("resets the continuation count before a manual continue", async () => {
     const { result } = renderHook(() =>

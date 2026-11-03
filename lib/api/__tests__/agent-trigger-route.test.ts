@@ -1515,13 +1515,86 @@ describe("regional subscription gate before Agent dispatch", () => {
 });
 
 describe("goal reservations on oversized dispatch", () => {
+  const previousCorrelationSecret = process.env.AGENT_RUN_CORRELATION_SECRET;
+  afterEach(() => {
+    if (previousCorrelationSecret === undefined)
+      delete process.env.AGENT_RUN_CORRELATION_SECRET;
+    else process.env.AGENT_RUN_CORRELATION_SECRET = previousCorrelationSecret;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "owner",
       subscription: "pro",
     });
-    mockGoalMutation.mockResolvedValue({ generation: 1 });
+    mockGoalMutation.mockReset().mockResolvedValue({ generation: 1 });
+    process.env.AGENT_RUN_CORRELATION_SECRET = "test-only-correlation-secret";
+  });
+  it.each(["resume", "unfenced", "start"])(
+    "requires a fenced goal resume for edited-message regeneration (%s)",
+    async (kind) => {
+      // Reaching the reservation boundary proves this path retains normal admission.
+      // Its rejection must prevent dispatch and preserve the newer goal.
+      mockGoalMutation.mockRejectedValueOnce(new Error("Goal changed"));
+      const goal =
+        kind === "start"
+          ? {
+              action: "start",
+              expectedGeneration: 5,
+              objective: "New objective",
+              criteria: ["Complete it"],
+            }
+          : {
+              action: "resume",
+              ...(kind === "resume" ? { expectedGeneration: 5 } : {}),
+            };
+      const response = await createAgentTriggerPost({ endpoint: "/api/agent" })(
+        {
+          headers: new Headers(),
+          cookies: { get: () => undefined },
+          json: async () => ({
+            chatId: "goal-chat",
+            messages: [],
+            regenerate: true,
+            agentRunRequestId: "edit-1",
+            goal,
+            agentPermissionMode: "full_access",
+          }),
+        } as any,
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      if (kind === "resume")
+        expect(mockGoalMutation).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ action: "resume", generation: 5 }),
+        );
+      else expect(mockGoalMutation).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+  it("dispatches an edited goal using the resumed generation", async () => {
+    mockGoalMutation.mockResolvedValue({ generation: 6 });
+    mockTriggerTask.mockReset().mockResolvedValue({ id: "run-edited-goal" });
+    mockCreatePublicToken.mockResolvedValue("test-token");
+    mockSetActiveTriggerRun.mockResolvedValue("updated");
+    const response = await createAgentTriggerPost({ endpoint: "/api/agent" })({
+      headers: new Headers(),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "goal-chat",
+        messages: [],
+        regenerate: true,
+        agentRunRequestId: "edit-success",
+        goal: { action: "resume", expectedGeneration: 5 },
+        agentPermissionMode: "full_access",
+      }),
+    } as any);
+    expect(response.status).toBe(200);
+    expect(mockTriggerTask).toHaveBeenCalledWith(
+      "agent-long",
+      expect.objectContaining({ goalGeneration: 6, regenerate: true }),
+      expect.anything(),
+    );
   });
   it.each(["full_access", "ask_approval", "trigger_api_413"])(
     "releases the reserved goal for %s",

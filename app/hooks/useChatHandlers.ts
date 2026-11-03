@@ -178,6 +178,8 @@ export const useChatHandlers = ({
   const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
+  const goalGenerationRef = useLatestRef(goalGeneration);
+  const goalStateRef = useLatestRef(goalState);
   const recoveryPendingRef = useRef(false);
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
@@ -553,8 +555,8 @@ export const useChatHandlers = ({
     )
       throw new Error("The task changed. Your draft is saved.");
     if (
-      goalGeneration !== undefined &&
-      saved.goal.generation !== goalGeneration
+      goalGenerationRef.current !== undefined &&
+      saved.goal.generation !== goalGenerationRef.current
     )
       throw new Error("The goal changed. Reload before changing it.");
     const stoppedRun = Boolean(saved.goal.activeRunId);
@@ -1332,15 +1334,74 @@ export const useChatHandlers = ({
       return;
     }
 
+    const expectedGoalGeneration = goalGenerationRef.current;
+    const editsGoal =
+      messages[lastUserMessageIndex].metadata?.goal?.sent === true;
+    if (
+      editsGoal &&
+      (!isAgentMode(chatModeRef.current) || subscriptionRef.current === "free")
+    ) {
+      toast.error("Use Agent mode on a paid plan to rerun a goal message.");
+      return;
+    }
+    let stoppedGoalRun = false;
+    // Fence scheduled continuations as well as an already attached worker.
+    if (
+      editsGoal &&
+      goalStateRef.current &&
+      ["queued", "running", "waiting", "needs_approval"].includes(
+        goalStateRef.current,
+      )
+    ) {
+      stoppedGoalRun = (await controlSavedGoal("pause")).stoppedRun;
+    }
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
-    if (hasActiveRunToReplace()) {
+    if (!stoppedGoalRun && hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement("edit"))) return;
     }
     if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
+    let savedGoal:
+      | {
+          generation: number;
+          sandboxPreference: string;
+          permissionMode: string;
+          selectedModel: string;
+        }
+      | undefined;
+    const editStopGeneration = stopGenerationRef.current;
+    if (editsGoal) {
+      const response = await fetch(
+        `/api/agent-goal?chatId=${encodeURIComponent(chatId)}`,
+        { cache: "no-store" },
+      );
+      const data = await response.json();
+      if (
+        !response.ok ||
+        !data.enabled ||
+        !data.goal ||
+        data.goal.deletedAt ||
+        data.goal.activeRunId ||
+        !Number.isInteger(data.goal.generation) ||
+        expectedGoalGeneration === undefined ||
+        data.goal.generation !== expectedGoalGeneration
+      ) {
+        throw new Error(
+          "The goal changed or is unavailable. Reopen it before editing.",
+        );
+      }
+      if (
+        currentChatIdRef.current !== chatId ||
+        stopGenerationRef.current !== editStopGeneration
+      ) {
+        throw new Error("The task changed. Your edit has not been sent.");
+      }
+      savedGoal = data.goal;
+    }
+    let editedGoalGeneration: number | undefined;
 
     // Compute the todo snapshot before the edit mutation. Stopping a run
     // persists its latest todos, so the same mutation that removes the old
@@ -1357,12 +1418,19 @@ export const useChatHandlers = ({
     );
 
     try {
-      await regenerateWithNewContent({
+      const edited = await regenerateWithNewContent({
         messageId: messageId as Id<"messages">,
         newContent,
+        ...(savedGoal ? { goalGeneration: savedGoal.generation } : {}),
         fileIds: remainingFileIds,
         todos: cleanedTodosForEdit,
       });
+      editedGoalGeneration = edited?.goalGeneration;
+      if (editsGoal && editedGoalGeneration === undefined) {
+        throw new Error(
+          "The goal message could not be updated. Reload before trying again.",
+        );
+      }
     } catch (error) {
       if (getConvexErrorCode(error) === "MESSAGE_NOT_EDITABLE") {
         toast.error("Only the latest user message can be edited.");
@@ -1372,7 +1440,12 @@ export const useChatHandlers = ({
       throw error;
     }
 
-    if (sendDisabledReasonRef.current) return;
+    if (
+      sendDisabledReasonRef.current ||
+      currentChatIdRef.current !== chatId ||
+      stopGenerationRef.current !== editStopGeneration
+    )
+      return;
     setTodos(cleanedTodosForEdit);
     reconcileSidebar(messages.slice(0, editedMessageIndex + 1));
 
@@ -1428,6 +1501,17 @@ export const useChatHandlers = ({
           sandboxPreference,
           agentPermissionMode: agentPermissionModeRef.current,
           selectedModel: requestSelectedModel,
+          ...(savedGoal && editedGoalGeneration !== undefined
+            ? {
+                sandboxPreference: savedGoal.sandboxPreference,
+                agentPermissionMode: savedGoal.permissionMode,
+                selectedModel: savedGoal.selectedModel,
+                goal: {
+                  action: "resume",
+                  expectedGeneration: editedGoalGeneration,
+                },
+              }
+            : {}),
         },
       }),
     );
