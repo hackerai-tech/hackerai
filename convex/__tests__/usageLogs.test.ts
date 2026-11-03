@@ -60,6 +60,7 @@ describe("usageLogs", () => {
       extra_usage_cost_dollars: 6,
       uncovered_cost_dollars: 3,
       uncovered_points: 30000,
+      usage_deduction_outcome_unknown: true,
       usage_deduction_failure_reason: "insufficient_funds",
       model_cost_dollars: 13,
       non_model_cost_dollars: 2,
@@ -80,6 +81,7 @@ describe("usageLogs", () => {
     expect(inserted.uncovered_cost_dollars).toBeCloseTo(2.4);
     expect(inserted.uncovered_points).toBe(30000);
     expect(inserted.usage_deduction_failure_reason).toBe("insufficient_funds");
+    expect(inserted.usage_deduction_outcome_unknown).toBe(true);
     expect(inserted).not.toHaveProperty("total_tokens");
     expect(inserted).not.toHaveProperty("usage_deduction_failed");
 

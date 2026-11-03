@@ -827,6 +827,7 @@ describe("token-bucket async functions", () => {
         "user-123",
         36,
         "settlement-123",
+        "wallet-v1:settlement-123:final",
       );
     });
 
@@ -2088,12 +2089,14 @@ describe("token-bucket async functions", () => {
         { enabled: true, hasBalance: true, autoReloadEnabled: false },
         undefined,
         "settlement-123",
+        7,
       );
 
       expect(mockDeductFromBalance).toHaveBeenCalledWith(
         "user-123",
         33,
         "settlement-123",
+        "wallet-v1:settlement-123:step:7",
       );
     });
 

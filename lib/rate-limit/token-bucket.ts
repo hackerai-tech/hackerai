@@ -379,6 +379,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig,
   organizationId,
   usageSettlementId,
+  settlementOperationId,
 }: {
   monthly: MonthlyLimiter;
   userId: string;
@@ -387,6 +388,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig?: ExtraUsageConfig;
   organizationId?: string;
   usageSettlementId?: string;
+  settlementOperationId?: string;
 }): Promise<UsageDeductionResult> => {
   const normalizedAdditionalCost = nonNegativePoints(additionalCostPoints);
   if (normalizedAdditionalCost <= 0) return emptyUsageDeductionResult();
@@ -458,11 +460,13 @@ const deductAdditionalUsagePoints = async ({
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               )
             : await deductFromBalance(
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               );
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
@@ -1271,6 +1275,7 @@ export const deductUsageDelta = async (
   extraUsageConfig?: ExtraUsageConfig,
   organizationId?: string,
   usageSettlementId?: string,
+  settlementSequence?: number,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -1296,6 +1301,10 @@ export const deductUsageDelta = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId:
+        usageSettlementId && settlementSequence !== undefined
+          ? `wallet-v1:${usageSettlementId}:step:${settlementSequence}`
+          : undefined,
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
@@ -1533,6 +1542,9 @@ export const deductUsage = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId: usageSettlementId
+        ? `wallet-v1:${usageSettlementId}:final`
+        : undefined,
     });
     lastKnownDeductionResult = buildDeductionResult(
       deltaResult.includedPointsDeducted,

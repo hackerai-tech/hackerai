@@ -65,6 +65,7 @@ export const logUsage = mutation({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_outcome_unknown: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -163,6 +164,7 @@ export const logUsage = mutation({
       extra_usage_points_deducted: args.extra_usage_points_deducted,
       uncovered_points: args.uncovered_points,
       usage_deduction_failure_reason: args.usage_deduction_failure_reason,
+      usage_deduction_outcome_unknown: args.usage_deduction_outcome_unknown,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,

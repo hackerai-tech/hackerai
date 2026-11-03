@@ -653,6 +653,7 @@ export class UsageTracker {
       uncoveredCostDollars: usage.uncoveredCostDollars,
       uncoveredPoints: usage.uncoveredPoints,
       usageDeductionFailureReason: usage.usageDeductionFailureReason,
+      usageDeductionOutcomeUnknown: usage.usageDeductionOutcomeUnknown,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens,
