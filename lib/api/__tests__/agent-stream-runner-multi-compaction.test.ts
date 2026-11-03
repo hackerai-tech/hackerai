@@ -14,7 +14,11 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.structuredClone = originalClone;
 });
-import { MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM } from "@/lib/chat/summarization/constants";
+import { MAX_TOKENS_PAID, MAX_TOKENS_FREE } from "@/lib/token-limits";
+import {
+  getSummarizationThresholdTokens,
+  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
+} from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
@@ -1094,7 +1098,8 @@ describe("createAgentStream repeated compaction", () => {
       usedTokens: 0,
       maxTokens: 0,
     });
-    state.lastStepInputTokens = 120_000;
+    state.lastStepInputTokens =
+      getSummarizationThresholdTokens(MAX_TOKENS_FREE) + 1;
     mockGetProviderPromptPressure.mockReturnValue(null);
     mockSummaryGenerateText.mockResolvedValue({
       text: "Keep the verified lab marker ABC and continue.",
@@ -1387,7 +1392,7 @@ describe("createAgentStream repeated compaction", () => {
     const source: ModelMessage[] = [
       { role: "user", content: "Original request" },
     ];
-    const retained = " a".repeat(210_000);
+    const retained = " a".repeat(MAX_TOKENS_PAID + 10_000);
     const identity = historyDigest({
       version: 1,
       model,
@@ -1409,7 +1414,8 @@ describe("createAgentStream repeated compaction", () => {
       }),
     });
     mockRunSummarizationStep.mockImplementation(async (options) =>
-      options.preparedInputTokens > 200_000
+      options.preparedInputTokens >
+      getSummarizationThresholdTokens(MAX_TOKENS_PAID)
         ? {
             summarizationAttempted: true,
             needsSummarization: true,
@@ -1425,7 +1431,7 @@ describe("createAgentStream repeated compaction", () => {
     );
     const state = initAgentStreamState(
       [uiMessage("old", "Original request"), uiMessage("new", "Next question")],
-      { usedTokens: 100, maxTokens: 200_000 },
+      { usedTokens: 100, maxTokens: MAX_TOKENS_PAID },
     );
     const stream = (await createAgentStream(
       "model-deepseek-v4-flash-0731",
@@ -1458,7 +1464,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(prepared.messages)).toContain("Verified checkpoint");
     expect(JSON.stringify(prepared.messages).includes(retained)).toBe(false);
     expect(prepared.system).toBe("system");
-    expect(state.ctxUsage.maxTokens).toBe(200_000);
+    expect(state.ctxUsage.maxTokens).toBe(MAX_TOKENS_PAID);
   });
 
   it.each(["hackerai-max", "hackerai-pro"] as const)(
@@ -1535,11 +1541,13 @@ describe("createAgentStream repeated compaction", () => {
   it("continues intact after failed proactive compaction when the prepared request still fits", async () => {
     mockGetProviderPromptPressure.mockReturnValue(null);
     mockCompactModelMessagesInRun.mockResolvedValue(null);
-    const text = " ordinary".repeat(185_000);
+    const text = " ordinary".repeat(
+      getSummarizationThresholdTokens(MAX_TOKENS_PAID) + 5_000,
+    );
     const original = [uiMessage("within-budget", text)];
     const state = initAgentStreamState(original, {
       usedTokens: 100,
-      maxTokens: 200_000,
+      maxTokens: MAX_TOKENS_PAID,
     });
     state.lastStepInputTokens = 100;
     const stream = (await createAgentStream(
@@ -1569,13 +1577,13 @@ describe("createAgentStream repeated compaction", () => {
     "stops oversized %s requests when compaction fails without dropping saved history",
     async (phase) => {
       mockGetProviderPromptPressure.mockReturnValue(null);
-      const largeText = " ordinary".repeat(190_000);
+      const largeText = " ordinary".repeat(MAX_TOKENS_PAID - 10_000);
       const original = [uiMessage("large", largeText)];
       const state = initAgentStreamState(original, {
-        usedTokens: 210_000,
-        maxTokens: 200_000,
+        usedTokens: MAX_TOKENS_PAID + 10_000,
+        maxTokens: MAX_TOKENS_PAID,
       });
-      state.lastStepInputTokens = 210_000;
+      state.lastStepInputTokens = MAX_TOKENS_PAID + 10_000;
       const rolling = phase.startsWith("rolling");
       if (phase === "startup-error") {
         mockRunSummarizationStep.mockRejectedValue(
@@ -1690,7 +1698,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it.each([
     ["x-ai/grok-4.6", 234_000],
-    ["abliterated-model", 200_000],
+    ["abliterated-model", MAX_TOKENS_PAID],
   ])(
     "compacts long history before switching to %s with a %i budget",
     async (smallerModel, smallerBudget) => {
@@ -5824,7 +5832,10 @@ describe("createAgentStream repeated compaction", () => {
                     type: "tool-result",
                     toolCallId: "big",
                     toolName: "file",
-                    output: { type: "text", value: " a".repeat(210_000) },
+                    output: {
+                      type: "text",
+                      value: " a".repeat(MAX_TOKENS_PAID + 10_000),
+                    },
                   },
                 ],
               },
