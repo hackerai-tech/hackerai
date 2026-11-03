@@ -1,7 +1,7 @@
-"""Run HackerAI's Agent on a pinned RealVuln subset and score with RealVuln code.
+"""Score pinned RealVuln targets through the product backend by default.
 
-The target container receives source code only. Ground truth and model credentials
-stay on the host; raw Agent traces remain in the ignored results directory.
+The legacy isolated Docker adapter remains available with --isolated-adapter.
+Ground truth and private result artifacts stay on the host.
 """
 
 from __future__ import annotations
