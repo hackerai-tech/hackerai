@@ -69,10 +69,10 @@ describe("empty whole-message projection diagnostics", () => {
 
 describe("getMaxTokensForSubscription", () => {
   it.each(["ask", "agent"] as const)(
-    "uses the 256k cap for free %s",
+    "uses the 276k budget for 256k before compaction for free %s",
     (mode) => {
-      expect(MAX_TOKENS_FREE).toBe(256_000);
-      expect(getMaxTokensForSubscription("free", { mode })).toBe(256_000);
+      expect(MAX_TOKENS_FREE).toBe(276_000);
+      expect(getMaxTokensForSubscription("free", { mode })).toBe(276_000);
     },
   );
 

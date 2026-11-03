@@ -43,14 +43,14 @@ it.each([
   { modelId: "abliterated-model" },
   { fallbackModelIds: ["custom/unknown"] },
   { fallbackModelIds: ["abliterated-model"] },
-])("uses the 256k baseline when expansion is unavailable: %j", (override) => {
-  expect(getAgentContextBudget({ ...route, ...override })).toBe(256_000);
+])("uses the 276k baseline when expansion is unavailable: %j", (override) => {
+  expect(getAgentContextBudget({ ...route, ...override })).toBe(276_000);
 });
 
 it.each(["free", "pro"] as const)(
   "leaves %s Ask and upload budgets unchanged even with the flag enabled",
   (subscription) => {
-    const baseline = 256_000;
+    const baseline = 276_000;
     expect(getAgentContextBudget({ ...route, subscription, mode: "ask" })).toBe(
       baseline,
     );
@@ -71,15 +71,15 @@ it("uses the exact 1M Large v2 capacity rather than the base model limit", () =>
 it("uses Flash's verified capacity only when context expansion is enabled", () => {
   const flash = { ...route, modelId: "abliterated-model-large-flash" };
   expect(getAgentContextBudget(flash)).toBe(508_288);
-  expect(getAgentContextBudget({ ...flash, enabled: false })).toBe(256_000);
-  expect(getAgentContextBudget({ ...flash, mode: "ask" })).toBe(256_000);
+  expect(getAgentContextBudget({ ...flash, enabled: false })).toBe(276_000);
+  expect(getAgentContextBudget({ ...flash, mode: "ask" })).toBe(276_000);
 });
 
 it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
   "loads the %s baseline history and reserves 20k tokens before compaction",
   (subscription) => {
     const budget = getAgentHistoryBudget(subscription, "agent");
-    expect(budget).toBe(256_000);
-    expect(getSummarizationThresholdTokens(budget)).toBe(236_000);
+    expect(budget).toBe(276_000);
+    expect(getSummarizationThresholdTokens(budget)).toBe(256_000);
   },
 );

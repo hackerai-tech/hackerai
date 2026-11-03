@@ -2,7 +2,8 @@ import { FREE_MAX_CONTEXT_TOKENS } from "@/lib/rate-limit/free-config";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const MAX_TOKENS_FREE = FREE_MAX_CONTEXT_TOKENS;
-export const MAX_TOKENS_PAID = 256_000;
+// Keep 256K tokens before compaction, plus the 20K compaction reserve.
+export const MAX_TOKENS_PAID = 276_000;
 
 /**
  * Percentage of context window budget allocated to file uploads in Ask mode.
