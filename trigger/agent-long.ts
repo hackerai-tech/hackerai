@@ -1469,22 +1469,39 @@ const finishCloudSandboxLifecycleForParentRun = async ({
   userId: string;
   triggerRunId: string;
 }): Promise<void> => {
-  try {
-    await setActiveTriggerRun({
-      chatId,
-      triggerRunId: null,
-      approvalSessionId: null,
-      expectedRunId: triggerRunId,
-      clearApprovalPending: true,
-    });
-  } catch (error) {
-    triggerLogger.warn("[agent-long] active run clear failed", {
-      event: "agent_cloud_sandbox_active_run_clear_failed",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      error: stringifyRedactedError(error),
-    });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const outcome = await setActiveTriggerRun({
+        chatId,
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: triggerRunId,
+        clearApprovalPending: true,
+      });
+      // The mutation clears the reply wait atomically with the active run.
+      // A stale result means a newer run already owns the chat.
+      if (
+        outcome === "updated" ||
+        outcome === "stale" ||
+        outcome === "not_found"
+      ) {
+        return;
+      }
+      throw new Error(`Unexpected active run clear outcome: ${outcome}`);
+    } catch (error) {
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+        continue;
+      }
+      triggerLogger.warn("[agent-long] active run clear failed", {
+        event: "agent_cloud_sandbox_active_run_clear_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        attempts: attempt,
+        error: stringifyRedactedError(error),
+      });
+    }
   }
 };
 
@@ -2797,6 +2814,7 @@ export const agentLongTask = task({
                           : undefined,
                       pauseActiveTime: runtimeBudget.pause,
                       resumeActiveTime: runtimeBudget.resume,
+                      abortRun: () => userStopSignal.abort(),
                       revalidateAfterSuspend: async (toolCallId) => {
                         try {
                           await revalidateAfterUserWait(toolCallId);

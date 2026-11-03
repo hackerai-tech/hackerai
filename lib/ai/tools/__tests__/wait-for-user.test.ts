@@ -21,11 +21,15 @@ const context = {
   triggerRunId: "run-1",
 };
 
-const execute = async (overrides: Record<string, unknown> = {}) => {
+const execute = async (
+  overrides: Record<string, unknown> = {},
+  toolOptions: { abortRun?: () => void } = {},
+) => {
   const { createWaitForUserTool } = await import("../wait-for-user");
   const waitTool = createWaitForUserTool({ ...context, ...overrides } as any, {
     pauseActiveTime: jest.fn(),
     resumeActiveTime: jest.fn(),
+    ...toolOptions,
   });
   return waitTool.execute?.({}, { toolCallId: "tool-1" } as any);
 };
@@ -49,7 +53,8 @@ describe("wait_for_user", () => {
   });
 
   it("parks the current run, returns the matching reply, and clears the wait", async () => {
-    await expect(execute()).resolves.toMatchObject({
+    const abortRun = jest.fn();
+    await expect(execute({}, { abortRun })).resolves.toMatchObject({
       success: true,
       wait_outcome: "message_arrived",
       reply: "Option A",
@@ -75,9 +80,11 @@ describe("wait_for_user", () => {
       "agent_wait_for_user_started",
       expect.not.objectContaining({ reply: expect.anything() }),
     );
+    expect(abortRun).not.toHaveBeenCalled();
   });
 
   it("refuses a reply for a different run", async () => {
+    const abortRun = jest.fn();
     forToken.mockResolvedValue({
       ok: true,
       output: {
@@ -88,8 +95,11 @@ describe("wait_for_user", () => {
         text: "Option A",
       },
     });
-    await expect(execute()).resolves.toMatchObject({ success: false });
+    await expect(execute({}, { abortRun })).resolves.toMatchObject({
+      success: false,
+    });
     expect(setActiveWait).toHaveBeenCalledTimes(2);
+    expect(abortRun).toHaveBeenCalledTimes(1);
   });
 
   it("does not park when a newer run owns the chat", async () => {
@@ -99,11 +109,13 @@ describe("wait_for_user", () => {
   });
 
   it("reports timeout and releases the reply slot", async () => {
+    const abortRun = jest.fn();
     forToken.mockResolvedValue({ ok: false, error: new Error("timed out") });
-    await expect(execute()).resolves.toMatchObject({
+    await expect(execute({}, { abortRun })).resolves.toMatchObject({
       success: false,
       wait_outcome: "timed_out",
     });
     expect(setActiveWait).toHaveBeenCalledTimes(2);
+    expect(abortRun).toHaveBeenCalledTimes(1);
   });
 });

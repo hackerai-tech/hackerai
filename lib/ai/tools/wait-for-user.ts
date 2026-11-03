@@ -21,6 +21,7 @@ export const createWaitForUserTool = (
     beforeSuspend?: () => Promise<void>;
     pauseActiveTime?: () => void;
     resumeActiveTime?: () => void;
+    abortRun?: () => void;
     revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
   } = {},
 ) =>
@@ -77,6 +78,7 @@ export const createWaitForUserTool = (
         options.resumeActiveTime?.();
         activeTimePaused = false;
         if (!result.ok) {
+          options.abortRun?.();
           return {
             success: false,
             wait_outcome: "timed_out",
@@ -92,6 +94,7 @@ export const createWaitForUserTool = (
           typeof reply.text !== "string" ||
           !reply.text.trim()
         ) {
+          options.abortRun?.();
           return {
             success: false,
             error: "The reply did not match this Agent wait.",
