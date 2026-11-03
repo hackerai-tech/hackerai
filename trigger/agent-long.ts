@@ -310,6 +310,7 @@ import {
   shouldRetryProviderStreamAfterInterruptedToolInput,
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
+import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import {
   ProviderTerminalError,
   getProviderDisconnectIgnoredSlugs,
@@ -4533,6 +4534,10 @@ export const agentLongTask = task({
                       const loopRecoveryMessages = loopContinuation
                         ? [...state.finalMessages, ...loopContinuation.messages]
                         : undefined;
+                      const loopRecoverySourceMessageId =
+                        loopContinuation?.messages.findLast(
+                          (message) => message.role === "assistant",
+                        )?.id;
                       const imageRecovery =
                         state.providerRejectedMultimodalToolResults
                           ? omitImageViewToolResultsForProviderRetry(
@@ -4979,7 +4984,14 @@ export const agentLongTask = task({
                               chatId,
                               userId,
                               triggerRunId: ctx.run.id,
-                              message,
+                              message:
+                                loopContinuation &&
+                                message.id === loopRecoverySourceMessageId
+                                  ? markLoopRecoveryCheckpoint(
+                                      message,
+                                      retryMessageId,
+                                    )
+                                  : message,
                               extraFileIds: preservedFileIds,
                               model: configuredModelId,
                               mode,
@@ -5013,6 +5025,10 @@ export const agentLongTask = task({
                                     mode,
                                     createdAt: fallbackStartTime,
                                     generationStartedAt: fallbackStartTime,
+                                    ...(loopRecoverySourceMessageId && {
+                                      recoverySourceMessageId:
+                                        loopRecoverySourceMessageId,
+                                    }),
                                   };
                                 }
 

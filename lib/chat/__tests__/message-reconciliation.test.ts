@@ -1,6 +1,8 @@
 import {
   areMessagesEquivalentForConvexSync,
   arePersistedMessagesAtLeastAsComplete,
+  normalizeStreamedRecoveryMessages,
+  markLoopRecoveryCheckpoint,
 } from "../message-reconciliation";
 import type { ChatMessage } from "@/types";
 
@@ -12,6 +14,162 @@ const createAssistantMessage = (
   role: "assistant",
   parts: [{ type: "text", text }],
   ...overrides,
+});
+
+describe("loop recovery boundaries", () => {
+  const tool = {
+    type: "tool-file",
+    toolCallId: "read-once",
+    state: "output-available",
+    input: { action: "read", path: "/tmp/result.txt" },
+    output: "saved result",
+  } as ChatMessage["parts"][number];
+  const primary = createAssistantMessage("", {
+    id: "primary",
+    parts: [{ type: "text", text: "Discarded looping prose." }, tool],
+  });
+  const fallback = createAssistantMessage("", {
+    id: "fallback",
+    metadata: { recoverySourceMessageId: primary.id },
+    parts: [...primary.parts, { type: "text", text: "Current answer" }],
+  });
+  const checkpoint = markLoopRecoveryCheckpoint(
+    { ...primary, parts: [tool] },
+    fallback.id,
+  );
+  const savedFallback = {
+    ...fallback,
+    parts: [{ type: "text" as const, text: "Current answer" }],
+  };
+
+  it("preserves newer fallback content when a saved suffix is stale", () => {
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [primary, fallback],
+        [
+          checkpoint,
+          { ...savedFallback, parts: [{ type: "text", text: "Current" }] },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      arePersistedMessagesAtLeastAsComplete([primary, fallback], [checkpoint]),
+    ).toBe(false);
+  });
+
+  it("does not discard prose without a matching saved recovery checkpoint", () => {
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [primary, fallback],
+        [{ ...primary, parts: [tool] }, savedFallback],
+      ),
+    ).toBe(false);
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [primary, fallback],
+        [
+          markLoopRecoveryCheckpoint(
+            { ...primary, parts: [tool] },
+            "different-retry",
+          ),
+          savedFallback,
+        ],
+      ),
+    ).toBe(false);
+    expect(arePersistedMessagesAtLeastAsComplete([primary], [checkpoint])).toBe(
+      false,
+    );
+  });
+
+  it("keeps tools whose progress is missing or stale in the checkpoint", () => {
+    const pending = {
+      ...tool,
+      state: "input-available",
+      output: undefined,
+    } as ChatMessage["parts"][number];
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [primary, fallback],
+        [
+          markLoopRecoveryCheckpoint(
+            { ...primary, parts: [pending] },
+            fallback.id,
+          ),
+          savedFallback,
+        ],
+      ),
+    ).toBe(false);
+    const newer = {
+      ...primary,
+      parts: [
+        ...primary.parts,
+        {
+          ...tool,
+          toolCallId: "unsettled",
+          state: "input-available",
+          output: undefined,
+        } as ChatMessage["parts"][number],
+      ],
+    };
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [newer, savedFallback],
+        [checkpoint, savedFallback],
+      ),
+    ).toBe(false);
+  });
+
+  it("requires an exact prefix and never crosses a user turn", () => {
+    const unrelated = { ...fallback, metadata: undefined };
+    const changed = {
+      ...fallback,
+      parts: [{ type: "text" as const, text: "Different content" }, tool],
+    };
+    expect(normalizeStreamedRecoveryMessages([primary, unrelated])[1]).toBe(
+      unrelated,
+    );
+    expect(normalizeStreamedRecoveryMessages([primary, changed])[1]).toBe(
+      changed,
+    );
+    const nextUser: ChatMessage = {
+      id: "next-user",
+      role: "user",
+      parts: [{ type: "text", text: "New task" }],
+    };
+    expect(
+      normalizeStreamedRecoveryMessages([primary, nextUser, fallback])[2],
+    ).toBe(fallback);
+    expect(
+      arePersistedMessagesAtLeastAsComplete(
+        [primary, nextUser, fallback],
+        [checkpoint, nextUser, savedFallback],
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps each attempt once through chained replacement and a persisted reload", () => {
+    const third = {
+      ...fallback,
+      id: "third",
+      metadata: { recoverySourceMessageId: fallback.id },
+      parts: [
+        ...fallback.parts,
+        { type: "text" as const, text: "Third attempt" },
+      ],
+    };
+    const displayed = normalizeStreamedRecoveryMessages([
+      primary,
+      fallback,
+      third,
+    ]);
+    expect(displayed[1].parts).toEqual(savedFallback.parts);
+    expect(displayed[2].parts).toEqual([
+      { type: "text", text: "Third attempt" },
+    ]);
+    expect(
+      normalizeStreamedRecoveryMessages([checkpoint, savedFallback]),
+    ).toEqual([checkpoint, savedFallback]);
+  });
 });
 
 describe("areMessagesEquivalentForConvexSync", () => {

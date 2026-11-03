@@ -1,6 +1,24 @@
 import type { ChatMessage } from "@/types";
 
-type ReconciledMessage = Pick<ChatMessage, "id" | "role" | "parts">;
+type ReconciledMessage = Pick<
+  ChatMessage,
+  "id" | "role" | "parts" | "metadata"
+>;
+
+const LOOP_CHECKPOINT_PART = "data-agent-loop-checkpoint";
+
+export const markLoopRecoveryCheckpoint = <
+  T extends Pick<ChatMessage, "parts">,
+>(
+  message: T,
+  continuationMessageId: string,
+): T => ({
+  ...message,
+  parts: [
+    ...message.parts.filter((part) => part.type !== LOOP_CHECKPOINT_PART),
+    { type: LOOP_CHECKPOINT_PART, data: { continuationMessageId } },
+  ],
+});
 
 const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
   if (Object.is(current, next)) return true;
@@ -40,6 +58,54 @@ const haveSameJsonValue = (current: unknown, next: unknown): boolean => {
       Object.prototype.hasOwnProperty.call(nextRecord, key) &&
       haveSameJsonValue(currentRecord[key], nextRecord[key]),
   );
+};
+
+/** The SDK retains parts when a second start changes the response message ID. */
+export const normalizeStreamedRecoveryMessages = <T extends ReconciledMessage>(
+  messages: readonly T[],
+): T[] => {
+  const sources = new Map<string, T>();
+  return messages.map((message) => {
+    if (message.role !== "assistant") {
+      sources.clear();
+      return message;
+    }
+    const sourceId = message.metadata?.recoverySourceMessageId;
+    const source =
+      typeof sourceId === "string" ? sources.get(sourceId) : undefined;
+    // Keep the raw source for chained replacements, whose SDK prefix includes
+    // all earlier attempts. Never remove an unproven or changed prefix.
+    sources.set(message.id, message);
+    if (
+      !source ||
+      source.id === message.id ||
+      source.parts.length === 0 ||
+      message.parts.length < source.parts.length ||
+      !source.parts.every((part, index) =>
+        haveSameJsonValue(part, message.parts[index]),
+      )
+    )
+      return message;
+    return { ...message, parts: message.parts.slice(source.parts.length) };
+  });
+};
+
+const isToolPart = (part: ChatMessage["parts"][number]): boolean =>
+  part.type.startsWith("tool-") || part.type === "dynamic-tool";
+
+const loopCheckpointTarget = (
+  message: ReconciledMessage,
+): string | undefined => {
+  const checkpoints = message.parts.filter(
+    (part) => part.type === LOOP_CHECKPOINT_PART,
+  );
+  if (checkpoints.length !== 1) return;
+  const data = (checkpoints[0] as { data?: unknown }).data;
+  if (!data || typeof data !== "object" || !("continuationMessageId" in data))
+    return;
+  return typeof data.continuationMessageId === "string"
+    ? data.continuationMessageId
+    : undefined;
 };
 
 const partStateProgress: Record<string, number> = {
@@ -123,14 +189,44 @@ export const arePersistedMessagesAtLeastAsComplete = (
   current: readonly ReconciledMessage[],
   persisted: readonly ReconciledMessage[],
 ): boolean => {
+  const normalizedCurrent = normalizeStreamedRecoveryMessages(current);
   const persistedById = new Map(
     persisted.map((message) => [message.id, message]),
   );
 
-  return current.every((message) => {
+  return normalizedCurrent.every((message, messageIndex) => {
     const persistedMessage = persistedById.get(message.id);
     if (!persistedMessage || persistedMessage.role !== message.role) {
       return false;
+    }
+    const target = loopCheckpointTarget(persistedMessage);
+    const continuationIndex = target
+      ? normalizedCurrent.findIndex(
+          (candidate, index) =>
+            index > messageIndex &&
+            candidate.id === target &&
+            candidate.role === "assistant" &&
+            candidate.metadata?.recoverySourceMessageId === message.id,
+        )
+      : -1;
+    if (
+      message.role === "assistant" &&
+      continuationIndex > messageIndex &&
+      normalizedCurrent
+        .slice(messageIndex + 1, continuationIndex)
+        .every((candidate) => candidate.role === "assistant")
+    ) {
+      // Only a persisted loop checkpoint linked to this replacement may discard
+      // runaway prose/reasoning. Every local tool still needs persisted progress.
+      const currentTools = message.parts.filter(isToolPart);
+      const persistedTools = persistedMessage.parts.filter(isToolPart);
+      return (
+        currentTools.length > 0 &&
+        persistedTools.length >= currentTools.length &&
+        currentTools.every((part, index) =>
+          isPersistedPartAtLeastAsComplete(part, persistedTools[index]),
+        )
+      );
     }
     if (persistedMessage.parts.length < message.parts.length) return false;
 

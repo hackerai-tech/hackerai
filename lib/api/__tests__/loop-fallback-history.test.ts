@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import type { UIMessage } from "ai";
+import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import {
   AGENT_LOOP_CONTINUATION_PROMPT,
   prepareAgentLoopContinuation,
@@ -23,12 +24,15 @@ function recoveryCode(file: string) {
   const declarations = new Map<string, string>();
   let loopBody = "";
   let visionCall = "";
+  let backgroundSave = "";
   const visit = (node: ts.Node) => {
     if (
       ts.isVariableDeclaration(node) &&
-      ["loopRecoveryMessages", "imageRecovery"].includes(
-        node.name.getText(source),
-      )
+      [
+        "loopRecoveryMessages",
+        "imageRecovery",
+        "loopRecoverySourceMessageId",
+      ].includes(node.name.getText(source))
     )
       declarations.set(node.name.getText(source), node.getText(source));
     if (
@@ -37,6 +41,12 @@ function recoveryCode(file: string) {
     ) {
       loopBody = node.thenStatement.getText(source);
     }
+    if (
+      ts.isIfStatement(node) &&
+      node.expression.getText(source).replace(/\s+/g, " ") ===
+        "finishContinuation || loopContinuation || providerDisconnectContinuation"
+    )
+      backgroundSave = node.getText(source);
     if (
       ts.isCallExpression(node) &&
       node.expression.getText(source) ===
@@ -47,15 +57,17 @@ function recoveryCode(file: string) {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  if (declarations.size !== 2 || !loopBody || !visionCall) {
+  if (declarations.size !== 3 || !loopBody || !visionCall) {
     throw new Error(`Missing loop recovery assembly in ${file}`);
   }
   return ts.transpileModule(
-    `const ${declarations.get("loopRecoveryMessages")};
+    `const ${declarations.get("loopRecoverySourceMessageId")};
+     const ${declarations.get("loopRecoveryMessages")};
      const ${declarations.get("imageRecovery")};
      let recoveredVisionMessages;
      if (shouldRetryWithVisionSummary) recoveredVisionMessages = await ${visionCall};
-     ${loopBody}`,
+     ${loopBody}
+     ${backgroundSave}`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   ).outputText;
 }
@@ -129,6 +141,10 @@ it.each([
     const dependencies = {
       state,
       loopContinuation,
+      finishContinuation: undefined,
+      providerDisconnectContinuation: undefined,
+      retryMessageId: "replacement",
+      markLoopRecoveryCheckpoint,
       messages: completed,
       finishedMessages: completed,
       shouldRetryWithVisionSummary: vision,
@@ -180,10 +196,14 @@ it.each([
     expect(uiMessagesContainImageViewResult(loopContinuation.messages)).toBe(
       true,
     );
-    if (_caller === "web")
-      expect(saveMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ message: loopContinuation.messages[0] }),
-      );
+    expect(saveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: markLoopRecoveryCheckpoint(
+          loopContinuation.messages[0],
+          "replacement",
+        ),
+      }),
+    );
     if (vision) {
       expect(describeImageAttachmentsWithAuxiliaryVision).toHaveBeenCalledTimes(
         1,
