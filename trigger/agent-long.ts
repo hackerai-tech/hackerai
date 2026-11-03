@@ -4897,6 +4897,7 @@ export const agentLongTask = task({
                             {
                               id: generateId(),
                               role: "user",
+                              metadata: { isAutoContinue: true },
                               parts: [
                                 {
                                   type: "text",
