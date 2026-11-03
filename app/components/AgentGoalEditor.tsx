@@ -94,9 +94,12 @@ export function AgentGoalEditor({
     const next = goal && !goal.deletedAt ? goal : null;
     if (!next && previousText !== undefined) {
       // Clearing a loaded goal must not discard the backed-up unsaved draft.
-      setText(previousText);
-      setPreviousText(undefined);
-      setError("");
+      // Keep the backup marker even when the recovered text happens to equal
+      // the old baseline; a later render must not treat it as disposable.
+      if (text !== previousText) {
+        setText(previousText);
+        setError("");
+      }
     } else if (next !== original) {
       setOriginal(next);
       setText(next?.objective ?? "");
