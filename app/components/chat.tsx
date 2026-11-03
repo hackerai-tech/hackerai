@@ -62,6 +62,7 @@ import {
 import {
   areMessagesEquivalentForConvexSync,
   arePersistedMessagesAtLeastAsComplete,
+  normalizeStreamedRecoveryMessages,
 } from "@/lib/chat/message-reconciliation";
 import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
@@ -1097,7 +1098,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   } | null>(null);
 
   const {
-    messages,
+    messages: streamedMessages,
     sendMessage: sendMessageUnchecked,
     setMessages,
     status,
@@ -1322,6 +1323,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  const messages = useMemo(
+    () => normalizeStreamedRecoveryMessages(streamedMessages),
+    [streamedMessages],
+  );
 
   useChatPerformance({
     tracker: performanceTracker,
