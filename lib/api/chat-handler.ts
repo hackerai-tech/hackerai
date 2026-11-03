@@ -16,6 +16,8 @@ import {
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
+  prepareAgentLoopContinuation,
+  AGENT_LOOP_CONTINUATION_PROMPT,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
@@ -2061,6 +2063,12 @@ export const createChatHandler = () => {
                       hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
                       );
+                    const loopTriggeredRetry =
+                      stoppedDueToAssistantContentLoop ||
+                      state.stoppedDueToDoomLoop;
+                    const loopContinuation = loopTriggeredRetry
+                      ? prepareAgentLoopContinuation(messages)
+                      : undefined;
                     const emptyResponseContinuation =
                       terminalEmptyResponse && !uncertainToolOutcome
                         ? prepareProviderDisconnectContinuation(messages)
@@ -2091,8 +2099,9 @@ export const createChatHandler = () => {
                       state.providerError ??
                       new Error("Direct vision route failed");
 
-                    if (
+                    primaryProviderRecovery: if (
                       !uncertainToolOutcome &&
+                      (!loopTriggeredRetry || loopContinuation !== undefined) &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||
@@ -2100,9 +2109,6 @@ export const createChatHandler = () => {
                         shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
                     ) {
-                      const loopTriggeredRetry =
-                        stoppedDueToAssistantContentLoop ||
-                        state.stoppedDueToDoomLoop;
                       const retryReason =
                         terminalEmptyResponse && emptyResponseContinuation
                           ? "empty_answer_continuation"
@@ -2306,7 +2312,50 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (
+                        if (loopContinuation) {
+                          state.finalMessages = [
+                            ...state.finalMessages,
+                            ...loopContinuation.messages,
+                            {
+                              id: generateId(),
+                              role: "user",
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_LOOP_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: true,
+                          });
+                          const preservedFileIds = getFileAccumulator()
+                            .getAll()
+                            .map((file) => file.fileId);
+                          for (const message of loopContinuation.messages) {
+                            if (message.role !== "assistant") continue;
+                            await observeFinish(
+                              "save_message",
+                              () =>
+                                saveMessage({
+                                  chatId,
+                                  userId,
+                                  message:
+                                    summarizationTracker.processMessageForSave(
+                                      message,
+                                    ),
+                                  extraFileIds: preservedFileIds,
+                                  model: configuredModelId,
+                                  mode,
+                                  generationStartedAt: streamStartTime,
+                                  generationTimeMs:
+                                    fallbackStartTime - streamStartTime,
+                                }),
+                              "provider_retry",
+                            );
+                          }
+                        } else if (
                           emptyResponseContinuation ||
                           shouldRecoverAbliterationStreamError
                         ) {
@@ -2357,6 +2406,10 @@ export const createChatHandler = () => {
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel

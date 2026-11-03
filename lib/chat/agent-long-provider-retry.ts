@@ -337,6 +337,59 @@ export const prepareProviderDisconnectContinuation = (
   };
 };
 
+export const AGENT_LOOP_CONTINUATION_PROMPT =
+  "The previous model was stopped for repeating work without progress. Continue from the preserved tool results, not from the start of the request. Count the calls and completed actions already shown against the user's limits. Do not repeat completed actions or unchanged failed calls. Change approach only within the user's instructions, or report the blocker. Do not claim an action succeeded without a confirming tool result.";
+
+/** Keep settled tool transactions across a loop fallback without replaying looping prose. */
+export const prepareAgentLoopContinuation = (
+  messages: UIMessage[],
+): { messages: UIMessage[] } | undefined => {
+  const preserved: UIMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      preserved.push(message);
+      continue;
+    }
+    // A loop replacement must never erase an in-flight or unknown operation.
+    // Dynamic tools are not used by this harness; reject rather than drop them.
+    if (
+      message.parts.some(
+        (part) =>
+          getPartType(part) === "dynamic-tool" ||
+          (isStaticToolUIPart(part) && part.providerExecuted === true) ||
+          (isToolPart(part) &&
+            (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part))),
+      )
+    )
+      return undefined;
+    const tools = message.parts.filter(isCompletedToolPart);
+    if (!tools.length) continue;
+    // Each settled transaction keeps its original ID and output. Text/reasoning
+    // may be the loop itself and must not seed the replacement model's answer.
+    preserved.push({
+      ...message,
+      parts: message.parts
+        .filter(
+          (part) =>
+            getPartType(part) === "step-start" || isCompletedToolPart(part),
+        )
+        .map((part) => {
+          if (!isStaticToolUIPart(part)) return part;
+          // Provider item IDs/signatures refer to the discarded model leg.
+          // Keep client tool transactions portable across the model switch.
+          const { callProviderMetadata, ...portable } = part;
+          if ("resultProviderMetadata" in portable) {
+            const { resultProviderMetadata, ...withoutResultMetadata } =
+              portable;
+            return withoutResultMetadata;
+          }
+          return portable;
+        }),
+    });
+  }
+  return { messages: preserved };
+};
+
 const isRestartableInterruptedToolInput = (part: unknown): boolean => {
   if (!isToolPart(part) || !part || typeof part !== "object") return false;
   const candidate = part as MessagePartLike;

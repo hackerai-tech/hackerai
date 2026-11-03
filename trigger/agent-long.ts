@@ -289,6 +289,8 @@ import {
 } from "@/lib/chat/stop-conditions";
 import {
   AGENT_FINISH_CONTINUATION_PROMPT,
+  AGENT_LOOP_CONTINUATION_PROMPT,
+  prepareAgentLoopContinuation,
   appendAgentFinishContinuationLimit,
   appendProviderEmptyResponseFailure,
   classifyAgentRetryFinalization,
@@ -4549,6 +4551,14 @@ export const agentLongTask = task({
                             message.role !== "assistant" ||
                             (message.parts?.length ?? 0) > 0,
                         );
+                      const loopTriggeredRetry =
+                        stoppedDueToAssistantContentLoop ||
+                        state.stoppedDueToDoomLoop;
+                      const loopContinuation = loopTriggeredRetry
+                        ? prepareAgentLoopContinuation(
+                            normalizedFinishedMessages,
+                          )
+                        : undefined;
                       const finishContinuation =
                         mode === "agent" &&
                         !isAborted &&
@@ -4608,6 +4618,8 @@ export const agentLongTask = task({
                         hasCandidate:
                           !confirmedFailureLoop &&
                           !uncertainToolOutcome &&
+                          (!loopTriggeredRetry ||
+                            loopContinuation !== undefined) &&
                           (shouldRecoverAbliterationStreamError ||
                             shouldRetryWithFallback ||
                             shouldRetryWithoutImageToolResults ||
@@ -4746,9 +4758,6 @@ export const agentLongTask = task({
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
                       ) {
-                        const loopTriggeredRetry =
-                          stoppedDueToAssistantContentLoop ||
-                          state.stoppedDueToDoomLoop;
                         const retryReason = finishContinuation
                           ? `agent_finish_${finishContinuation.reason}`
                           : terminalEmptyResponse &&
@@ -4881,6 +4890,24 @@ export const agentLongTask = task({
                               ],
                             },
                           ];
+                        } else if (loopContinuation) {
+                          state.finalMessages = [
+                            ...state.finalMessages,
+                            ...loopContinuation.messages,
+                            {
+                              id: generateId(),
+                              role: "user",
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_LOOP_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: true,
+                          });
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
                           usageTracker.prepareModelRetry({
@@ -4924,12 +4951,14 @@ export const agentLongTask = task({
                         }
                         if (
                           finishContinuation ||
+                          loopContinuation ||
                           providerDisconnectContinuation
                         ) {
                           const preservedFileIds = getFileAccumulator()
                             .getAll()
                             .map((file) => file.fileId);
                           for (const message of (finishContinuation ??
+                            loopContinuation ??
                             providerDisconnectContinuation)!.messages) {
                             if (message.role !== "assistant") continue;
                             await saveMessage({
