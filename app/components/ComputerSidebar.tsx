@@ -1487,28 +1487,64 @@ export const ComputerSidebar: React.FC<{
     );
   }, [closeSidebar]);
 
-  if (
+  const editorChatId =
     sidebarOpen &&
     sidebarContent &&
     "kind" in sidebarContent &&
     sidebarContent.kind === "goal"
-  ) {
+      ? sidebarContent.chatId
+      : undefined;
+  const editorGoal = useQuery(
+    api.agentGoals.get,
+    editorChatId ? { chatId: editorChatId } : "skip",
+  );
+  const lastEditorGoal = useRef<
+    | {
+        chatId: string;
+        id: string;
+        startedAt?: number;
+      }
+    | undefined
+  >(undefined);
+  useEffect(() => {
+    if (!editorChatId) {
+      lastEditorGoal.current = undefined;
+      return;
+    }
+    if (editorGoal === undefined) return;
+    const previous = lastEditorGoal.current;
+    if (editorGoal === null) {
+      // Only close the goal being viewed. A preserved draft may belong to an
+      // older objective while another goal is being replaced or cleared.
+      lastEditorGoal.current = undefined;
+      if (
+        previous?.chatId === editorChatId &&
+        (!goalDraft ||
+          (goalDraft.chatId === editorChatId &&
+            goalDraft.original._id === previous.id &&
+            goalDraft.original.startedAt === previous.startedAt))
+      )
+        closeSidebar();
+      return;
+    }
+    lastEditorGoal.current = {
+      chatId: editorChatId,
+      id: editorGoal._id,
+      startedAt: editorGoal.startedAt,
+    };
+  }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
+
+  if (editorChatId) {
     return (
       <AgentGoalEditor
-        key={sidebarContent.chatId}
-        chatId={sidebarContent.chatId}
+        key={editorChatId}
+        chatId={editorChatId}
         onClose={closeGoalEditor}
-        continueGoal={
-          sidebarContent.chatId === chatId ? continueGoal : undefined
-        }
-        draft={
-          goalDraft?.chatId === sidebarContent.chatId ? goalDraft : undefined
-        }
+        continueGoal={editorChatId === chatId ? continueGoal : undefined}
+        draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
         onDraftChange={keepGoalDraft}
         stopRunBeforeControl={
-          sidebarContent.chatId === chatId
-            ? stopGoalRunBeforeControl
-            : undefined
+          editorChatId === chatId ? stopGoalRunBeforeControl : undefined
         }
       />
     );
