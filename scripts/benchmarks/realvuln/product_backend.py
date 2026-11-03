@@ -204,6 +204,7 @@ class ProductBackend:
                         stop.wait(0.5)
                         continue
                     observed["connected"] = True
+                    connection_work = False
                     for line in response:
                         if stop.is_set():
                             return
@@ -211,7 +212,7 @@ class ProductBackend:
                             continue
                         data = line[5:].strip()
                         if data == b"[DONE]":
-                            if observed.get("agentWork"):
+                            if connection_work:
                                 observed["done"] = True
                                 return
                             # The endpoint can replay an empty or prior stream
@@ -228,6 +229,7 @@ class ProductBackend:
                             "text-delta", "tool-input-available", "tool-output-available",
                         ):
                             observed["agentWork"] = True
+                            connection_work = True
             except (OSError, urllib.error.HTTPError, urllib.error.URLError, http.client.HTTPException):
                 stop.wait(0.5)
 

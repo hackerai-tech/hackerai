@@ -124,6 +124,39 @@ class ProductBackendContractTests(unittest.TestCase):
         client.observe("chat", stop, {})
         self.assertEqual(stop.waits, 1)
 
+    def test_replay_done_cannot_complete_a_dropped_live_stream(self):
+        class Response(io.BytesIO):
+            status = 200
+
+        class Opener:
+            calls = 0
+
+            def open(self, _request, timeout):
+                self.calls += 1
+                if self.calls == 1:
+                    return Response(b'data: {"type":"text-delta","delta":"work"}\n\n')
+                return Response(b'data: {"type":"data-appendMessage","data":"{}"}\n\ndata: [DONE]\n\n')
+
+        class Stop:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, _seconds):
+                self.stopped = True
+
+        client = object.__new__(backend.ProductBackend)
+        client.origin = "https://hackerai-git-test.vercel.app"
+        client.lock = threading.Lock()
+        client.opener = Opener()
+        client.access_headers = {}
+        observed = {}
+        client.observe("chat", Stop(), observed)
+        self.assertTrue(observed.get("agentWork"))
+        self.assertFalse(observed.get("done", False))
+        self.assertEqual(client.opener.calls, 2)
+
     def test_official_scorecard_shape_must_be_valid_before_scoring(self):
         card = {"tp": 1, "fp": 2, "fn": 3, "f2_score": 41.7, "f3_score": 35.0}
         self.assertEqual(backend.official_score_fields(card), card)
