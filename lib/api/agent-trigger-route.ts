@@ -1240,6 +1240,8 @@ export const createAgentTriggerPost =
           approvalSessionId,
           goal: reservedGoal,
         });
+      // The associated worker owns this generation, even if response creation fails.
+      reservedGoal = undefined;
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,

@@ -1572,30 +1572,41 @@ describe("goal reservations on oversized dispatch", () => {
       expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
-  it("dispatches an edited goal using the resumed generation", async () => {
-    mockGoalMutation.mockResolvedValue({ generation: 6 });
-    mockTriggerTask.mockReset().mockResolvedValue({ id: "run-edited-goal" });
-    mockCreatePublicToken.mockResolvedValue("test-token");
-    mockSetActiveTriggerRun.mockResolvedValue("updated");
-    const response = await createAgentTriggerPost({ endpoint: "/api/agent" })({
-      headers: new Headers(),
-      cookies: { get: () => undefined },
-      json: async () => ({
-        chatId: "goal-chat",
-        messages: [],
-        regenerate: true,
-        agentRunRequestId: "edit-success",
-        goal: { action: "resume", expectedGeneration: 5 },
-        agentPermissionMode: "full_access",
-      }),
-    } as any);
-    expect(response.status).toBe(200);
-    expect(mockTriggerTask).toHaveBeenCalledWith(
-      "agent-long",
-      expect.objectContaining({ goalGeneration: 6, regenerate: true }),
-      expect.anything(),
-    );
-  });
+  it.each([false, true])(
+    "keeps the associated goal owned if response creation fails (%s)",
+    async (failResponse) => {
+      if (failResponse) delete process.env.AGENT_RUN_CORRELATION_SECRET;
+      mockGoalMutation.mockResolvedValue({ generation: 6 });
+      mockTriggerTask.mockReset().mockResolvedValue({ id: "run-edited-goal" });
+      mockCreatePublicToken.mockResolvedValue("test-token");
+      mockSetActiveTriggerRun.mockResolvedValue("updated");
+      const response = await createAgentTriggerPost({ endpoint: "/api/agent" })(
+        {
+          headers: new Headers(),
+          cookies: { get: () => undefined },
+          json: async () => ({
+            chatId: "goal-chat",
+            messages: [],
+            regenerate: true,
+            agentRunRequestId: "edit-success",
+            goal: { action: "resume", expectedGeneration: 5 },
+            agentPermissionMode: "full_access",
+          }),
+        } as any,
+      );
+      expect(response.status).toBe(failResponse ? 500 : 200);
+      expect(mockGoalMutation).toHaveBeenCalledTimes(2);
+      expect(mockGoalMutation).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ runId: "run-edited-goal", generation: 6 }),
+      );
+      expect(mockTriggerTask).toHaveBeenCalledWith(
+        "agent-long",
+        expect.objectContaining({ goalGeneration: 6, regenerate: true }),
+        expect.anything(),
+      );
+    },
+  );
   it.each(["full_access", "ask_approval", "trigger_api_413"])(
     "releases the reserved goal for %s",
     async (path) => {
