@@ -48,7 +48,11 @@ python3 scripts/benchmarks/realvuln/run.py \
 
 By default the product-backend runner audits four human-authored projects.
 Pass explicit slugs to select a subset. It requires the Preview Pro QA account
-and healthy Preview Trigger worker. `--agent-limit-seconds` bounds each Agent
+and an available account cloud workspace. A known failing Trigger probe blocks
+the run. Preview cron snapshots may be unavailable because Vercel invokes cron
+jobs only on Production; the driver records that gap and requires the actual
+Agent start, status and saved stream to succeed before scoring. Verify the
+Preview Trigger deployment separately. `--agent-limit-seconds` bounds each Agent
 run. The driver records each chat and Trigger run ID before waiting; it never
 relaunches into an existing results directory. Missing live-stream evidence,
 malformed output, or a backend failure stays unscored. Do not automatically

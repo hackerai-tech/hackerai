@@ -112,7 +112,8 @@ class ProductBackend:
             if vercel_oidc_token else {}
         )
 
-    def request(self, method: str, path: str, payload: dict | None = None, *, timeout: int = 45) -> bytes:
+    def request(self, method: str, path: str, payload: dict | None = None, *, timeout: int = 45,
+                accepted_statuses: tuple[int, ...] = ()) -> bytes:
         body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
         request = urllib.request.Request(
             self.origin + path, data=body, method=method,
@@ -129,13 +130,23 @@ class ProductBackend:
                     raise BackendError(f"{path}: response exceeded bound")
                 return data
         except urllib.error.HTTPError as error:
+            if error.code in accepted_statuses:
+                try:
+                    with error:
+                        data = error.read(MAX_RESPONSE_BYTES + 1)
+                except (OSError, http.client.HTTPException):
+                    raise BackendError(f"{path}: invalid HTTP response", retryable=True) from None
+                if len(data) > MAX_RESPONSE_BYTES:
+                    raise BackendError(f"{path}: response exceeded bound") from None
+                return data
             raise BackendError(f"{path}: HTTP {error.code}", retryable=error.code == 429 or error.code >= 500) from None
         except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
             raise BackendError(f"{path}: {type(error).__name__}", retryable=True) from None
 
-    def json(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def json(self, method: str, path: str, payload: dict | None = None, *,
+             accepted_statuses: tuple[int, ...] = ()) -> dict:
         try:
-            result = json.loads(self.request(method, path, payload))
+            result = json.loads(self.request(method, path, payload, accepted_statuses=accepted_statuses))
         except (ValueError, UnicodeDecodeError):
             raise BackendError(f"{path}: invalid JSON") from None
         if not isinstance(result, dict):
@@ -146,10 +157,25 @@ class ProductBackend:
         entitlement = self.json("GET", "/api/entitlements")
         if entitlement.get("subscription") not in PAID_TIERS:
             raise BackendError("Preview QA account is not on the Pro tier")
-        health = self.json("GET", "/api/health/trigger-agent-mode")
-        if health.get("ok") is not True or health.get("source") != "trigger_probe":
+        workspace = self.json("GET", "/api/sandbox/workspaces")
+        if workspace.get("status") not in ("selected", "empty"):
+            raise BackendError("Preview QA cloud workspace is not available")
+        # Vercel does not run cron jobs on Preview deployments, so a missing
+        # cron-produced snapshot cannot by itself block an otherwise healthy
+        # Preview Agent. The actual start, status, and saved-stream gates below
+        # still fail closed if the worker is unavailable.
+        health = self.json("GET", "/api/health/trigger-agent-mode", accepted_statuses=(503,))
+        if health.get("source") != "trigger_probe":
             raise BackendError("Preview Trigger worker health is not confirmed")
-        return {"subscription": entitlement["subscription"], "triggerHealth": "healthy"}
+        if health.get("ok") is True and health.get("status") == "healthy":
+            trigger_health = "healthy"
+        elif (health.get("ok") is False and health.get("status") == "unknown"
+              and health.get("error") == "health_data_unavailable"):
+            trigger_health = "preview_cron_snapshot_unavailable"
+        else:
+            raise BackendError("Preview Trigger worker health is not confirmed")
+        return {"subscription": entitlement["subscription"],
+                "workspaceStatus": workspace["status"], "triggerHealth": trigger_health}
 
     def start(self, chat_id: str, message: str, *, automatic: bool = False) -> str:
         response = self.json("POST", "/api/agent", {

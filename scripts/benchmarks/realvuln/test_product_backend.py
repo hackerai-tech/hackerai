@@ -26,18 +26,69 @@ class ProductBackendContractTests(unittest.TestCase):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
                 backend.preview_url(origin)
 
-    def test_account_and_trigger_health_are_required_before_paid_run(self):
+    def test_account_workspace_and_known_unhealthy_probe_block_paid_run(self):
         client = object.__new__(backend.ProductBackend)
-        client.json = lambda _method, path: (
-            {"subscription": "free"} if path == "/api/entitlements" else {"ok": True, "source": "trigger_probe"}
-        )
+        responses = {
+            "/api/entitlements": {"subscription": "free"},
+            "/api/sandbox/workspaces": {"status": "selected"},
+            "/api/health/trigger-agent-mode": {"ok": True, "status": "healthy", "source": "trigger_probe"},
+        }
+        client.json = lambda _method, path, **_options: responses[path]
         with self.assertRaises(backend.BackendError):
             client.preflight()
-        client.json = lambda _method, path: (
-            {"subscription": "pro"} if path == "/api/entitlements" else {"ok": False, "source": "trigger_probe"}
-        )
+        responses["/api/entitlements"] = {"subscription": "pro"}
+        responses["/api/sandbox/workspaces"] = {"status": "unavailable"}
         with self.assertRaises(backend.BackendError):
             client.preflight()
+        responses["/api/sandbox/workspaces"] = {"status": "selected"}
+        responses["/api/health/trigger-agent-mode"] = {
+            "ok": False, "status": "failing", "source": "trigger_probe", "error": "trigger_probe_failed",
+        }
+        with self.assertRaises(backend.BackendError):
+            client.preflight()
+
+    def test_preview_missing_cron_snapshot_is_recorded_without_claiming_health(self):
+        client = object.__new__(backend.ProductBackend)
+        responses = {
+            "/api/entitlements": {"subscription": "pro"},
+            "/api/sandbox/workspaces": {"status": "empty"},
+            "/api/health/trigger-agent-mode": {
+                "ok": False, "status": "unknown", "source": "trigger_probe",
+                "error": "health_data_unavailable",
+            },
+        }
+        options = []
+
+        def read(_method, path, **kwargs):
+            options.append((path, kwargs))
+            return responses[path]
+
+        client.json = read
+        self.assertEqual(client.preflight(), {
+            "subscription": "pro", "workspaceStatus": "empty",
+            "triggerHealth": "preview_cron_snapshot_unavailable",
+        })
+        self.assertEqual(options[-1], ("/api/health/trigger-agent-mode", {"accepted_statuses": (503,)}))
+
+    def test_expected_preview_health_503_body_can_be_read_without_ignoring_other_503s(self):
+        class Opener:
+            def open(self, request, timeout):
+                raise backend.urllib.error.HTTPError(
+                    request.full_url, 503, "Service Unavailable", {},
+                    io.BytesIO(b'{"ok":false,"source":"trigger_probe","status":"unknown","error":"health_data_unavailable"}'),
+                )
+
+        client = object.__new__(backend.ProductBackend)
+        client.origin = "https://hackerai-git-test.vercel.app"
+        client.lock = threading.Lock()
+        client.opener = Opener()
+        client.access_headers = {}
+        with self.assertRaises(backend.BackendError):
+            client.json("GET", "/api/health/trigger-agent-mode")
+        self.assertEqual(
+            client.json("GET", "/api/health/trigger-agent-mode", accepted_statuses=(503,))["error"],
+            "health_data_unavailable",
+        )
 
     def test_saved_answer_must_be_exact_json_array(self):
         message = {"role": "assistant", "parts": [{"type": "text", "text": "[]"}]}
