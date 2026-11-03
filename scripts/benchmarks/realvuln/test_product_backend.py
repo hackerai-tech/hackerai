@@ -1,9 +1,11 @@
 import io
+import http.client
 import json
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.benchmarks.realvuln import product_backend as backend
 
@@ -45,6 +47,63 @@ class ProductBackendContractTests(unittest.TestCase):
             with self.subTest(answer=answer), self.assertRaises(ValueError):
                 backend.parse_findings_text(answer)
 
+    def test_saved_answer_excludes_narration_before_a_tool_call(self):
+        message = {"role": "assistant", "parts": [
+            {"type": "text", "text": "I will inspect the code."},
+            {"type": "tool-run_terminal_cmd", "output": "omitted"},
+            {"type": "text", "text": "[]"},
+        ]}
+        events = [{"type": "data-appendMessage", "data": json.dumps(message)}]
+        self.assertEqual(backend.latest_assistant_text(events), "[]")
+
+    def test_truncated_http_response_is_a_retryable_backend_error(self):
+        class Opener:
+            def open(self, _request, timeout):
+                class Response:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_args):
+                        return None
+
+                    def read(self, _limit):
+                        raise http.client.IncompleteRead(b"partial")
+
+                return Response()
+
+        client = object.__new__(backend.ProductBackend)
+        client.origin = "https://hackerai-git-test.vercel.app"
+        client.lock = threading.Lock()
+        client.opener = Opener()
+        with self.assertRaises(backend.BackendError) as raised:
+            client.request("GET", "/api/entitlements")
+        self.assertTrue(raised.exception.retryable)
+
+    def test_empty_replay_backs_off_before_reconnecting(self):
+        class Response(io.BytesIO):
+            status = 200
+
+        class Opener:
+            def open(self, _request, timeout):
+                return Response(b"data: [DONE]\n\n")
+
+        class Stop:
+            waits = 0
+
+            def is_set(self):
+                return self.waits > 0
+
+            def wait(self, _seconds):
+                self.waits += 1
+
+        client = object.__new__(backend.ProductBackend)
+        client.origin = "https://hackerai-git-test.vercel.app"
+        client.lock = threading.Lock()
+        client.opener = Opener()
+        stop = Stop()
+        client.observe("chat", stop, {})
+        self.assertEqual(stop.waits, 1)
+
     def test_official_scorecard_shape_must_be_valid_before_scoring(self):
         card = {"tp": 1, "fp": 2, "fn": 3, "f2_score": 41.7, "f3_score": 35.0}
         self.assertEqual(backend.official_score_fields(card), card)
@@ -77,6 +136,24 @@ class ProductBackendContractTests(unittest.TestCase):
 
 
 class ProductBackendRunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_poll_recovers_from_two_transient_read_failures(self):
+        class FakeClient:
+            calls = 0
+
+            def status(self, _chat_id, _run_id):
+                self.calls += 1
+                if self.calls < 3:
+                    raise backend.BackendError("status unavailable", retryable=True)
+                return {"status": "COMPLETED", "terminal": True}
+
+        async def no_delay(_seconds):
+            return None
+
+        client = FakeClient()
+        with patch.object(backend.asyncio, "sleep", no_delay):
+            self.assertEqual(await backend.wait_run(client, "chat", "run", backend.time.monotonic() + 30), "COMPLETED")
+        self.assertEqual(client.calls, 3)
+
     async def test_missing_live_stream_stays_unscored_and_does_not_duplicate(self):
         class FakeClient:
             starts = 0

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import http.cookiejar
 import json
 import os
@@ -76,6 +77,10 @@ def clean_revision(path: Path) -> str:
 class BackendError(Exception):
     """A sanitized backend error; never include a response body or cookie."""
 
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class ProductBackend:
     def __init__(self, origin: str, sealed_session: str):
@@ -109,9 +114,9 @@ class ProductBackend:
                     raise BackendError(f"{path}: response exceeded bound")
                 return data
         except urllib.error.HTTPError as error:
-            raise BackendError(f"{path}: HTTP {error.code}") from None
-        except (OSError, urllib.error.URLError) as error:
-            raise BackendError(f"{path}: {type(error).__name__}") from None
+            raise BackendError(f"{path}: HTTP {error.code}", retryable=error.code == 429 or error.code >= 500) from None
+        except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+            raise BackendError(f"{path}: {type(error).__name__}", retryable=True) from None
 
     def json(self, method: str, path: str, payload: dict | None = None) -> dict:
         try:
@@ -194,6 +199,7 @@ class ProductBackend:
                                 return
                             # The endpoint can replay an empty or prior stream
                             # before this run's producer attaches.
+                            stop.wait(0.5)
                             break
                         try:
                             event = json.loads(data)
@@ -205,7 +211,7 @@ class ProductBackend:
                             "text-delta", "tool-input-available", "tool-output-available",
                         ):
                             observed["agentWork"] = True
-            except (OSError, urllib.error.HTTPError, urllib.error.URLError):
+            except (OSError, urllib.error.HTTPError, urllib.error.URLError, http.client.HTTPException):
                 stop.wait(0.5)
 
 
@@ -222,7 +228,14 @@ def latest_assistant_text(events: list[dict]) -> str | None:
             continue
         parts = message.get("parts")
         if isinstance(parts, list):
-            return "".join(part.get("text", "") for part in parts if isinstance(part, dict) and part.get("type") == "text")
+            last_non_text = max(
+                (index for index, part in enumerate(parts) if not isinstance(part, dict) or part.get("type") != "text"),
+                default=-1,
+            )
+            return "".join(
+                part.get("text", "") for part in parts[last_non_text + 1 :]
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
     return None
 
 
@@ -260,8 +273,19 @@ def task_prompt(entry: dict) -> str:
 
 
 async def wait_run(client: ProductBackend, chat_id: str, run_id: str, deadline: float) -> str:
+    transient_failures = 0
     while time.monotonic() < deadline:
-        status = await asyncio.to_thread(client.status, chat_id, run_id)
+        try:
+            status = await asyncio.to_thread(client.status, chat_id, run_id)
+            transient_failures = 0
+        except BackendError as error:
+            if not error.retryable:
+                raise
+            transient_failures += 1
+            if transient_failures >= 3:
+                raise BackendError("Agent status unavailable after bounded read-only retries") from None
+            await asyncio.sleep(5)
+            continue
         if status.get("terminal") is True:
             return str(status.get("status"))
         await asyncio.sleep(10)
