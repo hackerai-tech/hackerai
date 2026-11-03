@@ -1046,6 +1046,19 @@ const ChatInputContent = ({
             />
           )}
 
+          {nextActions.batch && (
+            <NextMessagePredictions
+              key={nextActions.batch.batchId}
+              controller={nextActions}
+              showKeyboardHint={composerFocused}
+              onFocusComposer={() => {
+                chatInputContainerRef.current
+                  ?.querySelector("textarea")
+                  ?.focus({ preventScroll: true });
+              }}
+            />
+          )}
+
           {/* Hidden selectors take no space; the bottom-anchored composer stays
               in place while the panels above it use the available height. */}
           {user && isAgent && !showAgentApprovalPrompt && (
@@ -1069,19 +1082,6 @@ const ChatInputContent = ({
                 />
               </div>
             </div>
-          )}
-
-          {nextActions.batch && (
-            <NextMessagePredictions
-              key={nextActions.batch.batchId}
-              controller={nextActions}
-              showKeyboardHint={composerFocused}
-              onFocusComposer={() => {
-                chatInputContainerRef.current
-                  ?.querySelector("textarea")
-                  ?.focus({ preventScroll: true });
-              }}
-            />
           )}
 
           {user && (
