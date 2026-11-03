@@ -78,6 +78,7 @@ overrides:
   glob@>=9.0.0 <14.0.2: 14.0.3
   minimatch@>=9.0.0 <11.0.1: 11.0.4
   '@opentelemetry/api': 1.9.1
+  trigger.dev>minimatch: 10.2.3
 
 patchedDependencies:
   '@workos-inc/authkit-nextjs@4.3.2':
@@ -7043,6 +7044,10 @@ packages:
 
   minimal-polyfills@2.2.3:
     resolution: {integrity: sha512-oxdmJ9cL+xV72h0xYxp4tP2d5/fTBpP45H8DIOn9pASuF8a3IYTf+25fMGDYGiWW+MFsuog6KD6nfmhZJQ+uUw==}
+
+  minimatch@10.2.3:
+    resolution: {integrity: sha512-Rwi3pnapEqirPSbWbrZaa6N3nmqq4Xer/2XooiOKyV3q12ML06f7MOuc5DVH8ONZIFhwIYQ3yzPH4nt7iWHaTg==}
+    engines: {node: 18 || 20 || >=22}
 
   minimatch@11.0.4:
     resolution: {integrity: sha512-/UJ1dEoVQTjPNDh6SGlUo+ueLMmoHTas4q+8yaAR/5t6nLAIiBDJtoYUh20IYleix7ehiQkgczb84PE3uzHkxg==}
@@ -15819,6 +15824,10 @@ snapshots:
 
   minimal-polyfills@2.2.3: {}
 
+  minimatch@10.2.3:
+    dependencies:
+      brace-expansion: 5.0.12(patch_hash=c21475a6dddf7d6e51aea14c31c14bb4cd80eeafb6f8ea8b669cb8985d98429e)
+
   minimatch@11.0.4:
     dependencies:
       '@isaacs/nonrecursive-glob-match': 1.0.3
@@ -17224,7 +17233,7 @@ snapshots:
       json-stable-stringify: 1.3.0
       jsonc-parser: 3.2.1
       magicast: 0.3.5
-      minimatch: 11.0.4
+      minimatch: 10.2.3
       mlly: 1.8.0
       nypm: 0.5.4
       open: 10.2.0
