@@ -37,6 +37,15 @@ stored operation identity, action state/result, and a bounded set of debit recei
 Failure diagnostics include `settlement_operation_id`; selective step IDs also
 join the existing run settlement ID and sequence.
 
+After an action error, personal and team callers make one read-only receipt
+query with a 1.5-second deadline. They recover only a completed result whose
+operation, user, organization, settlement and point amount match the attempted
+call. A successful result must also have exactly one applied debit with the
+expected balance delta. Missing, pending, inconsistent or unavailable receipts
+retain UNKNOWN and the existing stop/no-adjustment fences, including when a
+pending action already has an applied debit. The lookup never retries the
+action, claims an operation, drives a reload or adjusts a balance.
+
 - Completed action: read its saved result and debit receipts. Do not repeat the
   debit to verify it.
 - Pending action with an applied receipt: the wallet debit committed, even if
