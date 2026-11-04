@@ -885,16 +885,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
   useLayoutEffect(() => {
-    if (!usesCloudRecovery || !cloudRecoveryAdmission.recoveryStarted) return;
+    if (
+      !usesCloudRecovery ||
+      !cloudRecoveryAdmission.recoveryStarted ||
+      (isExistingChat && initializedSandboxChatId !== chatId)
+    )
+      return;
     // Recovery never resumes an old intent. Retain drafts/queued messages for
     // a fresh explicit send instead of releasing auto-continue after the fence.
     hasManuallyStoppedRef.current = true;
     try {
-      sessionStorage.removeItem("autoSendChatId");
+      if (sessionStorage.getItem("autoSendChatId") === chatId)
+        sessionStorage.removeItem("autoSendChatId");
     } catch {
       // Storage may be disabled; the shared send guard still owns admission.
     }
-  }, [usesCloudRecovery, cloudRecoveryAdmission.recoveryStarted, chatId]);
+  }, [
+    usesCloudRecovery,
+    cloudRecoveryAdmission.recoveryStarted,
+    isExistingChat,
+    initializedSandboxChatId,
+    chatId,
+  ]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);

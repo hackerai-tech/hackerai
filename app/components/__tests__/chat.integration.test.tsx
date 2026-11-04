@@ -653,6 +653,36 @@ describe("Chat Component Integration", () => {
       }
     });
 
+    it("preserves a Local fork's pending send while its saved computer loads during Cloud recovery", async () => {
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+      };
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "recovering", step: "backup_created" }),
+      } as Response);
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      await screen.findByText(/Saving the recovered environment/);
+      mockRouteParams = { id: "local-fork" };
+      sessionStorage.setItem("autoSendChatId", "local-fork");
+      await act(async () => rerender(view()));
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("local-fork");
+      mockRestoredChat = {
+        id: "local-fork",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      await act(async () => rerender(view()));
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("local-fork");
+      sessionStorage.removeItem("autoSendChatId");
+    });
+
     it("preserves live draft and focus across folding and the first message", () => {
       const view = () => (
         <TestWrapper>
