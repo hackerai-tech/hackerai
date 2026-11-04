@@ -44,24 +44,36 @@ export type PredictionSource = {
   text: string;
 };
 
+const OMITTED_TEXT =
+  "\n[... middle omitted; do not infer missing context ...]\n";
+
+/** Keep the opening scope and the closing corrections/conclusion verbatim. */
+function excerpt(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  const available = budget - OMITTED_TEXT.length;
+  if (available <= 0) return "";
+  const headLength = Math.floor(available / 3);
+  const tailLength = available - headLength;
+  // Avoid producing unpaired UTF-16 surrogates at either cut.
+  const head = text.slice(0, headLength).replace(/[\uD800-\uDBFF]$/, "");
+  const tail = text.slice(-tailLength).replace(/^[\uDC00-\uDFFF]/, "");
+  return head + OMITTED_TEXT + tail;
+}
+
 /** Recent persisted messages only. No reasoning, attachments, system messages,
  * tool inputs, or arbitrary tool outputs. Existing finding results provide IDs. */
 export function buildPredictionSources(
   newestFirst: ContextMessage[],
 ): PredictionSource[] {
-  const sources: PredictionSource[] = [];
-  let remaining = 12_000;
-  for (const message of newestFirst.slice(0, 6)) {
-    if (message.role === "system" || remaining <= 0) continue;
-    const chunks: string[] = [];
-    let messageRemaining = Math.min(4_000, remaining);
+  const messages = newestFirst.slice(0, 6).flatMap((message) => {
+    if (message.role === "system") return [];
+    const textParts: string[] = [];
+    const findingParts: string[] = [];
     for (const value of message.parts) {
-      if (!value || typeof value !== "object" || messageRemaining <= 0)
-        continue;
+      if (!value || typeof value !== "object") continue;
       const part = value as Record<string, unknown>;
-      let text = "";
       if (part.type === "text" && typeof part.text === "string")
-        text = part.text;
+        textParts.push(part.text);
       else if (
         typeof part.type === "string" &&
         [
@@ -73,13 +85,53 @@ export function buildPredictionSources(
         part.state === "output-available" &&
         part.output
       ) {
-        text = JSON.stringify(part.output);
+        // Persisted outputs are JSON. An unexpected malformed result must not
+        // prevent the actual answer from providing context.
+        try {
+          findingParts.push(JSON.stringify(part.output));
+        } catch {
+          /* Ignore a non-JSON finding output. */
+        }
       }
-      const clipped = text.slice(0, messageRemaining);
-      if (clipped) chunks.push(clipped);
-      messageRemaining -= clipped.length;
     }
-    const text = chunks.join("\n").slice(0, remaining);
+    const text = textParts.join("\n");
+    const findings = findingParts.join("\n");
+    return text.trim() || findings
+      ? [{ id: message.id, role: message.role, text, findings }]
+      : [];
+  });
+  const sources: PredictionSource[] = [];
+  let remaining = 12_000;
+  for (const [index, message] of messages.entries()) {
+    // Reserve context for every recent turn instead of dropping the user's
+    // earlier scope/intent after three long assistant messages.
+    const reserved = messages
+      .slice(index + 1)
+      .reduce(
+        (sum, older) =>
+          sum +
+          Math.min(
+            1_000,
+            older.text.length +
+              older.findings.length +
+              (older.text && older.findings ? 1 : 0),
+          ),
+        0,
+      );
+    const budget = Math.min(4_000, remaining - reserved);
+    // Findings cannot crowd out the final answer, including on older turns
+    // with a smaller budget. Clip each original span only once so an omission
+    // marker cannot itself be cut into apparent source evidence.
+    const findings = excerpt(
+      message.findings,
+      Math.min(1_000, message.text ? Math.floor(budget / 4) : budget),
+    );
+    const text = [
+      excerpt(message.text, budget - findings.length - (findings ? 1 : 0)),
+      findings,
+    ]
+      .filter(Boolean)
+      .join("\n");
     remaining -= text.length;
     if (text.trim()) sources.push({ id: message.id, role: message.role, text });
   }
@@ -96,8 +148,22 @@ export function validateGroundedSuggestions(
   return parsed.data.suggestions.flatMap((item) => {
     const source = sources.find((source) => source.id === item.sourceMessageId);
     // Quotes are checked against exactly the bounded context the model saw.
-    if (!source?.text.includes(item.evidenceQuote)) return [];
+    if (
+      !source?.text
+        .split(OMITTED_TEXT)
+        .some((part) => part.includes(item.evidenceQuote))
+    )
+      return [];
     const text = item.text.replace(/\s+/g, " ").trim();
+    // A real evidence quote does not make an invented user update true. Drop
+    // the observed placeholder/completed-action forms instead of making Tab
+    // insert a draft that falsely claims new evidence or work was supplied.
+    if (
+      /^(?:here (?:is|are)\b|i(?:['’]ve| have| just)? (?:attached|uploaded|provided|ran|run|tested|verified|checked)\b)/i.test(
+        text,
+      )
+    )
+      return [];
     // Suggestions are plain editable questions, never fabricated artifact links.
     if (/[<>]|https?:\/\/|www\./i.test(text) || seen.has(text.toLowerCase()))
       return [];
