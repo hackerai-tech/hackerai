@@ -91,7 +91,7 @@ patchedDependencies:
     hash: c93828b110099b0aad7753174144850943b1981ea88fc24d7bb85b615275a361
     path: patches/convex@1.46.0.patch
   resumable-stream@2.2.13:
-    hash: e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b
+    hash: 10637d9574b54edf9e3632eb1e4bfad1f106af41b3a8227a04a2d3d81a204995
     path: patches/resumable-stream@2.2.13.patch
 
 importers:
@@ -340,7 +340,7 @@ importers:
         version: 6.3.1(@opentelemetry/api@1.9.1)
       resumable-stream:
         specifier: ^2.2.13
-        version: 2.2.13(patch_hash=e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b)
+        version: 2.2.13(patch_hash=10637d9574b54edf9e3632eb1e4bfad1f106af41b3a8227a04a2d3d81a204995)
       shiki:
         specifier: ^4.6.0
         version: 4.6.0
@@ -16683,7 +16683,7 @@ snapshots:
       path-parse: 1.0.7
       supports-preserve-symlinks-flag: 1.0.0
 
-  resumable-stream@2.2.13(patch_hash=e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b): {}
+  resumable-stream@2.2.13(patch_hash=10637d9574b54edf9e3632eb1e4bfad1f106af41b3a8227a04a2d3d81a204995): {}
 
   retry-axios@2.6.0(axios@1.20.0(debug@4.4.3)):
     dependencies:
