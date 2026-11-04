@@ -1,3 +1,4 @@
+import { AgentGoalEditor, type GoalEditorDraft } from "./AgentGoalEditor";
 import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
@@ -1448,11 +1449,20 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
+  continueGoal?: React.ComponentProps<typeof AgentGoalEditor>["continueGoal"];
   chatId?: string;
   messages?: any[];
   status?: ChatStatus;
   onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
-}> = ({ chatId, messages, status, onBrowserContinue }) => {
+}> = ({
+  chatId,
+  messages,
+  status,
+  onBrowserContinue,
+  stopGoalRunBeforeControl,
+  continueGoal,
+}) => {
   const {
     sidebarOpen,
     sidebarContent,
@@ -1460,6 +1470,99 @@ export const ComputerSidebar: React.FC<{
     openSidebar,
     consumeBrowserTakeoverRequest,
   } = useGlobalState();
+
+  const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft | undefined) => {
+    setGoalDraft(draft);
+  }, []);
+  const closeGoalEditor = useCallback(() => {
+    setGoalDraft(undefined);
+    closeSidebar();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+        )
+        ?.focus(),
+    );
+  }, [closeSidebar]);
+
+  const editorChatId =
+    sidebarOpen &&
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal"
+      ? sidebarContent.chatId
+      : undefined;
+  const editorGoal = useQuery(
+    api.agentGoals.get,
+    editorChatId ? { chatId: editorChatId } : "skip",
+  );
+  const lastEditorGoal = useRef<
+    | {
+        chatId: string;
+        id: string;
+        startedAt?: number;
+        state: string;
+      }
+    | undefined
+  >(undefined);
+  useEffect(() => {
+    if (!editorChatId) {
+      lastEditorGoal.current = undefined;
+      return;
+    }
+    if (editorGoal === undefined) return;
+    const previous = lastEditorGoal.current;
+    if (editorGoal === null) {
+      // Only close the goal being viewed. A preserved draft may belong to an
+      // older objective while another goal is being replaced or cleared.
+      lastEditorGoal.current = undefined;
+      if (
+        previous?.chatId === editorChatId &&
+        (!goalDraft ||
+          (goalDraft.chatId === editorChatId &&
+            goalDraft.original._id === previous.id &&
+            goalDraft.original.startedAt === previous.startedAt))
+      )
+        closeSidebar();
+      return;
+    }
+    lastEditorGoal.current = {
+      chatId: editorChatId,
+      id: editorGoal._id,
+      startedAt: editorGoal.startedAt,
+      state: editorGoal.state,
+    };
+    if (
+      editorGoal.state === "achieved" &&
+      previous?.state !== "achieved" &&
+      previous?.chatId === editorChatId &&
+      previous.id === editorGoal._id &&
+      previous.startedAt === editorGoal.startedAt &&
+      (!goalDraft ||
+        (goalDraft.chatId === editorChatId &&
+          goalDraft.original._id === editorGoal._id &&
+          goalDraft.original.startedAt === editorGoal.startedAt))
+    )
+      closeSidebar();
+  }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
+
+  if (editorChatId) {
+    return (
+      <AgentGoalEditor
+        key={editorChatId}
+        chatId={editorChatId}
+        onClose={closeGoalEditor}
+        continueGoal={editorChatId === chatId ? continueGoal : undefined}
+        draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
+        onDraftChange={keepGoalDraft}
+        stopRunBeforeControl={
+          editorChatId === chatId ? stopGoalRunBeforeControl : undefined
+        }
+      />
+    );
+  }
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (
