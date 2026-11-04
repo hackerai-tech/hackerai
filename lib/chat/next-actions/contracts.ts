@@ -158,7 +158,7 @@ export function validateGroundedSuggestions(
     const text = item.text.replace(/\s+/g, " ").trim();
     // Modal questions ask for something; they do not assert a user fact.
     const factualText = text.replace(
-      /\b(?:can|could|may|should|would|do)\s+(?:i|we)\s+/gi,
+      /\b(?:can|could|may|might|should|would|will|shall|must|do|did|if)\s+(?:i|we)\b/gi,
       " ",
     );
     // Editable predictions must not become composer control commands on send.
@@ -177,8 +177,17 @@ export function validateGroundedSuggestions(
       /\b(?:i(?:['’](?:m|ve)|\s+(?:am|have|own|work|ran|tested|verified|checked|attached|uploaded|provided))|we(?:['’](?:re|ve)|\s+(?:are|have|own|work|ran|tested|verified|checked|attached|uploaded|provided)))\b/i.test(
         factualText,
       ) ||
-      /^(?:my|our)\s+.{0,80}\b(?:owns?|is|has|are|have)\b/i.test(text) ||
-      /\b(?:tengo|tenemos)\s+(?:permiso|autorizaci[oó]n)\b/i.test(text)
+      /(?:^|[.!?;:]\s+)(?:my|our)\s+.{0,80}\b(?:owns?|is|has|are|have)\b/i.test(
+        text,
+      ) ||
+      // These are bounded observed claim forms, not a semantic verifier for
+      // every language. The prompt must also avoid unsupported factual updates.
+      /\b(?:(?:tengo|tenemos)\s+(?:permisos?|autorizaci[oó]n)|(?:estoy|estamos)\s+autorizad[oa]s?|soy\s+(?:el\s+|la\s+)?dueñ[oa])\b/i.test(
+        text,
+      ) ||
+      /\b(?:j['’]ai|nous avons)\s+(?:la permission|l['’]autorisation)\b/i.test(
+        text,
+      )
     )
       return [];
     // Suggestions are plain editable questions, never fabricated artifact links.
