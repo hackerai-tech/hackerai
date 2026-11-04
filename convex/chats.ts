@@ -605,6 +605,7 @@ export const getChatByIdFromClient = query({
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        next_actions: _privateNextActions,
         ...chatPublic
       } = chat;
 
@@ -711,6 +712,7 @@ export const getChatById = query({
       const {
         codex_thread_id: _legacy,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        next_actions: _privateNextActions,
         ...chatPublic
       } = chat;
       return chatPublic;
@@ -1202,7 +1204,11 @@ export const getUserChats = query({
 
       // Step 4: Enhance chats using the map
       const enhancedChats = combinedPage.map(
-        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => {
+        ({
+          objective_checkpoint: _privateObjectiveCheckpoint,
+          next_actions: _privateNextActions,
+          ...chat
+        }) => {
           if (chat.branched_from_chat_id) {
             const branchedFromChat = branchedChatMap.get(
               chat.branched_from_chat_id,

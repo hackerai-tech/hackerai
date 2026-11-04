@@ -3076,6 +3076,56 @@ describe("ChatInput - Integration Tests", () => {
     },
   );
 
+  it.each([
+    { hasActiveGoalRun: false, pauseGoalOnSend: false, requests: 1 },
+    { hasActiveGoalRun: true, pauseGoalOnSend: false, requests: 0 },
+    { hasActiveGoalRun: false, pauseGoalOnSend: true, requests: 0 },
+  ])(
+    "does not generate next-message predictions while a goal owns the composer: %j",
+    async ({ hasActiveGoalRun, pauseGoalOnSend, requests }) => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "prediction-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      sessionStorage.clear();
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true, suggestions: [] }),
+      });
+      render(
+        <TestWrapper>
+          <ChatInput
+            chatId="goal-prediction-chat"
+            completedPredictionTurn={{
+              chatId: "goal-prediction-chat",
+              messageId: "answer",
+            }}
+            latestMessageId="answer"
+            hasActiveGoalRun={hasActiveGoalRun}
+            pauseGoalOnSend={pauseGoalOnSend}
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      });
+      expect(
+        mockFetch.mock.calls.filter(
+          ([url]) => url === "/api/chat/next-actions",
+        ),
+      ).toHaveLength(requests);
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    },
+  );
+
   it("selects a goal from the mobile add menu without losing the draft or attachments", async () => {
     mockIsMobile = true;
     jest.mocked(useAuth).mockReturnValue({

@@ -65,34 +65,38 @@ export async function enforceRegionalSubscriptionFirst(args: {
   subscription: string;
   country?: string;
   surface: "ask" | "agent" | "agent_worker";
+  /** Background checks enforce access without exposing the pricing experiment. */
+  captureExposure?: boolean;
 }) {
   const assignment = await evaluateRegionalSubscriptionFirst(args);
   if (!assignment) return;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const posthog = PostHogClient();
-    posthog?.capture({
-      distinctId: args.userId,
-      event: REGIONAL_SUBSCRIPTION_FIRST_EXPOSURE,
-      properties: {
-        ...regionalSubscriptionProperties(assignment),
-        exposure_surface: args.surface,
-        subscription_tier: "free",
-        $geoip_disable: true,
-        $process_person_profile: false,
-      },
-    });
-    // Blocked tasks have no later completion event to flush this exposure.
-    await Promise.race([
-      posthog?.flush(),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, 750);
-      }),
-    ]);
-  } catch {
-    // Telemetry failure must neither grant access nor reject a control account.
-  } finally {
-    if (timeout) clearTimeout(timeout);
+  if (args.captureExposure !== false) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const posthog = PostHogClient();
+      posthog?.capture({
+        distinctId: args.userId,
+        event: REGIONAL_SUBSCRIPTION_FIRST_EXPOSURE,
+        properties: {
+          ...regionalSubscriptionProperties(assignment),
+          exposure_surface: args.surface,
+          subscription_tier: "free",
+          $geoip_disable: true,
+          $process_person_profile: false,
+        },
+      });
+      // Blocked tasks have no later completion event to flush this exposure.
+      await Promise.race([
+        posthog?.flush(),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 750);
+        }),
+      ]);
+    } catch {
+      // Telemetry failure must neither grant access nor reject a control account.
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
   if (assignment.variant === "test") {
     throw new ChatSDKError(

@@ -1,4 +1,5 @@
 "use client";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
 import {
@@ -763,6 +764,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  const [initializedPredictionModeChatId, setInitializedPredictionModeChatId] =
+    useState<string | null>(null);
   // Keep automatic sends blocked until the task's saved environment is applied.
   const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
     string | null
@@ -1220,6 +1223,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }),
   );
 
+  const [completedPredictionTurn, setCompletedPredictionTurn] =
+    useState<CompletedPredictionTurn | null>(null);
+  const [interruptedPredictionTurn, setInterruptedPredictionTurn] = useState<{
+    chatId: string;
+  } | null>(null);
+
   const {
     messages: streamedMessages,
     sendMessage: sendMessageUnchecked,
@@ -1393,7 +1402,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort, isError }) => {
+    onFinish: ({ isAbort, isError, message, messages: finishedMessages }) => {
       if (isAbort && goalAdmissionRef.current?.chatId === chatId)
         goalAdmissionRef.current.aborted = true;
       performanceTracker.setOutcome(
@@ -1401,6 +1410,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
+      }
+      // useChat forwards old Chat instances to the latest callback after
+      // navigation. Its event history still belongs to the originating task.
+      // Check membership rather than the newest user ID: throttled visible
+      // messages may lag a legitimate abort before its assistant is appended.
+      const visibleUser = messagesRef.current.findLast(
+        (item) => item.role === "user",
+      );
+      if (
+        !visibleUser ||
+        finishedMessages?.some((item) => item.id === visibleUser.id)
+      ) {
+        setCompletedPredictionTurn(
+          !isAbort && !isError ? { chatId, messageId: message.id } : null,
+        );
+        setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
       }
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
@@ -1470,6 +1495,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     () => normalizeStreamedRecoveryMessages(streamedMessages),
     [streamedMessages],
   );
+
+  useEffect(() => {
+    if (status === "submitted" || status === "streaming" || status === "error")
+      setCompletedPredictionTurn(null);
+  }, [chatId, status]);
 
   useChatPerformance({
     tracker: performanceTracker,
@@ -2217,6 +2247,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Legacy chats stored as agent-long map to agent mode
         setChatMode("agent");
       }
+      setInitializedPredictionModeChatId(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
@@ -2932,6 +2963,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     )}
                   </div>
                   <ChatInput
+                    completedPredictionTurn={completedPredictionTurn}
+                    predictionModeReady={
+                      !isExistingChat ||
+                      initializedPredictionModeChatId === chatId
+                    }
+                    interruptedPredictionTurn={interruptedPredictionTurn}
+                    latestMessageId={messages.at(-1)?.id}
+                    latestMessageIsAssistant={
+                      messages.at(-1)?.role === "assistant"
+                    }
                     goalPanel={goalPanel}
                     hasActiveGoalRun={hasActiveGoalRun}
                     pauseGoalOnSend={pauseGoalOnSend}

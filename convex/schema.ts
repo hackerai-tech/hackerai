@@ -1,3 +1,4 @@
+import { nextActionsStateValidator } from "./lib/nextActionsState";
 import {
   settlementIdentityFields,
   walletActionResult,
@@ -284,6 +285,7 @@ export default defineSchema({
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
+    next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
     engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),

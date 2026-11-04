@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNextActions } from "@/app/hooks/useNextActions";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -65,6 +67,11 @@ import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
+  completedPredictionTurn?: CompletedPredictionTurn | null;
+  interruptedPredictionTurn?: { chatId: string } | null;
+  latestMessageId?: string;
+  latestMessageIsAssistant?: boolean;
+  predictionModeReady?: boolean;
   goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
   hasActiveGoalRun?: boolean;
   pauseGoalOnSend?: boolean;
@@ -258,6 +265,11 @@ export const ChatInput = (props: ChatInputProps) => {
 };
 
 const ChatInputContent = ({
+  completedPredictionTurn,
+  interruptedPredictionTurn,
+  latestMessageId,
+  latestMessageIsAssistant,
+  predictionModeReady = true,
   goalPanel,
   hasActiveGoalRun = false,
   pauseGoalOnSend = false,
@@ -902,6 +914,36 @@ const ChatInputContent = ({
     setGoalMode(true);
     setInput(goalSuggestionDraft);
   };
+  const nextActions = useNextActions({
+    userId: user?.id,
+    chatId,
+    chatMode,
+    modeReady: predictionModeReady,
+    completedTurn: completedPredictionTurn,
+    interruptedTurn: interruptedPredictionTurn,
+    latestMessageId,
+    latestMessageIsAssistant,
+    status,
+    input,
+    getInput,
+    setInput,
+    hasAttachments: () =>
+      getUploadedFiles().length > 0 ||
+      getDraftAttachmentsById(draftId).length > 0,
+    blocked:
+      goalMode ||
+      hasActiveGoalRun ||
+      pauseGoalOnSend ||
+      isMobile !== false ||
+      isOffline ||
+      !!effectiveSendDisabledReason ||
+      isResolvingInitialState ||
+      isUploadingFiles ||
+      uploadedFiles.length > 0 ||
+      !!approvalRequest ||
+      !!editingQueuedMessageId ||
+      messageQueue.length > 0,
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -927,6 +969,7 @@ const ChatInputContent = ({
 
     if (canSubmit) {
       isSubmittingRef.current = true;
+      const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
@@ -937,6 +980,7 @@ const ChatInputContent = ({
           e,
           goalMode ? `/goal start ${input}` : undefined,
         );
+        finishPredictionSubmission(accepted !== false);
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
@@ -969,6 +1013,7 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
+        finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         console.error("Failed to submit message:", error);
       } finally {
@@ -1227,6 +1272,11 @@ const ChatInputContent = ({
             }}
           >
             <ChatInputTextarea
+              prediction={nextActions.batch?.suggestions[0]}
+              onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
+              onPredictionExposed={nextActions.exposed}
+              composerFocused={composerFocused}
+              onDismissPrediction={nextActions.dismiss}
               composerRef={composerTextareaRef}
               draftId={draftId}
               chatMode={chatMode}
