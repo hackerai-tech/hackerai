@@ -360,7 +360,7 @@ const { useGlobalState } = jest.requireActual<
   typeof import("@/app/contexts/GlobalState")
 >("@/app/contexts/GlobalState");
 
-const { useComposerActions } = jest.requireActual<
+const { useComposerActions, useComposerInput } = jest.requireActual<
   typeof import("@/app/contexts/ComposerState")
 >("@/app/contexts/ComposerState");
 const mockUseAuth = require("@workos-inc/authkit-nextjs/components").useAuth;
@@ -370,6 +370,20 @@ const ForkDraftSetter = () => {
   const { setInput } = useComposerActions();
   useEffect(() => setInput("continue"), [setInput]);
   return null;
+};
+const RecoveryDraftProbe = () => (
+  <output data-testid="recovery-draft">{useComposerInput()}</output>
+);
+const RecoveryQueueProbe = () => {
+  const { queueMessage, messageQueue } = useGlobalState();
+  return (
+    <>
+      <button onClick={() => queueMessage("queued after recovery")}>
+        Queue recovery draft
+      </button>
+      <output data-testid="recovery-queue">{messageQueue.length}</output>
+    </>
+  );
 };
 
 const SelectedComputerProbe = () => {
@@ -554,6 +568,91 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("holds Cloud sends during recovery and keeps the draft for an explicit send after verification", async () => {
+      jest.useFakeTimers();
+      try {
+        mockUseRealChatHandlers = true;
+        mockDesktopState = {
+          chatMode: "agent",
+          sandboxPreference: "e2b",
+          subscription: "pro",
+        };
+        global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovering", step: "backup_created" }),
+        } as Response);
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <ForkDraftSetter />
+            <RecoveryDraftProbe />
+          </TestWrapper>,
+        );
+        await screen.findByText(/Saving the recovered environment/);
+        fireEvent.click(
+          screen.getByRole("button", { name: "Submit test message" }),
+        );
+        await act(async () => {});
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("recovery-draft")).toHaveTextContent(
+          "continue",
+        );
+        jest.mocked(global.fetch).mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovered" }),
+        } as Response);
+        await act(async () => jest.advanceTimersByTimeAsync(5000));
+        expect(screen.getByText(/Workspace ready/)).toBeVisible();
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("recovery-draft")).toHaveTextContent(
+          "continue",
+        );
+        fireEvent.click(
+          screen.getByRole("button", { name: "Submit test message" }),
+        );
+        await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("recovery-draft")).toBeEmptyDOMElement();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("does not automatically release queued work when workspace recovery finishes", async () => {
+      jest.useFakeTimers();
+      try {
+        mockUseRealChatHandlers = true;
+        mockDesktopState = {
+          chatMode: "agent",
+          sandboxPreference: "e2b",
+          subscription: "pro",
+        };
+        global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovering", step: "backup_created" }),
+        } as Response);
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <RecoveryQueueProbe />
+          </TestWrapper>,
+        );
+        await screen.findByText(/Saving the recovered environment/);
+        fireEvent.click(
+          screen.getByRole("button", { name: "Queue recovery draft" }),
+        );
+        jest.mocked(global.fetch).mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovered" }),
+        } as Response);
+        await act(async () => jest.advanceTimersByTimeAsync(5000));
+        expect(screen.getByText(/Workspace ready/)).toBeVisible();
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it("preserves live draft and focus across folding and the first message", () => {
       const view = () => (
         <TestWrapper>

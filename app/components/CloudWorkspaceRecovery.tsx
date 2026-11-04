@@ -1,8 +1,9 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { RecoveryView } from "@/lib/cloud-recovery/service";
+import { CloudRecoveryAdmissionContext } from "@/app/hooks/useCloudRecoveryAdmission";
 const steps: Record<string, string> = {
   queued: "Preparing recovery…",
   reboot_connected: "Checking terminal and file access…",
@@ -20,6 +21,18 @@ export function CloudWorkspaceRecovery({
   surface?: "cloud_connection_error" | "workspace_status" | "workspace_dialog";
   onSettled?: () => void;
 }) {
+  const admission = useContext(CloudRecoveryAdmissionContext);
+  const beginRead = admission?.beginRead;
+  const finishRead = admission?.finishRead;
+  const channel = useRef<BroadcastChannel | null>(null);
+  const wasRecovering = useRef<boolean | null>(null);
+  const notifyChange = useCallback(() => {
+    try {
+      channel.current?.postMessage("changed");
+    } catch {
+      // Cross-tab hints must never change consent or recovery outcomes.
+    }
+  }, []);
   const [view, setView] = useState<RecoveryView>({ status: "hidden" });
   const [observedRecovery, setObservedRecovery] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -39,10 +52,15 @@ export function CloudWorkspaceRecovery({
       )
         setObservedRecovery(true);
       setView(next);
+      const recovering = next.status === "recovering";
+      if (wasRecovering.current !== recovering) {
+        if (wasRecovering.current !== null || recovering) notifyChange();
+        wasRecovering.current = recovering;
+      }
       if (next.status === "hidden" || next.status === "recovered")
         onSettled?.();
     },
-    [onSettled],
+    [onSettled, notifyChange],
   );
   // Durable recovery receipts belong to the workspace, not the current chat.
   // Announce completion only if this mount actually displayed the incident.
@@ -52,6 +70,7 @@ export function CloudWorkspaceRecovery({
   const refresh = useCallback(
     async (signal?: AbortSignal, reportError = true) => {
       const generation = ++statusReadGeneration.current;
+      const read = beginRead?.();
       const isCurrent = () =>
         !signal?.aborted && generation === statusReadGeneration.current;
       try {
@@ -64,19 +83,38 @@ export function CloudWorkspaceRecovery({
         if (!response.ok) throw new Error("Recovery status unavailable");
         const next = await response.json();
         if (isCurrent()) {
+          if (read !== undefined) finishRead?.(read, next.status);
           setChecked(true);
           updateView(next);
           setError(false);
         }
       } catch {
+        if (isCurrent() && read !== undefined) finishRead?.(read);
         if (isCurrent() && reportError) {
           setChecked(true);
           setError(true);
         }
       }
     },
-    [updateView],
+    [updateView, beginRead, finishRead],
   );
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    let current: BroadcastChannel;
+    try {
+      current = new BroadcastChannel("cloud-workspace-recovery");
+    } catch {
+      return;
+    }
+    channel.current = current;
+    current.onmessage = (event) => {
+      if (event.data === "changed") void refresh();
+    };
+    return () => {
+      channel.current = null;
+      current.close();
+    };
+  }, [refresh]);
   useEffect(() => {
     const controller = new AbortController();
     void refresh(controller.signal, surface !== "workspace_status");
@@ -148,6 +186,9 @@ export function CloudWorkspaceRecovery({
   }, [view, surface]);
   async function decide(decision: boolean | "reopen") {
     if (!view.token || busy) return;
+    const finishConfirmation =
+      decision === true ? admission?.beginConfirmation() : undefined;
+    if (decision === true && admission && !finishConfirmation) return;
     checks.current = 0;
     setChecksStopped(false);
     statusReadGeneration.current += 1;
@@ -164,13 +205,17 @@ export function CloudWorkspaceRecovery({
         ),
       });
       if (!response.ok) throw new Error("Recovery confirmation unavailable");
-      updateView(await response.json());
+      const next = await response.json();
+      finishConfirmation?.(next.status);
+      updateView(next);
     } catch {
+      finishConfirmation?.("recovering");
       // The server may have accepted consent. Read status; never repeat POST.
       updateView({ status: "recovering", step: "queued" });
       setError(true);
       void refresh();
     } finally {
+      if (decision === true) notifyChange();
       setBusy(false);
     }
   }
