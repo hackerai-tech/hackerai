@@ -1210,7 +1210,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     [applyUploadedFileUpdate, uploadFileToS3],
   );
 
-  const handleAttachClick = () => {
+  const handleAttachClick = (
+    source: "camera" | "photos" | "files" = "files",
+  ) => {
     const isTauri = isTauriEnvironment();
     logLocalAttachmentDebug("attach-click", {
       isTauri,
@@ -1237,7 +1239,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         });
       return;
     }
-    fileInputRef.current?.click();
+    const input = fileInputRef.current;
+    if (!input) return;
+    // Configure every opening so Camera cannot restrict a later Files picker.
+    input.accept = source === "files" ? "" : "image/*";
+    input.multiple = source !== "camera";
+    if (source === "camera") {
+      input.setAttribute("capture", "environment");
+    } else {
+      input.removeAttribute("capture");
+    }
+    input.click();
   };
 
   const handlePastedTextAttachment = useCallback(

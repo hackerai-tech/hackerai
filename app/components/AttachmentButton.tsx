@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/popover";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { Check, Paperclip, Plus } from "lucide-react";
+import { Camera, Check, Image, Paperclip, Plus } from "lucide-react";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
 import {
   DropdownMenu,
@@ -28,7 +28,7 @@ export interface AttachmentButtonProps {
     onSelect: () => void;
     onFocusComposer: () => void;
   };
-  onAttachClick: () => void;
+  onAttachClick: (source?: "camera" | "photos" | "files") => void;
   disabled?: boolean;
 }
 
@@ -115,7 +115,25 @@ export const AttachmentButton = ({
         >
           <DropdownMenuItem
             className="min-h-12 gap-3 rounded-xl px-3 text-base"
-            onSelect={onAttachClick}
+            onSelect={() => onAttachClick("camera")}
+          >
+            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+              <Camera className="size-5" />
+            </span>
+            Camera
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="min-h-12 gap-3 rounded-xl px-3 text-base"
+            onSelect={() => onAttachClick("photos")}
+          >
+            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+              <Image className="size-5" />
+            </span>
+            Photos
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="min-h-12 gap-3 rounded-xl px-3 text-base"
+            onSelect={() => onAttachClick("files")}
           >
             <span className="flex size-9 items-center justify-center rounded-full bg-muted">
               <Paperclip className="size-5" />
@@ -159,7 +177,7 @@ export const AttachmentButton = ({
         <TooltipTrigger asChild>
           <Button
             type="button"
-            onClick={onAttachClick}
+            onClick={() => onAttachClick()}
             variant="ghost"
             size="sm"
             className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"

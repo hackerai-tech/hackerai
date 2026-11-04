@@ -115,6 +115,37 @@ describe("useFileUpload desktop-local agent attachments", () => {
     global.fetch = originalFetch;
   });
 
+  it("opens camera, photos, and unrestricted files without leaking picker settings", () => {
+    (isTauriEnvironment as jest.Mock).mockReturnValue(false);
+    globalState.sandboxPreference = "cloud";
+    const { result } = renderHook(() => useFileUpload("agent"));
+    const input = document.createElement("input");
+    input.type = "file";
+    result.current.fileInputRef.current = input;
+    const selections: unknown[] = [];
+    jest.spyOn(input, "click").mockImplementation(() => {
+      selections.push({
+        accept: input.accept,
+        capture: input.getAttribute("capture"),
+        multiple: input.multiple,
+      });
+    });
+
+    act(() => {
+      result.current.handleAttachClick("camera");
+      result.current.handleAttachClick("photos");
+      result.current.handleAttachClick();
+    });
+
+    expect(selections).toEqual([
+      { accept: "image/*", capture: "environment", multiple: false },
+      { accept: "image/*", capture: null, multiple: true },
+      { accept: "", capture: null, multiple: true },
+    ]);
+    expect(pickLocalFiles).not.toHaveBeenCalled();
+    expect(addUploadedFile).not.toHaveBeenCalled();
+  });
+
   it("keeps an attachment visible when deletion fails", async () => {
     const file = new File(["test"], "test.txt", { type: "text/plain" });
     globalState.uploadedFiles = [

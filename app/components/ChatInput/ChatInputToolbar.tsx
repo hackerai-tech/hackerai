@@ -20,7 +20,7 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   goalControl?: React.ReactNode;
   goalMenu?: AttachmentButtonProps["goalMenu"];
-  onAttachClick: () => void;
+  onAttachClick: AttachmentButtonProps["onAttachClick"];
 }
 
 export function ChatInputToolbar({
