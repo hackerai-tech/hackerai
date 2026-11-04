@@ -489,9 +489,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           });
           // A persistent shell can launch the browser in a later send, including
           // through a script. Establish its ownership before any input runs.
-          const agentBrowserEnv = isE2B
-            ? await prepareBrowserEnv(sandbox, command, true)
-            : undefined;
+          const agentBrowserEnv =
+            isE2B || context.browserSessions?.hasConnectedChallengeScope?.()
+              ? await prepareBrowserEnv(sandbox, command, true)
+              : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -516,6 +517,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cols,
                   rows,
                   cwd: sandbox.getWorkingDirectory(),
+                  ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -817,9 +819,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
-          const agentBrowserEnv = isE2BSandbox(sandboxInstance)
-            ? await prepareBrowserEnv(sandboxInstance, command)
-            : undefined;
+          const agentBrowserEnv =
+            isE2BSandbox(sandboxInstance) ||
+            context.browserSessions?.hasConnectedChallengeScope?.()
+              ? await prepareBrowserEnv(sandboxInstance, command)
+              : undefined;
           captureAgentBrowserUsage({
             context,
             command,
@@ -1161,6 +1165,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStdout: forwardCommandOutput,
                     onStderr: forwardCommandOutput,
                   },
+              agentBrowserEnv,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
@@ -1175,7 +1180,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               : isE2BSandbox(sandboxInstance)
                 ? {
                     ...commonOptions,
-                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                     signal: abortSignal,
                   }
                 : commonOptions;

@@ -1180,6 +1180,56 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
+  test.each([false, true])(
+    "passes owned browser environment to connected commands only when eligible (%s)",
+    async (eligible) => {
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        getWorkingDirectory: () => "/tmp",
+        commands: {
+          run: jest.fn(async (_command: string, _options: unknown) => ({
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          })),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      const prepare = jest.fn(async () => ({
+        AGENT_BROWSER_SESSION: "owned-preview",
+      }));
+      context.browserSessions = {
+        prepare,
+        hasHandoffScope: () => false,
+        hasConnectedChallengeScope: () => eligible,
+      } as unknown as NonNullable<ToolContext["browserSessions"]>;
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://example.com",
+        brief: "inspect page",
+        is_background: false,
+        interactive: false,
+        timeout: 5,
+      });
+      if (eligible) {
+        expect(prepare).toHaveBeenCalledWith(sandbox);
+        expect(sandbox.commands.run).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            envVars: expect.objectContaining({
+              AGENT_BROWSER_SESSION: "owned-preview",
+            }),
+          }),
+        );
+      } else {
+        expect(prepare).not.toHaveBeenCalled();
+        expect(sandbox.commands.run.mock.calls[0][1]).not.toHaveProperty(
+          "envVars",
+        );
+      }
+    },
+  );
+
   test("owns a cloud shell's browser state before a later browser command", async () => {
     const fakeHandle = makeFakeHandle();
     const e2b = makeFakeE2BSandbox();
@@ -2402,45 +2452,71 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test("exec + interactive=true on Centrifugo sandbox invokes createCentrifugoPtyHandle", async () => {
-    const fakeHandle = makeFakeHandle();
-    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+  test.each([false, true])(
+    "exec + interactive=true preserves connected browser ownership when eligible (%s)",
+    async (eligible) => {
+      const fakeHandle = makeFakeHandle();
+      mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
 
-    const centrifugoSandbox = {
-      sandboxKind: "centrifugo" as const,
-      commands: { run: jest.fn() },
-      getUserId: () => "user-1",
-      getConnectionId: () => "conn-1",
-      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
-      getWorkingDirectory: () => "/tmp/project",
-      isWindows: () => false,
-    };
-    const { context } = makeContext({ sandbox: centrifugoSandbox });
-    const tool = createRunTerminalCmd(context);
+      const centrifugoSandbox = {
+        sandboxKind: "centrifugo" as const,
+        commands: { run: jest.fn() },
+        getUserId: () => "user-1",
+        getConnectionId: () => "conn-1",
+        getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+        getWorkingDirectory: () => "/tmp/project",
+        isWindows: () => false,
+      };
+      const { context } = makeContext({ sandbox: centrifugoSandbox });
+      const prepare = jest.fn(async () => ({
+        AGENT_BROWSER_SESSION: "owned-interactive",
+      }));
+      context.browserSessions = {
+        prepare,
+        hasConnectedChallengeScope: () => eligible,
+      } as unknown as NonNullable<ToolContext["browserSessions"]>;
+      const tool = createRunTerminalCmd(context);
 
-    // Emit some data so waitForOutput resolves
-    setTimeout(() => {
-      fakeHandle.emit(new TextEncoder().encode("$ top\n"));
-      fakeHandle.resolveExit(0);
-    }, 50);
+      // Emit some data so waitForOutput resolves
+      setTimeout(() => {
+        fakeHandle.emit(new TextEncoder().encode("$ top\n"));
+        fakeHandle.resolveExit(0);
+      }, 50);
 
-    const result = (await runTool(tool, {
-      action: "exec",
-      command: "top",
-      brief: "x",
-      is_background: false,
-      interactive: true,
-      timeout: 0.2,
-    })) as { result: { output?: string; session?: string; pid?: number } };
+      const result = (await runTool(tool, {
+        action: "exec",
+        command: "top",
+        brief: "x",
+        is_background: false,
+        interactive: true,
+        timeout: 0.2,
+      })) as { result: { output?: string; session?: string; pid?: number } };
 
-    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
-    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
-      centrifugoSandbox,
-      expect.objectContaining({ cwd: "/tmp/project" }),
-    );
-    expect(result.result.session).toBeDefined();
-    expect(result.result.pid).toBe(fakeHandle.pid);
-  });
+      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+        centrifugoSandbox,
+        expect.objectContaining({ cwd: "/tmp/project" }),
+      );
+      if (eligible) {
+        expect(prepare).toHaveBeenCalledWith(centrifugoSandbox);
+        expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+          centrifugoSandbox,
+          expect.objectContaining({
+            envs: expect.objectContaining({
+              AGENT_BROWSER_SESSION: "owned-interactive",
+            }),
+          }),
+        );
+      } else {
+        expect(prepare).not.toHaveBeenCalled();
+        expect(
+          mockCreateCentrifugoPtyHandle.mock.calls[0][1],
+        ).not.toHaveProperty("envs");
+      }
+      expect(result.result.session).toBeDefined();
+      expect(result.result.pid).toBe(fakeHandle.pid);
+    },
+  );
 
   test("exec + interactive=true on Centrifugo sandbox does NOT send initial command via sendInput", async () => {
     const fakeHandle = makeFakeHandle();

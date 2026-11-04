@@ -75,6 +75,10 @@ export class BrowserSessions {
     return !!this.handoffScope;
   }
 
+  hasConnectedChallengeScope(): boolean {
+    return this.enableConnectedChallenges;
+  }
+
   /** Pin a CAPTCHA operation to an already-open browser owned by this run.
    * JavaScript (including any solver response) goes over stdin, never argv,
    * terminal streaming, checkpoint files or the model's tool result.
