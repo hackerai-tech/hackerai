@@ -205,7 +205,7 @@ export function useNextActions(options: Options): NextActionsController {
   ]);
 
   // Synchronous getters protect the gap between an input event and React commit.
-  const canUse = useCallback(() => {
+  const canRetain = useCallback(() => {
     const now = current.current;
     return Boolean(
       keyRef.current &&
@@ -215,10 +215,13 @@ export function useNextActions(options: Options): NextActionsController {
       now.status === "ready" &&
       (!batchRef.current ||
         batchRef.current.messageId === now.latestMessageId) &&
-      now.getInput() === "" &&
       !now.hasAttachments(),
     );
   }, [current, keyRef]);
+  const canUse = useCallback(
+    () => canRetain() && current.current.getInput() === "",
+    [canRetain],
+  );
 
   useEffect(() => {
     accepted.current = null;
@@ -236,16 +239,21 @@ export function useNextActions(options: Options): NextActionsController {
     accepted.current = null;
   }, [options.interruptedTurn, options.chatId]);
 
+  // Draft edits do not cancel or consume a prediction. Ownership/completion
+  // changes still cancel work, and its result never writes into the draft.
+  useEffect(() => () => request.current?.abort(), [key, completedHere]);
+
   useEffect(() => {
     if (!options.input && !submissionInProgress.current)
       accepted.current = null;
     if (options.status === "error") pending.current = null;
     if (!key) return;
-    if (!canUse()) {
+    if (!canRetain()) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Lifecycle changes revoke an already visible async prediction.
       if (batchRef.current || request.current) invalidate();
       return;
     }
+    if (!canUse() || batchRef.current || request.current) return;
     const attemptKey = `${key}:${completedHere ? "generate" : "restore"}`;
     if (attempted.current.has(attemptKey) || consumed(key)) return;
     const controller = new AbortController();
@@ -257,7 +265,7 @@ export function useNextActions(options: Options): NextActionsController {
         if (
           controller.signal.aborted ||
           keyRef.current !== eligibleKey ||
-          !canUse()
+          !canRetain()
         )
           return;
         remember(attempted.current, attemptKey);
@@ -289,7 +297,7 @@ export function useNextActions(options: Options): NextActionsController {
           parsed.data.mode !== current.current.chatMode ||
           controller.signal.aborted ||
           keyRef.current !== eligibleKey ||
-          !canUse() ||
+          !canRetain() ||
           consumed(eligibleKey) ||
           parsed.data.messageId !== current.current.latestMessageId
         )
@@ -302,12 +310,15 @@ export function useNextActions(options: Options): NextActionsController {
     };
     timer = setTimeout(() => void run(), 500);
     const deadline = setTimeout(() => controller.abort(), 18_000);
-    return () => {
-      clearTimeout(timer);
-      clearTimeout(deadline);
-      controller.abort();
-      if (request.current === controller) request.current = null;
-    };
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        clearTimeout(deadline);
+        if (request.current === controller) request.current = null;
+      },
+      { once: true },
+    );
   }, [
     key,
     completedHere,
@@ -318,6 +329,7 @@ export function useNextActions(options: Options): NextActionsController {
     options.input,
     options.latestMessageId,
     canUse,
+    canRetain,
     invalidate,
     current,
     keyRef,

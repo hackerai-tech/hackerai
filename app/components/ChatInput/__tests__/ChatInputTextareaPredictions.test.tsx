@@ -53,7 +53,6 @@ function Harness({ blocked = false }: { blocked?: boolean }) {
         onPredictionExposed={controller.exposed}
         composerFocused
         onDismissPrediction={controller.dismiss}
-        onDraftInteraction={controller.invalidate}
       />
       <button type="button">Next control</button>
     </>
@@ -149,7 +148,7 @@ test("Escape restores the ordinary placeholder and preserves composer focus", as
   expect(send).not.toHaveBeenCalled();
 });
 
-test("Escape and typing dismiss permanently without sending", async () => {
+test("Escape dismisses permanently without sending", async () => {
   const textarea = await setup();
   fireEvent.keyDown(textarea, { key: "Escape" });
   expect(screen.queryByText("Tab")).not.toBeInTheDocument();
@@ -162,13 +161,22 @@ test("Escape and typing dismiss permanently without sending", async () => {
   expect(send).not.toHaveBeenCalled();
 });
 
-test("typing replaces the suggestion and clearing the draft does not revive it", async () => {
+test("typing hides the suggestion and clearing the draft restores it", async () => {
   const textarea = await setup();
   fireEvent.change(textarea, { target: { value: "My own request" } });
   expect(textarea).toHaveValue("My own request");
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   fireEvent.change(textarea, { target: { value: "" } });
-  expect(screen.queryByText("Tab")).toBeNull();
+  expect(textarea).toHaveAttribute("placeholder", suggestions[0]);
+  expect(screen.getByText("Tab")).toBeInTheDocument();
+  expect(
+    jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST"),
+  ).toHaveLength(1);
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
   expect(send).not.toHaveBeenCalled();
 });
 

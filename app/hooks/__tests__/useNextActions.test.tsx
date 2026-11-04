@@ -119,7 +119,6 @@ test.each(["typing", "attachment", "navigation", "new turn", "error"])(
     await settle();
     if (change === "typing") {
       input = "my draft";
-      act(() => result.current.invalidate());
     }
     if (change === "attachment") attachments = true;
     rerender({
@@ -481,4 +480,65 @@ test("destination messages arriving before its saved mode do not consume the des
       .mocked(fetch)
       .mock.calls.filter(([, init]) => init?.method === "DELETE"),
   ).toHaveLength(0);
+});
+
+test("clearing ordinary typing restores the same batch without another request or consumption", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  input = "A different draft";
+  rerender(base());
+  expect(result.current.batch).toBeNull();
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  input = "";
+  rerender(base());
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("an in-flight prediction stays hidden while typing and appears only after the draft is cleared", async () => {
+  let resolve!: (value: ReturnType<typeof response>) => void;
+  jest.mocked(fetch).mockReturnValue(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  const signal = generationCalls()[0][1]?.signal;
+  input = "Keep my work";
+  rerender(base());
+  await act(async () => resolve(response()));
+  expect(signal?.aborted).toBe(false);
+  expect(result.current.batch).toBeNull();
+  expect(input).toBe("Keep my work");
+  expect(setInput).not.toHaveBeenCalled();
+  input = "";
+  rerender(base());
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+});
+
+test("clearing a restored draft can start the first prediction without disturbing the draft", async () => {
+  input = "Saved unfinished draft";
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  input = "";
+  rerender(base());
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  expect(setInput).not.toHaveBeenCalled();
 });

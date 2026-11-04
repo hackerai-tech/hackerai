@@ -1276,7 +1276,6 @@ const ChatInputContent = ({
               onPredictionExposed={nextActions.exposed}
               composerFocused={composerFocused}
               onDismissPrediction={nextActions.dismiss}
-              onDraftInteraction={nextActions.invalidate}
               composerRef={composerTextareaRef}
               draftId={draftId}
               chatMode={chatMode}

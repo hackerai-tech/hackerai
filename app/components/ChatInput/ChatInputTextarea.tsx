@@ -30,7 +30,6 @@ export interface ChatInputTextareaProps {
   onPredictionExposed?: () => void;
   composerFocused?: boolean;
   onDismissPrediction?: () => void;
-  onDraftInteraction?: () => void;
   composerRef?: React.RefObject<HTMLTextAreaElement | null>;
   draftId: string;
   chatMode: ChatMode;
@@ -51,7 +50,6 @@ export function ChatInputTextarea({
   onPredictionExposed,
   composerFocused = false,
   onDismissPrediction,
-  onDraftInteraction,
   composerRef,
   draftId,
   chatMode,
@@ -242,7 +240,6 @@ export function ChatInputTextarea({
           ref={textareaRef}
           value={input}
           onChange={(e) => {
-            onDraftInteraction?.();
             setInput(e.target.value);
           }}
           aria-label={defaultPlaceholder}
