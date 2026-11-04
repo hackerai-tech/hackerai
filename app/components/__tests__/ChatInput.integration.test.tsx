@@ -3076,6 +3076,97 @@ describe("ChatInput - Integration Tests", () => {
     },
   );
 
+  it("selects a goal from the mobile add menu without losing the draft or attachments", async () => {
+    mockIsMobile = true;
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "goal-menu-user" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    mockOnSubmit.mockResolvedValue(true);
+    const file: UploadedFileState = {
+      file: new File(["fixture"], "goal-context.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "goal-context",
+    };
+    render(
+      <TestWrapper>
+        <UploadedFilesSetter files={[file]} label="Attach context" />
+        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
+      </TestWrapper>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Attach context" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Verify the attached file" } });
+    const add = await screen.findByRole("button", {
+      name: "Add files or pursue a goal",
+    });
+    fireEvent.keyDown(add, { key: "Enter" });
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Pursue goal" }),
+    );
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(input).toHaveValue("Verify the attached file");
+    expect(input).toHaveAttribute("placeholder", "Describe your goal");
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Verify the attached file",
+      ),
+    );
+  });
+
+  it.each([
+    { mobile: false, subscription: "pro", chatMode: "agent", enabled: true },
+    { mobile: true, subscription: "free", chatMode: "agent", enabled: true },
+    { mobile: true, subscription: "pro", chatMode: "ask", enabled: true },
+    { mobile: true, subscription: "pro", chatMode: "agent", enabled: false },
+  ] as const)(
+    "keeps the existing attachment action outside eligible mobile Agent: %j",
+    async ({ mobile, subscription, chatMode, enabled }) => {
+      mockIsMobile = mobile;
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "goal-menu-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { subscription, chatMode, isCheckingProPlan: false };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled }),
+      });
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      await act(async () => {});
+      expect(
+        screen.getByRole("button", { name: "Attach files" }),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Add files or pursue a goal" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("selects /goal without sending and submits its objective through goal mode", async () => {
     mockSandboxState = {
       chatMode: "agent",
