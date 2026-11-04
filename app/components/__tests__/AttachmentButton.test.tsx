@@ -24,36 +24,36 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
-it.each(["Camera", "Photos", "Files"])(
-  "opens %s and records goal exposure only once",
-  async (label) => {
-    const onAttachClick = jest.fn();
-    const goalMenu = {
-      active: false,
-      onSelect: jest.fn(),
-      onFocusComposer: jest.fn(),
-    };
-    render(
-      <AttachmentButton onAttachClick={onAttachClick} goalMenu={goalMenu} />,
-    );
-    expect(mockCapture).not.toHaveBeenCalled();
-    const add = screen.getByRole("button", {
-      name: "Add files or pursue a goal",
-    });
-    fireEvent.keyDown(add, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: label }));
-    expect(onAttachClick).toHaveBeenCalledWith(label.toLowerCase());
-    expect(goalMenu.onSelect).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
-    );
-    fireEvent.keyDown(add, { key: "Enter" });
-    await screen.findByRole("menuitem", { name: "Pursue goal" });
-    expect(mockCapture.mock.calls).toEqual([
-      ["agent_goal_exposed", { surface: "composer_plus_menu" }],
-    ]);
-  },
-);
+it.each([
+  ["Camera", "camera"],
+  ["Photos & files", "files"],
+])("opens %s and records goal exposure only once", async (label, source) => {
+  const onAttachClick = jest.fn();
+  const goalMenu = {
+    active: false,
+    onSelect: jest.fn(),
+    onFocusComposer: jest.fn(),
+  };
+  render(
+    <AttachmentButton onAttachClick={onAttachClick} goalMenu={goalMenu} />,
+  );
+  expect(mockCapture).not.toHaveBeenCalled();
+  const add = screen.getByRole("button", {
+    name: "Add files or pursue a goal",
+  });
+  fireEvent.keyDown(add, { key: "Enter" });
+  fireEvent.click(await screen.findByRole("menuitem", { name: label }));
+  expect(onAttachClick).toHaveBeenCalledWith(source);
+  expect(goalMenu.onSelect).not.toHaveBeenCalled();
+  await waitFor(() =>
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+  );
+  fireEvent.keyDown(add, { key: "Enter" });
+  await screen.findByRole("menuitem", { name: "Pursue goal" });
+  expect(mockCapture.mock.calls).toEqual([
+    ["agent_goal_exposed", { surface: "composer_plus_menu" }],
+  ]);
+});
 
 it.each([false, true])(
   "selects or refocuses a goal without duplicate intent (active=%s)",

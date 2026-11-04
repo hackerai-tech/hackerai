@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/popover";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { Camera, Check, Image, Paperclip, Plus } from "lucide-react";
+import { Camera, Check, Paperclip, Plus } from "lucide-react";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
 import {
   DropdownMenu,
@@ -28,7 +28,7 @@ export interface AttachmentButtonProps {
     onSelect: () => void;
     onFocusComposer: () => void;
   };
-  onAttachClick: (source?: "camera" | "photos" | "files") => void;
+  onAttachClick: (source?: "camera" | "files") => void;
   disabled?: boolean;
 }
 
@@ -124,21 +124,12 @@ export const AttachmentButton = ({
           </DropdownMenuItem>
           <DropdownMenuItem
             className="min-h-12 gap-3 rounded-xl px-3 text-base"
-            onSelect={() => onAttachClick("photos")}
-          >
-            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
-              <Image className="size-5" />
-            </span>
-            Photos
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="min-h-12 gap-3 rounded-xl px-3 text-base"
             onSelect={() => onAttachClick("files")}
           >
             <span className="flex size-9 items-center justify-center rounded-full bg-muted">
               <Paperclip className="size-5" />
             </span>
-            Files
+            Photos &amp; files
           </DropdownMenuItem>
           <DropdownMenuItem
             className="min-h-12 gap-3 rounded-xl px-3 text-base"

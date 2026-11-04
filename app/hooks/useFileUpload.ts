@@ -1210,9 +1210,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     [applyUploadedFileUpdate, uploadFileToS3],
   );
 
-  const handleAttachClick = (
-    source: "camera" | "photos" | "files" = "files",
-  ) => {
+  const handleAttachClick = (source: "camera" | "files" = "files") => {
     const isTauri = isTauriEnvironment();
     logLocalAttachmentDebug("attach-click", {
       isTauri,

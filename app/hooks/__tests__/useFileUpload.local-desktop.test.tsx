@@ -115,7 +115,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
     global.fetch = originalFetch;
   });
 
-  it("opens camera, photos, and unrestricted files without leaking picker settings", () => {
+  it("opens camera and unrestricted photos/files without leaking picker settings", () => {
     (isTauriEnvironment as jest.Mock).mockReturnValue(false);
     globalState.sandboxPreference = "cloud";
     const { result } = renderHook(() => useFileUpload("agent"));
@@ -133,13 +133,13 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
     act(() => {
       result.current.handleAttachClick("camera");
-      result.current.handleAttachClick("photos");
+      result.current.handleAttachClick("files");
       result.current.handleAttachClick();
     });
 
     expect(selections).toEqual([
       { accept: "image/*", capture: "environment", multiple: false },
-      { accept: "image/*", capture: null, multiple: true },
+      { accept: "", capture: null, multiple: true },
       { accept: "", capture: null, multiple: true },
     ]);
     expect(pickLocalFiles).not.toHaveBeenCalled();
