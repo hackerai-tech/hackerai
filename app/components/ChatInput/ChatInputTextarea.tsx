@@ -93,10 +93,10 @@ export function ChatInputTextarea({
     };
     const observer = new IntersectionObserver(
       ([entry]) => {
-        visible = entry.isIntersecting && entry.intersectionRatio >= 0.5;
+        visible = entry.isIntersecting && entry.intersectionRatio >= 1;
         record();
       },
-      { threshold: 0.5 },
+      { threshold: 1 },
     );
     observer.observe(textareaRef.current);
     document.addEventListener("visibilitychange", record);

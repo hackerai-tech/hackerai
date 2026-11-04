@@ -187,6 +187,8 @@ test("exposure waits for the inline placeholder to be visible and is deduplicate
       ),
     );
   observe(0.2);
+  observe(0.5);
+  observe(0.99);
   expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
   observe(1);
   observe(1);
