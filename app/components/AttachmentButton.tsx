@@ -6,24 +6,42 @@ import {
 } from "@/components/ui/popover";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { Plus } from "lucide-react";
+import { Check, Paperclip, Plus } from "lucide-react";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useEffect, useRef, useState } from "react";
 import { redirectToPricing } from "../hooks/usePricingDialog";
-import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureUpgradeCtaImpression,
+} from "@/lib/analytics/client";
 
-interface AttachmentButtonProps {
+export interface AttachmentButtonProps {
+  goalMenu?: {
+    active: boolean;
+    onSelect: () => void;
+    onFocusComposer: () => void;
+  };
   onAttachClick: () => void;
   disabled?: boolean;
 }
 
 export const AttachmentButton = ({
   onAttachClick,
+  goalMenu,
   disabled = false,
 }: AttachmentButtonProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();
   const [popoverOpen, setPopoverOpen] = useState(false);
   const capturedImpressionRef = useRef(false);
+  const goalExposureRef = useRef(false);
+  const focusComposerOnCloseRef = useRef(false);
 
   useEffect(() => {
     if (!popoverOpen || capturedImpressionRef.current) return;
@@ -56,6 +74,83 @@ export const AttachmentButton = ({
       cta_text: "Upgrade now",
     });
   };
+
+  if (goalMenu && subscription !== "free" && !isCheckingProPlan) {
+    return (
+      <DropdownMenu
+        onOpenChange={(open) => {
+          if (!open || goalExposureRef.current) return;
+          goalExposureRef.current = true;
+          captureAuthenticatedEvent("agent_goal_exposed", {
+            surface: "composer_plus_menu",
+          });
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"
+            aria-label="Add files or pursue a goal"
+            data-testid="composer-plus-menu-button"
+            disabled={disabled}
+          >
+            <Plus className="size-5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          sideOffset={8}
+          collisionPadding={12}
+          className="w-60 rounded-2xl p-2"
+          data-chat-input-agent-menu
+          onCloseAutoFocus={(event) => {
+            if (!focusComposerOnCloseRef.current) return;
+            focusComposerOnCloseRef.current = false;
+            event.preventDefault();
+            goalMenu.onFocusComposer();
+          }}
+        >
+          <DropdownMenuItem
+            className="min-h-12 gap-3 rounded-xl px-3 text-base"
+            onSelect={onAttachClick}
+          >
+            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+              <Paperclip className="size-5" />
+            </span>
+            Files
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="min-h-12 gap-3 rounded-xl px-3 text-base"
+            onSelect={() => {
+              focusComposerOnCloseRef.current = true;
+              if (!goalMenu.active) {
+                captureAuthenticatedEvent("agent_goal_selected", {
+                  surface: "composer_plus_menu",
+                });
+                goalMenu.onSelect();
+              }
+              // Keep focus in the tap gesture for mobile software keyboards.
+              goalMenu.onFocusComposer();
+            }}
+          >
+            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+              <GoalTargetIcon className="size-5" />
+            </span>
+            Pursue goal
+            {goalMenu.active && (
+              <>
+                <Check className="ml-auto size-4" aria-hidden="true" />
+                <span className="sr-only">, on</span>
+              </>
+            )}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
 
   // If user has pro plan or we're checking, show normal tooltip behavior
   if (subscription !== "free" || isCheckingProPlan) {
