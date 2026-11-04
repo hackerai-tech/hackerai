@@ -24,6 +24,8 @@ export function verifyBrowserResumeTargets() {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     AGENT_BROWSER_SESSION: "default",
+    AGENT_BROWSER_SOCKET_DIR: `${root}/sockets`,
+    AGENT_BROWSER_CONFIG: `${root}/config.json`,
   };
   const lifecycle = (action: "prepare" | "resume" | "cleanup") => {
     const result = spawnSync(
@@ -32,9 +34,12 @@ export function verifyBrowserResumeTargets() {
     );
     assert.equal(result.status, 0, result.stderr);
   };
-  const run = (args: string[]) =>
+  const run = (
+    args: string[],
+    overrides: Record<string, string | undefined> = {},
+  ) =>
     spawnSync(`${root.replace("/dev/shm/", "/tmp/")}/bin/agent-browser`, args, {
-      env,
+      env: { ...env, ...overrides },
       encoding: "utf8",
       timeout: 5000,
     });
@@ -57,6 +62,10 @@ export function verifyBrowserResumeTargets() {
       ["--namespace=other"],
       ["--config", "/tmp/other-config.json"],
       ["--config=/tmp/other-config.json"],
+      ["--debug"],
+      ["--idle-timeout", "1s"],
+      ["--action-policy", "/tmp/other-policy.json"],
+      ["--engine", "lightpanda"],
     ]) {
       for (const args of [
         [...options, "snapshot", "-i"],
@@ -69,9 +78,22 @@ export function verifyBrowserResumeTargets() {
         rejected++;
       }
     }
+    for (const overrides of [
+      { AGENT_BROWSER_NAMESPACE: "other" },
+      { AGENT_BROWSER_SOCKET_DIR: "/tmp/other-sockets" },
+      { AGENT_BROWSER_CONFIG: "/tmp/other-config.json" },
+      { AGENT_BROWSER_SOCKET_DIR: undefined },
+      { AGENT_BROWSER_CONFIG: undefined },
+    ]) {
+      writeFileSync(ledger, "");
+      assert.equal(run(["snapshot", "-i"], overrides).status, 75);
+      assert.equal(existsSync(`${root}/verify-required`), true);
+      assert.equal(readFileSync(ledger, "utf8"), "");
+      rejected++;
+    }
     assert.notEqual(run(["--session", "other", "snapshot", "-i"]).status, 0);
     assert.equal(existsSync(`${root}/verify-required`), true);
-    assert.equal(run(["snapshot", "-i"]).status, 0);
+    assert.equal(run(["--json", "snapshot", "-i", "--compact"]).status, 0);
     assert.equal(existsSync(`${root}/verify-required`), false);
     assert.equal(readFileSync(`${root}/active-session`, "utf8"), "kept");
     // Once the original browser has been inspected, ordinary options work again.

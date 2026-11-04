@@ -92,23 +92,15 @@ active.write_text(name)
 verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]
-    if any(arg in ('--cdp', '--auto-connect', '--provider', '-p', '--profile', '--namespace', '--config') or arg.startswith(('--cdp=', '--auto-connect=', '--provider=', '--profile=', '--namespace=', '--config=')) for arg in args):
-        print('Browser handoff verification must inspect the current browser. Run agent-browser snapshot -i without connection, profile, namespace or config options.', file=sys.stderr)
-        sys.exit(75)
-    command = None
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-        elif arg == '--session':
-            skip_next = True
-        elif arg.startswith('--session=') or arg.startswith('-'):
-            continue
-        else:
-            command = arg
-            break
-    if command != 'snapshot':
-        print('Browser handoff resumed; this command was not executed. The browser is still open and user input is preserved. Run agent-browser snapshot -i first in this same session, without prepending get url or open. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
+    # Only presentation flags are allowed on this one required snapshot. Other
+    # global options can redirect the CLI or restart its existing daemon.
+    snapshot_args = args[2:]  # --session and its normalized name are above.
+    routing_changed = bool(os.environ.get('AGENT_BROWSER_NAMESPACE')) or any(
+        os.environ.get(key) != str(root / leaf)
+        for key, leaf in (('AGENT_BROWSER_SOCKET_DIR', 'sockets'), ('AGENT_BROWSER_CONFIG', 'config.json')))
+    if routing_changed or snapshot_args.count('snapshot') != 1 or any(
+        arg not in ('snapshot', '-i', '--interactive', '-c', '--compact', '--json') for arg in snapshot_args):
+        print('Browser handoff resumed; this command was not executed. Run agent-browser snapshot -i first in this same session with its original environment. Only interactive, compact and JSON output flags are supported until verification finishes. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
         sys.exit(75)
     result = __import__('subprocess').run([%r, *args], close_fds=True)
     if result.returncode == 0:
