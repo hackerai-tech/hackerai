@@ -6,6 +6,11 @@ const mockSetActiveTriggerRun = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockLoggerWarn = jest.fn();
+const mockPauseGoal = jest.fn();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ mutation: mockPauseGoal }),
+}));
+jest.mock("@/lib/goals/server", () => ({ goalServiceKey: () => "synthetic" }));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -97,6 +102,36 @@ describe("agent cancel route", () => {
     );
   });
 
+  it("still cancels the worker and clears its lease if goal pausing fails", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockPauseGoal.mockRejectedValueOnce(
+      new Error("Storage unavailable") as never,
+    );
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(await response.json()).toEqual({ canceled: true, runId: "run-1" });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-1",
+      }),
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: "agent_cancel_goal_pause_failed",
+      }),
+    );
+  });
+
   it("logs a distinct reason when a persisted chat belongs to another user", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
     mockGetChatById.mockResolvedValue({ user_id: "user-2" } as never);
@@ -135,6 +170,15 @@ describe("agent cancel route", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockPauseGoal).toHaveBeenCalledWith(expect.anything(), {
+      serviceKey: "synthetic",
+      chatId: "chat-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+    expect(mockPauseGoal.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelAgentTriggerRun.mock.invocationCallOrder[0],
+    );
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
       chatId: "chat-1",
@@ -179,6 +223,7 @@ describe("agent cancel route", () => {
         chat_id: "chat-1",
       }),
     );
+    expect(mockPauseGoal).not.toHaveBeenCalled();
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
@@ -243,6 +288,7 @@ describe("cancellation timeout diagnostics", () => {
     "read_request",
     "authenticate",
     "get_chat",
+    "pause_goal",
     "close_approval_session",
     "cancel_trigger_run",
     "clear_active_run",
@@ -261,6 +307,8 @@ describe("cancellation timeout diagnostics", () => {
       mockGetUserIDAndPro.mockReturnValueOnce(pending.promise);
     if (stage === "get_chat")
       mockGetChatById.mockReturnValueOnce(pending.promise);
+    if (stage === "pause_goal")
+      mockPauseGoal.mockReturnValueOnce(pending.promise);
     if (stage === "close_approval_session")
       mockCloseAgentApprovalSession.mockReturnValueOnce(pending.promise);
     if (stage === "cancel_trigger_run")
@@ -282,6 +330,7 @@ describe("cancellation timeout diagnostics", () => {
       elapsed_ms: 10_000,
     });
     const authorized = [
+      "pause_goal",
       "close_approval_session",
       "cancel_trigger_run",
       "clear_active_run",

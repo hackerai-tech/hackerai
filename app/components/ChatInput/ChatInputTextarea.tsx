@@ -31,9 +31,11 @@ export interface ChatInputTextareaProps {
   composerFocused?: boolean;
   onDismissPrediction?: () => void;
   onDraftInteraction?: () => void;
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>;
   draftId: string;
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
+  onCommandKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled?: boolean;
   minRows?: number;
   placeholder?: string;
@@ -50,9 +52,11 @@ export function ChatInputTextarea({
   composerFocused = false,
   onDismissPrediction,
   onDraftInteraction,
+  composerRef,
   draftId,
   chatMode,
   onEnterSubmit,
+  onCommandKeyDown,
   disabled = false,
   minRows = 1,
   placeholder,
@@ -67,7 +71,8 @@ export function ChatInputTextarea({
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const localTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = composerRef ?? localTextareaRef;
   const exposed = useCommittedRef(onPredictionExposed);
   const activePrediction = input === "" && !disabled ? prediction : undefined;
   const defaultPlaceholder =
@@ -99,7 +104,7 @@ export function ChatInputTextarea({
       observer.disconnect();
       document.removeEventListener("visibilitychange", record);
     };
-  }, [activePrediction, exposed]);
+  }, [activePrediction, exposed, textareaRef]);
 
   const acceptPrediction = () => {
     if (!onAcceptPrediction?.()) return false;
@@ -117,7 +122,7 @@ export function ChatInputTextarea({
     if (autoFocus && !window.matchMedia("(max-width: 767px)").matches) {
       textareaRef.current?.focus();
     }
-  }, [autoFocus]);
+  }, [autoFocus, textareaRef]);
 
   // Load draft when draftId changes (chat switch or mount)
   useLayoutEffect(() => {
@@ -226,6 +231,7 @@ export function ChatInputTextarea({
     handlePasteEvent,
     handlePastedTextAttachment,
     setInput,
+    textareaRef,
     subscription,
   ]);
 
@@ -252,6 +258,8 @@ export function ChatInputTextarea({
           disabled={disabled}
           data-testid="chat-input"
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
+              return;
             if (
               activePrediction &&
               getInput() === "" &&
@@ -272,6 +280,8 @@ export function ChatInputTextarea({
                 return;
               }
             }
+            onCommandKeyDown?.(e);
+            if (e.defaultPrevented) return;
             if (
               e.key === "Enter" &&
               !e.shiftKey &&

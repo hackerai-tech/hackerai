@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -24,6 +25,7 @@ import {
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -61,7 +63,7 @@ const unavailable = (error: unknown) => {
   return json({ state: "disconnected" }, 503);
 };
 
-export async function GET(
+export const GET = withServiceQueryRecovery(async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
@@ -99,7 +101,7 @@ export async function GET(
   } catch (error) {
     return unavailable(error);
   }
-}
+});
 
 type BrowserAction = {
   action?: unknown;

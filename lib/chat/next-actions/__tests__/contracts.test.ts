@@ -258,6 +258,35 @@ test("rejects drafts that pretend the user supplied new evidence and keeps a usa
   ).toEqual([]);
 });
 
+test("rejects composer commands while retaining ordinary path references", () => {
+  const sources = [
+    {
+      id: "answer",
+      role: "assistant" as const,
+      text: "The existing checklist still needs explanation.",
+    },
+  ];
+  const suggestion = (text: string) => ({
+    text,
+    sourceMessageId: "answer",
+    evidenceQuote: "existing checklist still needs explanation",
+  });
+  for (const text of [
+    "/goal pause",
+    "/clear",
+    "Explain the checklist /goal",
+    "Explain /GOAL the checklist",
+  ]) {
+    expect(
+      validateGroundedSuggestions({ suggestions: [suggestion(text)] }, sources),
+    ).toEqual([]);
+  }
+  const text = "Explain the checklist in /goal/notes.txt.";
+  expect(
+    validateGroundedSuggestions({ suggestions: [suggestion(text)] }, sources),
+  ).toEqual([text]);
+});
+
 test("bounds history and excludes reasoning, tool inputs, and unrelated tool outputs", () => {
   const messages = Array.from({ length: 20 }, (_, i) => ({
     id: `m${i}`,

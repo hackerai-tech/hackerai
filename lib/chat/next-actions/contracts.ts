@@ -155,6 +155,9 @@ export function validateGroundedSuggestions(
     )
       return [];
     const text = item.text.replace(/\s+/g, " ").trim();
+    // Editable predictions must not become composer control commands on send.
+    // A standalone /goal token also selects goal mode inside an ordinary draft.
+    if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
     // A real evidence quote does not make an invented user update true. Drop
     // the observed placeholder/completed-action forms instead of making Tab
     // insert a draft that falsely claims new evidence or work was supplied.

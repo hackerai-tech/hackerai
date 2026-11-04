@@ -959,9 +959,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFilesRef.current[indexToRemove];
-    if (!uploadedFile || removingFilesRef.current.has(uploadedFile.file))
+    if (
+      !uploadedFile ||
+      uploadedFile.removing ||
+      removingFilesRef.current.has(uploadedFile.file)
+    )
       return;
     removingFilesRef.current.add(uploadedFile.file);
+    updateUploadedFile(uploadedFile.file, { removing: true });
     const matchesAttachment = (item: UploadedFileState) =>
       item.file === uploadedFile.file ||
       (uploadedFile.generatedTextAttachment !== undefined &&
@@ -1029,6 +1034,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       );
     } finally {
       removingFilesRef.current.delete(uploadedFile.file);
+      const remainingFile = uploadedFilesRef.current.find(matchesAttachment);
+      if (remainingFile)
+        updateUploadedFile(remainingFile.file, { removing: false });
     }
   };
 

@@ -42,6 +42,28 @@ describe("ProcessRunner", () => {
     jest.useRealTimers();
   });
 
+  it("drops PTY command identity and keeps its home out of the root client", () => {
+    const proc = makePtyProcess();
+    mockSpawn.mockReturnValue(proc);
+    const runner = new ProcessRunner({
+      uid: 65534,
+      gid: 65534,
+      home: "/home/hackerai-agent",
+    });
+    runner.run("isolated", "id");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        uid: 65534,
+        gid: 65534,
+        env: expect.objectContaining({ HOME: "/home/hackerai-agent" }),
+      }),
+    );
+    proc.__exit();
+    runner.dispose();
+  });
+
   it("has no flush timer while idle and batches from the first output chunk", () => {
     const proc = makePtyProcess();
     mockSpawn.mockReturnValue(proc);

@@ -152,7 +152,11 @@ async function callCreateBillingPortalSession(ctx: any) {
 
 async function callDeductWithAutoReload(
   ctx: any,
-  args: { userId: string; amountPoints: number },
+  args: {
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { deductWithAutoReload } = await import("../extraUsageActions");
   return (deductWithAutoReload as any).handler(ctx, {
@@ -477,6 +481,59 @@ describe("deductWithAutoReload", () => {
       id: "in_auto",
       deleted: true,
     } as never);
+  });
+
+  it("releases the reload executor if receipt linkage fails before Stripe", async () => {
+    const failure = new Error("deletion fence started");
+    const ctx: any = {
+      runQuery: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+        balanceDollars: 0,
+        balancePoints: 0,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdPoints: 10000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      }),
+      runMutation: jest.fn(async (_ref: unknown, args: any) => {
+        if ("auto_reload_operation_id" in args) throw failure;
+        if ("operation_id" in args) return { claimed: true, result: null };
+        if ("candidateOperationId" in args)
+          return {
+            status: "operation",
+            operationId: "reload-op",
+            executorId: "executor",
+            amountDollars: 15,
+            claimed: true,
+            paymentAllowed: true,
+          };
+        if ("outcome" in args) return true;
+        return {
+          success: false,
+          newBalancePoints: 0,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+        };
+      }),
+    };
+    await expect(
+      callDeductWithAutoReload(ctx, {
+        userId: "user_member",
+        amountPoints: 10,
+        settlementOperationId: "settlement-link-failure",
+      }),
+    ).rejects.toBe(failure);
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operationId: "reload-op",
+        executorId: "executor",
+        outcome: "executor_released",
+      }),
+    );
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
   });
 
   it("does not charge auto-reload while the account is suspended", async () => {

@@ -379,6 +379,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig,
   organizationId,
   usageSettlementId,
+  settlementOperationId,
 }: {
   monthly: MonthlyLimiter;
   userId: string;
@@ -387,6 +388,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig?: ExtraUsageConfig;
   organizationId?: string;
   usageSettlementId?: string;
+  settlementOperationId?: string;
 }): Promise<UsageDeductionResult> => {
   const normalizedAdditionalCost = nonNegativePoints(additionalCostPoints);
   if (normalizedAdditionalCost <= 0) return emptyUsageDeductionResult();
@@ -458,11 +460,13 @@ const deductAdditionalUsagePoints = async ({
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               )
             : await deductFromBalance(
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               );
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
@@ -953,6 +957,7 @@ export const checkTokenBucketLimit = async (
     };
   }
 
+  let admissionOperationId: string | undefined;
   try {
     // For team users: detect new bucket so we can apply seat debt after creation
     if (subscription === "team" && !organizationId) {
@@ -1031,7 +1036,11 @@ export const checkTokenBucketLimit = async (
       return new ChatSDKError(
         "rate_limit:chat",
         `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`,
-        limitMetadata(reset, "monthly_exhausted"),
+        limitMetadata(reset, "monthly_exhausted", {
+          ...(admissionOperationId && {
+            extraUsageAdmissionOperationId: admissionOperationId,
+          }),
+        }),
       );
     };
 
@@ -1042,6 +1051,7 @@ export const checkTokenBucketLimit = async (
       result: { remaining: number; reset: number },
       pointsDeducted: number,
       extraUsagePointsDeducted?: number,
+      extraUsageAdmissionOperationId?: string,
     ): RateLimitInfo => ({
       remaining: result.remaining,
       resetTime: new Date(result.reset),
@@ -1052,6 +1062,7 @@ export const checkTokenBucketLimit = async (
         resetTime: new Date(result.reset),
       },
       pointsDeducted,
+      ...(extraUsageAdmissionOperationId && { extraUsageAdmissionOperationId }),
       ...(extraUsagePointsDeducted !== undefined && {
         extraUsagePointsDeducted,
       }),
@@ -1097,13 +1108,21 @@ export const checkTokenBucketLimit = async (
         // Team users draw from the org's shared pool with per-member caps;
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
+        admissionOperationId = crypto.randomUUID();
         const deductResult = isTeamPool
           ? await deductFromTeamBalance(
               organizationId!,
               userId,
               extraUsageShortfall,
+              undefined,
+              admissionOperationId,
             )
-          : await deductFromBalance(userId, extraUsageShortfall);
+          : await deductFromBalance(
+              userId,
+              extraUsageShortfall,
+              undefined,
+              admissionOperationId,
+            );
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -1114,7 +1133,12 @@ export const checkTokenBucketLimit = async (
           // subscription debit to validate, so that failed peek must not block
           // an otherwise successful paid request.
           if (bucketDeduct <= 0) {
-            return buildResult(monthlyCheck, 0, extraUsageShortfall);
+            return buildResult(
+              monthlyCheck,
+              0,
+              extraUsageShortfall,
+              admissionOperationId,
+            );
           }
 
           const monthlyResult = await monthly.limiter.limit(monthly.key, {
@@ -1141,7 +1165,12 @@ export const checkTokenBucketLimit = async (
             throw monthlyLimitError(monthlyResult.reset);
           }
 
-          return buildResult(monthlyResult, bucketDeduct, extraUsageShortfall);
+          return buildResult(
+            monthlyResult,
+            bucketDeduct,
+            extraUsageShortfall,
+            admissionOperationId,
+          );
         }
 
         // Deduction failed - check why
@@ -1252,10 +1281,21 @@ export const checkTokenBucketLimit = async (
 
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
-    if (error instanceof ChatSDKError) throw error;
+    if (error instanceof ChatSDKError) {
+      if (admissionOperationId) {
+        error.metadata = {
+          ...error.metadata,
+          extraUsageAdmissionOperationId: admissionOperationId,
+        };
+      }
+      throw error;
+    }
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+      admissionOperationId
+        ? { extraUsageAdmissionOperationId: admissionOperationId }
+        : undefined,
     );
   }
 };
@@ -1271,6 +1311,7 @@ export const deductUsageDelta = async (
   extraUsageConfig?: ExtraUsageConfig,
   organizationId?: string,
   usageSettlementId?: string,
+  settlementSequence?: number,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -1296,6 +1337,10 @@ export const deductUsageDelta = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId:
+        usageSettlementId && settlementSequence !== undefined
+          ? `wallet-v1:${usageSettlementId}:step:${settlementSequence}`
+          : undefined,
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
@@ -1533,6 +1578,9 @@ export const deductUsage = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId: usageSettlementId
+        ? `wallet-v1:${usageSettlementId}:final`
+        : undefined,
     });
     lastKnownDeductionResult = buildDeductionResult(
       deltaResult.includedPointsDeducted,

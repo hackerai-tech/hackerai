@@ -5,9 +5,38 @@ import {
   ComposerStateProvider,
   useComposerActions,
   useComposerInput,
+  useComposerGoalMode,
 } from "../ComposerState";
 
 describe("ComposerStateProvider", () => {
+  it("keeps goal mode across responsive remounts and clears it when exiting", () => {
+    function Draft({ id }: { id: string }) {
+      const [enabled, setEnabled] = useComposerGoalMode(id);
+      return (
+        <>
+          <output>{enabled ? "Goal mode" : "Normal message"}</output>
+          <button onClick={() => setEnabled(true)}>Edit goal</button>
+          <button onClick={() => setEnabled(false)}>Exit goal</button>
+        </>
+      );
+    }
+    const ui = (key: string, id = "chat") => (
+      <ComposerStateProvider>
+        <Draft key={key} id={id} />
+      </ComposerStateProvider>
+    );
+    const { rerender } = render(ui("mobile"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit goal" }));
+    rerender(ui("desktop"));
+    expect(screen.getByRole("status")).toHaveTextContent("Goal mode");
+    rerender(ui("desktop", "other-chat"));
+    expect(screen.getByRole("status")).toHaveTextContent("Normal message");
+    rerender(ui("desktop"));
+    fireEvent.click(screen.getByRole("button", { name: "Exit goal" }));
+    rerender(ui("mobile"));
+    expect(screen.getByRole("status")).toHaveTextContent("Normal message");
+  });
+
   it("updates input subscribers without rerendering action-only consumers", () => {
     const actionConsumerRendered = jest.fn();
     const inputConsumerRendered = jest.fn();

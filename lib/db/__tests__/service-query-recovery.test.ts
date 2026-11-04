@@ -15,11 +15,32 @@ import { verifyServiceArgs } from "../service-proof";
 jest.mock("@trigger.dev/sdk", () => ({ tasks: { middleware: jest.fn() } }));
 jest.mock("next/server", () => ({
   NextResponse: {
-    json: (body: unknown) => ({ status: 200, json: async () => body }),
+    json: (body: unknown, init?: { status?: number }) => ({
+      status: init?.status ?? 200,
+      json: async () => body,
+    }),
   },
 }));
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserID: jest.fn().mockResolvedValue("owner"),
+  getUserIDAndPro: jest.fn().mockResolvedValue({
+    userId: "owner",
+    organizationId: "fixture-org",
+    subscription: "pro",
+  }),
+}));
+jest.mock("server-only", () => ({}), { virtual: true });
+jest.mock("@/lib/cloud-recovery/service", () => ({
+  recoveryView: jest.fn().mockResolvedValue({ status: "none" }),
+  confirmRecovery: jest.fn(),
+  reopenRecovery: jest.fn(),
+}));
+jest.mock("@/lib/cloud-recovery/store", () => ({ failConsent: jest.fn() }));
+jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  BrowserPreviewUnavailable: class extends Error {},
+  connectBrowserSandbox: jest.fn().mockResolvedValue({}),
+  getActiveBrowserSessionName: jest.fn().mockResolvedValue("default"),
+  captureBrowserFrame: jest.fn().mockResolvedValue({ image: "fixture-frame" }),
 }));
 jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("synthetic"),
@@ -487,4 +508,131 @@ it("recovers the actual presence route's connection read and returns its result"
       else process.env[name] = value;
     }
   }
+});
+
+describe("read-only browser and recovery GET requests", () => {
+  let viewerGet: typeof import("@/app/api/agent/browser/[sessionId]/route").GET;
+  let recoveryGet: typeof import("@/app/api/sandbox/recovery/route").GET;
+  let restoreClientUrl: string;
+  const savedEnv = {
+    url: process.env.NEXT_PUBLIC_CONVEX_URL,
+    key: process.env.CONVEX_SERVICE_ROLE_KEY,
+    vercel: process.env.VERCEL_ENV,
+    environment: process.env.HACKERAI_ENVIRONMENT,
+  };
+  const sessionId = "a".repeat(32);
+  const readers = [
+    {
+      name: "browser viewer",
+      functionName: "browserHandoffs:getForBackend",
+      value: { sessionId, state: "agent" },
+      expected: { state: "agent", frame: { image: "fixture-frame" } },
+      failureStatus: 503,
+      deniedValue: null,
+      deniedStatus: 404,
+      call: (request: NextRequest) =>
+        viewerGet(request, { params: Promise.resolve({ sessionId }) }),
+    },
+    {
+      name: "recovery status",
+      functionName: "userSuspensions:getActiveByUser",
+      value: null,
+      expected: { status: "none" },
+      failureStatus: 409,
+      deniedValue: {
+        category: "policy",
+        source: "manual",
+        source_id: "fixture",
+      },
+      deniedStatus: 403,
+      call: (request: NextRequest) => recoveryGet(request),
+    },
+  ];
+  beforeAll(async () => {
+    const { getConvexUrl } = await import("../convex-client");
+    restoreClientUrl = getConvexUrl();
+    process.env.NEXT_PUBLIC_CONVEX_URL = deployment;
+    process.env.CONVEX_SERVICE_ROLE_KEY = secret;
+    process.env.VERCEL_ENV = "preview";
+    process.env.HACKERAI_ENVIRONMENT = "preview";
+    viewerGet = (await import("@/app/api/agent/browser/[sessionId]/route")).GET;
+    recoveryGet = (await import("@/app/api/sandbox/recovery/route")).GET;
+  });
+  afterAll(async () => {
+    const { setConvexUrl } = await import("../convex-client");
+    setConvexUrl(restoreClientUrl);
+    for (const [name, value] of Object.entries({
+      NEXT_PUBLIC_CONVEX_URL: savedEnv.url,
+      CONVEX_SERVICE_ROLE_KEY: savedEnv.key,
+      VERCEL_ENV: savedEnv.vercel,
+      HACKERAI_ENVIRONMENT: savedEnv.environment,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  const response = (value: unknown) =>
+    new Response(JSON.stringify({ status: "success", value, logLines: [] }));
+  async function call(
+    reader: (typeof readers)[number],
+    signal = new AbortController().signal,
+  ) {
+    // Give each request a client bound to that test's transport, as a fresh worker would.
+    const { setConvexUrl } = await import("../convex-client");
+    setConvexUrl(deployment);
+    return reader.call({ signal } as NextRequest);
+  }
+  it.each(readers)(
+    "recovers the $name SDK read and preserves request context",
+    async (reader) => {
+      globalThis.fetch = jest
+        .fn()
+        .mockRejectedValueOnce(reset())
+        .mockResolvedValueOnce(response(reader.value));
+      const result = await call(reader);
+      expect(result.status).toBe(200);
+      expect(await result.json()).toMatchObject(reader.expected);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      for (const [_url, init] of (globalThis.fetch as jest.Mock).mock.calls) {
+        const body = JSON.parse(init.body);
+        expect(body.path).toBe(reader.functionName);
+        expect(body.args[0].userId).toBe("owner");
+        if (reader.name === "browser viewer")
+          expect(body.args[0].sessionId).toBe(sessionId);
+      }
+    },
+  );
+  it.each(readers)(
+    "keeps the $name denial after a recovered transport",
+    async (reader) => {
+      globalThis.fetch = jest
+        .fn()
+        .mockRejectedValueOnce(reset())
+        .mockResolvedValueOnce(response(reader.deniedValue));
+      expect((await call(reader)).status).toBe(reader.deniedStatus);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(readers)(
+    "preserves the $name failure after one exhausted retry",
+    async (reader) => {
+      globalThis.fetch = jest.fn().mockRejectedValue(reset());
+      expect((await call(reader)).status).toBe(reader.failureStatus);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each(readers)(
+    "does not retry the $name after its request is canceled",
+    async (reader) => {
+      const stop = new AbortController();
+      globalThis.fetch = jest.fn(async () => {
+        stop.abort();
+        throw reset();
+      });
+      expect((await call(reader, stop.signal)).status).toBe(
+        reader.failureStatus,
+      );
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    },
+  );
 });

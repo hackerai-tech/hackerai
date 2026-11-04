@@ -1,3 +1,9 @@
+import {
+  settlementIdentityFields,
+  walletActionResult,
+  walletDebitResult,
+} from "./lib/settlementReceiptValidators";
+import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
@@ -247,6 +253,8 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
+
   // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
   // Normal chat/account deletion still cleans these records. No bulk migration.
   engagement_scopes: defineTable({
@@ -446,6 +454,12 @@ export default defineSchema({
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
     generation_started_at: v.optional(v.number()),
+    goal: v.optional(
+      v.object({
+        sent: v.optional(v.boolean()),
+        achievedElapsedMs: v.optional(v.number()),
+      }),
+    ),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     trigger_run_id: v.optional(v.string()),
@@ -1351,8 +1365,33 @@ export default defineSchema({
     .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
+  // Immutable financial operation identities; pending actions have no automatic takeover.
+  usage_settlement_operations: defineTable({
+    ...settlementIdentityFields,
+    status: v.union(v.literal("pending"), v.literal("completed")),
+    created_at: v.number(),
+    completed_at: v.optional(v.number()),
+    result: v.optional(walletActionResult),
+    auto_reload_operation_ids: v.optional(v.array(v.string())),
+  })
+    .index("by_operation_id", ["operation_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_usage_settlement_id", ["usage_settlement_id"]),
+  usage_settlement_debits: defineTable({
+    ...settlementIdentityFields,
+    sequence: v.number(),
+    outcome: v.union(v.literal("applied"), v.literal("not_applied")),
+    previous_balance_points: v.union(v.number(), v.null()),
+    new_balance_points: v.union(v.number(), v.null()),
+    created_at: v.number(),
+    result: walletDebitResult,
+  })
+    .index("by_operation_id_and_sequence", ["operation_id", "sequence"])
+    .index("by_user_id", ["user_id"]),
+
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    admission_operation_id: v.optional(v.string()),
     usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
@@ -1388,6 +1427,7 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_outcome_unknown: v.optional(v.boolean()),
     usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
