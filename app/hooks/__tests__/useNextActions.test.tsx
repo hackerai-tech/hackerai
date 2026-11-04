@@ -405,3 +405,80 @@ test("navigating to a chat with a different mode does not consume its saved batc
       .mock.calls.filter(([, init]) => init?.method === "DELETE"),
   ).toHaveLength(0);
 });
+
+test("saved mode initialization does not consume a batch while Ask resolves to Agent", async () => {
+  const initial = {
+    ...base(),
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+    modeReady: false,
+  };
+  jest.mocked(fetch).mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ ...batch, mode: "agent" }),
+  } as Response);
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: initial,
+  });
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  rerender({ ...initial, chatMode: "agent", modeReady: true });
+  await settle();
+  expect(result.current.batch?.mode).toBe("agent");
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
+  expect(JSON.parse(String(generationCalls()[0][1]?.body)).restoreOnly).toBe(
+    true,
+  );
+  rerender({ ...initial, chatMode: "ask", modeReady: true });
+  expect(result.current.batch).toBeNull();
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(1);
+});
+
+test("destination messages arriving before its saved mode do not consume the destination batch", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: {
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+      modeReady: true,
+    },
+  });
+  await settle();
+  const target = {
+    ...base(),
+    chatId: "target",
+    latestMessageId: "target-answer",
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+    modeReady: false,
+  };
+  rerender(target);
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  jest.mocked(fetch).mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...batch,
+      mode: "agent",
+      messageId: "target-answer",
+    }),
+  } as Response);
+  rerender({ ...target, chatMode: "agent", modeReady: true });
+  await settle();
+  expect(result.current.batch?.messageId).toBe("target-answer");
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
+});

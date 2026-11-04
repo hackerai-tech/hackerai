@@ -764,6 +764,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  const [initializedPredictionModeChatId, setInitializedPredictionModeChatId] =
+    useState<string | null>(null);
   // Keep automatic sends blocked until the task's saved environment is applied.
   const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
     string | null
@@ -2245,6 +2247,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Legacy chats stored as agent-long map to agent mode
         setChatMode("agent");
       }
+      setInitializedPredictionModeChatId(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
@@ -2961,6 +2964,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   </div>
                   <ChatInput
                     completedPredictionTurn={completedPredictionTurn}
+                    predictionModeReady={
+                      !isExistingChat ||
+                      initializedPredictionModeChatId === chatId
+                    }
                     interruptedPredictionTurn={interruptedPredictionTurn}
                     latestMessageId={messages.at(-1)?.id}
                     latestMessageIsAssistant={

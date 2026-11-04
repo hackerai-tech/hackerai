@@ -28,6 +28,7 @@ type Options = {
   userId?: string;
   chatId?: string;
   chatMode: "ask" | "agent";
+  modeReady?: boolean;
   completedTurn?: CompletedPredictionTurn | null;
   interruptedTurn?: { chatId: string } | null;
   latestMessageId?: string;
@@ -112,6 +113,7 @@ export function useNextActions(options: Options): NextActionsController {
       : null;
   const keyRef = useRef(key);
   const previousMode = useRef(options.chatMode);
+  const previousModeReady = useRef(options.modeReady !== false);
   const previousOwner = useRef(`${options.userId}:${options.chatId}`);
   useLayoutEffect(() => {
     if (keyRef.current !== key) {
@@ -177,7 +179,13 @@ export function useNextActions(options: Options): NextActionsController {
 
   useLayoutEffect(() => {
     const owner = `${options.userId}:${options.chatId}`;
-    if (previousOwner.current !== owner) {
+    const modeReady = options.modeReady !== false;
+    if (
+      previousOwner.current !== owner ||
+      !modeReady ||
+      !previousModeReady.current
+    ) {
+      previousModeReady.current = modeReady;
       previousOwner.current = owner;
       previousMode.current = options.chatMode;
       return;
@@ -188,7 +196,13 @@ export function useNextActions(options: Options): NextActionsController {
     // reappear after switching back. Keep any already accepted draft intact.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Mode changes must abort and discard externally generated predictions before interaction.
     invalidate();
-  }, [options.chatMode, options.userId, options.chatId, invalidate]);
+  }, [
+    options.chatMode,
+    options.modeReady,
+    options.userId,
+    options.chatId,
+    invalidate,
+  ]);
 
   // Synchronous getters protect the gap between an input event and React commit.
   const canUse = useCallback(() => {
@@ -196,6 +210,7 @@ export function useNextActions(options: Options): NextActionsController {
     return Boolean(
       keyRef.current &&
       !now.blocked &&
+      now.modeReady !== false &&
       (!batchRef.current || batchRef.current.mode === now.chatMode) &&
       now.status === "ready" &&
       (!batchRef.current ||
@@ -298,6 +313,7 @@ export function useNextActions(options: Options): NextActionsController {
     completedHere,
     options.status,
     options.chatMode,
+    options.modeReady,
     options.blocked,
     options.input,
     options.latestMessageId,
@@ -330,6 +346,7 @@ export function useNextActions(options: Options): NextActionsController {
     batch &&
     options.status === "ready" &&
     !options.blocked &&
+    options.modeReady !== false &&
     batch.mode === options.chatMode &&
     options.input === "" &&
     batch.messageId === options.latestMessageId

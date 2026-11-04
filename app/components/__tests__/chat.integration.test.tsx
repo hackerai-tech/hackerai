@@ -1273,6 +1273,33 @@ describe("Chat Component Integration", () => {
     });
   });
 
+  it("waits for the saved chat mode before restoring predictions", async () => {
+    mockRouteParams = { id: "restore-prediction-mode" };
+    mockUseChat.mockReturnValue({
+      ...mockUseChat(),
+      messages: [
+        {
+          id: "answer",
+          role: "assistant",
+          parts: [{ type: "text", text: "Saved answer" }],
+        },
+      ],
+    });
+    const view = () => (
+      <TestWrapper>
+        <Chat autoResume={false} />
+      </TestWrapper>
+    );
+    const { rerender } = render(view());
+    expect(mockChatInputProps.predictionModeReady).toBe(false);
+    mockRestoredChat = {
+      id: "restore-prediction-mode",
+      default_model_slug: "agent",
+    };
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.predictionModeReady).toBe(true);
+  });
+
   describe("Prediction completion ownership", () => {
     const userB = {
       id: "user-b",
