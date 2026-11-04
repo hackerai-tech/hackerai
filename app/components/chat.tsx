@@ -1,6 +1,10 @@
 "use client";
 import { goalResumeMessage } from "@/lib/goals/commands";
 import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
+import {
+  CloudRecoveryAdmissionContext,
+  useCloudRecoveryAdmission,
+} from "@/app/hooks/useCloudRecoveryAdmission";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart } from "ai";
@@ -763,10 +767,27 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
     string | null
   >(null);
+  const usesCloudRecovery =
+    sandboxPreference === "e2b" && subscription !== "free";
+  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+    chatId: string;
+    sequence: number;
+  } | null>(null);
+  // A remounted Cloud panel must verify fresh state before any send effect runs.
+  const cloudRecoveryScope = useMemo(
+    () => ({
+      chatId,
+      usesCloudRecovery,
+      sequence: cloudConnectionFailure?.sequence,
+    }),
+    [chatId, usesCloudRecovery, cloudConnectionFailure?.sequence],
+  );
+  const cloudRecoveryAdmission = useCloudRecoveryAdmission(cloudRecoveryScope);
   const computerSendDisabledReason =
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
-      : connectionSendDisabledReason;
+      : (usesCloudRecovery && cloudRecoveryAdmission.sendDisabledReason) ||
+        connectionSendDisabledReason;
   const computerSendDisabledReasonRef = useCommittedRef(
     computerSendDisabledReason,
   );
@@ -876,6 +897,38 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  const recoveryDuringComputerLoad = useRef({ chatId, observed: false });
+  useLayoutEffect(() => {
+    if (recoveryDuringComputerLoad.current.chatId !== chatId)
+      recoveryDuringComputerLoad.current = { chatId, observed: false };
+    if (isExistingChat && initializedSandboxChatId !== chatId) {
+      if (cloudRecoveryAdmission.recoveryStarted)
+        recoveryDuringComputerLoad.current.observed = true;
+      return;
+    }
+    const observedWhileLoading = recoveryDuringComputerLoad.current.observed;
+    recoveryDuringComputerLoad.current.observed = false;
+    if (
+      !usesCloudRecovery ||
+      (!cloudRecoveryAdmission.recoveryStarted && !observedWhileLoading)
+    )
+      return;
+    // Recovery never resumes an old intent. Retain drafts/queued messages for
+    // a fresh explicit send instead of releasing auto-continue after the fence.
+    hasManuallyStoppedRef.current = true;
+    try {
+      if (sessionStorage.getItem("autoSendChatId") === chatId)
+        sessionStorage.removeItem("autoSendChatId");
+    } catch {
+      // Storage may be disabled; the shared send guard still owns admission.
+    }
+  }, [
+    usesCloudRecovery,
+    cloudRecoveryAdmission.recoveryStarted,
+    isExistingChat,
+    initializedSandboxChatId,
+    chatId,
+  ]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
@@ -1166,11 +1219,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       },
     }),
   );
-
-  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
-    chatId: string;
-    sequence: number;
-  } | null>(null);
 
   const {
     messages: streamedMessages,
@@ -2717,7 +2765,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   );
 
   return (
-    <>
+    <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
       <StreamEffects
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
@@ -2768,7 +2816,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               branchedFromChatTitle={branchedFromChatTitle}
             />
 
-            {sandboxPreference === "e2b" && subscription !== "free" && (
+            {usesCloudRecovery && (
               <div className="mx-auto w-full max-w-[768px] px-4">
                 <CloudWorkspaceRecovery
                   key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
@@ -2993,6 +3041,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           />
         </div>
       </div>
-    </>
+    </CloudRecoveryAdmissionContext.Provider>
   );
 };
