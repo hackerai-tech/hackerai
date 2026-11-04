@@ -374,6 +374,17 @@ const ForkDraftSetter = () => {
 const RecoveryDraftProbe = () => (
   <output data-testid="recovery-draft">{useComposerInput()}</output>
 );
+const RecoveryComputerPicker = () => {
+  const { setSandboxPreference } = useGlobalState();
+  return (
+    <>
+      <button onClick={() => setSandboxPreference("desktop")}>
+        Use Local QA
+      </button>
+      <button onClick={() => setSandboxPreference("e2b")}>Use Cloud QA</button>
+    </>
+  );
+};
 const RecoveryQueueProbe = () => {
   const { queueMessage, messageQueue } = useGlobalState();
   return (
@@ -681,6 +692,110 @@ describe("Chat Component Integration", () => {
       await act(async () => rerender(view()));
       expect(sessionStorage.getItem("autoSendChatId")).toBe("local-fork");
       sessionStorage.removeItem("autoSendChatId");
+    });
+
+    it("requires a new explicit send when recovery finishes before a Cloud fork's computer loads", async () => {
+      jest.useFakeTimers();
+      try {
+        mockUseRealChatHandlers = true;
+        mockDesktopState = { chatMode: "agent", subscription: "pro" };
+        mockRouteParams = { id: "cloud-fork" };
+        sessionStorage.setItem("autoSendChatId", "cloud-fork");
+        global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovering", step: "backup_created" }),
+        } as Response);
+        const view = () => (
+          <TestWrapper>
+            <ForkDraftSetter />
+            <Chat autoResume={false} />
+            <RecoveryDraftProbe />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        await screen.findByText(/Saving the recovered environment/);
+        jest.mocked(global.fetch).mockResolvedValue({
+          ok: true,
+          json: async () => ({ status: "recovered" }),
+        } as Response);
+        await act(async () => jest.advanceTimersByTimeAsync(5000));
+        mockRestoredChat = {
+          id: "cloud-fork",
+          sandbox_type: "e2b",
+          default_model_slug: "agent",
+        };
+        mockUseChat.mockReturnValue({
+          messages: [
+            {
+              id: "original",
+              role: "user",
+              parts: [{ type: "text", text: "original" }],
+            },
+          ],
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          status: "ready",
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+        await act(async () => rerender(view()));
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
+        expect(screen.getByTestId("recovery-draft")).toHaveTextContent(
+          "continue",
+        );
+      } finally {
+        sessionStorage.removeItem("autoSendChatId");
+        jest.useRealTimers();
+      }
+    });
+
+    it("waits for fresh recovery status when switching back from Local to Cloud", async () => {
+      mockUseRealChatHandlers = true;
+      mockDesktopState = { chatMode: "agent", subscription: "pro" };
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: "hidden" }),
+      } as Response);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+          <ForkDraftSetter />
+          <RecoveryDraftProbe />
+          <RecoveryComputerPicker />
+        </TestWrapper>,
+      );
+      await act(async () => {});
+      fireEvent.click(screen.getByRole("button", { name: "Use Local QA" }));
+      let resolveStatus!: (value: Response) => void;
+      jest.mocked(global.fetch).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveStatus = resolve;
+          }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Use Cloud QA" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Submit test message" }),
+      );
+      await act(async () => {});
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("recovery-draft")).toHaveTextContent(
+        "continue",
+      );
+      await act(async () =>
+        resolveStatus({
+          ok: true,
+          json: async () => ({ status: "hidden" }),
+        } as Response),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Submit test message" }),
+      );
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId("recovery-draft")).toBeEmptyDOMElement();
     });
 
     it("preserves live draft and focus across folding and the first message", () => {

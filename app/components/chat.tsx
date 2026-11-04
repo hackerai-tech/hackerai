@@ -521,7 +521,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
-  const cloudRecoveryAdmission = useCloudRecoveryAdmission();
   const convex = useConvex();
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
@@ -770,6 +769,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   >(null);
   const usesCloudRecovery =
     sandboxPreference === "e2b" && subscription !== "free";
+  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+    chatId: string;
+    sequence: number;
+  } | null>(null);
+  // A remounted Cloud panel must verify fresh state before any send effect runs.
+  const cloudRecoveryScope = useMemo(
+    () => ({
+      chatId,
+      usesCloudRecovery,
+      sequence: cloudConnectionFailure?.sequence,
+    }),
+    [chatId, usesCloudRecovery, cloudConnectionFailure?.sequence],
+  );
+  const cloudRecoveryAdmission = useCloudRecoveryAdmission(cloudRecoveryScope);
   const computerSendDisabledReason =
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
@@ -884,11 +897,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  const recoveryDuringComputerLoad = useRef({ chatId, observed: false });
   useLayoutEffect(() => {
+    if (recoveryDuringComputerLoad.current.chatId !== chatId)
+      recoveryDuringComputerLoad.current = { chatId, observed: false };
+    if (isExistingChat && initializedSandboxChatId !== chatId) {
+      if (cloudRecoveryAdmission.recoveryStarted)
+        recoveryDuringComputerLoad.current.observed = true;
+      return;
+    }
+    const observedWhileLoading = recoveryDuringComputerLoad.current.observed;
+    recoveryDuringComputerLoad.current.observed = false;
     if (
       !usesCloudRecovery ||
-      !cloudRecoveryAdmission.recoveryStarted ||
-      (isExistingChat && initializedSandboxChatId !== chatId)
+      (!cloudRecoveryAdmission.recoveryStarted && !observedWhileLoading)
     )
       return;
     // Recovery never resumes an old intent. Retain drafts/queued messages for
@@ -1197,11 +1219,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       },
     }),
   );
-
-  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
-    chatId: string;
-    sequence: number;
-  } | null>(null);
 
   const {
     messages: streamedMessages,

@@ -8,11 +8,28 @@ type State = {
   availability: "unknown" | "clear" | "held";
   sequence: number;
   confirming: boolean;
+  checkedScope?: object;
+  checkedScopeSequence: number;
 };
-type Update = { sequence: number; status?: Status; confirming?: boolean };
+type Update = {
+  sequence: number;
+  status?: Status;
+  confirming?: boolean;
+  checkedScope?: object;
+};
+const defaultScope = {};
 
 function reduce(state: State, update: Update): State {
-  if (update.sequence < state.sequence) return state;
+  // A newer POST owns availability, but a panel's older GET can still finish
+  // its freshness check. An even older panel cannot replace a newer read.
+  const checkedScope =
+    update.checkedScope && update.sequence >= state.checkedScopeSequence
+      ? {
+          checkedScope: update.checkedScope,
+          checkedScopeSequence: update.sequence,
+        }
+      : {};
+  if (update.sequence < state.sequence) return { ...state, ...checkedScope };
   let availability = state.availability;
   switch (update.status) {
     case "recovering":
@@ -23,6 +40,7 @@ function reduce(state: State, update: Update): State {
     case "offered":
     case "declined":
     case "waiting":
+    case "support":
       availability = "clear";
       break;
     default:
@@ -33,22 +51,29 @@ function reduce(state: State, update: Update): State {
     availability,
     sequence: update.sequence,
     confirming: update.confirming ?? state.confirming,
+    checkedScope: state.checkedScope,
+    checkedScopeSequence: state.checkedScopeSequence,
+    ...checkedScope,
   };
 }
 
 /** One workspace gate outlives chat/panel remounts and orders both panels' reads. */
-export function useCloudRecoveryAdmission() {
+export function useCloudRecoveryAdmission(scope: object = defaultScope) {
   const sequence = useRef(0);
   const confirming = useRef(false);
   const [state, dispatch] = useReducer(reduce, {
     availability: "unknown",
     sequence: 0,
     confirming: false,
+    checkedScopeSequence: 0,
   });
   const beginRead = useCallback(() => ++sequence.current, []);
-  const finishRead = useCallback((read: number, status?: Status) => {
-    dispatch({ sequence: read, status });
-  }, []);
+  const finishRead = useCallback(
+    (read: number, status?: Status) => {
+      dispatch({ sequence: read, status, checkedScope: scope });
+    },
+    [scope],
+  );
   const beginConfirmation = useCallback(() => {
     if (confirming.current) return;
     confirming.current = true;
@@ -63,7 +88,7 @@ export function useCloudRecoveryAdmission() {
     ? "Starting Cloud workspace recovery"
     : state.availability === "held"
       ? "Cloud workspace recovery is in progress"
-      : state.availability === "unknown"
+      : state.availability === "unknown" || state.checkedScope !== scope
         ? "Checking Cloud workspace status"
         : undefined;
   return useMemo(

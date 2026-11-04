@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useMemo } from "react";
 import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
@@ -15,7 +16,8 @@ const response = (status: string) => ({
   json: async () => ({ status, token }),
 });
 function Harness({ panelKey = "a", cloud = true, second = false }) {
-  const admission = useCloudRecoveryAdmission();
+  const scope = useMemo(() => ({ panelKey, cloud }), [panelKey, cloud]);
+  const admission = useCloudRecoveryAdmission(scope);
   return (
     <CloudRecoveryAdmissionContext.Provider value={admission}>
       <output data-testid="gate">
@@ -123,6 +125,56 @@ it("does not turn a failed initial status lookup into an indefinite outage", asy
   await act(async () => {});
   expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
 });
+
+it("treats an explicit support status consistently before and after a reload", async () => {
+  fetchMock.mockResolvedValue(response("recovering"));
+  const { unmount } = render(<Harness />);
+  await act(async () => {});
+  expect(screen.getByTestId("gate")).toHaveTextContent(
+    "recovery is in progress",
+  );
+  fetchMock.mockResolvedValue(response("support"));
+  await act(async () => jest.advanceTimersByTimeAsync(5000));
+  expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+  unmount();
+  render(<Harness />);
+  await act(async () => {});
+  expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+});
+
+it.each(["recovered", "recovering"])(
+  "settles the remounted panel's fresh read without overriding a newer %s confirmation",
+  async (status) => {
+    let finishPost!: (value: ReturnType<typeof response>) => void;
+    let finishRead!: (value: ReturnType<typeof response>) => void;
+    fetchMock
+      .mockResolvedValueOnce(response("offered"))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishPost = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRead = resolve;
+          }),
+      );
+    const { rerender } = render(<Harness />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Recover workspace" }));
+    rerender(<Harness panelKey="new-chat" />);
+    await act(async () => finishPost(response(status)));
+    await act(async () => finishRead(response("hidden")));
+    if (status === "recovered")
+      expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+    else
+      expect(screen.getByTestId("gate")).toHaveTextContent(
+        "recovery is in progress",
+      );
+  },
+);
 
 it("rechecks another tab's recovery change without submitting consent", async () => {
   const original = global.BroadcastChannel;
