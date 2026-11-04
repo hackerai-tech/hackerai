@@ -148,3 +148,34 @@ it("honors account deletion and authorization before accessing saved content", a
     "Suspended",
   );
 });
+
+it("persists consumption before the assistant row and completion timestamp catch up", async () => {
+  const ctx = context({
+    messages: { id: "user-turn", role: "user", user_id: "owner" },
+  });
+  expect(await consumeForBackend.handler(ctx, args)).toBe(true);
+  ctx.rows.messages = { id: "answer", role: "assistant", user_id: "owner" };
+  ctx.rows.chats.last_run_finished_at = 124;
+  expect(
+    await saveForBackend.handler(ctx, { ...args, finishedAt: 124, batch }),
+  ).toBeNull();
+  const saved = await getForBackend.handler(ctx, args);
+  expect(saved.consumed).toBe(true);
+  expect(saved.batch).toBeUndefined();
+});
+
+it("a late consumption cannot erase a newer assistant's saved batch", async () => {
+  const newer = { ...batch, messageId: "new-answer", batchId: "new-batch" };
+  const ctx = context({
+    messages: { id: "new-answer", role: "assistant", user_id: "owner" },
+  });
+  ctx.rows.chats.next_actions = {
+    messageId: "new-answer",
+    finishedAt: 123,
+    consumed: false,
+    batch: newer,
+  };
+  expect(await consumeForBackend.handler(ctx, args)).toBe(false);
+  expect(ctx.rows.chats.next_actions.batch).toEqual(newer);
+  expect(ctx.db.patch).not.toHaveBeenCalled();
+});

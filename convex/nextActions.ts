@@ -23,6 +23,7 @@ async function completedChat(
     chatId: string;
     messageId: string;
   },
+  allowPendingAssistant = false,
 ) {
   validateServiceKey(args.serviceKey);
   await assertUserCanAccessChatHistory(ctx, args.userId);
@@ -48,13 +49,12 @@ async function completedChat(
     .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
     .order("desc")
     .first();
-  if (
-    !latest ||
-    latest.id !== args.messageId ||
-    latest.role !== "assistant" ||
-    latest.user_id !== args.userId
-  )
-    return null;
+  if (!latest || latest.user_id !== args.userId) return null;
+  if (latest.id !== args.messageId || latest.role !== "assistant") {
+    // A completed stream can reach the browser before its assistant row. Only
+    // consumption may fence that pending row; never target a newer assistant.
+    if (!allowPendingAssistant || latest.role !== "user") return null;
+  }
   return chat;
 }
 
@@ -64,12 +64,10 @@ export const getForBackend = query({
   handler: async (ctx, args) => {
     const chat = await completedChat(ctx, args);
     const saved = chat?.next_actions;
-    if (
-      !saved ||
-      saved.messageId !== args.messageId ||
-      saved.finishedAt !== chat?.last_run_finished_at
-    )
-      return null;
+    if (!saved || saved.messageId !== args.messageId) return null;
+    // Message IDs identify turns even if final persistence advances its clock.
+    if (saved.consumed) return saved;
+    if (saved.finishedAt !== chat?.last_run_finished_at) return null;
     if (
       saved.batch &&
       saved.batch.mode !== (chat.default_model_slug === "ask" ? "ask" : "agent")
@@ -105,6 +103,7 @@ export const saveForBackend = mutation({
     )
       return null;
     const saved = chat.next_actions;
+    if (saved?.messageId === args.messageId && saved.consumed) return null;
     if (
       saved?.messageId === args.messageId &&
       saved.finishedAt === args.finishedAt
@@ -126,7 +125,7 @@ export const consumeForBackend = mutation({
   args: ownerArgs,
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    const chat = await completedChat(ctx, args);
+    const chat = await completedChat(ctx, args, true);
     if (!chat) return false;
     // Also fence an in-flight generation: a late save cannot revive dismissal.
     await ctx.db.patch(chat._id, {
