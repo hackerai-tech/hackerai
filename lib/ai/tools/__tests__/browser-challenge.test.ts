@@ -27,6 +27,7 @@ const observation = {
     {
       kind: "recaptcha_v2" as const,
       siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
+      observationId: "0123456789abcdef0123456789abcdef",
       tokenPresent: false,
       invisible: false,
     },

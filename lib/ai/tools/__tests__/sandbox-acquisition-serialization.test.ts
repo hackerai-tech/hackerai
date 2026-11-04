@@ -105,6 +105,7 @@ describe("sandbox acquisition serialization", () => {
                     kind: "recaptcha_v2",
                     siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
                     invisible: false,
+                    observationId: "0123456789abcdef0123456789abcdef",
                     tokenPresent: false,
                   },
                 ],

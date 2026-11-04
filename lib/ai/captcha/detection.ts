@@ -11,6 +11,7 @@ export const browserChallengeObservation = z.object({
       z.object({
         kind: captchaKind,
         siteKey: z.string().min(1).max(256),
+        observationId: z.string().regex(/^[a-f0-9]{32}$/),
         tokenPresent: z.boolean(),
         invisible: z.boolean(),
       }),
@@ -137,7 +138,11 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
         : kind === "hcaptcha" ? '[name="h-captcha-response"]'
           : '[name="cf-turnstile-response"]',
     );
-    widgets.push({kind, siteKey, tokenPresent: !!field?.value,
+    // Element properties do not survive DOM replacement/cloning. Pin the
+    // response field too, so a re-render cannot receive an earlier solve.
+    const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+    element[Symbol.for('hackerai.captchaObservation')] = {observationId, field};
+    widgets.push({kind, siteKey, observationId, tokenPresent: !!field?.value,
       invisible: element.getAttribute("data-size") === "invisible"});
   }
   return {
@@ -166,6 +171,8 @@ export function buildDeliverCaptchaScript(
     const container = element.closest('form') || element.parentElement || element;
     const name = widget.kind === 'recaptcha_v2' ? 'g-recaptcha-response' : widget.kind === 'hcaptcha' ? 'h-captcha-response' : 'cf-turnstile-response';
     const fields = [...container.querySelectorAll('[name="' + name + '"]')];
+    const observed = element[Symbol.for('hackerai.captchaObservation')];
+    if (!widget.observationId || observed?.observationId !== widget.observationId || observed.field !== fields[0]) return {status: 'page_changed'};
     if (fields.length !== 1 || fields[0].value) return {status: 'page_changed'};
     fields[0].value = token;
     fields[0].dispatchEvent(new Event('input', {bubbles: true}));

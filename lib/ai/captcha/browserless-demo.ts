@@ -211,6 +211,9 @@ export async function runBrowserlessDemo(
     const solved = attempt?.solve?.solved === true;
     const submitted = outcome?.submitted === true;
     const image = body.data?.image?.base64;
+    const redactFailed = (body.errors ?? []).some(({ path }) =>
+      path?.includes("redact"),
+    );
     return {
       status: "completed" as const,
       demo: payload.demo,
@@ -244,7 +247,9 @@ export async function runBrowserlessDemo(
       }),
       solveMs: attempt?.solve?.time ?? null,
       elapsedMs: Date.now() - started,
-      ...(image && image.startsWith("iVBORw0KGgo") && { screenshotPng: image }),
+      ...(image &&
+        !redactFailed &&
+        image.startsWith("iVBORw0KGgo") && { screenshotPng: image }),
     };
   } catch {
     // No provider errors, response tokens, headers, query or keys escape this

@@ -99,16 +99,16 @@ try:
     if fallback.exists():
         selected = json.loads(fallback.read_text())
         if selected.get('name') != remote or selected.get('original') != name: raise ValueError()
-        if (root / 'active-session').read_text().strip() != remote: raise ValueError()
+        if (root / 'active-session').read_text().strip() not in (name, remote): raise ValueError()
         try:
             info = (root / 'sockets' / (name + '.sock')).lstat()
         except FileNotFoundError:
             pass  # The original daemon may have stopped while fallback ran.
         else:
             if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid(): raise ValueError()
+        (root / 'verify-required').touch(mode=0o600)
         (root / 'active-session.next').write_text(name)
         os.replace(root / 'active-session.next', root / 'active-session')
-        (root / 'verify-required').touch(mode=0o600)
         fallback.unlink()
     print('{"restored":true}')
 except Exception:

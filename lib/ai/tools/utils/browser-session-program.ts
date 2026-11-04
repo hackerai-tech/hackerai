@@ -77,6 +77,12 @@ if not name or len(name) > 80 or '/' in name or '\\x00' in name:
 fallback = root / 'fallback-session'
 if fallback.exists():
     selected = json.loads(fallback.read_text())
+    if (root / 'active-session').read_text().strip() == selected['original']:
+        # Activation or restoration was interrupted before marker cleanup.
+        (root / 'verify-required').touch(mode=0o600)
+        fallback.unlink()
+if fallback.exists():
+    selected = json.loads(fallback.read_text())
     if name not in ('default', selected['original'], selected['name']):
         raise RuntimeError('The fallback browser is pinned to this run')
     args = []

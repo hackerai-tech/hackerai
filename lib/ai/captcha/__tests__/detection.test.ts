@@ -17,6 +17,7 @@ it("requires an exact server-approved URL, kind and site key for non-demo solvin
     kind: "hcaptcha" as const,
     siteKey: "public-widget-key",
     invisible: false,
+    observationId: "0123456789abcdef0123456789abcdef",
     tokenPresent: false,
   };
   const url = "https://authorized.example.test/login";
@@ -54,6 +55,7 @@ it.each([
     kind: "hcaptcha" as const,
     siteKey: "public-widget-key",
     invisible: false,
+    observationId: "0123456789abcdef0123456789abcdef",
     tokenPresent: false,
   };
   expect(
@@ -75,18 +77,21 @@ it("distinguishes widgets from completed tokens without returning token values",
     {
       kind: "recaptcha_v2",
       siteKey: "public-key",
+      observationId: expect.stringMatching(/^[a-f0-9]{32}$/),
       tokenPresent: false,
       invisible: false,
     },
     {
       kind: "hcaptcha",
       siteKey: "h-key",
+      observationId: expect.stringMatching(/^[a-f0-9]{32}$/),
       tokenPresent: true,
       invisible: false,
     },
     {
       kind: "turnstile",
       siteKey: "cf-key",
+      observationId: expect.stringMatching(/^[a-f0-9]{32}$/),
       tokenPresent: false,
       invisible: false,
     },
@@ -141,35 +146,47 @@ it("delivers an hCaptcha response to its own field without exposing it in result
   expect(JSON.stringify(result)).not.toContain("private-h-response");
 });
 
-it.each(["navigation", "document", "widget", "already completed"])(
-  "does not deliver into a changed page: %s",
-  (change) => {
-    document.body.innerHTML =
-      '<form><div class="g-recaptcha" data-sitekey="public-key"></div><textarea name="g-recaptcha-response"></textarea></form>';
-    const observation = inspect();
-    if (change === "navigation") observation.url = "https://example.com/";
-    if (change === "document") observation.documentId = "previous-document";
-    if (change === "widget")
-      document
-        .querySelector(".g-recaptcha")!
-        .setAttribute("data-sitekey", "new-key");
-    if (change === "already completed")
-      (document.querySelector("textarea") as HTMLTextAreaElement).value =
-        "human-solved";
-    expect(
-      window.eval(
-        buildDeliverCaptchaScript(
-          observation,
-          observation.widgets[0],
-          "must-not-deliver",
-        ),
+it.each([
+  "navigation",
+  "document",
+  "widget",
+  "replacement",
+  "response replacement",
+  "already completed",
+])("does not deliver into a changed page: %s", (change) => {
+  document.body.innerHTML =
+    '<form><div class="g-recaptcha" data-sitekey="public-key"></div><textarea name="g-recaptcha-response"></textarea></form>';
+  const observation = inspect();
+  if (change === "navigation") observation.url = "https://example.com/";
+  if (change === "document") observation.documentId = "previous-document";
+  if (change === "widget")
+    document
+      .querySelector(".g-recaptcha")!
+      .setAttribute("data-sitekey", "new-key");
+  if (change === "replacement") {
+    const element = document.querySelector(".g-recaptcha")!;
+    element.replaceWith(element.cloneNode(true));
+  }
+  if (change === "response replacement") {
+    const field = document.querySelector("textarea")!;
+    field.replaceWith(field.cloneNode(true));
+  }
+  if (change === "already completed")
+    (document.querySelector("textarea") as HTMLTextAreaElement).value =
+      "human-solved";
+  expect(
+    window.eval(
+      buildDeliverCaptchaScript(
+        observation,
+        observation.widgets[0],
+        "must-not-deliver",
       ),
-    ).toEqual({ status: "page_changed" });
-    expect(
-      (document.querySelector("textarea") as HTMLTextAreaElement).value,
-    ).not.toBe("must-not-deliver");
-  },
-);
+    ),
+  ).toEqual({ status: "page_changed" });
+  expect(
+    (document.querySelector("textarea") as HTMLTextAreaElement).value,
+  ).not.toBe("must-not-deliver");
+});
 
 it.each([
   "https://www.google.com.evil.test/recaptcha/api2/demo",

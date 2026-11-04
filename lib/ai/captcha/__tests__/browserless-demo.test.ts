@@ -289,3 +289,20 @@ it("does not start a provider request after cancellation", async () => {
   ).rejects.toThrow();
   expect(mockFetch).not.toHaveBeenCalled();
 });
+
+it("withholds a screenshot when provider redaction failed", async () => {
+  mockFetch.mockResolvedValueOnce(
+    reply({
+      data: { image: { base64: "iVBORw0KGgo=private-content" } },
+      errors: [{ path: ["redact"] }],
+    }),
+  );
+  const result = await runBrowserlessDemo(payload, "PREVIEW", {
+    fetch: mockFetch,
+  });
+  expect(result).toMatchObject({
+    status: "completed",
+    failedStages: ["redact"],
+  });
+  expect(result).not.toHaveProperty("screenshotPng");
+});
