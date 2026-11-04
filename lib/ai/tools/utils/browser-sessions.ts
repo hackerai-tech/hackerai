@@ -186,9 +186,10 @@ export class BrowserSessions {
             await handle.sendStdin(JSON.stringify({ name, remoteName }));
             await handle.closeStdin();
             const result = await handle.wait();
+            const recovery = JSON.parse(result.stdout);
             if (
               result.exitCode !== 0 ||
-              JSON.parse(result.stdout).restored !== true
+              (recovery.restored !== true && recovery.deferred !== true)
             )
               throw new Error();
           } catch {

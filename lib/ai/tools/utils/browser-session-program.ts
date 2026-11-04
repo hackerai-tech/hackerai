@@ -66,41 +66,48 @@ while (root / 'paused').exists():
     fcntl.flock(fd, fcntl.LOCK_UN)
     time.sleep(0.2)
     fcntl.flock(fd, fcntl.LOCK_EX)
-name = os.environ.get('AGENT_BROWSER_SESSION', 'default')
-for i, arg in enumerate(sys.argv[1:]):
-    if arg == '--session' and i + 2 < len(sys.argv):
-        name = sys.argv[i + 2]
-    elif arg.startswith('--session='):
-        name = arg.split('=', 1)[1]
-if not name or len(name) > 80 or '/' in name or '\\x00' in name:
-    raise RuntimeError('Invalid browser session name')
 fallback = root / 'fallback-session'
+active = root / 'active-session'
+verify = root / 'verify-required'
 if fallback.exists():
     selected = json.loads(fallback.read_text())
-    if (root / 'active-session').read_text().strip() == selected['original']:
-        # Activation or restoration was interrupted before marker cleanup.
-        (root / 'verify-required').touch(mode=0o600)
+    current = active.read_text().strip()
+    closed = (root / ('closed-' + selected['name'])).exists()
+    if current == selected['original'] or closed:
+        if current not in (selected['original'], selected['name']):
+            raise RuntimeError('The active browser session changed')
+        verify.touch(mode=0o600)
+        active.write_text(selected['original'])
         fallback.unlink()
+name = os.environ.get('AGENT_BROWSER_SESSION', 'default')
+if name == 'default' and active.exists():
+    name = active.read_text().strip()
+args = []
+skip_next = False
+for arg in sys.argv[1:]:
+    if skip_next:
+        name = arg
+        skip_next = False
+    elif arg == '--session':
+        skip_next = True
+    elif arg.startswith('--session='):
+        name = arg.split('=', 1)[1]
+    else:
+        args.append(arg)
+if skip_next or not name or len(name) > 80 or any(c in name for c in '/\\x00\\r\\n'):
+    raise RuntimeError('Invalid browser session name')
 if fallback.exists():
     selected = json.loads(fallback.read_text())
     if name not in ('default', selected['original'], selected['name']):
         raise RuntimeError('The fallback browser is pinned to this run')
-    args = []
-    skip_next = False
-    for arg in sys.argv[1:]:
-        if skip_next:
-            skip_next = False
-        elif arg == '--session':
-            skip_next = True
-        elif arg.startswith('--session='):
-            continue
-        elif arg in ('connect', '--cdp', '--auto-connect', '--provider', '--profile') or arg.startswith(('--cdp=', '--provider=', '--profile=')):
-            raise RuntimeError('The fallback browser connection is pinned')
-        else:
-            args.append(arg)
+    if any(arg in ('connect', '--cdp', '--auto-connect', '--provider', '--profile') or arg.startswith(('--cdp=', '--provider=', '--profile=')) for arg in args):
+        raise RuntimeError('The fallback browser connection is pinned')
     name = selected['name']
-    sys.argv = [sys.argv[0], '--session', name, '--cdp', selected['endpoint'], *args]
-(root / 'active-session').write_text(name)
+    args = ['--cdp', selected['endpoint'], *args]
+if verify.exists() and active.read_text().strip() != name:
+    raise RuntimeError('Snapshot the current browser before changing sessions')
+sys.argv = [sys.argv[0], '--session', name, *args]
+active.write_text(name)
 verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]

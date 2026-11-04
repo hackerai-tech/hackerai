@@ -86,6 +86,9 @@ try:
     name, remote = payload['name'], payload['remoteName']
     if any(not isinstance(s, str) or not s or len(s) > 80 or any(c in s for c in '/\x00\r\n') for s in (name, remote)):
         raise ValueError()
+    # Publish closure before waiting: the next CLI command completes recovery
+    # under the same lock if a long-running command outlives this bounded call.
+    (root / ('closed-' + remote)).touch(mode=0o600)
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
     deadline = time.monotonic() + 8
     while True:
@@ -93,7 +96,9 @@ try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
         except BlockingIOError:
-            if time.monotonic() >= deadline: raise ValueError()
+            if time.monotonic() >= deadline:
+                print('{"restored":false,"deferred":true}')
+                sys.exit(0)
             time.sleep(0.1)
     fallback = root / 'fallback-session'
     if fallback.exists():
