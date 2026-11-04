@@ -1,6 +1,15 @@
 import type { ToolContext } from "@/types";
 import { createBrowserChallenge } from "../browser-challenge";
 import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
+import { openBrowserlessFallback } from "../../captcha/browserless-session";
+
+jest.mock("../../captcha/browserless-session", () => ({
+  ...jest.requireActual("../../captcha/browserless-session"),
+  openBrowserlessFallback: jest.fn(),
+}));
+jest.mock("../../captcha/browserless-tunnel", () => ({
+  createBrowserlessTunnel: jest.fn(),
+}));
 import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
@@ -31,6 +40,7 @@ const cloneObservation = () => ({
   widgets: observation.widgets.map((widget) => ({ ...widget })),
 });
 function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
+  const adoptRemote = jest.fn(async () => {});
   const evaluate = jest.fn(async (script: string) =>
     script === DETECT_CHALLENGES_SCRIPT
       ? cloneObservation()
@@ -39,6 +49,7 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
   const getChallengeBrowser = jest.fn(async () => ({
     identity: "owner:default",
     evaluate,
+    adoptRemote,
   }));
   const onToolCost = jest.fn();
   const context = {
@@ -55,7 +66,15 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
   const tool = createBrowserChallenge(context, environment, undefined, () => ({
     solve,
   }));
-  return { tool, context, solve, evaluate, getChallengeBrowser, onToolCost };
+  return {
+    tool,
+    context,
+    solve,
+    evaluate,
+    getChallengeBrowser,
+    onToolCost,
+    adoptRemote,
+  };
 }
 const run = (
   tool: ReturnType<typeof createBrowserChallenge>,
@@ -73,6 +92,118 @@ beforeEach(() => {
     CAPTCHA_SOLVER_PREVIEW_USER_IDS: "internal-user",
     TWOCAPTCHA_API_KEY: "private-provider-key",
   };
+  delete process.env.HACKERAI_BROWSERLESS_FALLBACK_PREVIEW;
+  delete process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW;
+});
+
+it("automatically solves a detected supported challenge in place before considering a hosted browser", async () => {
+  process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
+  process.env.HACKERAI_BROWSERLESS_FALLBACK_PREVIEW = "1";
+  process.env.HACKERAI_ENVIRONMENT = "preview";
+  const { tool, solve, adoptRemote, evaluate } = setup();
+  evaluate.mockResolvedValueOnce({ ...cloneObservation(), widgets: [] });
+  expect(await run(tool, "inspect")).toEqual({
+    status: "no_pending_challenge",
+  });
+  expect(solve).not.toHaveBeenCalled();
+  expect(await run(tool, "inspect")).toMatchObject({
+    status: "token_delivered",
+    websiteAccepted: false,
+  });
+  expect(adoptRemote).not.toHaveBeenCalled();
+  expect(openBrowserlessFallback).not.toHaveBeenCalled();
+  expect(await run(tool, "inspect")).toMatchObject({ reason: "attempt_limit" });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+describe("on-demand Browserless fallback", () => {
+  const open = jest.mocked(openBrowserlessFallback);
+  let close: jest.Mock;
+  beforeEach(() => {
+    process.env.HACKERAI_BROWSERLESS_FALLBACK_PREVIEW = "1";
+    process.env.HACKERAI_ENVIRONMENT = "preview";
+    process.env.BROWSERLESS_API_KEY = "private-browserless-account-key";
+    close = jest.fn(async () => {});
+    open.mockReset().mockResolvedValue({
+      close,
+      expiresAt: Date.now() + 60000,
+    } as unknown as Awaited<ReturnType<typeof openBrowserlessFallback>>);
+  });
+
+  it("does not allocate or switch browsers on a page without a pending CAPTCHA", async () => {
+    const { tool, evaluate, adoptRemote } = setup();
+    evaluate.mockResolvedValue({ ...cloneObservation(), widgets: [] });
+    await expect(run(tool, "inspect")).resolves.toEqual({
+      status: "no_pending_challenge",
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(adoptRemote).not.toHaveBeenCalled();
+  });
+
+  it("adopts a solved browser once while requiring normal website verification", async () => {
+    const { tool, adoptRemote } = setup();
+    const result = await run(tool, "inspect");
+    expect(result).toMatchObject({
+      status: "browserless_fallback_ready",
+      browserChanged: true,
+      websiteAccepted: false,
+    });
+    expect(adoptRemote).toHaveBeenCalledWith(
+      { url: observation.url, documentId: observation.documentId },
+      expect.any(Function),
+    );
+    expect(close).not.toHaveBeenCalled();
+    await expect(run(tool, "inspect")).resolves.toMatchObject({
+      reason: "attempt_limit",
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toContain(
+      process.env.BROWSERLESS_API_KEY,
+    );
+  });
+
+  it.each(["provider", "adoption"])(
+    "does not retry after an ambiguous %s failure",
+    async (stage) => {
+      const { tool, adoptRemote, solve } = setup();
+      if (stage === "provider")
+        open.mockRejectedValueOnce(new Error("private-provider-response"));
+      else adoptRemote.mockRejectedValueOnce(new Error("stale ownership"));
+      await expect(run(tool, "inspect")).resolves.toMatchObject({
+        status: "handoff_required",
+      });
+      await expect(run(tool, "inspect")).resolves.toMatchObject({
+        reason: "attempt_limit",
+      });
+      await expect(run(tool, "solve")).resolves.toMatchObject({
+        reason: "attempt_limit",
+      });
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(solve).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(stage === "adoption" ? 1 : 0);
+    },
+  );
+
+  it.each([
+    "gate off",
+    "wrong runtime",
+    "foreign page",
+    "invisible",
+    "interstitial",
+  ])("does not allocate for %s", async (reason) => {
+    const { tool, evaluate } = setup();
+    const value = cloneObservation();
+    if (reason === "gate off")
+      process.env.HACKERAI_BROWSERLESS_FALLBACK_PREVIEW = "0";
+    if (reason === "wrong runtime")
+      process.env.HACKERAI_ENVIRONMENT = "production";
+    if (reason === "foreign page") value.url = "https://example.com/private";
+    if (reason === "invisible") value.widgets[0].invisible = true;
+    if (reason === "interstitial") value.interstitial = true;
+    evaluate.mockResolvedValue(value);
+    await run(tool, "inspect");
+    expect(open).not.toHaveBeenCalled();
+  });
 });
 afterEach(() => {
   global.fetch = originalFetch;

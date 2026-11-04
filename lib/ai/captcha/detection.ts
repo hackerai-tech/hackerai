@@ -35,6 +35,10 @@ const DEMOS = new Set([
 // Public keys verified on these demos. A matching URL alone must not authorize
 // a paid task for a site key injected into the page by another browser action.
 const SOLVER_DEMOS: Record<string, { kind: CaptchaKind; siteKey: string }> = {
+  "https://accounts.hcaptcha.com/demo": {
+    kind: "hcaptcha",
+    siteKey: "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2",
+  },
   "https://www.google.com/recaptcha/api2/demo": {
     kind: "recaptcha_v2",
     siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
@@ -67,6 +71,52 @@ export function isSupportedCaptchaDemo(
 
 export function isCaptchaDemo(url: string): boolean {
   return DEMOS.has(url);
+}
+
+const configuredTargets = z
+  .array(
+    z.object({
+      url: z
+        .string()
+        .max(2048)
+        .url()
+        .refine((value) => {
+          const parsed = new URL(value);
+          return (
+            parsed.protocol === "https:" &&
+            !parsed.username &&
+            !parsed.password &&
+            !parsed.search &&
+            !parsed.hash
+          );
+        }),
+      kind: captchaKind,
+      siteKey: z.string().regex(/^[A-Za-z0-9_-]{10,256}$/),
+    }),
+  )
+  .max(20);
+
+/** Additional targets require exact server-side approval, never a tool input.
+ * This authorizes sharing the selected URL and public widget key only.
+ */
+export function isSupportedCaptchaTarget(
+  url: string,
+  widget: CaptchaWidget,
+  configuration = process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS,
+): boolean {
+  if (isSupportedCaptchaDemo(url, widget)) return true;
+  if (!configuration || configuration.length > 16384) return false;
+  try {
+    const targets = configuredTargets.parse(JSON.parse(configuration));
+    return targets.some(
+      (target) =>
+        target.url === url &&
+        target.kind === widget.kind &&
+        target.siteKey === widget.siteKey,
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Runs inside the owned page. A literal avoids bundler/coverage helper references.
@@ -109,12 +159,12 @@ export function buildDeliverCaptchaScript(
   // The script travels exclusively over protected process stdin.
   return `((expected, widget, token) => {
     if (location.href !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status: 'page_changed'};
-    const selector = widget.kind === 'recaptcha_v2' ? '.g-recaptcha' : '.cf-turnstile';
+    const selector = widget.kind === 'recaptcha_v2' ? '.g-recaptcha' : widget.kind === 'hcaptcha' ? '.h-captcha' : '.cf-turnstile';
     const matches = [...document.querySelectorAll(selector)].filter(el => el.getAttribute('data-sitekey') === widget.siteKey);
     if (matches.length !== 1) return {status: 'page_changed'};
     const element = matches[0];
     const container = element.closest('form') || element.parentElement || element;
-    const name = widget.kind === 'recaptcha_v2' ? 'g-recaptcha-response' : 'cf-turnstile-response';
+    const name = widget.kind === 'recaptcha_v2' ? 'g-recaptcha-response' : widget.kind === 'hcaptcha' ? 'h-captcha-response' : 'cf-turnstile-response';
     const fields = [...container.querySelectorAll('[name="' + name + '"]')];
     if (fields.length !== 1 || fields[0].value) return {status: 'page_changed'};
     fields[0].value = token;

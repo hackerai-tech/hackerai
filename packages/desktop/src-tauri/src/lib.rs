@@ -3,6 +3,7 @@ mod update_safety;
 #[cfg(test)]
 mod update_safety_tests;
 mod child_environment;
+mod command_stdin;
 mod environment_identity;
 mod file_save;
 mod pty;
@@ -1442,17 +1443,28 @@ async fn execute_command(
 }
 
 #[tauri::command]
+fn get_command_stdin_support() -> bool {
+    true
+}
+
+#[tauri::command]
 async fn execute_stream_command(
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
     command: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    stdin: Option<String>,
+    stdin_encoding: Option<String>,
     timeout_ms: Option<u64>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
     let _operation = update_safety::UPDATE_GATE.operation()?;
+    let input = command_stdin::decode(stdin, stdin_encoding)?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
+    if input.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
     let Some(mut child) = spawn_stream_command(&state, &command_id, &mut cmd)? else {
         let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
         return Ok(());
@@ -1460,18 +1472,25 @@ async fn execute_stream_command(
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
+    let child_stdin = child.stdin.take();
+    let mut write_input = Box::pin(command_stdin::write(child_stdin, input));
 
     let result = tokio::time::timeout(timeout, async {
         let mut stdout_buf = [0u8; 4096];
         let mut stderr_buf = [0u8; 4096];
         let mut stdout_done = false;
         let mut stderr_done = false;
+        let mut input_done = false;
 
         loop {
-            if stdout_done && stderr_done {
+            if stdout_done && stderr_done && input_done {
                 break;
             }
             tokio::select! {
+                result = &mut write_input, if !input_done => {
+                    input_done = true;
+                    result?;
+                }
                 result = stdout.read(&mut stdout_buf), if !stdout_done => {
                     match result {
                         Ok(0) => stdout_done = true,
@@ -1505,6 +1524,7 @@ async fn execute_stream_command(
             });
         }
         Ok(Err(e)) => {
+            platform::graceful_kill(&mut child).await;
             let _ = on_event.send(StreamEvent::Error {
                 message: format!("Process error: {}", e),
             });
@@ -2370,6 +2390,7 @@ pub fn run() {
             read_local_file,
             read_local_preview_file,
             execute_command,
+            get_command_stdin_support,
             execute_stream_command,
             cancel_stream_command,
             execute_pty_create,

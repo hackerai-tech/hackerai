@@ -23,7 +23,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-it.each(["recaptcha_v2", "turnstile"] as const)(
+it.each(["recaptcha_v2", "turnstile", "hcaptcha"] as const)(
   "creates once, polls and validates a %s solution",
   async (kind) => {
     mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
@@ -41,12 +41,18 @@ it.each(["recaptcha_v2", "turnstile"] as const)(
     const url =
       kind === "turnstile"
         ? "https://2captcha.com/demo/cloudflare-turnstile"
-        : demo;
+        : kind === "hcaptcha"
+          ? "https://accounts.hcaptcha.com/demo"
+          : demo;
     const selectedWidget = {
       ...widget,
       kind,
       siteKey:
-        kind === "turnstile" ? "3x00000000000000000000FF" : widget.siteKey,
+        kind === "turnstile"
+          ? "3x00000000000000000000FF"
+          : kind === "hcaptcha"
+            ? "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2"
+            : widget.siteKey,
     };
     const onTaskCreated = jest.fn();
     const pending = createTwoCaptchaSolver("provider-key").solve(
@@ -72,7 +78,9 @@ it.each(["recaptcha_v2", "turnstile"] as const)(
         type:
           kind === "recaptcha_v2"
             ? "RecaptchaV2TaskProxyless"
-            : "TurnstileTaskProxyless",
+            : kind === "hcaptcha"
+              ? "HCaptchaTaskProxyless"
+              : "TurnstileTaskProxyless",
       },
     });
     expect(onTaskCreated).toHaveBeenCalledWith(123);

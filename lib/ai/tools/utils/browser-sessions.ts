@@ -9,6 +9,8 @@ import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
+import { BROWSERLESS_ADOPT_PROGRAM } from "../../captcha/browserless-adopt-program";
+import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -53,12 +55,20 @@ export class BrowserSessions {
   private readonly expiresAt = Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS;
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly failedSessions = new Set<BrowserSession>();
+  private readonly remoteCleanups = new Set<() => Promise<void>>();
+  private readonly connectedBrowsers = new Map<
+    string,
+    ConnectedChallengeBrowser
+  >();
+  private activeConnectedBrowser?: ConnectedChallengeBrowser;
+  private connectedTargetSelected = false;
   private closed = false;
   private cleanupPromise?: Promise<void>;
 
   constructor(
     private readonly handoffScope?: BrowserHandoffScope,
     private readonly onOwnershipLost?: () => void,
+    private readonly enableConnectedChallenges = false,
   ) {}
 
   hasHandoffScope(): boolean {
@@ -71,9 +81,23 @@ export class BrowserSessions {
    */
   async getChallengeBrowser(signal: AbortSignal): Promise<{
     identity: string;
+    supportsHostedFallback: boolean;
     evaluate: (script: string) => Promise<unknown>;
+    adoptRemote: (
+      expected: { url: string; documentId: string },
+      openTunnel: (
+        sandbox: AnySandbox,
+        directory: string,
+      ) => Promise<{ endpoint: string; close: () => Promise<void> }>,
+    ) => Promise<void>;
   }> {
     signal.throwIfAborted();
+    if (this.closed) throw new Error("Browser session ownership has ended.");
+    if (this.connectedTargetSelected) {
+      if (!this.activeConnectedBrowser)
+        throw new Error("Open an owned connected browser first.");
+      return this.activeConnectedBrowser.getBrowser(signal);
+    }
     const scope = this.handoffScope;
     const session = [...this.sessions.values()].findLast((s) => s.registered);
     if (!scope || !session || !isE2BSandbox(session.sandbox) || this.closed)
@@ -123,6 +147,58 @@ export class BrowserSessions {
     await assertOwned();
     return {
       identity: `${session.sessionId}:${name}`,
+      supportsHostedFallback: true,
+      adoptRemote: async (expected, openTunnel) => {
+        await assertOwned();
+        const tunnel = await openTunnel(sandbox, session.directory);
+        this.remoteCleanups.add(tunnel.close);
+        const remoteName = `fallback-${randomBytes(8).toString("hex")}`;
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        try {
+          for (const phase of ["prepare", "activate"]) {
+            await assertOwned();
+            const handle = await sandbox.commands.run(
+              `python3 -c ${quote(BROWSERLESS_ADOPT_PROGRAM)} ${quote(session.directory)}`,
+              {
+                ...buildSandboxCommandOptions(sandbox),
+                background: true,
+                stdin: true,
+                timeoutMs: 18_000,
+              },
+            );
+            try {
+              await assertOwned();
+              await withCancellation(
+                handle.sendStdin(
+                  JSON.stringify({
+                    phase,
+                    name,
+                    remoteName,
+                    endpoint: tunnel.endpoint,
+                    expected,
+                  }),
+                ),
+                signal,
+              );
+              await withCancellation(handle.closeStdin(), signal);
+              const result = await withCancellation(handle.wait(), signal);
+              if (
+                result.exitCode !== 0 ||
+                JSON.parse(result.stdout).adopted !== true
+              )
+                throw new Error();
+            } catch {
+              await handle.kill().catch(() => false);
+              throw new Error("Browser adoption failed.");
+            }
+          }
+        } catch {
+          await tunnel.close();
+          this.remoteCleanups.delete(tunnel.close);
+          signal.throwIfAborted();
+          throw new Error("Browser adoption failed.");
+        }
+      },
       evaluate: async (script) => {
         await assertOwned();
         // A status probe never starts a daemon. Refuse eval after idle shutdown.
@@ -233,7 +309,25 @@ export class BrowserSessions {
         "Browser session ownership has ended. Start a new Agent run.",
       );
     }
-    if (!isE2BSandbox(sandbox)) return {};
+    this.connectedTargetSelected = !isE2BSandbox(sandbox);
+    if (!isE2BSandbox(sandbox)) {
+      if (!this.enableConnectedChallenges || !sandbox.supportsCommandStdin()) {
+        this.activeConnectedBrowser = undefined;
+        return {};
+      }
+      const connectionId = sandbox.getConnectionInfo().connectionId;
+      let browser = this.connectedBrowsers.get(connectionId);
+      if (!browser) {
+        browser = new ConnectedChallengeBrowser(sandbox, this.expiresAt);
+        this.connectedBrowsers.set(connectionId, browser);
+      } else browser.reconnect(sandbox);
+      this.activeConnectedBrowser = browser;
+      // An optional solver must not prevent ordinary terminal commands on
+      // hosts without Node or with incompatible browser configuration. The
+      // failed owner remains unavailable to challenge operations for this run.
+      return browser.prepare().catch(() => ({}));
+    }
+    this.activeConnectedBrowser = undefined;
     if (Date.now() >= this.expiresAt)
       throw new Error(
         "Browser session ownership has ended. Start a new Agent run.",
@@ -477,6 +571,13 @@ export class BrowserSessions {
 
   /** Drain in-flight setup before erasing active and failed directories. */
   private async cleanupAll(): Promise<void> {
+    await Promise.allSettled(
+      [...this.connectedBrowsers.values()].map((browser) => browser.close()),
+    );
+    this.connectedBrowsers.clear();
+    this.activeConnectedBrowser = undefined;
+    await Promise.allSettled([...this.remoteCleanups].map((close) => close()));
+    this.remoteCleanups.clear();
     const results = await Promise.allSettled(
       [...this.sessions.values(), ...this.failedSessions].map(
         async (session) => {

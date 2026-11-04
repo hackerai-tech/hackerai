@@ -16,7 +16,7 @@ async function owner() {
     serviceKey: "private-service-key",
   });
   const handle = {
-    sendStdin: jest.fn(async () => {}),
+    sendStdin: jest.fn(async (_input: string) => {}),
     closeStdin: jest.fn(async () => {}),
     kill: jest.fn(async () => true),
     wait: jest.fn(async () => ({
@@ -60,6 +60,50 @@ it("requires an already-owned browser and never acquires or opens a new one", as
     sessions.getChallengeBrowser(new AbortController().signal),
   ).rejects.toThrow("Open an owned Cloud browser");
   expect(mockQuery).not.toHaveBeenCalled();
+});
+
+it("abandons a prepared remote browser when human takeover starts before activation", async () => {
+  const { sessions, handle } = await owner();
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+  );
+  const close = jest.fn(async () => {});
+  handle.wait.mockImplementationOnce(async () => {
+    mockQuery.mockResolvedValue({ runActive: true, state: "claiming" });
+    return { exitCode: 0, stdout: JSON.stringify({ adopted: true }) };
+  });
+  await expect(
+    browser.adoptRemote(
+      { url: "https://example.com/demo", documentId: "old-page" },
+      async () => ({ endpoint: "ws://127.0.0.1:12345/", close }),
+    ),
+  ).rejects.toThrow("Browser adoption failed");
+  expect(handle.sendStdin).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(handle.sendStdin.mock.calls[0][0]).phase).toBe("prepare");
+  expect(close).toHaveBeenCalledTimes(1);
+  await sessions.cleanup();
+});
+
+it("cleans up an adopted remote browser with the owning run", async () => {
+  const { sessions, handle } = await owner();
+  handle.wait.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({ adopted: true }),
+  });
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+  );
+  const close = jest.fn(async () => {});
+  await browser.adoptRemote(
+    { url: "https://example.com/demo", documentId: "old-page" },
+    async () => ({ endpoint: "ws://127.0.0.1:12345/", close }),
+  );
+  expect(
+    handle.sendStdin.mock.calls.map((call) => JSON.parse(call[0]).phase),
+  ).toEqual(["prepare", "activate"]);
+  await sessions.cleanup();
+  await sessions.cleanup();
+  expect(close).toHaveBeenCalledTimes(1);
 });
 
 it("passes response material only through stdin and returns the bounded result", async () => {

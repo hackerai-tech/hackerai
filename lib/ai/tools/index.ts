@@ -274,6 +274,7 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
+        isCaptchaPreviewEligible(runtimePolicy.environment, userID),
       )
     : undefined;
   const context: ToolContext = {

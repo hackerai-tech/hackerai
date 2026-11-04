@@ -3,12 +3,66 @@ import {
   buildDeliverCaptchaScript,
   DETECT_CHALLENGES_SCRIPT,
   isCaptchaDemo,
+  isSupportedCaptchaTarget,
 } from "../detection";
 
 const inspect = () =>
   browserChallengeObservation.parse(window.eval(DETECT_CHALLENGES_SCRIPT));
 beforeEach(() => {
   document.body.innerHTML = "";
+});
+
+it("requires an exact server-approved URL, kind and site key for non-demo solving", () => {
+  const widget = {
+    kind: "hcaptcha" as const,
+    siteKey: "public-widget-key",
+    invisible: false,
+    tokenPresent: false,
+  };
+  const url = "https://authorized.example.test/login";
+  const configuration = JSON.stringify([
+    { url, kind: widget.kind, siteKey: widget.siteKey },
+  ]);
+  expect(isSupportedCaptchaTarget(url, widget, configuration)).toBe(true);
+  expect(isSupportedCaptchaTarget(url, widget, "")).toBe(false);
+  expect(isSupportedCaptchaTarget(url + "/other", widget, configuration)).toBe(
+    false,
+  );
+  expect(
+    isSupportedCaptchaTarget(
+      url,
+      { ...widget, siteKey: "unapproved-site-key" },
+      configuration,
+    ),
+  ).toBe(false);
+  expect(
+    isSupportedCaptchaTarget(
+      url,
+      { ...widget, kind: "recaptcha_v2" },
+      configuration,
+    ),
+  ).toBe(false);
+});
+
+it.each([
+  "https://user:password@authorized.example.test/login",
+  "https://authorized.example.test/login?token=private",
+  "https://authorized.example.test/login#private",
+  "http://authorized.example.test/login",
+])("rejects credential-bearing or insecure target configuration: %s", (url) => {
+  const widget = {
+    kind: "hcaptcha" as const,
+    siteKey: "public-widget-key",
+    invisible: false,
+    tokenPresent: false,
+  };
+  expect(
+    isSupportedCaptchaTarget(
+      url,
+      widget,
+      JSON.stringify([{ url, kind: widget.kind, siteKey: widget.siteKey }]),
+    ),
+  ).toBe(false);
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -67,6 +121,24 @@ it("delivers to the observed widget and callback without claiming website accept
   expect(callback).toHaveBeenCalledWith("sensitive-response");
   expect(JSON.stringify(result)).not.toContain("sensitive-response");
   delete (window as unknown as Record<string, unknown>).captchaDone;
+});
+
+it("delivers an hCaptcha response to its own field without exposing it in results", () => {
+  document.body.innerHTML =
+    '<form><div class="h-captcha" data-sitekey="h-key"></div><textarea name="h-captcha-response"></textarea></form>';
+  const observation = inspect();
+  const result = window.eval(
+    buildDeliverCaptchaScript(
+      observation,
+      observation.widgets[0],
+      "private-h-response",
+    ),
+  );
+  expect(result).toEqual({ status: "token_delivered", websiteAccepted: false });
+  expect(
+    (document.querySelector("textarea") as HTMLTextAreaElement).value,
+  ).toBe("private-h-response");
+  expect(JSON.stringify(result)).not.toContain("private-h-response");
 });
 
 it.each(["navigation", "document", "widget", "already completed"])(

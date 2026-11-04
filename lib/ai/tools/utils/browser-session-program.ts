@@ -58,7 +58,7 @@ if action == 'prepare':
         # server can only create the paused marker after the current command
         # exits; subsequent CLI invocations wait until explicit resume.
         wrapper = '''#!/usr/bin/env python3
-import fcntl, os, pathlib, sys, time
+import fcntl, json, os, pathlib, sys, time
 root = pathlib.Path(%r)
 fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -74,6 +74,26 @@ for i, arg in enumerate(sys.argv[1:]):
         name = arg.split('=', 1)[1]
 if not name or len(name) > 80 or '/' in name or '\\x00' in name:
     raise RuntimeError('Invalid browser session name')
+fallback = root / 'fallback-session'
+if fallback.exists():
+    selected = json.loads(fallback.read_text())
+    if name not in ('default', selected['original'], selected['name']):
+        raise RuntimeError('The fallback browser is pinned to this run')
+    args = []
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+        elif arg == '--session':
+            skip_next = True
+        elif arg.startswith('--session='):
+            continue
+        elif arg in ('connect', '--cdp', '--auto-connect', '--provider', '--profile') or arg.startswith(('--cdp=', '--provider=', '--profile=')):
+            raise RuntimeError('The fallback browser connection is pinned')
+        else:
+            args.append(arg)
+    name = selected['name']
+    sys.argv = [sys.argv[0], '--session', name, '--cdp', selected['endpoint'], *args]
 (root / 'active-session').write_text(name)
 verify = root / 'verify-required'
 if verify.exists():
@@ -83,7 +103,7 @@ if verify.exists():
     for arg in args:
         if skip_next:
             skip_next = False
-        elif arg == '--session':
+        elif arg in ('--session', '--cdp'):
             skip_next = True
         elif arg.startswith('--session=') or arg.startswith('-'):
             continue

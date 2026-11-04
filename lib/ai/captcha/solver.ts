@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
-import { isSupportedCaptchaDemo, type CaptchaWidget } from "./detection";
+import { isSupportedCaptchaTarget, type CaptchaWidget } from "./detection";
 
 const providerResponse = z.object({
   errorId: z.number().int(),
@@ -34,9 +34,8 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
     async solve(url, widget, signal, onTaskCreated) {
       if (
         !apiKey ||
-        !isSupportedCaptchaDemo(url, widget) ||
+        !isSupportedCaptchaTarget(url, widget) ||
         !/^[A-Za-z0-9_-]{10,256}$/.test(widget.siteKey) ||
-        widget.kind === "hcaptcha" ||
         widget.invisible
       )
         throw new Error("CAPTCHA provider or challenge is unsupported.");
@@ -72,7 +71,9 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           type:
             widget.kind === "recaptcha_v2"
               ? "RecaptchaV2TaskProxyless"
-              : "TurnstileTaskProxyless",
+              : widget.kind === "hcaptcha"
+                ? "HCaptchaTaskProxyless"
+                : "TurnstileTaskProxyless",
           websiteURL: url,
           websiteKey: widget.siteKey,
         },
@@ -89,7 +90,7 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         });
         if (result.status === "processing") continue;
         const token =
-          widget.kind === "recaptcha_v2"
+          widget.kind === "recaptcha_v2" || widget.kind === "hcaptcha"
             ? result.solution?.gRecaptchaResponse
             : result.solution?.token;
         const costDollars = Number(result.cost);
