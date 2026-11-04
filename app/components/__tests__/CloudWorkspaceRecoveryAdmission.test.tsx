@@ -80,6 +80,40 @@ it("holds an uncertain confirmation through failed status reads without repeatin
   expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
 });
 
+it.each([
+  ["offered", "Not now"],
+  ["declined", "Review recovery"],
+])(
+  "applies a concurrent recovery returned by the %s decision after another panel's read",
+  async (status, button) => {
+    let finishPost!: (value: ReturnType<typeof response>) => void;
+    fetchMock.mockImplementation((_url, options) =>
+      options?.method === "POST"
+        ? new Promise((resolve) => {
+            finishPost = resolve;
+          })
+        : Promise.resolve(response(status)),
+    );
+    render(<Harness second />);
+    await act(async () => {});
+    fireEvent.click(screen.getAllByRole("button", { name: button })[0]);
+    fetchMock.mockImplementation((_url, options) =>
+      options?.method === "POST"
+        ? Promise.reject(new Error("unexpected repeated POST"))
+        : Promise.resolve(response("hidden")),
+    );
+    await act(async () => jest.advanceTimersByTimeAsync(5000));
+    expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+    await act(async () => finishPost(response("recovering")));
+    expect(screen.getByTestId("gate")).toHaveTextContent(
+      "recovery is in progress",
+    );
+    expect(
+      fetchMock.mock.calls.filter(([, options]) => options?.method === "POST"),
+    ).toHaveLength(1);
+  },
+);
+
 it("ignores the other panel's stale clear read and retains the block across chat remounts", async () => {
   let finishOld!: (value: ReturnType<typeof response>) => void;
   let finishNew!: (value: ReturnType<typeof response>) => void;
@@ -114,6 +148,23 @@ it("ignores the other panel's stale clear read and retains the block across chat
   );
   await act(async () => finishNew(response("recovered")));
   expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+});
+
+it("does not invent a running recovery when a decline and its status check fail", async () => {
+  fetchMock
+    .mockResolvedValueOnce(response("offered"))
+    .mockRejectedValue(new Error("offline"));
+  render(<Harness />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Recover workspace" }),
+  ).toBeVisible();
+  expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
+  expect(
+    fetchMock.mock.calls.filter(([, options]) => options?.method === "POST"),
+  ).toHaveLength(1);
 });
 
 it("does not turn a failed initial status lookup into an indefinite outage", async () => {

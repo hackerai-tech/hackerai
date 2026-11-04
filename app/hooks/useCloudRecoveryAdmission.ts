@@ -89,6 +89,15 @@ export function useCloudRecoveryAdmission(scope: object = defaultScope) {
     },
     [scope],
   );
+  const recordDecision = useCallback((status?: Status) => {
+    // Every successful POST can observe a concurrent recovery. Its result is
+    // newer than reads issued before it settled, including decline/reopen.
+    dispatch({
+      sequence: ++sequence.current,
+      status,
+      confirming: confirming.current,
+    });
+  }, []);
   const beginConfirmation = useCallback(() => {
     if (confirming.current) return;
     confirming.current = true;
@@ -113,10 +122,18 @@ export function useCloudRecoveryAdmission(scope: object = defaultScope) {
       beginRead,
       finishRead,
       beginConfirmation,
+      recordDecision,
       sendDisabledReason,
       recoveryStarted: state.confirming || state.availability === "held",
     }),
-    [beginRead, finishRead, beginConfirmation, sendDisabledReason, state],
+    [
+      beginRead,
+      finishRead,
+      beginConfirmation,
+      recordDecision,
+      sendDisabledReason,
+      state,
+    ],
   );
 }
 

@@ -206,12 +206,14 @@ export function CloudWorkspaceRecovery({
       });
       if (!response.ok) throw new Error("Recovery confirmation unavailable");
       const next = await response.json();
-      finishConfirmation?.(next.status);
+      if (finishConfirmation) finishConfirmation(next.status);
+      else admission?.recordDecision(next.status);
       updateView(next);
     } catch {
       finishConfirmation?.("recovering");
       // The server may have accepted consent. Read status; never repeat POST.
-      updateView({ status: "recovering", step: "queued" });
+      if (decision === true)
+        updateView({ status: "recovering", step: "queued" });
       setError(true);
       void refresh();
     } finally {
