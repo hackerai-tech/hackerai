@@ -56,7 +56,8 @@ export async function POST(req: NextRequest) {
       { subscription_tier: subscription },
     );
     const enabled = assignment === true || assignment === "test";
-    if (assignment === undefined) return empty();
+    // A disabled flag is not a randomized control assignment.
+    if (!enabled && assignment !== "control") return empty();
     const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
     const convex = getConvexClient(signal);
     const chat = await convex.query(api.chats.getChatById, {
@@ -96,9 +97,20 @@ export async function POST(req: NextRequest) {
     )
       return empty();
     const mode = chat.default_model_slug === "ask" ? "ask" : "agent";
+    // Enrollment eligibility must be identical in both randomized arms.
+    await assertUserCanMakeCostIncurringRequest(userId, { signal });
+    await enforceRegionalSubscriptionFirst({
+      userId,
+      subscription,
+      country: subscriptionFirstCountryFromRequest(req),
+      surface: mode,
+      captureExposure: false,
+    });
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
       flag_key: NEXT_ACTIONS_FLAG,
+      experiment_version: "next-actions-v1",
+      [`$feature/${NEXT_ACTIONS_FLAG}`]: enabled ? "test" : "control",
       chat_id: chatId,
       message_id: messageId,
       mode,
@@ -115,14 +127,6 @@ export async function POST(req: NextRequest) {
       },
     });
     if (!enabled) return empty();
-    await assertUserCanMakeCostIncurringRequest(userId, { signal });
-    await enforceRegionalSubscriptionFirst({
-      userId,
-      subscription,
-      country: subscriptionFirstCountryFromRequest(req),
-      surface: mode,
-      captureExposure: false,
-    });
     const redis = createRedisClient();
     if (
       !redis ||

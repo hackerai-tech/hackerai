@@ -240,3 +240,47 @@ test("analytics flush failure after the response does not reject or lose the dra
   await expect(flush()).resolves.toBeUndefined();
   expect((await result.json()).suggestions).toHaveLength(1);
 });
+
+test.each(["control", "test"])(
+  "records eligible experiment assignment for %s without conflating it with visible exposure",
+  async (variant) => {
+    jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(variant);
+    await POST(request());
+    expect(capture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "contextual_next_actions_eligible",
+        properties: expect.objectContaining({
+          assignment: variant,
+          "$feature/contextual-next-actions": variant,
+          experiment_version: "next-actions-v1",
+        }),
+      }),
+    );
+    expect(assertUserCanMakeCostIncurringRequest).toHaveBeenCalledTimes(1);
+    expect(enforceRegionalSubscriptionFirst).toHaveBeenCalledTimes(1);
+    expect(generateNextActions).toHaveBeenCalledTimes(
+      variant === "test" ? 1 : 0,
+    );
+    expect(
+      capture.mock.calls.some(
+        ([entry]) => entry.event === "contextual_next_actions_exposed",
+      ),
+    ).toBe(false);
+  },
+);
+
+test("disabled flag does not enroll users as controls", async () => {
+  jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
+  await POST(request());
+  expect(capture).not.toHaveBeenCalled();
+});
+
+test("ineligible control users are not enrolled", async () => {
+  jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
+  jest
+    .mocked(assertUserCanMakeCostIncurringRequest)
+    .mockRejectedValueOnce(new Error("suspended"));
+  await POST(request());
+  expect(capture).not.toHaveBeenCalled();
+  expect(generateNextActions).not.toHaveBeenCalled();
+});
