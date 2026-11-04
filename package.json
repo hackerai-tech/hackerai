@@ -287,6 +287,7 @@
       "trigger.dev>minimatch": "10.2.3"
     },
     "patchedDependencies": {
+      "@shikijs/engine-oniguruma@4.6.0": "patches/@shikijs__engine-oniguruma@4.6.0.patch",
       "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",
       "brace-expansion@5.0.12": "patches/brace-expansion@5.0.12.patch",
       "convex@1.46.0": "patches/convex@1.46.0.patch",

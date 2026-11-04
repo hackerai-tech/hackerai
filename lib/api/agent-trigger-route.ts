@@ -457,6 +457,42 @@ export const finalizeStartedAgentRun = async ({
       ]);
 
     failureStage = "associate_run";
+    let expectedApprovalSessionId: string | null = null;
+    if (!goal) {
+      const previousChat = await getChatById({ id: chatId });
+      const previousRunId = previousChat?.active_trigger_run_id ?? null;
+      expectedApprovalSessionId =
+        previousChat?.active_agent_approval_session_id ?? null;
+      if (
+        previousRunId !== null &&
+        previousRunId !== runId &&
+        previousRunId !== expectedRunId
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Another Agent run started in this chat. Reconnect to that run before sending again.",
+          { agent_run_association: "stale" },
+        );
+      }
+      // Keep the previous ownership record until both cleanup operations finish.
+      // A failed close must remain discoverable by Stop or a later send.
+      if (previousRunId && previousRunId !== runId) {
+        failureStage = "cancel_previous_run";
+        await cancelAgentTriggerRun(previousRunId);
+      }
+      if (
+        expectedApprovalSessionId &&
+        expectedApprovalSessionId !== approvalSessionId
+      ) {
+        failureStage = "close_previous_session";
+        await closeAgentApprovalSession(
+          expectedApprovalSessionId,
+          "agent-run-replaced",
+        );
+      }
+    }
+
+    failureStage = "associate_run";
     // Goal startup has its own generation fence and must not reattach a worker
     // that already finished. Ordinary sends atomically replace the prior owner.
     const association = goal
@@ -471,6 +507,7 @@ export const finalizeStartedAgentRun = async ({
         : "stale"
       : await replaceActiveTriggerRun({
           expectedRunId,
+          expectedApprovalSessionId,
           chatId,
           triggerRunId: runId,
           approvalSessionId: approvalSessionId ?? null,
@@ -488,20 +525,6 @@ export const finalizeStartedAgentRun = async ({
         "The chat was deleted while the Agent run was starting.",
         { agent_run_association: association },
       );
-    }
-
-    if (association.previousRunId && association.previousRunId !== runId) {
-      // Cancel only the owner displaced by this transaction. Its conditional
-      // cleanup cannot detach the replacement, and persisted output is retained.
-      failureStage = "cancel_previous_run";
-      await cancelAgentTriggerRun(association.previousRunId);
-      if (association.previousApprovalSessionId !== approvalSessionId) {
-        failureStage = "close_previous_session";
-        await closeAgentApprovalSession(
-          association.previousApprovalSessionId ?? undefined,
-          "agent-run-replaced",
-        );
-      }
     }
 
     return {

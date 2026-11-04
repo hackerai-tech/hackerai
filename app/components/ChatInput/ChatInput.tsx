@@ -1307,6 +1307,24 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
+              goalMenu={
+                isMobile === true &&
+                user &&
+                chatMode === "agent" &&
+                subscription !== "free" &&
+                goalEnabled
+                  ? {
+                      active: goalMode,
+                      onSelect: () => {
+                        setGoalMode(true);
+                      },
+                      onFocusComposer: () =>
+                        composerTextareaRef.current?.focus({
+                          preventScroll: true,
+                        }),
+                    }
+                  : undefined
+              }
               goalControl={
                 goalMode ? (
                   <GoalModeButton

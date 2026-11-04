@@ -1,6 +1,9 @@
 "use client";
 
-import { AttachmentButton } from "@/app/components/AttachmentButton";
+import {
+  AttachmentButton,
+  type AttachmentButtonProps,
+} from "@/app/components/AttachmentButton";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
@@ -16,11 +19,13 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   goalControl?: React.ReactNode;
-  onAttachClick: () => void;
+  goalMenu?: AttachmentButtonProps["goalMenu"];
+  onAttachClick: AttachmentButtonProps["onAttachClick"];
 }
 
 export function ChatInputToolbar({
   goalControl,
+  goalMenu,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -60,6 +65,7 @@ export function ChatInputToolbar({
       >
         <div className="shrink-0">
           <AttachmentButton
+            goalMenu={goalMenu}
             onAttachClick={onAttachClick}
             disabled={!isOnline}
           />

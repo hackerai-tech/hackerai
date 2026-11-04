@@ -185,9 +185,12 @@ export const createAgentCancelPost =
           );
         }
       }
-      stage = "close_approval_session";
-      await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
+        stage = "close_approval_session";
+        await closeAgentApprovalSession(
+          approvalSessionId,
+          "agent-run-canceled",
+        );
         if (approvalSessionId) {
           stage = "clear_active_run";
           await setActiveTriggerRun({
@@ -203,7 +206,34 @@ export const createAgentCancelPost =
       }
 
       stage = "cancel_trigger_run";
-      await cancelAgentTriggerRun(runId);
+      // Approval cleanup must not prevent Stop from reaching the worker.
+      // Await both outcomes before clearing ownership or acknowledging success.
+      const [cancellation, approvalClose] = await Promise.allSettled([
+        cancelAgentTriggerRun(runId).finally(() => {
+          stage = "close_approval_session";
+        }),
+        closeAgentApprovalSession(approvalSessionId, "agent-run-canceled"),
+      ]);
+      if (cancellation.status === "rejected") {
+        if (approvalClose.status === "rejected") {
+          logger.warn(
+            "Approval cleanup also failed during Agent cancellation",
+            {
+              event: "agent_cancel_approval_cleanup_failed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              approval_session_id: approvalSessionId,
+              request_id: requestId,
+            },
+          );
+        }
+        stage = "cancel_trigger_run";
+        throw cancellation.reason;
+      }
+      if (approvalClose.status === "rejected") {
+        stage = "close_approval_session";
+        throw approvalClose.reason;
+      }
       stage = "clear_active_run";
       await setActiveTriggerRun({
         chatId,

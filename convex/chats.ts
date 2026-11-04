@@ -1741,6 +1741,7 @@ export const replaceActiveTriggerRun = mutation({
     chatId: v.string(),
     triggerRunId: v.string(),
     expectedRunId: v.union(v.string(), v.null()),
+    expectedApprovalSessionId: v.optional(v.union(v.string(), v.null())),
     approvalSessionId: v.union(v.string(), v.null()),
   },
   returns: v.union(
@@ -1769,6 +1770,17 @@ export const replaceActiveTriggerRun = mutation({
       currentRunId !== null &&
       currentRunId !== args.triggerRunId &&
       currentRunId !== args.expectedRunId
+    )
+      return "stale" as const;
+    const currentApprovalSessionId =
+      chat.active_agent_approval_session_id ?? null;
+    // Cleanup may have cleared the old owner while the caller was awaiting it.
+    // A different retained session must not be overwritten without cleanup.
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      currentApprovalSessionId !== null &&
+      currentApprovalSessionId !== args.approvalSessionId &&
+      currentApprovalSessionId !== args.expectedApprovalSessionId
     )
       return "stale" as const;
     const previous = {
