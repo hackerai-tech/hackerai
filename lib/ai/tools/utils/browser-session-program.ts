@@ -92,8 +92,8 @@ active.write_text(name)
 verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]
-    if any(arg in ('--cdp', '--auto-connect', '--provider', '--profile') or arg.startswith(('--cdp=', '--auto-connect=', '--provider=', '--profile=')) for arg in args):
-        print('Browser handoff verification must inspect the current browser. Run agent-browser snapshot -i without connection or profile options.', file=sys.stderr)
+    if any(arg in ('--cdp', '--auto-connect', '--provider', '-p', '--profile', '--namespace', '--config') or arg.startswith(('--cdp=', '--auto-connect=', '--provider=', '--profile=', '--namespace=', '--config=')) for arg in args):
+        print('Browser handoff verification must inspect the current browser. Run agent-browser snapshot -i without connection, profile, namespace or config options.', file=sys.stderr)
         sys.exit(75)
     command = None
     skip_next = False

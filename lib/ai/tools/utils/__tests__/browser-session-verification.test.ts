@@ -50,8 +50,13 @@ export function verifyBrowserResumeTargets() {
       ["--auto-connect"],
       ["--provider", "other"],
       ["--provider=other"],
+      ["-p", "other"],
       ["--profile", "/tmp/other-profile"],
       ["--profile=/tmp/other-profile"],
+      ["--namespace", "other"],
+      ["--namespace=other"],
+      ["--config", "/tmp/other-config.json"],
+      ["--config=/tmp/other-config.json"],
     ]) {
       for (const args of [
         [...options, "snapshot", "-i"],
