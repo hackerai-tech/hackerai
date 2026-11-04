@@ -40,6 +40,7 @@ interface SandboxSelectorProps {
   triggerLabel?: string;
   compact?: boolean;
   menuAlign?: "start" | "center" | "end";
+  className?: string;
 }
 
 interface ConnectionOption {
@@ -58,6 +59,7 @@ export function SandboxSelector({
   triggerLabel,
   compact = false,
   menuAlign = "start",
+  className,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -345,7 +347,7 @@ export function SandboxSelector({
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
-          className={buttonClassName}
+          className={`${buttonClassName} ${className ?? ""}`}
           title={triggerLabel ?? selectedOption?.label}
           aria-label={triggerLabel ?? selectedOption.label}
         >

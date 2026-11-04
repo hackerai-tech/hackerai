@@ -107,7 +107,7 @@ const ChatInputLoadingState = ({
     role="status"
   >
     <div className="mx-auto w-full min-w-0 max-w-full sm:max-w-[768px]">
-      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto bg-background">
+      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto md:bg-background">
         {topNotice}
       </div>
       <div
@@ -1033,7 +1033,7 @@ const ChatInputContent = ({
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
-          className={`flex min-h-0 shrink flex-col overflow-y-auto bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
           {isOffline && (
@@ -1041,7 +1041,7 @@ const ChatInputContent = ({
               role="status"
               aria-live="polite"
               data-testid="offline-status"
-              className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
+              className="computer-reconnection-warning mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
             >
               <div className="flex min-w-0 flex-1 items-start gap-2">
                 <WifiOff
@@ -1120,6 +1120,7 @@ const ChatInputContent = ({
                   compact
                   size="sm"
                   menuAlign="end"
+                  className="h-8 rounded-full border bg-background/95 shadow-sm backdrop-blur-md"
                 />
               </div>
             </div>
