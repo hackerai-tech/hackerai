@@ -28,6 +28,7 @@ afterEach(() => {
   process.env = originalEnv;
   document.body.innerHTML = "";
   document.body.removeAttribute("data-browserless-demo-ready");
+  sessionStorage.clear();
 });
 
 it.each(["PRODUCTION", "DEVELOPMENT"])(
@@ -79,6 +80,71 @@ it("recognizes the current GeeTest v4 demo markup before attempting a solve", ()
     sessionStorage,
   );
   expect(document.body.getAttribute("data-browserless-demo-ready")).toBe("1");
+});
+
+it("submits a completed reCAPTCHA widget without unsupported Boolean exports", () => {
+  const query = buildBrowserlessDemoQuery("recaptcha");
+  const script = query.match(
+    /submit: evaluate\(content: ("(?:\\.|[^"\\])*")\)/,
+  )?.[1];
+  if (!script) throw new Error("Missing demo submission");
+  document.body.innerHTML =
+    '<textarea name="g-recaptcha-response">test-response</textarea><button id="recaptcha-demo-submit">Submit</button>';
+  const clicked = jest.fn();
+  document.querySelector("button")!.addEventListener("click", clicked);
+  new Function("location", "document", "sessionStorage", JSON.parse(script))(
+    { origin: "https://www.google.com", pathname: "/recaptcha/api2/demo" },
+    document,
+    sessionStorage,
+  );
+  expect(clicked).toHaveBeenCalledTimes(1);
+  expect(sessionStorage.getItem("browserless-demo-submitted")).toBe("1");
+  sessionStorage.removeItem("browserless-demo-submitted");
+});
+
+it("recognizes Google's server-rendered verification success page", () => {
+  const query = buildBrowserlessDemoQuery("recaptcha");
+  const script = query.match(
+    /outcome: evaluate\(content: ("(?:\\.|[^"\\])*")\)/,
+  )?.[1];
+  if (!script) throw new Error("Missing demo outcome");
+  document.body.innerHTML =
+    '<div class="recaptcha-success">Verification Success...</div>';
+  sessionStorage.setItem("browserless-demo-submitted", "1");
+  const result = new Function(
+    "location",
+    "document",
+    "sessionStorage",
+    JSON.parse(script),
+  )(
+    { origin: "https://www.google.com", pathname: "/recaptcha/api2/demo" },
+    document,
+    sessionStorage,
+  );
+  expect(JSON.parse(result)).toEqual({ submitted: true, accepted: true });
+});
+
+it.each([
+  { origin: "https://www.google.com", response: "" },
+  { origin: "https://other.example", response: "test-response" },
+])("does not submit an incomplete widget or changed origin: %j", (state) => {
+  const query = buildBrowserlessDemoQuery("recaptcha");
+  const script = query.match(
+    /submit: evaluate\(content: ("(?:\\.|[^"\\])*")\)/,
+  )?.[1];
+  if (!script) throw new Error("Missing demo submission");
+  document.body.innerHTML =
+    '<textarea name="g-recaptcha-response"></textarea><button id="recaptcha-demo-submit">Submit</button>';
+  document.querySelector("textarea")!.value = state.response;
+  const clicked = jest.fn();
+  document.querySelector("button")!.addEventListener("click", clicked);
+  new Function("location", "document", "sessionStorage", JSON.parse(script))(
+    { origin: state.origin, pathname: "/recaptcha/api2/demo" },
+    document,
+    sessionStorage,
+  );
+  expect(clicked).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem("browserless-demo-submitted")).toBeNull();
 });
 
 it("keeps the key in the provider auth header and requires website acceptance", async () => {

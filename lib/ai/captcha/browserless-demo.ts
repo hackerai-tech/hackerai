@@ -12,14 +12,16 @@ const demos = {
   recaptcha: {
     url: "https://www.google.com/recaptcha/api2/demo",
     widget: ".g-recaptcha",
+    response: '[name="g-recaptcha-response"]',
     submit: "#recaptcha-demo-submit",
-    success: "/You are verified!?/i.test(document.body.innerText)",
+    success: '!!document.querySelector(".recaptcha-success")',
     type: "recaptcha",
     controlOnly: false,
   },
   hcaptcha: {
     url: "https://accounts.hcaptcha.com/demo",
     widget: ".h-captcha",
+    response: '[name="h-captcha-response"]',
     submit: "#hcaptcha-demo-submit",
     success:
       '/Your hCaptcha token is valid|"success"\\s*:\\s*true/i.test(document.body.innerText)',
@@ -30,6 +32,7 @@ const demos = {
   turnstile: {
     url: "https://2captcha.com/demo/cloudflare-turnstile",
     widget: ".cf-turnstile",
+    response: '[name="cf-turnstile-response"]',
     submit: null,
     success:
       'document.body.innerText.includes("Captcha is passed successfully!")',
@@ -40,6 +43,7 @@ const demos = {
   geetest: {
     url: "https://2captcha.com/demo/geetest-v4",
     widget: ".geetest_captcha",
+    response: '[name="geetest_validate"], [name="captcha_output"]',
     submit: null,
     success:
       'document.body.innerText.includes("Captcha is passed successfully!")',
@@ -95,7 +99,11 @@ export function buildBrowserlessDemoQuery(
     ? `document.querySelector(${JSON.stringify(demo.submit)})`
     : `Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim() === 'Check')`;
   const submit = `
-    if (!(${locationCheck}) || \${browserlessSolved} !== true) return false;
+    if (!(${locationCheck})) return false;
+    const responsePresent = Array.from(document.querySelectorAll(${JSON.stringify(demo.response)}))
+      .some(e => typeof e.value === 'string' && e.value.trim().length > 0);
+    const completedWidget = ${demoName === "geetest" ? "!!document.querySelector('.geetest_success, .geetest4_success')" : "false"};
+    if (!responsePresent && !completedWidget) return false;
     const button = ${button};
     if (!button || button.disabled) return false;
     sessionStorage.setItem('browserless-demo-submitted', '1');
@@ -123,7 +131,7 @@ export function buildBrowserlessDemoQuery(
     prepare: evaluate(content: ${JSON.stringify(prepare)}) { value }
     attempt: if(selector: "body[data-browserless-demo-ready='1']") {
       solve(${demo.type ? `type: ${demo.type}, ` : ""}wait: true, timeout: 90000) {
-        found solved @export(as: "browserlessSolved") time
+        found solved time
       }
       submit: evaluate(content: ${JSON.stringify(submit)}) { value }
       accepted: waitForFunction(fn: ${JSON.stringify(demo.success)}, timeout: 8000) { time }
