@@ -93,6 +93,8 @@ beforeEach(() => {
     suggestions: ["Explain the missing impact evidence."],
     inputTokens: 100,
     outputTokens: 30,
+    modelId: "deepseek/deepseek-v4.1-flash-1017",
+    reasoningTokens: 0,
     cost: 0.0001,
   });
 });
@@ -172,6 +174,8 @@ test("provider failure and a new run during generation suppress predictions", as
       suggestions: ["Explain the evidence."],
       inputTokens: 1,
       outputTokens: 1,
+      modelId: "deepseek/deepseek-v4.1-flash-1017",
+      reasoningTokens: 0,
       cost: 0,
     };
   });

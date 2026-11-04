@@ -165,6 +165,8 @@ export async function POST(req: NextRequest) {
         latency_ms: Date.now() - started,
         input_tokens: result.inputTokens,
         output_tokens: result.outputTokens,
+        model: result.modelId,
+        reasoning_tokens: result.reasoningTokens,
         cost_usd: result.cost,
       },
     });
