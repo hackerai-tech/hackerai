@@ -1,4 +1,5 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
+import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
 
 type PostHogEventLike = {
   event?: string;
@@ -386,6 +387,9 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
+    ...(category === "react_max_update_depth"
+      ? getComposerChangeDiagnostics()
+      : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
       ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }
       : {}),

@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useCommittedRef } from "@/app/hooks/useLatestRef";
+import { recordComposerChange } from "@/lib/posthog/composer-change-diagnostics";
 
 export interface ChatInputTextareaProps {
   prediction?: string;
@@ -240,6 +241,8 @@ export function ChatInputTextarea({
           ref={textareaRef}
           value={input}
           onChange={(e) => {
+            // Record before setInput: React can throw synchronously in the setter.
+            recordComposerChange(e.nativeEvent);
             setInput(e.target.value);
           }}
           aria-label={defaultPlaceholder}
