@@ -5,6 +5,7 @@ export const NEXT_ACTIONS_VERSION = 1;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
+    restoreOnly: z.boolean().optional(),
     messageId: z
       .string()
       .min(1)

@@ -70,6 +70,7 @@ interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
   interruptedPredictionTurn?: { chatId: string } | null;
   latestMessageId?: string;
+  latestMessageIsAssistant?: boolean;
   goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
   hasActiveGoalRun?: boolean;
   pauseGoalOnSend?: boolean;
@@ -266,6 +267,7 @@ const ChatInputContent = ({
   completedPredictionTurn,
   interruptedPredictionTurn,
   latestMessageId,
+  latestMessageIsAssistant,
   goalPanel,
   hasActiveGoalRun = false,
   pauseGoalOnSend = false,
@@ -917,6 +919,7 @@ const ChatInputContent = ({
     completedTurn: completedPredictionTurn,
     interruptedTurn: interruptedPredictionTurn,
     latestMessageId,
+    latestMessageIsAssistant,
     status,
     input,
     getInput,

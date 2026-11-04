@@ -1,5 +1,5 @@
 import { after, type NextRequest } from "next/server";
-import { POST } from "../route";
+import { POST, DELETE } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
@@ -30,6 +30,8 @@ jest.mock("@/lib/experiments/regional-subscription-first.server", () => ({
   subscriptionFirstCountryFromRequest: () => undefined,
 }));
 const query = jest.fn();
+const mutation = jest.fn();
+let saved: unknown = null;
 const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
@@ -52,7 +54,10 @@ const request = (body = { chatId, messageId: "answer" }) =>
 beforeEach(() => {
   jest.clearAllMocks();
   shutdown.mockResolvedValue(undefined);
+  saved = null;
+  mutation.mockImplementation(async (_name, args) => args.batch ?? true);
   chat = {
+    id: chatId,
     user_id: "owner",
     finish_reason: "stop",
     last_run_finished_at: Date.now(),
@@ -64,31 +69,33 @@ beforeEach(() => {
     emailVerified: true,
   });
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
-  jest.mocked(getConvexClient).mockReturnValue({ query } as never);
+  jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
   query.mockImplementation(async (_name, args) =>
-    args.paginationOpts
-      ? {
-          page: [
-            {
-              id: "answer",
-              role: "assistant",
-              parts: [
-                {
-                  type: "text",
-                  text: "Synthetic finding lacks impact evidence.",
-                },
-              ],
-            },
-            {
-              id: "user",
-              role: "user",
-              parts: [
-                { type: "text", text: "Explain this synthetic finding." },
-              ],
-            },
-          ],
-        }
-      : chat,
+    args.chatId && !args.paginationOpts
+      ? saved
+      : args.paginationOpts
+        ? {
+            page: [
+              {
+                id: "answer",
+                role: "assistant",
+                parts: [
+                  {
+                    type: "text",
+                    text: "Synthetic finding lacks impact evidence.",
+                  },
+                ],
+              },
+              {
+                id: "user",
+                role: "user",
+                parts: [
+                  { type: "text", text: "Explain this synthetic finding." },
+                ],
+              },
+            ],
+          }
+        : chat,
   );
   jest.mocked(createRedisClient).mockReturnValue({ eval: reserve } as never);
   reserve.mockResolvedValue(1);
@@ -282,5 +289,68 @@ test("ineligible control users are not enrolled", async () => {
     .mockRejectedValueOnce(new Error("suspended"));
   await POST(request());
   expect(capture).not.toHaveBeenCalled();
+  expect(generateNextActions).not.toHaveBeenCalled();
+});
+
+test("restores an older saved batch without model work or a second enrollment event", async () => {
+  chat.last_run_finished_at = Date.now() - 86_400_000;
+  const batch = {
+    batchId: "saved",
+    messageId: "answer",
+    mode: "ask",
+    suggestions: ["Explain the missing impact evidence."],
+  };
+  saved = { consumed: false, batch };
+  const result = await POST(
+    request({ chatId, messageId: "answer", restoreOnly: true } as never),
+  );
+  expect(await result.json()).toEqual(batch);
+  expect(generateNextActions).not.toHaveBeenCalled();
+  expect(reserve).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+});
+
+test.each(["consumed", "absent", "control", "disabled"])(
+  "restoration stays empty for %s without generating",
+  async (condition) => {
+    saved =
+      condition === "consumed"
+        ? { consumed: true }
+        : condition === "absent"
+          ? null
+          : { consumed: false, batch: { suggestions: ["Private suggestion"] } };
+    if (condition === "control")
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
+    if (condition === "disabled")
+      jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly: true } as never),
+    );
+    expect(await result.json()).toEqual({ suggestions: [] });
+    expect(generateNextActions).not.toHaveBeenCalled();
+  },
+);
+
+test("only returns a new batch after the database commits it", async () => {
+  mutation.mockResolvedValueOnce(null);
+  const result = await POST(request());
+  expect(await result.json()).toEqual({ suggestions: [] });
+  expect(mutation).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      userId: "owner",
+      chatId,
+      messageId: "answer",
+      finishedAt: chat.last_run_finished_at,
+    }),
+  );
+});
+
+test("consumption is bound to the authenticated user rather than caller identity", async () => {
+  await DELETE(request());
+  expect(mutation).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ userId: "owner", chatId, messageId: "answer" }),
+  );
   expect(generateNextActions).not.toHaveBeenCalled();
 });

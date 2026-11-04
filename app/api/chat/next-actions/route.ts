@@ -27,8 +27,9 @@ const empty = (status = 200) =>
       headers: { "Cache-Control": "no-store" },
     },
   );
-// One generation per completed message, including failed/aborted attempts. No
-// content is cached. A fixed per-user hourly budget bounds auxiliary spend.
+// One generation per completed message, including failed/aborted attempts.
+// Redis holds only reservations; validated results are private chat data.
+// A fixed per-user hourly budget bounds auxiliary spend.
 const RESERVE = `
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 local count = tonumber(redis.call('GET', KEYS[2]) or '0')
@@ -75,11 +76,6 @@ export async function POST(req: NextRequest) {
       !chat.active_agent_approval_pending &&
       !chat.canceled_at;
     if (!completed) return empty(409);
-    if (
-      !chat.last_run_finished_at ||
-      Date.now() - chat.last_run_finished_at > 5 * 60_000
-    )
-      return empty();
     const history = await convex.query(api.messages.getMessagesPageForBackend, {
       serviceKey,
       userId,
@@ -106,6 +102,27 @@ export async function POST(req: NextRequest) {
       surface: mode,
       captureExposure: false,
     });
+    const saved = enabled
+      ? await convex.query(api.nextActions.getForBackend, {
+          serviceKey,
+          userId,
+          chatId,
+          messageId,
+        })
+      : null;
+    if (saved)
+      return saved.consumed || !saved.batch
+        ? empty()
+        : NextResponse.json(saved.batch, {
+            headers: { "Cache-Control": "no-store" },
+          });
+    // Returning to a chat only restores existing work; it never spends tokens.
+    if (parsed.data.restoreOnly) return empty();
+    if (
+      !chat.last_run_finished_at ||
+      Date.now() - chat.last_run_finished_at > 5 * 60_000
+    )
+      return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
       flag_key: NEXT_ACTIONS_FLAG,
@@ -206,12 +223,20 @@ export async function POST(req: NextRequest) {
       latestHistory.page[0]?.role !== "assistant"
     )
       return empty();
-    return NextResponse.json(
-      { batchId, messageId, mode, suggestions: result.suggestions },
-      {
-        headers: { "Cache-Control": "no-store" },
-      },
-    );
+    if (!result.suggestions.length) return empty();
+    const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
+      serviceKey,
+      userId,
+      chatId,
+      messageId,
+      finishedAt: chat.last_run_finished_at,
+      batch: { batchId, messageId, mode, suggestions: result.suggestions },
+    });
+    return savedBatch
+      ? NextResponse.json(savedBatch, {
+          headers: { "Cache-Control": "no-store" },
+        })
+      : empty();
   } catch {
     // Optional predictions never surface provider/auth/data errors or content.
     return empty();
@@ -219,5 +244,26 @@ export async function POST(req: NextRequest) {
     // Keep event delivery in the request lifetime without delaying the draft.
     // The 15s request budget leaves room inside maxDuration for this flush.
     if (posthog) after(() => posthog.shutdown(4_000).catch(() => {}));
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const { userId } = await getUserIDAndPro(req);
+    const raw = await req.text();
+    if (raw.length > 512) return empty(400);
+    const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return empty(400);
+    await getConvexClient(
+      AbortSignal.any([req.signal, AbortSignal.timeout(5_000)]),
+    ).mutation(api.nextActions.consumeForBackend, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userId,
+      chatId: parsed.data.chatId,
+      messageId: parsed.data.messageId,
+    });
+    return empty();
+  } catch {
+    return empty();
   }
 }

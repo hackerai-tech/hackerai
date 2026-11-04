@@ -11,6 +11,8 @@ const batch = {
   mode: "ask",
   suggestions: ["Explain the missing evidence.", "Summarize the uncertainty."],
 };
+const generationCalls = () =>
+  jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST");
 const response = () => ({ ok: true, status: 200, json: async () => batch });
 let input = "";
 let attachments = false;
@@ -58,7 +60,7 @@ test("acceptance creates an editable draft; exposure, submission and finish are 
     expect(result.current.accept(0, "keyboard")).toBe(true);
   });
   expect(input).toBe(batch.suggestions[0]);
-  expect(fetch).toHaveBeenCalledTimes(1); // Acceptance never invokes chat/Agent.
+  expect(generationCalls()).toHaveLength(1); // Acceptance never invokes chat/Agent.
   expect(result.current.batch).toBeNull();
   input += " In plain language.";
   rerender({ ...base(), input, chatMode: "agent" });
@@ -145,13 +147,13 @@ test("dismissal survives remount, and existing drafts/attachments prevent genera
   const second = renderHook(() => useNextActions(base()));
   await settle();
   expect(second.result.current.batch).toBeNull();
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(generationCalls()).toHaveLength(1);
   second.unmount();
   sessionStorage.clear();
   input = "saved draft";
   const third = renderHook(() => useNextActions(base()));
   await settle();
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(generationCalls()).toHaveLength(1);
   third.unmount();
   sessionStorage.clear();
   input = "";
@@ -232,7 +234,7 @@ test.each(["pending", "visible"])(
     expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
     rerender(base());
     await settle();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(generationCalls()).toHaveLength(1);
     expect(result.current.batch).toBeNull();
   },
 );
@@ -264,7 +266,7 @@ test.each(["pending", "visible"])(
     expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
     rerender(base());
     await settle();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(generationCalls()).toHaveLength(1);
     expect(result.current.batch).toBeNull();
   },
 );
@@ -277,4 +279,129 @@ test("a mismatched server mode stays silent", async () => {
   expect(result.current.batch).toBeNull();
   act(() => expect(result.current.accept(0, "keyboard")).toBe(false));
   expect(setInput).not.toHaveBeenCalled();
+});
+
+test("returning to a chat restores the saved batch without requiring an in-memory completion", async () => {
+  const first = renderHook(() => useNextActions(base()));
+  await settle();
+  expect(first.result.current.batch?.batchId).toBe("batch");
+  first.unmount();
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
+  const restored = renderHook(() =>
+    useNextActions({
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+    }),
+  );
+  await settle();
+  expect(restored.result.current.batch).toEqual(batch);
+  expect(JSON.parse(String(generationCalls().at(-1)?.[1]?.body))).toEqual({
+    chatId: "chat",
+    messageId: "answer",
+    restoreOnly: true,
+  });
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("switching chats keeps each saved suggestion private to its source and can restore on return", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: {
+      ...base(),
+      latestMessageIsAssistant: true,
+      completedTurn: null,
+    },
+  });
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  jest.mocked(fetch).mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({ suggestions: [] }),
+  } as Response);
+  rerender({
+    ...base(),
+    chatId: "other",
+    latestMessageId: "other-answer",
+    latestMessageIsAssistant: true,
+    completedTurn: null,
+  });
+  expect(result.current.batch).toBeNull();
+  await settle();
+  rerender({ ...base(), latestMessageIsAssistant: true, completedTurn: null });
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
+});
+
+test("dismissal is persisted separately from generation and no saved content is sent", async () => {
+  const { result } = renderHook(() => useNextActions(base()));
+  await settle();
+  act(() => result.current.dismiss());
+  const deletion = jest
+    .mocked(fetch)
+    .mock.calls.find(([, init]) => init?.method === "DELETE");
+  expect(JSON.parse(String(deletion?.[1]?.body))).toEqual({
+    chatId: "chat",
+    messageId: "answer",
+  });
+  expect(deletion?.[1]?.keepalive).toBe(true);
+  expect(JSON.stringify(deletion)).not.toContain(batch.suggestions[0]);
+});
+
+test("a small screen does not fetch or consume a previously saved suggestion", async () => {
+  renderHook(() =>
+    useNextActions({
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+      blocked: true,
+    }),
+  );
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("navigating to a chat with a different mode does not consume its saved batch", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: {
+      ...base(),
+      latestMessageIsAssistant: true,
+      completedTurn: null,
+    },
+  });
+  await settle();
+  jest.mocked(fetch).mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...batch,
+      batchId: "agent-batch",
+      mode: "agent",
+      messageId: "agent-answer",
+    }),
+  } as Response);
+  rerender({
+    ...base(),
+    chatId: "agent-chat",
+    chatMode: "agent",
+    latestMessageId: "agent-answer",
+    latestMessageIsAssistant: true,
+    completedTurn: null,
+  });
+  await settle();
+  expect(result.current.batch?.batchId).toBe("agent-batch");
+  expect(
+    jest
+      .mocked(fetch)
+      .mock.calls.filter(([, init]) => init?.method === "DELETE"),
+  ).toHaveLength(0);
 });

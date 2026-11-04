@@ -31,6 +31,7 @@ type Options = {
   completedTurn?: CompletedPredictionTurn | null;
   interruptedTurn?: { chatId: string } | null;
   latestMessageId?: string;
+  latestMessageIsAssistant?: boolean;
   status: string;
   blocked: boolean;
   input: string;
@@ -40,7 +41,7 @@ type Options = {
 };
 
 // A consumed result cannot reappear after navigation/reconnect. Only opaque IDs
-// are persisted; predictions and draft text never go into analytics/storage here.
+// are cached locally; prediction content is stored privately in Convex, never analytics.
 const CONSUMED_KEY = "next-actions:consumed:v1";
 function consumedKeys(): string[] {
   try {
@@ -97,17 +98,31 @@ export function useNextActions(options: Options): NextActionsController {
     submittedAt: number;
   } | null>(null);
   const submissionInProgress = useRef(false);
+  const messageId = options.latestMessageId;
+  const completedHere = Boolean(
+    options.completedTurn?.chatId === options.chatId &&
+    options.completedTurn?.messageId === messageId,
+  );
   const key =
-    options.completedTurn &&
-    options.completedTurn.chatId === options.chatId &&
-    options.userId
-      ? `${options.userId}:${options.chatId}:${options.completedTurn.messageId}`
+    options.userId &&
+    options.chatId &&
+    messageId &&
+    (options.latestMessageIsAssistant || completedHere)
+      ? `${options.userId}:${options.chatId}:${messageId}`
       : null;
   const keyRef = useRef(key);
   const previousMode = useRef(options.chatMode);
+  const previousOwner = useRef(`${options.userId}:${options.chatId}`);
   useLayoutEffect(() => {
+    if (keyRef.current !== key) {
+      request.current?.abort();
+      request.current = null;
+      batchRef.current = null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Revoke the previous message before accepting a new chat/message identity.
+      setBatch(null);
+    }
     keyRef.current = key;
-  });
+  }, [key]);
 
   const capture = useCallback(
     (
@@ -133,9 +148,27 @@ export function useNextActions(options: Options): NextActionsController {
   );
 
   const invalidate = useCallback(() => {
+    const alreadyConsumed = keyRef.current ? consumed(keyRef.current) : true;
     if (keyRef.current) {
       remember(attempted.current, keyRef.current);
       consume(keyRef.current);
+    }
+    const now = current.current;
+    if (
+      !alreadyConsumed &&
+      keyRef.current &&
+      now.chatId &&
+      now.latestMessageId
+    ) {
+      void fetch("/api/chat/next-actions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chatId: now.chatId,
+          messageId: now.latestMessageId,
+        }),
+        keepalive: true,
+      }).catch(() => {});
     }
     request.current?.abort();
     batchRef.current = null;
@@ -143,13 +176,19 @@ export function useNextActions(options: Options): NextActionsController {
   }, [keyRef]);
 
   useLayoutEffect(() => {
+    const owner = `${options.userId}:${options.chatId}`;
+    if (previousOwner.current !== owner) {
+      previousOwner.current = owner;
+      previousMode.current = options.chatMode;
+      return;
+    }
     if (previousMode.current === options.chatMode) return;
     previousMode.current = options.chatMode;
     // Revoke before paint, including a pending result that could otherwise
     // reappear after switching back. Keep any already accepted draft intact.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Mode changes must abort and discard externally generated predictions before interaction.
     invalidate();
-  }, [options.chatMode, invalidate]);
+  }, [options.chatMode, options.userId, options.chatId, invalidate]);
 
   // Synchronous getters protect the gap between an input event and React commit.
   const canUse = useCallback(() => {
@@ -159,7 +198,8 @@ export function useNextActions(options: Options): NextActionsController {
       !now.blocked &&
       (!batchRef.current || batchRef.current.mode === now.chatMode) &&
       now.status === "ready" &&
-      now.latestMessageId === now.completedTurn?.messageId &&
+      (!batchRef.current ||
+        batchRef.current.messageId === now.latestMessageId) &&
       now.getInput() === "" &&
       !now.hasAttachments(),
     );
@@ -168,6 +208,7 @@ export function useNextActions(options: Options): NextActionsController {
   useEffect(() => {
     accepted.current = null;
     pending.current = null;
+    attempted.current.clear();
     batchRef.current = null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Navigation must discard async results before another chat can display them.
     setBatch(null);
@@ -187,10 +228,11 @@ export function useNextActions(options: Options): NextActionsController {
     if (!key) return;
     if (!canUse()) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Lifecycle changes revoke an already visible async prediction.
-      invalidate();
+      if (batchRef.current || request.current) invalidate();
       return;
     }
-    if (attempted.current.has(key) || consumed(key)) return;
+    const attemptKey = `${key}:${completedHere ? "generate" : "restore"}`;
+    if (attempted.current.has(attemptKey) || consumed(key)) return;
     const controller = new AbortController();
     request.current = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -203,11 +245,15 @@ export function useNextActions(options: Options): NextActionsController {
           !canUse()
         )
           return;
-        remember(attempted.current, eligibleKey);
+        remember(attempted.current, attemptKey);
         const response = await fetch("/api/chat/next-actions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(current.current.completedTurn),
+          body: JSON.stringify({
+            chatId: current.current.chatId,
+            messageId: current.current.latestMessageId,
+            restoreOnly: !completedHere,
+          }),
           signal: controller.signal,
         });
         if (
@@ -230,7 +276,7 @@ export function useNextActions(options: Options): NextActionsController {
           keyRef.current !== eligibleKey ||
           !canUse() ||
           consumed(eligibleKey) ||
-          parsed.data.messageId !== current.current.completedTurn?.messageId
+          parsed.data.messageId !== current.current.latestMessageId
         )
           return;
         batchRef.current = parsed.data;
@@ -245,9 +291,11 @@ export function useNextActions(options: Options): NextActionsController {
       clearTimeout(timer);
       clearTimeout(deadline);
       controller.abort();
+      if (request.current === controller) request.current = null;
     };
   }, [
     key,
+    completedHere,
     options.status,
     options.chatMode,
     options.blocked,
@@ -284,8 +332,7 @@ export function useNextActions(options: Options): NextActionsController {
     !options.blocked &&
     batch.mode === options.chatMode &&
     options.input === "" &&
-    options.latestMessageId === options.completedTurn?.messageId &&
-    batch.messageId === options.completedTurn?.messageId
+    batch.messageId === options.latestMessageId
       ? batch
       : null;
   return {

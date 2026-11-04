@@ -2963,6 +2963,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     completedPredictionTurn={completedPredictionTurn}
                     interruptedPredictionTurn={interruptedPredictionTurn}
                     latestMessageId={messages.at(-1)?.id}
+                    latestMessageIsAssistant={
+                      messages.at(-1)?.role === "assistant"
+                    }
                     goalPanel={goalPanel}
                     hasActiveGoalRun={hasActiveGoalRun}
                     pauseGoalOnSend={pauseGoalOnSend}
