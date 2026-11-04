@@ -258,6 +258,49 @@ describe("agent cancel route", () => {
     );
   });
 
+  it("recovers a failed session close after worker exit using the retained association", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const { clearFinishedAgentRun } = await import("../agent-run-cleanup");
+    const owned = {
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    };
+    mockGetChatById.mockResolvedValue(owned as never);
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(
+      new Error("Unavailable") as never,
+    );
+    const post = createAgentCancelPost({ endpoint: "/api/agent" });
+    await expect(
+      post(request({ chatId: "chat-1", expectedTriggerRunId: "run-1" })),
+    ).rejects.toThrow("unexpected route error");
+    // The worker's independent close also failed. Its finalization must keep
+    // the association so a client retry can still reach the old session.
+    await clearFinishedAgentRun({
+      chatId: "chat-1",
+      triggerRunId: "run-1",
+      approvalSessionId: "approval-1",
+      approvalSessionClosed: false,
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    const response = await post(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(await response.json()).toEqual({ canceled: true, runId: "run-1" });
+    expect(mockCloseAgentApprovalSession.mock.calls).toEqual([
+      ["approval-1", "agent-run-canceled"],
+      ["approval-1", "agent-run-canceled"],
+    ]);
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRunId: "run-1",
+        expectedApprovalSessionId: "approval-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+      }),
+    );
+  });
+
   it("reports an explicit null when a stale cancellation has no active run", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
     mockGetChatById.mockResolvedValue({

@@ -1,3 +1,4 @@
+import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
@@ -146,7 +147,6 @@ import {
   updateChat,
   updateChatTitle,
   getUserCustomization,
-  setActiveTriggerRun,
   persistAgentApprovalGrant,
   getMessagesByChatId,
   getChatById,
@@ -1522,18 +1522,21 @@ const finishCloudSandboxLifecycleForParentRun = async ({
   chatId,
   userId,
   triggerRunId,
+  approvalSessionId,
+  approvalSessionClosed,
 }: {
   chatId: string;
   userId: string;
   triggerRunId: string;
+  approvalSessionId?: string;
+  approvalSessionClosed: boolean;
 }): Promise<void> => {
   try {
-    await setActiveTriggerRun({
+    await clearFinishedAgentRun({
       chatId,
-      triggerRunId: null,
-      approvalSessionId: null,
-      expectedRunId: triggerRunId,
-      clearApprovalPending: true,
+      triggerRunId,
+      approvalSessionId,
+      approvalSessionClosed,
     });
   } catch (error) {
     triggerLogger.warn("[agent-long] active run clear failed", {
@@ -1918,13 +1921,19 @@ export const agentLongTask = task({
       }
     };
     let cleanupBrowserSessions = async () => {};
+    let approvalSessionClosed = false;
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
+      // onCancel can arrive while finally is still closing the session. Do not
+      // cache that pending result and prevent finally from clearing it later.
+      if (approvalSessionId && !approvalSessionClosed) return Promise.resolve();
       cloudSandboxLifecyclePromise ??= finishCloudSandboxLifecycleForParentRun({
         chatId,
         userId,
         triggerRunId: ctx.run.id,
+        approvalSessionId,
+        approvalSessionClosed,
       });
       return cloudSandboxLifecyclePromise;
     };
@@ -6164,6 +6173,7 @@ export const agentLongTask = task({
           await triggerSessions.close(payload.approvalSessionId, {
             reason: "agent-run-ended",
           });
+          approvalSessionClosed = true;
         } catch (error) {
           console.error(
             "[agent-long] failed to close approval session:",

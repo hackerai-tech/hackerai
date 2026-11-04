@@ -1306,7 +1306,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
-      /expectedRunId:\s*triggerRunId,[\s\S]*clearApprovalPending:\s*true/,
+      /await clearFinishedAgentRun\([\s\S]*?triggerRunId,[\s\S]*?approvalSessionId,[\s\S]*?approvalSessionClosed/,
     );
     expect(resumeSrc).toMatch(
       /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
@@ -1351,7 +1351,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("parent completion clears the active run after terminal teardown", () => {
     expect(taskSrc).toMatch(
-      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId/,
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?clearFinishedAgentRun\([\s\S]*?triggerRunId/,
     );
     expect(taskSrc).toMatch(
       /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
