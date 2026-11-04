@@ -56,8 +56,11 @@ explicit window URL, distinct QA identifier and disabled updater. Changing this
 JSON does **not** change the binary's frontend or permissions. Verify the actual
 loaded URL with Computer Use after launch.
 
-For native tests against Preview, use `environment: "preview"`, the exact
-HTTPS Vercel deployment origin and `worker.environment: "preview"`. Independently
+For native tests against Preview, use `environment: "preview"`, either a
+locally built loopback frontend or the exact HTTPS Vercel deployment origin,
+and `worker.environment: "preview"`. Prefer the local frontend to avoid a separate
+Vercel login in the native WebView. `serve` also supports this local frontend
+with Preview services; it still binds only to loopback. Independently
 verify the designated HackerAI Developer Convex account/project/deployment and
 matching Trigger Preview before writing the record. The runner cannot infer
 that mapping from hostnames or the word Preview. It deliberately makes no cloud
