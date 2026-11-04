@@ -66,16 +66,20 @@ const {spawn} = require('node:child_process');
     const command = request.action === 'cleanup'
       ? {id:'captcha-cleanup', action:'close'}
       : {id:'captcha-evaluate', action:'evaluate', script:request.script};
-    const socketFile = path.join(root, 'sockets', name + (process.platform === 'win32' ? '.port' : '.sock'));
-    // A normal close gets one attempt; the independent expiry watchdog can
-    // retry unresponsive cleanup, but never repeats a CAPTCHA delivery.
-    const attempts = request.action === 'cleanup' && request.defer === true ? 3 : 1;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      let socket;
-      let timer;
-      try {
-        let address;
+    const suffix = process.platform === 'win32' ? '.port' : '.sock';
+    const directory = path.join(root, 'sockets');
+    const entries = fs.readdirSync(directory).filter(file => file.endsWith(suffix));
+    // Explicit --session names are legitimate, but inspecting an arbitrary one
+    // of several browsers could deliver a response into the wrong document.
+    if (entries.length > 32 || (request.action === 'evaluate' && entries.length !== 1)) throw Error();
+    const callDaemon = async (file) => {
+      const socketFile = path.join(directory, file);
+      const attempts = request.action === 'cleanup' && request.defer === true ? 3 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        let socket;
+        let timer;
         try {
+          let address;
           const entry = fs.lstatSync(socketFile);
           if (entry.isSymbolicLink() || (process.getuid && entry.uid !== process.getuid())) throw Error();
           if (process.platform === 'win32') {
@@ -86,39 +90,39 @@ const {spawn} = require('node:child_process');
             if (!entry.isSocket()) throw Error();
             address = socketFile;
           }
-        } catch (error) {
-          if (request.action === 'cleanup' && error.code === 'ENOENT') cleanupAllowed = true;
-          throw error;
-        }
-        const response = await new Promise((resolve, reject) => {
-          timer = setTimeout(() => reject(Error()), 7500);
-          socket = net.createConnection(address);
-          socket.setEncoding('utf8');
-          let result = '';
-          socket.once('connect', () => socket.write(JSON.stringify(command) + '\n'));
-          socket.on('error', reject);
-          socket.on('end', () => reject(Error()));
-          socket.on('data', data => {
-            result += data;
-            if (Buffer.byteLength(result) > 65536) { reject(Error()); return; }
-            const newline = result.indexOf('\n');
-            if (newline >= 0) {
-              try { resolve(JSON.parse(result.slice(0,newline))); } catch { reject(Error()); }
-            }
+          const response = await new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(Error()), 7500);
+            socket = net.createConnection(address);
+            socket.setEncoding('utf8');
+            let result = '';
+            socket.once('connect', () => socket.write(JSON.stringify(command) + '\n'));
+            socket.on('error', reject);
+            socket.on('end', () => reject(Error()));
+            socket.on('data', data => {
+              result += data;
+              if (Buffer.byteLength(result) > 65536) { reject(Error()); return; }
+              const newline = result.indexOf('\n');
+              if (newline >= 0) {
+                try { resolve(JSON.parse(result.slice(0,newline))); } catch { reject(Error()); }
+              }
+            });
           });
-        });
-        if (response.success !== true) throw Error();
-        cleanupAllowed = request.action === 'cleanup';
-        console.log(JSON.stringify({ok:true,result:response.data?.result}));
-        return;
-      } catch (error) {
-        if (cleanupAllowed || attempt + 1 === attempts) throw error;
-      } finally {
-        clearTimeout(timer);
-        socket?.destroy();
+          if (response.success !== true) throw Error();
+          return response.data?.result;
+        } catch (error) {
+          if (request.action === 'cleanup' && error.code === 'ENOENT') return;
+          if (attempt + 1 === attempts) throw error;
+        } finally {
+          clearTimeout(timer);
+          socket?.destroy();
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    };
+    const results = await Promise.allSettled(entries.map(callDaemon));
+    if (results.some(result => result.status === 'rejected')) throw Error();
+    cleanupAllowed = request.action === 'cleanup';
+    console.log(JSON.stringify({ok:true,result:request.action === 'evaluate' ? results[0].value : undefined}));
   } catch {
     console.log('{"ok":false}');
     process.exitCode = 1;

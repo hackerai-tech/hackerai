@@ -194,7 +194,11 @@ export async function createBrowserlessTunnel(
   directory: string,
   remote: BrowserlessSession,
   signal: AbortSignal,
-): Promise<{ endpoint: string; close: () => Promise<void> }> {
+): Promise<{
+  endpoint: string;
+  close: () => Promise<void>;
+  closed: Promise<void>;
+}> {
   signal.throwIfAborted();
   if (!isE2BSandbox(sandbox)) throw new Error("Cloud browser required.");
   const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -202,6 +206,10 @@ export async function createBrowserlessTunnel(
   let bridge: ReturnType<typeof bridgeBrowserlessSocket> | undefined;
   let buffer = "";
   let closed = false;
+  let resolveClosed!: () => void;
+  const whenClosed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
   let resolvePort!: (port: number) => void;
   let rejectPort!: (error: Error) => void;
   const portReady = new Promise<number>((resolve, reject) => {
@@ -211,7 +219,7 @@ export async function createBrowserlessTunnel(
   // Attach rejection handling immediately, including failures before setup awaits it.
   void portReady.catch(() => {});
   const close = async () => {
-    if (closed) return;
+    if (closed) return whenClosed;
     closed = true;
     signal.removeEventListener("abort", abort);
     rejectPort(new Error("Browser tunnel ended."));
@@ -220,6 +228,7 @@ export async function createBrowserlessTunnel(
       remote.close(),
       handle && "kill" in handle ? handle.kill() : Promise.resolve(),
     ]);
+    resolveClosed();
   };
   const abort = () => {
     void close();
@@ -288,7 +297,7 @@ export async function createBrowserlessTunnel(
     const port = await portReady;
     signal.throwIfAborted();
     if (closed) throw new Error();
-    return { endpoint: `ws://127.0.0.1:${port}/`, close };
+    return { endpoint: `ws://127.0.0.1:${port}/`, close, closed: whenClosed };
   } catch {
     await close();
     signal.throwIfAborted();

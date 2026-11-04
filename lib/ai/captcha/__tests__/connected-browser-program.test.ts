@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -96,4 +97,47 @@ it("rejects invalid deadlines and inherited user profiles before creating owners
     }
   },
   15_000,
+);
+
+(process.platform === "win32" ? it.skip : it)(
+  "inspects a named owned browser, refuses ambiguity, and closes every owned daemon",
+  async () => {
+    const { owner, root } = namespace();
+    mkdirSync(path.join(root, "sockets"), { recursive: true, mode: 0o700 });
+    const calls: string[] = [];
+    const servers = [];
+    try {
+      for (const name of ["custom-session", "second-session"]) {
+        const server = createServer((socket) => {
+          socket.on("error", () => {});
+          socket.once("data", (bytes) => {
+            calls.push(name + ":" + JSON.parse(bytes.toString()).action);
+            socket.end('{"success":true,"data":{"result":"observed"}}\n');
+          });
+        });
+        servers.push(server);
+        server.listen(path.join(root, "sockets", name + ".sock"));
+        await once(server, "listening");
+        const result = await run({
+          action: "evaluate",
+          owner,
+          expiresAt: Date.now() + 30_000,
+          script: "document.title",
+        });
+        expect(result.code).toBe(servers.length === 1 ? 0 : 1);
+      }
+      expect(calls).toEqual(["custom-session:evaluate"]);
+      expect(
+        (await run({ action: "cleanup", owner, expiresAt: Date.now() })).code,
+      ).toBe(0);
+      expect(calls.slice(1).sort()).toEqual([
+        "custom-session:close",
+        "second-session:close",
+      ]);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      for (const server of servers) server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
 );

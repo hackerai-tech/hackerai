@@ -68,3 +68,46 @@ except BaseException:
     print(json.dumps({'adopted':False,'stage':stage}))
     sys.exit(1)
 `;
+
+// Restore only this adoption, never a newer browser selection. Both directions
+// require a fresh snapshot because references belong to different documents.
+export const BROWSERLESS_RESTORE_PROGRAM = String.raw`
+import fcntl, json, os, pathlib, stat, sys, time
+root = pathlib.Path(sys.argv[1])
+payload = json.load(sys.stdin)
+try:
+    if root.parent != pathlib.Path('/dev/shm') or not root.name.startswith('hackerai-browser-'):
+        raise ValueError()
+    if not root.exists():
+        print('{"restored":true}')
+        sys.exit(0)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid(): raise ValueError()
+    name, remote = payload['name'], payload['remoteName']
+    if any(not isinstance(s, str) or not s or len(s) > 80 or any(c in s for c in '/\x00\r\n') for s in (name, remote)):
+        raise ValueError()
+    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + 8
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline: raise ValueError()
+            time.sleep(0.1)
+    fallback = root / 'fallback-session'
+    if fallback.exists():
+        selected = json.loads(fallback.read_text())
+        if selected.get('name') != remote or selected.get('original') != name: raise ValueError()
+        if (root / 'active-session').read_text().strip() != remote: raise ValueError()
+        info = (root / 'sockets' / (name + '.sock')).lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid(): raise ValueError()
+        (root / 'active-session.next').write_text(name)
+        os.replace(root / 'active-session.next', root / 'active-session')
+        (root / 'verify-required').touch(mode=0o600)
+        fallback.unlink()
+    print('{"restored":true}')
+except Exception:
+    print('{"restored":false}')
+    sys.exit(1)
+`;

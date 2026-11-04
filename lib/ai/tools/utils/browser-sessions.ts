@@ -9,7 +9,10 @@ import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
-import { BROWSERLESS_ADOPT_PROGRAM } from "../../captcha/browserless-adopt-program";
+import {
+  BROWSERLESS_ADOPT_PROGRAM,
+  BROWSERLESS_RESTORE_PROGRAM,
+} from "../../captcha/browserless-adopt-program";
 import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -92,7 +95,11 @@ export class BrowserSessions {
       openTunnel: (
         sandbox: AnySandbox,
         directory: string,
-      ) => Promise<{ endpoint: string; close: () => Promise<void> }>,
+      ) => Promise<{
+        endpoint: string;
+        close: () => Promise<void>;
+        closed: Promise<void>;
+      }>,
     ) => Promise<void>;
   }> {
     signal.throwIfAborted();
@@ -155,9 +162,48 @@ export class BrowserSessions {
       adoptRemote: async (expected, openTunnel) => {
         await assertOwned();
         const tunnel = await openTunnel(sandbox, session.directory);
-        this.remoteCleanups.add(tunnel.close);
         const remoteName = `fallback-${randomBytes(8).toString("hex")}`;
         const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        let finishAdoption!: () => void;
+        const adoptionFinished = new Promise<void>((resolve) => {
+          finishAdoption = resolve;
+        });
+        // Closing can race activation. Wait for the in-flight adoption to settle
+        // before restoring, otherwise activation could overwrite the restoration.
+        const restored = tunnel.closed.then(async () => {
+          await adoptionFinished;
+          if (this.closed) return; // Whole-run cleanup closes both daemons.
+          const handle = await sandbox.commands.run(
+            `python3 -c ${quote(BROWSERLESS_RESTORE_PROGRAM)} ${quote(session.directory)}`,
+            {
+              ...buildSandboxCommandOptions(sandbox),
+              background: true,
+              stdin: true,
+              timeoutMs: 12_000,
+            },
+          );
+          try {
+            await handle.sendStdin(JSON.stringify({ name, remoteName }));
+            await handle.closeStdin();
+            const result = await handle.wait();
+            if (
+              result.exitCode !== 0 ||
+              JSON.parse(result.stdout).restored !== true
+            )
+              throw new Error();
+          } catch {
+            await handle.kill().catch(() => false);
+            throw new Error("Browser restoration failed.");
+          }
+        });
+        void restored.catch(() => {
+          console.warn("[browser-sessions] fallback restoration incomplete");
+        });
+        const close = async () => {
+          await tunnel.close();
+          await restored;
+        };
+        this.remoteCleanups.add(close);
         try {
           for (const phase of ["prepare", "activate"]) {
             await assertOwned();
@@ -197,10 +243,13 @@ export class BrowserSessions {
             }
           }
         } catch {
+          finishAdoption();
           await tunnel.close();
-          this.remoteCleanups.delete(tunnel.close);
+          await restored.catch(() => {});
           signal.throwIfAborted();
           throw new Error("Browser adoption failed.");
+        } finally {
+          finishAdoption();
         }
       },
       evaluate: async (script) => {
