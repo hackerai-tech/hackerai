@@ -913,6 +913,7 @@ const ChatInputContent = ({
   const nextActions = useNextActions({
     userId: user?.id,
     chatId,
+    chatMode,
     completedTurn: completedPredictionTurn,
     interruptedTurn: interruptedPredictionTurn,
     latestMessageId,

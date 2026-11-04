@@ -20,6 +20,7 @@ const setInput = jest.fn((value: string) => {
 const base = () => ({
   userId: "u",
   chatId: "chat",
+  chatMode: "ask" as "ask" | "agent",
   completedTurn: { chatId: "chat", messageId: "answer" },
   interruptedTurn: null as { chatId: string } | null,
   latestMessageId: "answer",
@@ -60,7 +61,8 @@ test("acceptance creates an editable draft; exposure, submission and finish are 
   expect(fetch).toHaveBeenCalledTimes(1); // Acceptance never invokes chat/Agent.
   expect(result.current.batch).toBeNull();
   input += " In plain language.";
-  rerender({ ...base(), input });
+  rerender({ ...base(), input, chatMode: "agent" });
+  expect(input).toBe(`${batch.suggestions[0]} In plain language.`);
   let finish!: (submitted: boolean) => void;
   act(() => {
     finish = result.current.prepareSubmission();
@@ -234,3 +236,45 @@ test.each(["pending", "visible"])(
     expect(result.current.batch).toBeNull();
   },
 );
+
+test.each(["pending", "visible"])(
+  "switching mode discards a %s prediction and does not revive it",
+  async (phase) => {
+    let resolve!: (value: ReturnType<typeof response>) => void;
+    jest.mocked(fetch).mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const { result, rerender } = renderHook((props) => useNextActions(props), {
+      initialProps: base(),
+    });
+    await settle();
+    const signal = jest.mocked(fetch).mock.calls[0][1]?.signal;
+    if (phase === "visible") await act(async () => resolve(response()));
+    rerender({ ...base(), chatMode: "agent" });
+    expect(signal?.aborted).toBe(true);
+    if (phase === "pending") await act(async () => resolve(response()));
+    expect(result.current.batch).toBeNull();
+    act(() => {
+      result.current.exposed();
+      expect(result.current.accept(0, "keyboard")).toBe(false);
+    });
+    expect(setInput).not.toHaveBeenCalled();
+    expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+    rerender(base());
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.current.batch).toBeNull();
+  },
+);
+
+test("a mismatched server mode stays silent", async () => {
+  const { result } = renderHook(() =>
+    useNextActions({ ...base(), chatMode: "agent" }),
+  );
+  await settle();
+  expect(result.current.batch).toBeNull();
+  act(() => expect(result.current.accept(0, "keyboard")).toBe(false));
+  expect(setInput).not.toHaveBeenCalled();
+});

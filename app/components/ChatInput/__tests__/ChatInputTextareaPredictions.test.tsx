@@ -31,6 +31,7 @@ function Harness({ blocked = false }: { blocked?: boolean }) {
   const controller = useNextActions({
     userId: "u",
     chatId: "chat",
+    chatMode: "ask",
     completedTurn: { chatId: "chat", messageId: "answer" },
     latestMessageId: "answer",
     status: "ready",
