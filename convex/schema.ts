@@ -3,6 +3,7 @@ import {
   walletActionResult,
   walletDebitResult,
 } from "./lib/settlementReceiptValidators";
+import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
@@ -252,6 +253,8 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
+
   // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
   // Normal chat/account deletion still cleans these records. No bulk migration.
   engagement_scopes: defineTable({
@@ -451,6 +454,12 @@ export default defineSchema({
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
     generation_started_at: v.optional(v.number()),
+    goal: v.optional(
+      v.object({
+        sent: v.optional(v.boolean()),
+        achievedElapsedMs: v.optional(v.number()),
+      }),
+    ),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     trigger_run_id: v.optional(v.string()),

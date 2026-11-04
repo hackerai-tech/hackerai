@@ -1,4 +1,5 @@
 import type { LimitRescueRequest } from "@/types/chat";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
@@ -19,7 +20,7 @@ import {
   WorkedForContent,
   WorkedForTrigger,
 } from "@/components/ai-elements/worked-for";
-import { ChevronDown, ChevronUp, FileSearch } from "lucide-react";
+import { ChevronDown, ChevronUp, FileSearch, CircleCheck } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -159,6 +160,12 @@ function areMessageItemPropsEqual(
     if (
       prev.message.metadata?.feedbackType !==
       next.message.metadata?.feedbackType
+    )
+      return false;
+    if (
+      prev.message.metadata?.goal?.sent !== next.message.metadata?.goal?.sent ||
+      prev.message.metadata?.goal?.achievedElapsedMs !==
+        next.message.metadata?.goal?.achievedElapsedMs
     )
       return false;
     if (prev.message.createdAt !== next.message.createdAt) return false;
@@ -695,6 +702,28 @@ export const MessageItem = memo(function MessageItem({
             />
           )}
 
+        {message.metadata?.goal && (
+          <div
+            className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
+            aria-label="Goal message status"
+          >
+            {isUser && message.metadata.goal.sent ? (
+              <>
+                <GoalTargetIcon className="size-3.5" aria-hidden="true" />
+                <span>Sent as goal</span>
+              </>
+            ) : !isUser &&
+              typeof message.metadata.goal.achievedElapsedMs === "number" ? (
+              <>
+                <CircleCheck className="size-3.5" aria-hidden="true" />
+                <span title="Time spent pursuing the goal">
+                  Goal achieved in{" "}
+                  {formatGoalDuration(message.metadata.goal.achievedElapsedMs)}
+                </span>
+              </>
+            ) : null}
+          </div>
+        )}
         <MessageActions
           messageText={messageText}
           isUser={isUser}
@@ -736,3 +765,10 @@ export const MessageItem = memo(function MessageItem({
     </Fragment>
   );
 }, areMessageItemPropsEqual);
+
+function formatGoalDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}

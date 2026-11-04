@@ -441,6 +441,7 @@ describe("browser attachment recovery", () => {
       await result.current.preview.handleRemoveFile(0);
     });
     expect(signal.aborted).toBe(false);
+    expect(result.current.uploadedFiles[0].removing).toBe(false);
     await act(async () => {
       finish({ ok: true });
     });
@@ -488,10 +489,12 @@ describe("browser attachment recovery", () => {
     act(() => {
       removal = result.current.preview.handleRemoveFile(0);
     });
+    expect(result.current.uploadedFiles[0].removing).toBe(true);
     await act(async () => {
       finishPut({ ok: true });
     });
     expect(result.current.uploadedFiles[0].fileId).toBe("replacement");
+    expect(result.current.uploadedFiles[0].removing).toBe(true);
     await act(async () => {
       finishDelete();
       await removal;

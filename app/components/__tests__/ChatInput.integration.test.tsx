@@ -872,6 +872,136 @@ describe("ChatInput - Integration Tests", () => {
       // Queue panel should not be visible in ask mode
       expect(screen.queryByText("Queued messages")).not.toBeInTheDocument();
     });
+
+    it("keeps composer Stop available for a persisted goal run while the local stream is ready", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasActiveGoalRun
+          />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByLabelText("Stop generation"));
+      expect(mockOnStop).toHaveBeenCalledTimes(1);
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
+    it.each(["ready", "streaming"] as const)(
+      "allows clicking Send beside Stop during an active goal with %s stream status",
+      (status) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status={status}
+              hasActiveGoalRun
+              pauseGoalOnSend
+            />
+          </TestWrapper>,
+        );
+        expect(
+          screen.queryByLabelText("Send message and pause goal"),
+        ).not.toBeInTheDocument();
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Please check the saved result" },
+        });
+        expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.any(Object),
+          undefined,
+        );
+        expect(mockOnStop).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, false])(
+      "prevents overlapping goal follow-ups and releases the guard after acceptance=%s",
+      async (accepted) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        let settle!: (value: boolean) => void;
+        mockOnSubmit.mockReturnValueOnce(
+          new Promise<boolean>((resolve) => {
+            settle = resolve;
+          }),
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="streaming"
+              hasActiveGoalRun
+              pauseGoalOnSend
+            />
+          </TestWrapper>,
+        );
+        const input = screen.getByRole("textbox");
+        fireEvent.change(input, { target: { value: "First follow-up" } });
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+        expect(
+          screen.getByLabelText("Send message and pause goal"),
+        ).toBeDisabled();
+        expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+        await act(async () => settle(accepted));
+        if (accepted) {
+          await waitFor(() => expect(input).toHaveValue(""));
+        } else {
+          expect(input).toHaveValue("First follow-up");
+        }
+        fireEvent.change(input, { target: { value: "Next follow-up" } });
+        fireEvent.click(screen.getByLabelText("Send message and pause goal"));
+        expect(mockOnSubmit).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("explains that follow-ups pause a waiting goal without mislabeling goal commands", () => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            pauseGoalOnSend
+          />
+        </TestWrapper>,
+      );
+      const input = screen.getByRole("textbox");
+      fireEvent.change(input, {
+        target: { value: "Please check the saved result" },
+      });
+      expect(
+        screen.getByLabelText("Send message and pause goal"),
+      ).toBeEnabled();
+      fireEvent.change(input, { target: { value: "/GOAL status" } });
+      expect(screen.getByLabelText("Send message")).toBeEnabled();
+      fireEvent.change(input, { target: { value: "/goals are useful" } });
+      expect(
+        screen.getByLabelText("Send message and pause goal"),
+      ).toBeEnabled();
+    });
   });
 
   describe("Signed-out home composer", () => {
@@ -1610,7 +1740,7 @@ describe("ChatInput - Integration Tests", () => {
         screen.getByText("Check whether the target host is reachable."),
       ).toBeInTheDocument();
       expect(screen.getByText("ping -c 4 hackerone.com")).toBeInTheDocument();
-      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeVisible();
     });
 
     it("merges the stored reviewer summary into the matching live approval", async () => {
@@ -1675,7 +1805,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByRole("button", { name: "Allow once" }),
       ).not.toBeInTheDocument();
-      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("chat-input")).not.toBeVisible();
 
       fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
 
@@ -2825,5 +2955,522 @@ describe("ChatInput - Integration Tests", () => {
       rerender(content());
       expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
     });
+  });
+
+  it("moves goal controls clear of files, approvals, and mobile panels without remounting their draft", async () => {
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "user_123" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    const panel = (placement: "attached" | "detached") => (
+      <input
+        aria-label="Goal reply draft"
+        defaultValue=""
+        data-placement={placement}
+      />
+    );
+    const approval = {
+      approvalId: "goal-approval",
+      toolCallId: "goal-tool",
+      title: "Approve command",
+      target: "printf goal-ok",
+      detail: "Waiting for approval",
+      kind: "terminal" as const,
+    };
+    const content = (request?: typeof approval) => (
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+          goalPanel={panel}
+          storedApprovalRequest={request}
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(content());
+    const reply = await screen.findByRole("textbox", {
+      name: "Goal reply draft",
+    });
+    fireEvent.change(reply, { target: { value: "Keep these instructions" } });
+    expect(reply).toHaveAttribute("data-placement", "attached");
+    mockSandboxState = {
+      ...mockSandboxState,
+      uploadedFiles: [
+        {
+          file: new File(["goal"], "goal.txt", { type: "text/plain" }),
+          fileId: "goal-file",
+          uploaded: true,
+          uploading: false,
+        },
+      ] as UploadedFileState[],
+    };
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(screen.getByRole("textbox", { name: "Goal reply draft" })).toBe(
+      reply,
+    );
+    expect(reply).toHaveValue("Keep these instructions");
+    mockSandboxState = { ...mockSandboxState, uploadedFiles: [] };
+    rerender(content(approval));
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(reply).toBeVisible();
+    expect(reply).toHaveValue("Keep these instructions");
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "attached");
+    mockIsMobile = true;
+    rerender(content());
+    expect(reply).toHaveAttribute("data-placement", "detached");
+    expect(screen.getByRole("textbox", { name: "Goal reply draft" })).toBe(
+      reply,
+    );
+    expect(reply).toHaveValue("Keep these instructions");
+  });
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    "preserves inline goal text while an IME candidate is being confirmed: %j",
+    async (compositionEvent) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: "日本語 /goal" } });
+      await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      });
+      for (const key of ["Tab", "Enter", "Escape"]) {
+        fireEvent.keyDown(input, { key, ...compositionEvent });
+        expect(input).toHaveValue("日本語 /goal");
+        expect(
+          screen.getByRole("button", {
+            name: "Goal Set a goal to keep pursuing",
+          }),
+        ).toBeVisible();
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+      }
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(input).toHaveValue("日本語");
+      fireEvent.keyDown(input, { key: "Escape", ...compositionEvent });
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+    },
+  );
+
+  it("selects /goal without sending and submits its objective through goal mode", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    mockOnSubmit.mockResolvedValue(true);
+    render(
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveAttribute("placeholder", "Describe your goal");
+    fireEvent.change(input, { target: { value: "Create a marker" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Create a marker",
+      ),
+    );
+  });
+
+  it.each([
+    ["Create a marker /goal", "Create a marker", "Enter"],
+    ["Create /goal a marker", "Create a marker", "Tab"],
+    ["Create /GOAL a marker", "Create a marker", "click"],
+    [
+      "Create a marker\n/goal\nCriteria: Read it back",
+      "Create a marker\n\nCriteria: Read it back",
+      "Enter",
+    ],
+  ])(
+    "selects an inline command in %s without losing draft content",
+    async (draft, objective, selection) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      mockOnSubmit.mockResolvedValue(true);
+      const file: UploadedFileState = {
+        file: new File(["fixture"], "inline-goal.txt", { type: "text/plain" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "inline-goal-file",
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach inline context" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Attach inline context" }),
+      );
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, { target: { value: draft } });
+      const suggestion = await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      });
+      if (selection === "click") fireEvent.click(suggestion);
+      else fireEvent.keyDown(input, { key: selection });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(input).toHaveValue(objective);
+      expect(screen.getByText("inline-goal.txt")).toBeVisible();
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          `/goal start ${objective}`,
+        ),
+      );
+    },
+  );
+
+  it("sends mid-draft partial commands unchanged instead of selecting goal mode", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    mockOnSubmit.mockResolvedValue(false);
+    render(
+      <TestWrapper>
+        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    // Wait for the feature decision, then replace a valid suggestion with normal text.
+    fireEvent.change(input, { target: { value: "/goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.change(input, {
+      target: { value: "Search for /go in this path" },
+    });
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(expect.anything(), undefined),
+    );
+    expect(input).toHaveValue("Search for /go in this path");
+  });
+
+  it("dismisses an inline goal suggestion without changing the draft", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    render(
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Explain /goal" } });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    expect(input).toHaveValue("Explain /goal");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(expect.anything(), undefined),
+    );
+  });
+
+  it.each(["chat", "ask", "free"])(
+    "ignores a late availability response after changing %s",
+    async (change) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      let resolveAvailability!: (value: { enabled: boolean }) => void;
+      const availability = new Promise<{ enabled: boolean }>((resolve) => {
+        resolveAvailability = resolve;
+      });
+      const readAvailability = jest.fn(() => availability);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: readAvailability });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: false }),
+      });
+      const ui = (chatId: string) => (
+        <TestWrapper>
+          <ChatInput
+            chatId={chatId}
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onSendNow={jest.fn()}
+            status="ready"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(ui("first-chat"));
+      await waitFor(() => expect(readAvailability).toHaveBeenCalled());
+      if (change === "ask")
+        mockSandboxState = { ...mockSandboxState, chatMode: "ask" };
+      if (change === "free")
+        mockSandboxState = { ...mockSandboxState, subscription: "free" };
+      rerender(ui(change === "chat" ? "second-chat" : "first-chat"));
+      await act(async () => resolveAvailability({ enabled: true }));
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Create a marker /goal" },
+      });
+      expect(
+        screen.queryByRole("button", {
+          name: "Goal Set a goal to keep pursuing",
+        }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox")).not.toHaveAttribute(
+        "placeholder",
+        "Describe your goal",
+      );
+    },
+  );
+
+  it("waits for attachment removal before accepting a message", async () => {
+    const attachment: UploadedFileState = {
+      file: new File(["fixture"], "removing.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "removing-file",
+    };
+    render(
+      <TestWrapper>
+        <UploadedFilesSetter
+          files={[{ ...attachment, removing: true }]}
+          label="Removal pending"
+        />
+        <UploadedFilesSetter files={[attachment]} label="Removal failed" />
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Removal pending" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Removal failed" }));
+    expect(input).toHaveValue("Keep this draft");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps goal intent when a responsive layout remounts the same draft", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    const ui = (placement: string, chatId: string) => (
+      <TestWrapper>
+        <ChatInput
+          key={placement}
+          chatId={chatId}
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          onSendNow={jest.fn()}
+          status="ready"
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(ui("mobile", "goal-draft"));
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "/goal" },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    );
+    rerender(ui("desktop", "goal-draft"));
+    expect(
+      screen.getByRole("button", { name: "Exit goal mode" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Verify the attachment" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Verify the attachment",
+      ),
+    );
+    rerender(ui("desktop", "another-draft"));
+    expect(
+      screen.queryByRole("button", { name: "Exit goal mode" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("preserves a goal draft and attachment while an approval replaces the composer", async () => {
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "user_123" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    const file: UploadedFileState = {
+      file: new File(["Goal attachment fixture"], "goal-context.txt", {
+        type: "text/plain",
+      }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "goal-context-file",
+    };
+    const approval = {
+      approvalId: "goal-approval",
+      toolCallId: "goal-tool",
+      title: "Allow this local check?",
+      target: "pwd",
+      detail: "Approve to continue.",
+      kind: "terminal" as const,
+      operation: "terminal_execute",
+    };
+    const ui = (pending: boolean) => (
+      <TestWrapper>
+        <UploadedFilesSetter files={[file]} label="Attach goal context" />
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          status="ready"
+          chatId="goal-approval-chat"
+          onSendNow={jest.fn()}
+          storedApprovalRequest={pending ? approval : null}
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(ui(false));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Attach goal context" }),
+    );
+    fireEvent.change(await screen.findByRole("textbox"), {
+      target: { value: "/goal" },
+    });
+    await screen.findByRole("button", {
+      name: "Goal Set a goal to keep pursuing",
+    });
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+
+    rerender(ui(true));
+    expect(screen.getByTestId("agent-approval-prompt")).toBeVisible();
+    expect(
+      screen.queryByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("goal-context.txt")).not.toBeInTheDocument();
+
+    rerender(ui(false));
+    expect(await screen.findByRole("textbox")).toHaveValue("/goal");
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Goal Set a goal to keep pursuing" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Exit goal mode" }),
+    ).toBeVisible();
+    expect(screen.getByText("goal-context.txt")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
   });
 });
