@@ -53,6 +53,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    agentGoals: { get: "getGoal" },
     browserHandoffs: { getForUser: "getForUser" },
     subagents: {
       getOwned: "getOwned",
@@ -139,6 +140,197 @@ const otherToolMessage = {
 };
 
 describe("ComputerSidebar reconnect behavior", () => {
+  it("keeps a goal editor open while unrelated tool messages change", async () => {
+    mockSidebarContent = { kind: "goal", chatId: "chat" };
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Keep working",
+      criteria: ["Keep working"],
+      generation: 1,
+      state: "running",
+    });
+    const stop = jest.fn();
+    const { rerender } = render(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="streaming"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "My unsaved edit" },
+    });
+    rerender(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="ready"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(6000);
+    });
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "My unsaved edit",
+    );
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+  });
+  it.each([
+    [false, "deleted"],
+    [true, "deleted"],
+    [false, "achieved"],
+    [true, "achieved"],
+  ] as const)(
+    "closes the viewed goal editor (overlay=%s, outcome=%s)",
+    (overlay, outcome) => {
+      mockComputerSidebarOverlay = overlay;
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      const goal = {
+        _id: "goal",
+        chatId: "chat",
+        startedAt: 100,
+        objective: "Original",
+        criteria: ["Original"],
+        generation: 1,
+        state: "running",
+      };
+      mockUseQuery.mockReturnValue(goal);
+      const view = () =>
+        mockSidebarContent && (
+          <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+        );
+      const { rerender } = render(view());
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+        {
+          target: { value: "Unsaved edit" },
+        },
+      );
+      mockUseQuery.mockReturnValue(undefined);
+      rerender(view());
+      expect(mockCloseSidebar).not.toHaveBeenCalled();
+      for (const state of ["paused", "blocked"]) {
+        mockUseQuery.mockReturnValue({ ...goal, state });
+        rerender(view());
+        expect(mockCloseSidebar).not.toHaveBeenCalled();
+      }
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted" ? null : { ...goal, state: "achieved" },
+      );
+      rerender(view());
+      expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+      mockSidebarContent = null;
+      rerender(view());
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      mockUseQuery.mockReturnValue({
+        ...goal,
+        startedAt: 200,
+        objective: "New goal",
+      });
+      rerender(view());
+      expect(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+      ).toHaveValue("New goal");
+    },
+  );
+  it.each(["deleted", "achieved"])(
+    "keeps an older draft open when a different replacement goal is %s",
+    (outcome) => {
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      const goal = {
+        _id: "goal",
+        startedAt: 100,
+        objective: "Original",
+        criteria: ["Original"],
+        generation: 1,
+        state: "running",
+      };
+      mockUseQuery.mockReturnValue(goal);
+      const view = () => (
+        <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+      );
+      const { rerender } = render(view());
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+        {
+          target: { value: "Older draft" },
+        },
+      );
+      mockUseQuery.mockReturnValue({
+        ...goal,
+        startedAt: 200,
+        objective: "Replacement",
+      });
+      rerender(view());
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted"
+          ? null
+          : { ...goal, startedAt: 200, state: "achieved" },
+      );
+      rerender(view());
+      expect(mockCloseSidebar).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+      ).toHaveValue("Older draft");
+    },
+  );
+  it("does not close a terminal panel when the goal is cleared", () => {
+    mockSidebarContent = { kind: "goal", chatId: "chat" };
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      startedAt: 100,
+      objective: "Original",
+      criteria: ["Original"],
+      generation: 1,
+      state: "running",
+    });
+    const view = () => (
+      <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+    );
+    const { rerender } = render(view());
+    mockSidebarContent = activeSidebarContent;
+    mockUseQuery.mockReturnValue(null);
+    rerender(view());
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("textbox", { name: "Goal objective" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores an unsaved goal draft after inspecting a terminal tool", () => {
+    const goalContent: SidebarContent = { kind: "goal", chatId: "chat" };
+    mockSidebarContent = goalContent;
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Original",
+      criteria: ["Original"],
+      generation: 1,
+      state: "running",
+    });
+    const { rerender } = render(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "Keep this edit" },
+    });
+    mockSidebarContent = activeSidebarContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Goal objective" }),
+    ).not.toBeInTheDocument();
+    mockSidebarContent = goalContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Keep this edit",
+    );
+  });
   beforeEach(() => {
     mockComputerSidebarOverlay = false;
     jest.useFakeTimers();

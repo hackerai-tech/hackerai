@@ -24,9 +24,11 @@ import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>;
   draftId: string;
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
+  onCommandKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   disabled?: boolean;
   minRows?: number;
   placeholder?: string;
@@ -37,9 +39,11 @@ export interface ChatInputTextareaProps {
 }
 
 export function ChatInputTextarea({
+  composerRef,
   draftId,
   chatMode,
   onEnterSubmit,
+  onCommandKeyDown,
   disabled = false,
   minRows = 1,
   placeholder,
@@ -53,7 +57,8 @@ export function ChatInputTextarea({
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const localTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = composerRef ?? localTextareaRef;
   const inputRef = useRef(input);
   const prevDraftIdRef = useRef(draftId);
   useEffect(() => {
@@ -199,12 +204,11 @@ export function ChatInputTextarea({
         disabled={disabled}
         data-testid="chat-input"
         onKeyDown={(e) => {
-          if (
-            e.key === "Enter" &&
-            !e.shiftKey &&
-            !e.nativeEvent.isComposing &&
-            e.nativeEvent.keyCode !== 229
-          ) {
+          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
+            return;
+          onCommandKeyDown?.(e);
+          if (e.defaultPrevented) return;
+          if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             onEnterSubmit(e);
           }

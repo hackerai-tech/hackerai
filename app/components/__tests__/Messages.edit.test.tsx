@@ -24,6 +24,7 @@ jest.mock("../MessageItem", () => ({
     lastUserMessageIndex,
     message,
     onStartEdit,
+    onSaveEdit,
     onBranchMessage,
     status,
   }: {
@@ -32,6 +33,7 @@ jest.mock("../MessageItem", () => ({
     lastUserMessageIndex?: number;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
+    onSaveEdit: (content: string, files: string[]) => Promise<void>;
     onBranchMessage: (messageId: string) => Promise<void>;
     status: string;
   }) => (
@@ -48,7 +50,12 @@ jest.mock("../MessageItem", () => ({
         Branch
       </button>
       {isEditing ? (
-        <div data-testid="message-editor">Editing {message.id}</div>
+        <div data-testid="message-editor">
+          Editing {message.id}
+          <button onClick={() => onSaveEdit("Revised goal", [])}>
+            Save edit
+          </button>
+        </div>
       ) : canEdit ? (
         <button
           type="button"
@@ -269,6 +276,107 @@ describe("Messages virtualized row invalidation", () => {
       "data-last-user-message-index",
       "2",
     );
+  });
+
+  it.each([false, true])(
+    "does not edit sent goals but allows the latest normal message (mobile=%s)",
+    (isMobile) => {
+      const goalMessage: ChatMessage = {
+        ...messages[0],
+        metadata: { goal: { sent: true } },
+      };
+      const props = {
+        chatId: "chat-1",
+        setMessages: jest.fn(),
+        onRegenerate: jest.fn(),
+        onRetry: jest.fn(),
+        onEditMessage: jest.fn(),
+        status: "ready" as const,
+        error: null,
+        scrollRef: createRef<HTMLElement>(),
+        contentRef: createRef<HTMLElement>(),
+        isMobile,
+      };
+      const { rerender } = render(
+        <DataStreamProvider>
+          <Messages {...props} messages={[goalMessage, messages[1]]} />
+        </DataStreamProvider>,
+      );
+      expect(
+        screen.queryByRole("button", { name: "Edit message" }),
+      ).not.toBeInTheDocument();
+      const followup = { ...messages[0], id: "followup" };
+      rerender(
+        <DataStreamProvider>
+          <Messages
+            {...props}
+            messages={[goalMessage, messages[1], followup]}
+          />
+        </DataStreamProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+      expect(screen.getByTestId("message-editor")).toHaveTextContent(
+        "Editing followup",
+      );
+      // Late metadata must also revoke an already open inline editor.
+      rerender(
+        <DataStreamProvider>
+          <Messages
+            {...props}
+            messages={[
+              goalMessage,
+              messages[1],
+              { ...followup, metadata: { goal: { sent: true } } },
+            ]}
+          />
+        </DataStreamProvider>,
+      );
+      expect(screen.queryByTestId("message-editor")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Edit message" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps the editor open after rejection and closes after a successful retry", async () => {
+    const onEditMessage = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("stale goal"))
+      .mockResolvedValueOnce(undefined);
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="chat-1"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={jest.fn()}
+          onEditMessage={onEditMessage}
+          status="ready"
+          error={null}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          isMobile
+        />
+      </DataStreamProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save edit" }));
+    });
+    expect(screen.getByTestId("message-editor")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save edit" }));
+    });
+    expect(screen.queryByTestId("message-editor")).not.toBeInTheDocument();
+    expect(onEditMessage).toHaveBeenNthCalledWith(
+      2,
+      "user-1",
+      "Revised goal",
+      [],
+    );
+    log.mockRestore();
   });
 
   it("invalidates the virtualized row when editing starts", () => {
