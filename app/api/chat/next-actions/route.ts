@@ -186,6 +186,22 @@ export async function POST(req: NextRequest) {
       latest.last_run_finished_at !== chat.last_run_finished_at
     )
       return empty();
+    // Regeneration can delete the answer before a replacement run is admitted,
+    // without changing the chat's completion fields.
+    const latestHistory = await convex.query(
+      api.messages.getMessagesPageForBackend,
+      {
+        serviceKey,
+        userId,
+        chatId,
+        paginationOpts: { cursor: null, numItems: 1 },
+      },
+    );
+    if (
+      latestHistory.page[0]?.id !== messageId ||
+      latestHistory.page[0]?.role !== "assistant"
+    )
+      return empty();
     return NextResponse.json(
       { batchId, messageId, mode, suggestions: result.suggestions },
       {

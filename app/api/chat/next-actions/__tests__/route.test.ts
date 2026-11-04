@@ -184,3 +184,27 @@ test("provider failure and a new run during generation suppress predictions", as
     "private provider payload",
   );
 });
+
+test.each([
+  { page: [] },
+  { page: [{ id: "new-answer", role: "assistant" }] },
+  { page: [{ id: "new-question", role: "user" }] },
+])(
+  "discards a prediction when the source message changes during generation: %j",
+  async ({ page }) => {
+    jest.mocked(generateNextActions).mockImplementationOnce(async () => {
+      query.mockImplementation(async (_name, args) =>
+        args.paginationOpts ? { page } : chat,
+      );
+      return {
+        suggestions: ["Explain the evidence."],
+        inputTokens: 1,
+        outputTokens: 1,
+        modelId: "deepseek/deepseek-v4.1-flash-1017",
+        reasoningTokens: 0,
+        cost: 0,
+      };
+    });
+    expect((await (await POST(request())).json()).suggestions).toEqual([]);
+  },
+);
