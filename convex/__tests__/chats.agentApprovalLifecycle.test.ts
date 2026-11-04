@@ -1120,3 +1120,49 @@ it("claims an empty slot when the expected previous run finished during startup"
     expect.objectContaining({ active_trigger_run_id: "new" }),
   );
 });
+
+it.each(["old", undefined])(
+  "preserves a concurrent retained session when current run is %s",
+  async (currentRunId) => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: currentRunId,
+      active_agent_approval_session_id: "unobserved-session",
+    });
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: "new-session",
+        expectedApprovalSessionId: "cleaned-session",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  },
+);
+
+it("admits the replacement after worker cleanup clears the observed session", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "old",
+      approvalSessionId: "new-session",
+      expectedApprovalSessionId: "cleaned-session",
+    }),
+  ).resolves.toEqual({ previousRunId: null, previousApprovalSessionId: null });
+  expect(patch).toHaveBeenCalledWith(
+    "chat-doc",
+    expect.objectContaining({ active_trigger_run_id: "new" }),
+  );
+});

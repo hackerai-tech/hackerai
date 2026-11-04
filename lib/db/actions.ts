@@ -2156,6 +2156,7 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 
 export async function replaceActiveTriggerRun(args: {
   expectedRunId: string | null;
+  expectedApprovalSessionId?: string | null;
   chatId: string;
   triggerRunId: string;
   approvalSessionId: string | null;
