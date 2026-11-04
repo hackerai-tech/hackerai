@@ -568,6 +568,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  /** Durable operation identity of the initial wallet debit, if any. */
+  extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };

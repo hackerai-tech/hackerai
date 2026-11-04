@@ -79,6 +79,7 @@ const logExtraUsageConvexFailure = ({
   organizationId,
   amountPoints,
   usageSettlementId,
+  settlementOperationId,
   convexFunction,
   operation,
   startedAt,
@@ -90,6 +91,7 @@ const logExtraUsageConvexFailure = ({
   organizationId?: string;
   amountPoints?: number;
   usageSettlementId?: string;
+  settlementOperationId?: string;
   convexFunction: string;
   operation: string;
   startedAt: number;
@@ -101,6 +103,7 @@ const logExtraUsageConvexFailure = ({
     organization_id: organizationId,
     amount_points: amountPoints,
     usage_settlement_id: usageSettlementId,
+    settlement_operation_id: settlementOperationId,
     convex_function: convexFunction,
     operation,
     component: "extra_usage",
@@ -282,6 +285,7 @@ export async function deductFromBalance(
   userId: string,
   pointsUsed: number,
   usageSettlementId?: string,
+  settlementOperationId = crypto.randomUUID(),
 ): Promise<DeductBalanceResult> {
   // No-op: nothing to deduct, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsUsed <= 0) {
@@ -307,6 +311,7 @@ export async function deductFromBalance(
         userId,
         amountPoints: pointsUsed,
         usageSettlementId,
+        settlementOperationId,
       },
     );
 
@@ -325,6 +330,7 @@ export async function deductFromBalance(
       userId,
       amountPoints: pointsUsed,
       usageSettlementId,
+      settlementOperationId,
       convexFunction: "extraUsageActions.deductWithAutoReload",
       operation: "deduct_extra_usage_balance",
       startedAt,
@@ -418,6 +424,7 @@ export async function deductFromTeamBalance(
   userId: string,
   pointsUsed: number,
   usageSettlementId?: string,
+  settlementOperationId = crypto.randomUUID(),
 ): Promise<DeductBalanceResult> {
   if (pointsUsed <= 0) {
     return {
@@ -440,6 +447,7 @@ export async function deductFromTeamBalance(
         userId,
         amountPoints: pointsUsed,
         usageSettlementId,
+        settlementOperationId,
       },
     );
 
@@ -462,6 +470,7 @@ export async function deductFromTeamBalance(
       organizationId,
       amountPoints: pointsUsed,
       usageSettlementId,
+      settlementOperationId,
       convexFunction: "teamExtraUsageActions.deductWithAutoReloadForTeam",
       operation: "deduct_team_extra_usage_balance",
       startedAt,
