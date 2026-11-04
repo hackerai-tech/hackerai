@@ -2712,6 +2712,7 @@ export async function getNotes({
 
 export async function logUsageRecord({
   usageSettlementId,
+  admissionOperationId,
   userId,
   organizationId,
   chatId,
@@ -2728,6 +2729,7 @@ export async function logUsageRecord({
   extraUsagePointsDeducted,
   uncoveredPoints,
   usageDeductionFailureReason,
+  usageDeductionOutcomeUnknown,
   inputTokens,
   outputTokens,
   cacheReadTokens,
@@ -2738,6 +2740,7 @@ export async function logUsageRecord({
   costSource,
 }: {
   usageSettlementId?: string;
+  admissionOperationId?: string;
   userId: string;
   organizationId?: string;
   chatId?: string;
@@ -2754,6 +2757,7 @@ export async function logUsageRecord({
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -2767,6 +2771,7 @@ export async function logUsageRecord({
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       usage_settlement_id: usageSettlementId,
+      admission_operation_id: admissionOperationId,
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
@@ -2783,6 +2788,7 @@ export async function logUsageRecord({
       extra_usage_points_deducted: extraUsagePointsDeducted,
       uncovered_points: uncoveredPoints,
       usage_deduction_failure_reason: usageDeductionFailureReason,
+      usage_deduction_outcome_unknown: usageDeductionOutcomeUnknown,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,

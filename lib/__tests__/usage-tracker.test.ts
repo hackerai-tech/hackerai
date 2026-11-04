@@ -768,11 +768,13 @@ describe("UsageTracker", () => {
           resetTime: new Date(),
           limit: 250000,
           pointsDeducted: 100,
+          extraUsageAdmissionOperationId: "admission-123",
         },
       });
 
       expect(localMockLog).toHaveBeenCalledWith({
         usageSettlementId: expect.any(String),
+        admissionOperationId: "admission-123",
         userId: "user-123",
         organizationId: undefined,
         chatId: undefined,

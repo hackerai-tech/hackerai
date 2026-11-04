@@ -3704,6 +3704,7 @@ export const agentLongTask = task({
                     extraUsageConfig,
                     organizationId,
                     usageTracker.usageSettlementId,
+                    usageSettlementSequence,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
