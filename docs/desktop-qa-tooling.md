@@ -107,7 +107,8 @@ the supervisor, which would prevent cleanup. Processes that intentionally daemon
 or escape the owned process group require separate ownership and cleanup; the
 runner is designed for the foreground native executable and `next start`.
 
-`serve` binds the configured loopback host and port. A busy port causes failure;
+`serve` requires an HTTP URL and binds the configured loopback host and port.
+A busy port causes failure;
 it never stops the existing server. The recorded Next build-ID hash identifies
 which prebuilt output was launched, but does not attest its source commit or
 build-time public environment. Verify those from the build record before reuse.

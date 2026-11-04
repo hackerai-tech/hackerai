@@ -125,6 +125,19 @@ test("allows a local frontend with verified Preview services without relaxing wo
   assert.throws(() => validateConfig(c));
 });
 
+test("serve rejects HTTPS before trying to launch its HTTP server", async (t) => {
+  const dir = await temp(t);
+  const c = config();
+  c.environment = "preview";
+  c.worker.environment = "preview";
+  c.frontend = "https://127.0.0.1:3100";
+  await writeFile(join(dir, "config.json"), JSON.stringify(c));
+  await assert.rejects(
+    main(["serve", "https-frontend", join(dir, "config.json")], dir),
+    /serve requires an HTTP loopback frontend/,
+  );
+});
+
 test("checks executable hash and rejects paths escaping the worktree through symlinks", async (t) => {
   const dir = await temp(t);
   const executable = join(dir, "app");
