@@ -10,16 +10,19 @@ type State = {
   confirming: boolean;
   checkedScope?: object;
   checkedScopeSequence: number;
+  pendingRead: number;
 };
 type Update = {
   sequence: number;
   status?: Status;
   confirming?: boolean;
   checkedScope?: object;
+  invalidate?: boolean;
 };
 const defaultScope = {};
 
 function reduce(state: State, update: Update): State {
+  if (update.invalidate) return { ...state, pendingRead: update.sequence };
   // A newer POST owns availability, but a panel's older GET can still finish
   // its freshness check. An even older panel cannot replace a newer read.
   const checkedScope =
@@ -29,7 +32,13 @@ function reduce(state: State, update: Update): State {
           checkedScopeSequence: update.sequence,
         }
       : {};
-  if (update.sequence < state.sequence) return { ...state, ...checkedScope };
+  const pendingRead =
+    update.confirming !== undefined ||
+    (update.checkedScope && update.sequence >= state.pendingRead)
+      ? 0
+      : state.pendingRead;
+  if (update.sequence < state.sequence)
+    return { ...state, ...checkedScope, pendingRead };
   let availability = state.availability;
   switch (update.status) {
     case "recovering":
@@ -53,6 +62,7 @@ function reduce(state: State, update: Update): State {
     confirming: update.confirming ?? state.confirming,
     checkedScope: state.checkedScope,
     checkedScopeSequence: state.checkedScopeSequence,
+    pendingRead,
     ...checkedScope,
   };
 }
@@ -66,8 +76,13 @@ export function useCloudRecoveryAdmission(scope: object = defaultScope) {
     sequence: 0,
     confirming: false,
     checkedScopeSequence: 0,
+    pendingRead: 0,
   });
-  const beginRead = useCallback(() => ++sequence.current, []);
+  const beginRead = useCallback((invalidate = false) => {
+    const read = ++sequence.current;
+    if (invalidate) dispatch({ sequence: read, invalidate: true });
+    return read;
+  }, []);
   const finishRead = useCallback(
     (read: number, status?: Status) => {
       dispatch({ sequence: read, status, checkedScope: scope });
@@ -88,7 +103,9 @@ export function useCloudRecoveryAdmission(scope: object = defaultScope) {
     ? "Starting Cloud workspace recovery"
     : state.availability === "held"
       ? "Cloud workspace recovery is in progress"
-      : state.availability === "unknown" || state.checkedScope !== scope
+      : state.pendingRead !== 0 ||
+          state.availability === "unknown" ||
+          state.checkedScope !== scope
         ? "Checking Cloud workspace status"
         : undefined;
   return useMemo(

@@ -68,9 +68,9 @@ export function CloudWorkspaceRecovery({
     view.status === "hidden" ||
     (view.status === "recovered" && !observedRecovery);
   const refresh = useCallback(
-    async (signal?: AbortSignal, reportError = true) => {
+    async (signal?: AbortSignal, reportError = true, invalidate = false) => {
       const generation = ++statusReadGeneration.current;
-      const read = beginRead?.();
+      const read = beginRead?.(invalidate);
       const isCurrent = () =>
         !signal?.aborted && generation === statusReadGeneration.current;
       try {
@@ -108,7 +108,7 @@ export function CloudWorkspaceRecovery({
     }
     channel.current = current;
     current.onmessage = (event) => {
-      if (event.data === "changed") void refresh();
+      if (event.data === "changed") void refresh(undefined, true, true);
     };
     return () => {
       channel.current = null;

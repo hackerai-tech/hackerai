@@ -188,15 +188,23 @@ it("rechecks another tab's recovery change without submitting consent", async ()
     close,
   })) as unknown as typeof BroadcastChannel;
   try {
-    fetchMock
-      .mockResolvedValueOnce(response("hidden"))
-      .mockResolvedValue(response("recovering"));
+    let finishCheck!: (value: ReturnType<typeof response>) => void;
+    fetchMock.mockResolvedValueOnce(response("hidden")).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishCheck = resolve;
+        }),
+    );
     const { unmount } = render(<Harness />);
     await act(async () => {});
     expect(screen.getByTestId("gate")).toBeEmptyDOMElement();
     await act(async () => {
       receive?.({ data: "changed" });
     });
+    expect(screen.getByTestId("gate")).toHaveTextContent(
+      "Checking Cloud workspace status",
+    );
+    await act(async () => finishCheck(response("recovering")));
     expect(screen.getByTestId("gate")).toHaveTextContent(
       "recovery is in progress",
     );
