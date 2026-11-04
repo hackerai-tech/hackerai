@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -212,6 +212,8 @@ export async function POST(req: NextRequest) {
     // Optional predictions never surface provider/auth/data errors or content.
     return empty();
   } finally {
-    await posthog?.shutdown().catch(() => {});
+    // Keep event delivery in the request lifetime without delaying the draft.
+    // The 15s request budget leaves room inside maxDuration for this flush.
+    if (posthog) after(() => posthog.shutdown(4_000).catch(() => {}));
   }
 }

@@ -1,4 +1,4 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
 import { POST } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -8,9 +8,10 @@ import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 const capture = jest.fn();
+const shutdown = jest.fn();
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
-  default: () => ({ capture, shutdown: async () => {} }),
+  default: () => ({ capture, shutdown }),
 }));
 jest.mock("@/lib/auth/get-user-id", () => ({ getUserIDAndPro: jest.fn() }));
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: jest.fn() }));
@@ -33,6 +34,7 @@ const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextResponse: {
     json: (body: unknown, init?: ResponseInit) => ({
       status: init?.status ?? 200,
@@ -49,6 +51,7 @@ const request = (body = { chatId, messageId: "answer" }) =>
 
 beforeEach(() => {
   jest.clearAllMocks();
+  shutdown.mockResolvedValue(undefined);
   chat = {
     user_id: "owner",
     finish_reason: "stop",
@@ -208,3 +211,32 @@ test.each([
     expect((await (await POST(request())).json()).suggestions).toEqual([]);
   },
 );
+
+test("returns the draft before analytics shutdown and flushes after the response", async () => {
+  let finishFlush!: () => void;
+  shutdown.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      finishFlush = resolve;
+    }),
+  );
+  const result = await POST(request());
+  expect((await result.json()).suggestions).toHaveLength(1);
+  expect(shutdown).not.toHaveBeenCalled();
+  expect(after).toHaveBeenCalledTimes(1);
+  const flush = jest.mocked(after).mock.calls[0][0] as () => Promise<void>;
+  const flushing = flush();
+  expect(shutdown).toHaveBeenCalledTimes(1);
+  finishFlush();
+  await flushing;
+  expect(capture.mock.calls.map(([event]) => event.event)).toContain(
+    "contextual_next_actions_generated",
+  );
+});
+
+test("analytics flush failure after the response does not reject or lose the draft", async () => {
+  shutdown.mockRejectedValueOnce(new Error("analytics unavailable"));
+  const result = await POST(request());
+  const flush = jest.mocked(after).mock.calls[0][0] as () => Promise<void>;
+  await expect(flush()).resolves.toBeUndefined();
+  expect((await result.json()).suggestions).toHaveLength(1);
+});
