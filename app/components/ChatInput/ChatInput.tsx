@@ -1251,7 +1251,6 @@ const ChatInputContent = ({
             className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
-            onFocusCapture={() => setComposerFocused(true)}
             onPointerDownCapture={holdComposerFocusForPointer}
             onClick={(event) => {
               // Reveal controls only after focus, not during touch start. Focus
@@ -1294,6 +1293,7 @@ const ChatInputContent = ({
                 }
               }}
               autoFocus={autoFocus}
+              onFocus={() => setComposerFocused(true)}
               onBlur={(event) => {
                 if (composerPointerDownRef.current) return;
                 const next = event.relatedTarget;

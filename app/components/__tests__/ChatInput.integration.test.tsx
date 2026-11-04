@@ -15,6 +15,7 @@ import {
   screen,
   fireEvent,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReactNode, StrictMode, useEffect, useState } from "react";
@@ -1415,6 +1416,79 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
       expect(input).not.toHaveFocus();
     });
+
+    it.each([
+      ["add", false],
+      ["permissions", false],
+      ["model", false],
+      ["add", true],
+      ["permissions", true],
+      ["model", true],
+    ] as const)(
+      "keeps mobile Cloud visibility unchanged when opening %s with editor previously focused=%s",
+      async (control, editorPreviouslyFocused) => {
+        mockIsMobile = true;
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "toolbar-focus-user" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ enabled: true }),
+        });
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              hasMessages
+              autoFocus={false}
+            />
+          </TestWrapper>,
+        );
+        const input = await screen.findByRole("textbox");
+        const add = await screen.findByRole("button", {
+          name: "Add files or pursue a goal",
+        });
+        const context = screen.getByTestId("chat-input-agent-context");
+        const trigger =
+          control === "add"
+            ? add
+            : screen.getByRole("button", {
+                name:
+                  control === "permissions" ? /^Agent permissions:/ : "Auto",
+              });
+
+        if (editorPreviouslyFocused) act(() => input.focus());
+        act(() => trigger.focus());
+        expect(context.hasAttribute("inert")).toBe(!editorPreviouslyFocused);
+        expect(input).not.toHaveFocus();
+
+        if (control === "add") fireEvent.keyDown(trigger, { key: "Enter" });
+        else fireEvent.click(trigger);
+        const popup = await screen.findByRole(
+          control === "add" ? "menu" : "dialog",
+        );
+        await waitFor(() =>
+          expect(popup).toContainElement(document.activeElement),
+        );
+        expect(context.hasAttribute("inert")).toBe(!editorPreviouslyFocused);
+
+        if (control === "model") {
+          fireEvent.click(within(popup).getByRole("button", { name: /^Auto/ }));
+        } else fireEvent.keyDown(popup, { key: "Escape" });
+        await waitFor(() => expect(popup).not.toBeInTheDocument());
+        expect(context.hasAttribute("inert")).toBe(!editorPreviouslyFocused);
+
+        fireEvent.pointerDown(document.body);
+        expect(context).toHaveAttribute("inert");
+      },
+    );
 
     it("hides the sandbox after leaving an existing mobile composer but keeps new chats visible", async () => {
       mockIsMobile = true;
