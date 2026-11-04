@@ -1400,7 +1400,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort, isError, message }) => {
+    onFinish: ({ isAbort, isError, message, messages: finishedMessages }) => {
       if (isAbort && goalAdmissionRef.current?.chatId === chatId)
         goalAdmissionRef.current.aborted = true;
       performanceTracker.setOutcome(
@@ -1409,10 +1409,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
-      setCompletedPredictionTurn(
-        !isAbort && !isError ? { chatId, messageId: message.id } : null,
+      // useChat forwards old Chat instances to the latest callback after
+      // navigation. Its event history still belongs to the originating task.
+      // Check membership rather than the newest user ID: throttled visible
+      // messages may lag a legitimate abort before its assistant is appended.
+      const visibleUser = messagesRef.current.findLast(
+        (item) => item.role === "user",
       );
-      setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
+      if (
+        !visibleUser ||
+        finishedMessages?.some((item) => item.id === visibleUser.id)
+      ) {
+        setCompletedPredictionTurn(
+          !isAbort && !isError ? { chatId, messageId: message.id } : null,
+        );
+        setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
+      }
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;

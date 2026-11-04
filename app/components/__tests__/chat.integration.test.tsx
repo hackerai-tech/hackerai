@@ -264,16 +264,21 @@ jest.mock("../Messages", () => ({
   ),
 }));
 
+let mockChatInputProps: Parameters<typeof import("../ChatInput").ChatInput>[0];
 jest.mock("../ChatInput", () => ({
-  ChatInput: ({ onSubmit, goalPanel }: any) => (
-    <div data-testid="chat-input">
-      ChatInput{goalPanel?.("attached")}
-      <textarea aria-label="Test draft" />
-      <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
-        Submit test message
-      </button>
-    </div>
-  ),
+  ChatInput: (props: typeof mockChatInputProps) => {
+    mockChatInputProps = props;
+    const { onSubmit, goalPanel } = props;
+    return (
+      <div data-testid="chat-input">
+        ChatInput{goalPanel?.("attached")}
+        <textarea aria-label="Test draft" />
+        <button onClick={() => onSubmit({ preventDefault: jest.fn() })}>
+          Submit test message
+        </button>
+      </div>
+    );
+  },
 }));
 
 let mockContinueGoal: NonNullable<
@@ -1266,6 +1271,94 @@ describe("Chat Component Integration", () => {
         })?.autoReview,
       ).toBeUndefined();
     });
+  });
+
+  describe("Prediction completion ownership", () => {
+    const userB = {
+      id: "user-b",
+      role: "user",
+      parts: [{ type: "text", text: "Current task" }],
+    };
+    const answerB = {
+      id: "answer-b",
+      role: "assistant",
+      parts: [{ type: "text", text: "Current answer" }],
+    };
+    const userA = { ...userB, id: "user-a" };
+    const answerA = { ...answerB, id: "answer-a" };
+    const mount = () => {
+      mockRouteParams = { id: "chat-b" };
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        messages: [userB, answerB],
+      });
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const finish = () =>
+        (
+          mockUseChat.mock.calls.at(-1)![0] as {
+            onFinish: (result: Record<string, unknown>) => void;
+          }
+        ).onFinish;
+      act(() =>
+        finish()({
+          isAbort: false,
+          isError: false,
+          message: answerB,
+          messages: [userB, answerB],
+        }),
+      );
+      expect(mockChatInputProps.completedPredictionTurn).toEqual({
+        chatId: "chat-b",
+        messageId: "answer-b",
+      });
+      return finish;
+    };
+    it.each([
+      { isAbort: true, isError: false },
+      { isAbort: false, isError: true },
+      { isAbort: false, isError: false },
+    ])(
+      "ignores a previous task's late finish in the latest callback: %j",
+      (outcome) => {
+        const finish = mount();
+        act(() =>
+          finish()({
+            ...outcome,
+            message: answerA,
+            messages: [userA, answerA],
+          }),
+        );
+        expect(mockChatInputProps.completedPredictionTurn).toEqual({
+          chatId: "chat-b",
+          messageId: "answer-b",
+        });
+        expect(mockChatInputProps.interruptedPredictionTurn).toBeNull();
+      },
+    );
+    it.each([
+      { isAbort: true, isError: false },
+      { isAbort: false, isError: true },
+    ])(
+      "clears current-task lineage before the assistant exists when visible messages lag: %j",
+      (outcome) => {
+        const finish = mount();
+        act(() =>
+          finish()({
+            ...outcome,
+            message: { ...answerB, id: "not-appended" },
+            messages: [userB, answerB, { ...userB, id: "new-user-b" }],
+          }),
+        );
+        expect(mockChatInputProps.completedPredictionTurn).toBeNull();
+        expect(mockChatInputProps.interruptedPredictionTurn).toEqual({
+          chatId: "chat-b",
+        });
+      },
+    );
   });
 
   describe("Scroll to bottom", () => {
