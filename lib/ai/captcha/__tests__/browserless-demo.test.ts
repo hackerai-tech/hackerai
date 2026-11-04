@@ -1,4 +1,7 @@
-import { runBrowserlessDemo } from "../browserless-demo";
+import {
+  buildBrowserlessDemoQuery,
+  runBrowserlessDemo,
+} from "../browserless-demo";
 
 const originalEnv = process.env;
 const payload = { demo: "recaptcha", userId: "qa-user" };
@@ -23,6 +26,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   process.env = originalEnv;
+  document.body.innerHTML = "";
+  document.body.removeAttribute("data-browserless-demo-ready");
 });
 
 it.each(["PRODUCTION", "DEVELOPMENT"])(
@@ -59,6 +64,21 @@ it("rejects arbitrary targets before any provider request", async () => {
     ),
   ).rejects.toThrow();
   expect(mockFetch).not.toHaveBeenCalled();
+});
+
+it("recognizes the current GeeTest v4 demo markup before attempting a solve", () => {
+  const query = buildBrowserlessDemoQuery("geetest");
+  const script = query.match(
+    /prepare: evaluate\(content: ("(?:\\.|[^"\\])*")\)/,
+  )?.[1];
+  if (!script) throw new Error("Missing demo preparation");
+  document.body.innerHTML = '<div class="geetest_captcha"></div>';
+  new Function("location", "document", "sessionStorage", JSON.parse(script))(
+    { origin: "https://2captcha.com", pathname: "/demo/geetest-v4" },
+    document,
+    sessionStorage,
+  );
+  expect(document.body.getAttribute("data-browserless-demo-ready")).toBe("1");
 });
 
 it("keeps the key in the provider auth header and requires website acceptance", async () => {
@@ -138,6 +158,28 @@ it("records missing observations and GraphQL partial failures without leaking er
     failedStages: ["outcome"],
   });
   expect(JSON.stringify(result)).not.toContain(providerKey);
+});
+
+it("retains blocked-page evidence when the demo widget never loads", async () => {
+  const screenshot = "iVBORw0KGgo=";
+  mockFetch.mockResolvedValueOnce(
+    reply({
+      data: {
+        goto: { status: 403 },
+        attempt: null,
+        image: { base64: screenshot },
+      },
+      errors: [{ message: "widget unavailable", path: ["widget"] }],
+    }),
+  );
+  expect(
+    await runBrowserlessDemo(payload, "PREVIEW", { fetch: mockFetch }),
+  ).toMatchObject({
+    navigationStatus: 403,
+    challengeReady: false,
+    websiteAccepted: false,
+    screenshotPng: screenshot,
+  });
 });
 
 it("labels the Turnstile demo as a test-key control even when accepted", async () => {

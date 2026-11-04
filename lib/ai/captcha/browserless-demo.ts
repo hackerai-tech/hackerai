@@ -39,7 +39,7 @@ const demos = {
   },
   geetest: {
     url: "https://2captcha.com/demo/geetest-v4",
-    widget: ".geetest4_wrap",
+    widget: ".geetest_captcha",
     submit: null,
     success:
       'document.body.innerText.includes("Captcha is passed successfully!")',
@@ -56,6 +56,8 @@ const evaluationSchema = z.object({ value: z.string().max(4096) });
 const responseSchema = z.object({
   data: z
     .object({
+      goto: z.object({ status: z.number().nullable() }).nullish(),
+      image: z.object({ base64: z.string().max(4_000_000) }).nullish(),
       attempt: z
         .object({
           solve: z
@@ -66,7 +68,6 @@ const responseSchema = z.object({
             })
             .nullish(),
           outcome: evaluationSchema.nullish(),
-          image: z.object({ base64: z.string().max(4_000_000) }).nullish(),
         })
         .nullish(),
     })
@@ -121,15 +122,15 @@ export function buildBrowserlessDemoQuery(
     widget: waitForSelector(selector: ${JSON.stringify(demo.widget)}, timeout: 10000) { time }
     prepare: evaluate(content: ${JSON.stringify(prepare)}) { value }
     attempt: if(selector: "body[data-browserless-demo-ready='1']") {
-      solve(${demo.type ? `type: ${demo.type}, ` : ""}wait: true, timeout: 10000) {
+      solve(${demo.type ? `type: ${demo.type}, ` : ""}wait: true, timeout: 90000) {
         found solved @export(as: "browserlessSolved") time
       }
       submit: evaluate(content: ${JSON.stringify(submit)}) { value }
       accepted: waitForFunction(fn: ${JSON.stringify(demo.success)}, timeout: 8000) { time }
       outcome: evaluate(content: ${JSON.stringify(outcome)}) { value }
-      redact: evaluate(content: ${JSON.stringify(redact)}) { value }
-      image: screenshot(type: png) { base64 }
     }
+    redact: evaluate(content: ${JSON.stringify(redact)}) { value }
+    image: screenshot(type: png) { base64 }
   }`;
 }
 
@@ -159,23 +160,30 @@ export async function runBrowserlessDemo(
   const started = Date.now();
   let requestStarted = false;
   try {
-    requestStarted = true;
-    const response = await (options.fetch ?? fetch)(
+    const endpoint = new URL(
       "https://production-sfo.browserless.io/stealth/bql?timeout=110000",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query: buildBrowserlessDemoQuery(payload.demo),
-          operationName: "BrowserlessDemo",
-        }),
-        signal,
-        redirect: "error",
-      },
     );
+    // Some hCaptcha demo sessions are blocked before the widget loads.
+    // Keep the provider's metered proxy confined to that fixed demo.
+    if (payload.demo === "hcaptcha") {
+      endpoint.searchParams.set("proxy", "residential");
+      endpoint.searchParams.set("proxyCountry", "us");
+      endpoint.searchParams.set("proxySticky", "true");
+    }
+    requestStarted = true;
+    const response = await (options.fetch ?? fetch)(endpoint.href, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: buildBrowserlessDemoQuery(payload.demo),
+        operationName: "BrowserlessDemo",
+      }),
+      signal,
+      redirect: "error",
+    });
     if (!response.ok) {
       return {
         status: "provider_rejected" as const,
@@ -194,12 +202,15 @@ export async function runBrowserlessDemo(
     }
     const solved = attempt?.solve?.solved === true;
     const submitted = outcome?.submitted === true;
-    const image = attempt?.image?.base64;
+    const image = body.data?.image?.base64;
     return {
       status: "completed" as const,
       demo: payload.demo,
       url: demos[payload.demo].url,
       controlOnly: demos[payload.demo].controlOnly,
+      proxy: payload.demo === "hcaptcha" ? "residential" : "none",
+      navigationStatus: body.data?.goto?.status ?? null,
+      challengeReady: attempt != null,
       found: attempt?.solve?.found === true,
       providerSolved: solved,
       formSubmitted: submitted,
