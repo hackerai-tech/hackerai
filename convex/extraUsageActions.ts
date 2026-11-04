@@ -1386,6 +1386,7 @@ export const deductWithAutoReload = action({
 
       convexLogger.info("deduct_with_auto_reload", {
         user_id: args.userId,
+        settlement_operation_id: args.settlementOperationId,
         amount_points: args.amountPoints,
         usage_settlement_id: args.usageSettlementId,
         success: deductResult.success,
