@@ -42,7 +42,6 @@ it.each([false, true])(
     const browser = await sessions.getChallengeBrowser(
       new AbortController().signal,
     );
-    expect(browser.supportsHostedFallback).toBe(false);
     const secret = "synthetic-response-token";
     expect(await browser.evaluate(secret)).toEqual({
       status: "token_delivered",

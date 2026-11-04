@@ -9,10 +9,6 @@ import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
-import {
-  BROWSERLESS_ADOPT_PROGRAM,
-  BROWSERLESS_RESTORE_PROGRAM,
-} from "../../captcha/browserless-adopt-program";
 import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -58,7 +54,6 @@ export class BrowserSessions {
   private readonly expiresAt = Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS;
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly failedSessions = new Set<BrowserSession>();
-  private readonly remoteCleanups = new Set<() => Promise<void>>();
   private readonly connectedBrowsers = new Map<
     string,
     ConnectedChallengeBrowser
@@ -88,19 +83,7 @@ export class BrowserSessions {
    */
   async getChallengeBrowser(signal: AbortSignal): Promise<{
     identity: string;
-    supportsHostedFallback: boolean;
     evaluate: (script: string) => Promise<unknown>;
-    adoptRemote: (
-      expected: { url: string; documentId: string },
-      openTunnel: (
-        sandbox: AnySandbox,
-        directory: string,
-      ) => Promise<{
-        endpoint: string;
-        close: () => Promise<void>;
-        closed: Promise<void>;
-      }>,
-    ) => Promise<void>;
   }> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Browser session ownership has ended.");
@@ -158,101 +141,6 @@ export class BrowserSessions {
     await assertOwned();
     return {
       identity: `${session.sessionId}:${name}`,
-      supportsHostedFallback: true,
-      adoptRemote: async (expected, openTunnel) => {
-        await assertOwned();
-        const tunnel = await openTunnel(sandbox, session.directory);
-        const remoteName = `fallback-${randomBytes(8).toString("hex")}`;
-        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        let finishAdoption!: () => void;
-        const adoptionFinished = new Promise<void>((resolve) => {
-          finishAdoption = resolve;
-        });
-        // Closing can race activation. Wait for the in-flight adoption to settle
-        // before restoring, otherwise activation could overwrite the restoration.
-        const restored = tunnel.closed.then(async () => {
-          await adoptionFinished;
-          if (this.closed) return; // Whole-run cleanup closes both daemons.
-          const handle = await sandbox.commands.run(
-            `python3 -c ${quote(BROWSERLESS_RESTORE_PROGRAM)} ${quote(session.directory)}`,
-            {
-              ...buildSandboxCommandOptions(sandbox),
-              background: true,
-              stdin: true,
-              timeoutMs: 12_000,
-            },
-          );
-          try {
-            await handle.sendStdin(JSON.stringify({ name, remoteName }));
-            await handle.closeStdin();
-            const result = await handle.wait();
-            const recovery = JSON.parse(result.stdout);
-            if (
-              result.exitCode !== 0 ||
-              (recovery.restored !== true && recovery.deferred !== true)
-            )
-              throw new Error();
-          } catch {
-            await handle.kill().catch(() => false);
-            throw new Error("Browser restoration failed.");
-          }
-        });
-        void restored.catch(() => {
-          console.warn("[browser-sessions] fallback restoration incomplete");
-        });
-        const close = async () => {
-          await tunnel.close();
-          await restored;
-        };
-        this.remoteCleanups.add(close);
-        try {
-          for (const phase of ["prepare", "activate"]) {
-            await assertOwned();
-            const handle = await sandbox.commands.run(
-              `python3 -c ${quote(BROWSERLESS_ADOPT_PROGRAM)} ${quote(session.directory)}`,
-              {
-                ...buildSandboxCommandOptions(sandbox),
-                background: true,
-                stdin: true,
-                timeoutMs: 18_000,
-              },
-            );
-            try {
-              await assertOwned();
-              await withCancellation(
-                handle.sendStdin(
-                  JSON.stringify({
-                    phase,
-                    name,
-                    remoteName,
-                    endpoint: tunnel.endpoint,
-                    expected,
-                  }),
-                ),
-                signal,
-              );
-              await withCancellation(handle.closeStdin(), signal);
-              const result = await withCancellation(handle.wait(), signal);
-              if (
-                result.exitCode !== 0 ||
-                JSON.parse(result.stdout).adopted !== true
-              )
-                throw new Error();
-            } catch {
-              await handle.kill().catch(() => false);
-              throw new Error("Browser adoption failed.");
-            }
-          }
-        } catch {
-          finishAdoption();
-          await tunnel.close();
-          await restored.catch(() => {});
-          signal.throwIfAborted();
-          throw new Error("Browser adoption failed.");
-        } finally {
-          finishAdoption();
-        }
-      },
       evaluate: async (script) => {
         await assertOwned();
         // A status probe never starts a daemon. Refuse eval after idle shutdown.
@@ -630,8 +518,6 @@ export class BrowserSessions {
     );
     this.connectedBrowsers.clear();
     this.activeConnectedBrowser = undefined;
-    await Promise.allSettled([...this.remoteCleanups].map((close) => close()));
-    this.remoteCleanups.clear();
     const results = await Promise.allSettled(
       [...this.sessions.values(), ...this.failedSessions].map(
         async (session) => {

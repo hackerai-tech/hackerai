@@ -92,7 +92,6 @@ export class ConnectedChallengeBrowser {
     await this.preparation;
     return {
       identity: this.owner,
-      supportsHostedFallback: false,
       evaluate: async (script: string): Promise<unknown> => {
         signal.throwIfAborted();
         if (this.closed) throw new Error("Browser ownership ended.");
@@ -100,9 +99,6 @@ export class ConnectedChallengeBrowser {
         if (this.closed || reply.ok !== true)
           throw new Error("Browser ownership ended.");
         return reply.result;
-      },
-      adoptRemote: async (): Promise<void> => {
-        throw new Error("Hosted fallback requires a Cloud browser.");
       },
     };
   }

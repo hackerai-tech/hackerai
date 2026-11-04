@@ -18,11 +18,6 @@ import {
 } from "../captcha/detection";
 import { createTwoCaptchaSolver, type CaptchaSolver } from "../captcha/solver";
 import { CAPTCHA_VISION_GUIDANCE } from "../captcha/vision-guidance";
-import {
-  isBrowserlessFallbackTarget,
-  openBrowserlessFallback,
-} from "../captcha/browserless-session";
-import { createBrowserlessTunnel } from "../captcha/browserless-tunnel";
 
 export function createBrowserChallenge(
   context: ToolContext,
@@ -35,7 +30,7 @@ export function createBrowserChallenge(
   let active = false;
   return tool({
     description:
-      "Inspect the current owned browser for CAPTCHA widgets or a verification interstitial. Cloud, remote connections and Desktop use the same server-side solver; provider keys never enter the browser or terminal. When internal Preview automatic solving is enabled, inspect solves supported pending challenges on server-approved targets in place once, preserving the current page and login. When a page shows verification, call inspect before retrying browser actions. If the internal Preview Browserless fallback is enabled, inspect switches to a fresh hosted browser only after detecting a pending supported CAPTCHA on an approved public demo. On browserless_fallback_ready, immediately run agent-browser snapshot -i in the same session, then submit the normal demo form and verify the website result; do not reopen the page or switch sessions. The hosted browser has a short lifetime. Normal pages do not allocate Browserless. Call this tool alone; only one provider attempt per run, including failures. Otherwise inspect can return visionGuidance for authorized vision-only demo testing. The solve action is the separate 2Captcha adapter. Unsupported, failed or expired challenges need browser_handoff; never retry a paid attempt or claim website acceptance from a provider solve alone.",
+      "Inspect the current owned browser for CAPTCHA widgets or a verification interstitial. Cloud, remote connections and Desktop use the same server-side solver; provider keys never enter the browser or terminal. When internal Preview automatic solving is enabled, inspect solves supported pending challenges on server-approved targets in place once, preserving the current page and login. When a page shows verification, call inspect before retrying browser actions. Call this tool alone; only one provider attempt per run, including failures. Otherwise inspect can return visionGuidance for authorized vision-only demo testing. The solve action is the separate 2Captcha adapter. Unsupported, failed or expired challenges need browser_handoff; never retry a paid attempt or claim website acceptance from a provider solve alone.",
     inputSchema: z.object({ action: z.enum(["inspect", "solve"]) }),
     execute: async ({ action }, options) => {
       const signals = [runSignal, options.abortSignal].filter(
@@ -60,7 +55,6 @@ export function createBrowserChallenge(
       active = true;
       let deliveryStarted = false;
       let taskStarted = false;
-      let browserlessStarted = false;
       let costRecorded = false;
       const record = (
         event: string,
@@ -111,70 +105,6 @@ export function createBrowserChallenge(
           pending.length === 1 &&
           !pending[0].invisible &&
           isSupportedCaptchaTarget(observation.url, pending[0]);
-        if (
-          action === "inspect" &&
-          !autoSolve &&
-          browser.supportsHostedFallback !== false &&
-          process.env.HACKERAI_BROWSERLESS_FALLBACK_PREVIEW === "1" &&
-          process.env.HACKERAI_ENVIRONMENT === "preview"
-        ) {
-          if (
-            !isBrowserlessFallbackTarget(observation.url) ||
-            observation.interstitial ||
-            pending.length !== 1 ||
-            pending[0].invisible
-          )
-            return {
-              status: "handoff_required",
-              reason: "unsupported_fallback_target",
-            };
-          if (solveStarted)
-            return { status: "handoff_required", reason: "attempt_limit" };
-          const key = process.env.BROWSERLESS_API_KEY;
-          if (!key)
-            return {
-              status: "handoff_required",
-              reason: "solver_not_configured",
-            };
-          solveStarted = true;
-          browserlessStarted = true;
-          record("browser_captcha_browserless_fallback_started", {
-            captcha_kind: pending[0].kind,
-          });
-          const remote = await openBrowserlessFallback(
-            observation.url,
-            key,
-            signal,
-          );
-          let adopted = false;
-          try {
-            await browser.adoptRemote(
-              { url: observation.url, documentId: observation.documentId },
-              (sandbox, directory) =>
-                createBrowserlessTunnel(sandbox, directory, remote, signal),
-            );
-            signal.throwIfAborted();
-            adopted = true;
-            record("browser_captcha_browserless_fallback_result", {
-              outcome: "browser_adopted",
-              captcha_kind: pending[0].kind,
-            });
-            return {
-              status: "browserless_fallback_ready",
-              browserChanged: true,
-              providerSolved: true,
-              websiteAccepted: false,
-              remainingSeconds: Math.max(
-                0,
-                Math.floor((remote.expiresAt - Date.now()) / 1000),
-              ),
-              message:
-                "The same agent-browser commands now control the hosted demo browser. Immediately run agent-browser snapshot -i, then submit the demo normally and verify its server result. Do not open/reload the URL or change sessions: that would discard the solved challenge. This is a fresh public-demo session; no original cookies or form data were copied. If it fails or expires, request human handoff; do not repeat the fallback.",
-            };
-          } finally {
-            if (!adopted) await remote.close();
-          }
-        }
         if (action === "inspect" && !autoSolve)
           return {
             status: "challenge_detected",
@@ -251,10 +181,6 @@ export function createBrowserChallenge(
             }
           : { status: "handoff_required", reason: "page_changed" };
       } catch {
-        if (browserlessStarted)
-          record("browser_captcha_browserless_fallback_result", {
-            outcome: "failed_or_cancelled",
-          });
         if (taskStarted)
           record("browser_captcha_solver_result", {
             outcome: deliveryStarted
