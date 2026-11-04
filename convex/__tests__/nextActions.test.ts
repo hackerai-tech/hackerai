@@ -133,6 +133,10 @@ it("does not return or overwrite a stale message, completion, or mode", async ()
   expect(
     await saveForBackend.handler(ctx, { ...args, finishedAt: 123, batch }),
   ).toBeNull();
+  const restored = context();
+  await saveForBackend.handler(restored, { ...args, finishedAt: 123, batch });
+  restored.rows.chats.default_model_slug = "agent";
+  expect(await getForBackend.handler(restored, args)).toBeNull();
 });
 it("honors account deletion and authorization before accessing saved content", async () => {
   const ctx = context({ user_deletion_fences: { user_id: "owner" } });
