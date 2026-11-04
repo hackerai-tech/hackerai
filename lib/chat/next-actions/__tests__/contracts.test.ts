@@ -300,6 +300,8 @@ test.each([
   "Tenemos permisos para evaluar el sitio.",
   "Estoy autorizado para probar esto.",
   "J'ai l'autorisation de tester ce site.",
+  "¿Tengo permiso para probar esto? Estoy autorizado para probar esto.",
+  "Est-ce que j’ai la permission de tester ? J'ai l'autorisation de tester ce site.",
 ])("rejects factual user updates despite a valid topic quote: %s", (text) => {
   const sources = [
     {
@@ -360,6 +362,9 @@ test.each([
   "Did we have enough evidence?",
   "Will I have to get permission first?",
   "Must we have written scope?",
+  "Can you tell me whether I have enough evidence to file a report?",
+  "¿Tengo permiso para probar esto?",
+  "Est-ce que j’ai la permission de tester ?",
 ])("does not confuse a question with a factual update: %s", (text) => {
   const source = {
     id: "answer",
