@@ -81,6 +81,9 @@ overrides:
   trigger.dev>minimatch: 10.2.3
 
 patchedDependencies:
+  '@shikijs/engine-oniguruma@4.6.0':
+    hash: 405eea4d267869a09aaff7b7b99e558eac414c3c873740a099121b19c4cb9b53
+    path: patches/@shikijs__engine-oniguruma@4.6.0.patch
   '@workos-inc/authkit-nextjs@4.3.2':
     hash: 10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378
     path: patches/@workos-inc__authkit-nextjs@4.3.2.patch
@@ -11805,7 +11808,7 @@ snapshots:
       '@shikijs/vscode-textmate': 10.1.0
       oniguruma-to-es: 4.3.6
 
-  '@shikijs/engine-oniguruma@4.6.0':
+  '@shikijs/engine-oniguruma@4.6.0(patch_hash=405eea4d267869a09aaff7b7b99e558eac414c3c873740a099121b19c4cb9b53)':
     dependencies:
       '@shikijs/types': 4.6.0
       '@shikijs/vscode-textmate': 10.1.0
@@ -16864,7 +16867,7 @@ snapshots:
     dependencies:
       '@shikijs/core': 4.6.0
       '@shikijs/engine-javascript': 4.6.0
-      '@shikijs/engine-oniguruma': 4.6.0
+      '@shikijs/engine-oniguruma': 4.6.0(patch_hash=405eea4d267869a09aaff7b7b99e558eac414c3c873740a099121b19c4cb9b53)
       '@shikijs/langs': 4.6.0
       '@shikijs/themes': 4.6.0
       '@shikijs/types': 4.6.0
