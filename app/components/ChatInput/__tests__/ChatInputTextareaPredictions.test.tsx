@@ -1,4 +1,10 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -7,6 +13,7 @@ import {
 import { useNextActions } from "@/app/hooks/useNextActions";
 import { ChatInputTextarea } from "../ChatInputTextarea";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
+import { getComposerChangeDiagnostics } from "@/lib/posthog/composer-change-diagnostics";
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ subscription: "pro" }),
@@ -19,6 +26,7 @@ jest.mock("@/app/hooks/useFileUpload", () => ({
 }));
 jest.mock("@/lib/analytics/client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
+  getIdentifiedAnalyticsUserId: () => "u",
 }));
 const send = jest.fn();
 const suggestions = [
@@ -95,6 +103,42 @@ async function setup(blocked = false) {
   });
   return screen.getByTestId("chat-input");
 }
+
+test("change diagnostics preserve editing and IME, including malformed native metadata", async () => {
+  const textarea = await setup(true);
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(5001);
+  });
+  getComposerChangeDiagnostics();
+  fireEvent.input(textarea, {
+    target: { value: "Synthetic composing edit" },
+    inputType: "insertCompositionText",
+    isComposing: true,
+  });
+  expect(textarea).toHaveValue("Synthetic composing edit");
+  expect(getComposerChangeDiagnostics()).toMatchObject({
+    hackerai_composer_change_recent_count: 1,
+    hackerai_composer_change_last_input_type: "insertCompositionText",
+    hackerai_composer_change_composing_count: 1,
+  });
+  fireEvent.keyDown(textarea, {
+    key: "Enter",
+    isComposing: true,
+    keyCode: 229,
+  });
+  expect(send).not.toHaveBeenCalled();
+
+  const malformed = createEvent.change(textarea, {
+    target: { value: "Synthetic ordinary edit" },
+  });
+  Object.defineProperty(malformed, "inputType", {
+    get: () => {
+      throw new Error("Diagnostic getter failed");
+    },
+  });
+  fireEvent(textarea, malformed);
+  expect(textarea).toHaveValue("Synthetic ordinary edit");
+});
 
 test("Tab only accepts into the empty focused composer; explicit Enter sends", async () => {
   const textarea = await setup();
