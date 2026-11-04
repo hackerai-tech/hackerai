@@ -31,7 +31,7 @@ async function owner() {
     .fn()
     .mockResolvedValueOnce({ exitCode: 0, stdout: "/usr/bin" });
   const read = jest.fn(async () => "default");
-  await sessions.prepare({
+  const preparedEnv = await sessions.prepare({
     sandboxId: "sandbox",
     commands: { run },
     files: { read },
@@ -47,7 +47,13 @@ async function owner() {
           }),
         },
   );
-  return { sessions, handle, run, read };
+  return {
+    sessions,
+    handle,
+    run,
+    read,
+    checkpointKey: preparedEnv.AGENT_BROWSER_ENCRYPTION_KEY,
+  };
 }
 beforeEach(() => {
   mockQuery.mockReset().mockResolvedValue({ runActive: true, state: "agent" });
@@ -63,7 +69,7 @@ it("requires an already-owned browser and never acquires or opens a new one", as
 });
 
 it("passes response material only through stdin and returns the bounded result", async () => {
-  const { sessions, run, handle, read } = await owner();
+  const { sessions, run, handle, read, checkpointKey } = await owner();
   const browser = await sessions.getChallengeBrowser(
     new AbortController().signal,
   );
@@ -82,7 +88,12 @@ it("passes response material only through stdin and returns the bounded result",
   const calls = JSON.stringify(run.mock.calls);
   expect(calls).not.toContain("private-response-script");
   expect(calls).not.toContain("private-service-key");
-  expect(calls).not.toContain("AGENT_BROWSER_ENCRYPTION_KEY");
+  expect(calls.includes(checkpointKey)).toBe(false);
+  for (const [, options] of run.mock.calls) {
+    expect(Object.keys(options.envs ?? options.envVars ?? {})).not.toContain(
+      "AGENT_BROWSER_ENCRYPTION_KEY",
+    );
+  }
   expect(run).toHaveBeenLastCalledWith(
     expect.stringMatching(
       /^\/tmp\/hackerai-browser-[a-f0-9]+\/bin\/agent-browser --session 'default' eval --stdin --json$/,

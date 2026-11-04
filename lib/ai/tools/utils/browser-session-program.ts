@@ -58,7 +58,7 @@ if action == 'prepare':
         # server can only create the paused marker after the current command
         # exits; subsequent CLI invocations wait until explicit resume.
         wrapper = '''#!/usr/bin/env python3
-import fcntl, os, pathlib, sys, time
+import fcntl, hashlib, json, os, pathlib, sys, time
 root = pathlib.Path(%r)
 fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -90,6 +90,14 @@ if verify.exists() and active.read_text().strip() != name:
 sys.argv = [sys.argv[0], '--session', name, *args]
 active.write_text(name)
 verify = root / 'verify-required'
+# Keep only a digest of the browser environment from the last successful call.
+# Session names are normalized above; checkpoint encryption does not route the
+# browser and is omitted by the server's inspection calls.
+environment = {key: value for key, value in os.environ.items()
+               if key.startswith('AGENT_BROWSER_') and key not in
+               ('AGENT_BROWSER_SESSION', 'AGENT_BROWSER_ENCRYPTION_KEY')}
+environment_digest = hashlib.sha256(json.dumps(environment, sort_keys=True).encode()).hexdigest()
+environment_path = root / 'runtime-env-hash'
 if verify.exists():
     args = sys.argv[1:]
     # Only presentation flags are allowed on this one required snapshot. Other
@@ -98,6 +106,7 @@ if verify.exists():
     routing_changed = bool(os.environ.get('AGENT_BROWSER_NAMESPACE')) or any(
         os.environ.get(key) != str(root / leaf)
         for key, leaf in (('AGENT_BROWSER_SOCKET_DIR', 'sockets'), ('AGENT_BROWSER_CONFIG', 'config.json')))
+    routing_changed = routing_changed or not environment_path.exists() or environment_path.read_text() != environment_digest
     if routing_changed or snapshot_args.count('snapshot') != 1 or any(
         arg not in ('snapshot', '-i', '--interactive', '-c', '--compact', '--json') for arg in snapshot_args):
         print('Browser handoff resumed; this command was not executed. Run agent-browser snapshot -i first in this same session with its original environment. Only interactive, compact and JSON output flags are supported until verification finishes. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
@@ -106,7 +115,11 @@ if verify.exists():
     if result.returncode == 0:
         verify.unlink(missing_ok=True)
     sys.exit(result.returncode)
-sys.exit(__import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True).returncode)
+result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
+if result.returncode == 0:
+    environment_path.write_text(environment_digest)
+    environment_path.chmod(0o600)
+sys.exit(result.returncode)
 ''' % (str(root), real, real)
         path = gate_bin / 'agent-browser'
         path.write_text(wrapper)

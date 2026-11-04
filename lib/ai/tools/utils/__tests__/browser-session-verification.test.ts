@@ -26,6 +26,7 @@ export function verifyBrowserResumeTargets() {
     AGENT_BROWSER_SESSION: "default",
     AGENT_BROWSER_SOCKET_DIR: `${root}/sockets`,
     AGENT_BROWSER_CONFIG: `${root}/config.json`,
+    AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
   };
   const lifecycle = (action: "prepare" | "resume" | "cleanup") => {
     const result = spawnSync(
@@ -84,6 +85,15 @@ export function verifyBrowserResumeTargets() {
       { AGENT_BROWSER_CONFIG: "/tmp/other-config.json" },
       { AGENT_BROWSER_SOCKET_DIR: undefined },
       { AGENT_BROWSER_CONFIG: undefined },
+      { AGENT_BROWSER_CDP: "9222" },
+      { AGENT_BROWSER_AUTO_CONNECT: "1" },
+      { AGENT_BROWSER_PROVIDER: "other" },
+      { AGENT_BROWSER_PROFILE: "/tmp/other-profile" },
+      { AGENT_BROWSER_ENGINE: "lightpanda" },
+      { AGENT_BROWSER_ARGS: "--other-launch-arg" },
+      { AGENT_BROWSER_IDLE_TIMEOUT_MS: "1000" },
+      { AGENT_BROWSER_IDLE_TIMEOUT_MS: undefined },
+      { AGENT_BROWSER_ACTION_POLICY: "/tmp/other-policy.json" },
     ]) {
       writeFileSync(ledger, "");
       assert.equal(run(["snapshot", "-i"], overrides).status, 75);
@@ -93,7 +103,12 @@ export function verifyBrowserResumeTargets() {
     }
     assert.notEqual(run(["--session", "other", "snapshot", "-i"]).status, 0);
     assert.equal(existsSync(`${root}/verify-required`), true);
-    assert.equal(run(["--json", "snapshot", "-i", "--compact"]).status, 0);
+    assert.equal(
+      run(["--json", "snapshot", "-i", "--compact"], {
+        AGENT_BROWSER_ENCRYPTION_KEY: "a".repeat(64),
+      }).status,
+      0,
+    );
     assert.equal(existsSync(`${root}/verify-required`), false);
     assert.equal(readFileSync(`${root}/active-session`, "utf8"), "kept");
     // Once the original browser has been inspected, ordinary options work again.
