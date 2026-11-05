@@ -7,8 +7,12 @@ const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockLoggerWarn = jest.fn();
 const mockPauseGoal = jest.fn();
+const mockConvexSignal = jest.fn();
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ mutation: mockPauseGoal }),
+  getConvexClient: (signal?: AbortSignal) => {
+    mockConvexSignal(signal);
+    return { mutation: mockPauseGoal };
+  },
 }));
 jest.mock("@/lib/goals/server", () => ({ goalServiceKey: () => "synthetic" }));
 
@@ -357,6 +361,61 @@ describe("cancellation timeout diagnostics", () => {
     jest.restoreAllMocks();
   });
 
+  it("continues Stop after five seconds even if goal storage ignores abort", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const pause = deferred();
+    mockPauseGoal.mockReturnValueOnce(pause.promise);
+    const response = createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      expect(await (await response).json()).toEqual({
+        canceled: true,
+        runId: "run-1",
+      });
+      expect(mockConvexSignal.mock.calls[0][0]).toBeInstanceOf(AbortSignal);
+      expect((mockConvexSignal.mock.calls[0][0] as AbortSignal).aborted).toBe(
+        true,
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          event: "agent_cancel_goal_pause_unconfirmed",
+          pause_acknowledgement: "unconfirmed",
+          failure_reason: "deadline_exceeded",
+        }),
+      );
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedRunId: "run-1" }),
+      );
+    } finally {
+      pause.resolve();
+      await response;
+    }
+    expect(mockPauseGoal).toHaveBeenCalledTimes(1);
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledTimes(1);
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("clears the goal-pause deadline after prompt storage success", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(response.status).toBe(200);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect((mockConvexSignal.mock.calls[0][0] as AbortSignal).aborted).toBe(
+      false,
+    );
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it("delivers Stop while approval cleanup is pending without acknowledging completion", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
     const approval = deferred();
@@ -427,7 +486,6 @@ describe("cancellation timeout diagnostics", () => {
     "read_request",
     "authenticate",
     "get_chat",
-    "pause_goal",
     "close_approval_session",
     "cancel_trigger_run",
     "clear_active_run",
