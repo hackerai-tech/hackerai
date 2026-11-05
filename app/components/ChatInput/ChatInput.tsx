@@ -1079,6 +1079,7 @@ const ChatInputContent = ({
 
     if (canSubmit) {
       if (isGoalSubmission) captureGoalComposerAction("submit_attempt");
+
       isSubmittingRef.current = true;
       const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
@@ -1128,6 +1129,7 @@ const ChatInputContent = ({
         }
       } catch (error) {
         if (isGoalSubmission) captureGoalComposerAction("submit_error");
+
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         console.error("Failed to submit message:", error);
