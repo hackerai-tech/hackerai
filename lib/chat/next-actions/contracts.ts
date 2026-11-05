@@ -20,6 +20,9 @@ export const nextActionsResponseSchema = z.object({
   suggestions: z.array(z.string().trim().min(1).max(240)).max(3),
 });
 export type NextActionsBatch = z.infer<typeof nextActionsResponseSchema>;
+export const emptyNextActionsResponseSchema = z.object({
+  suggestions: z.array(z.never()).max(0),
+});
 export type CompletedPredictionTurn = { chatId: string; messageId: string };
 
 export const generatedNextActionsSchema = z.object({

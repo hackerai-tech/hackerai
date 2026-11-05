@@ -67,6 +67,7 @@ beforeEach(() => {
     userId: "owner",
     subscription: "pro",
     emailVerified: true,
+    analyticsAccountCohort: "non_internal",
   });
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
@@ -260,6 +261,8 @@ test.each(["control", "test"])(
           assignment: variant,
           "$feature/contextual-next-actions": variant,
           experiment_version: "next-actions-v1",
+          account_metadata_version: 1,
+          account_cohort: "non_internal",
         }),
       }),
     );

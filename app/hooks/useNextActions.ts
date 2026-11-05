@@ -8,8 +8,10 @@ import {
   useState,
 } from "react";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
+import { v4 as uuidv4 } from "uuid";
 import {
   NEXT_ACTIONS_VERSION,
+  emptyNextActionsResponseSchema,
   nextActionsResponseSchema,
   type CompletedPredictionTurn,
   type NextActionsBatch,
@@ -21,6 +23,7 @@ export type NextActionsController = {
   dismiss: () => void;
   invalidate: () => void;
   exposed: () => void;
+  recordTyping: () => void;
   prepareSubmission: () => (submitted: boolean) => void;
 };
 
@@ -86,6 +89,7 @@ export function useNextActions(options: Options): NextActionsController {
   const [batch, setBatch] = useState<NextActionsBatch | null>(null);
   const batchRef = useRef<NextActionsBatch | null>(null);
   const request = useRef<AbortController | null>(null);
+  const readiness = useRef<{ key: string; markTyped: () => void } | null>(null);
   const attempted = useRef(new Set<string>());
   const exposedIds = useRef(new Set<string>());
   const accepted = useRef<{
@@ -244,6 +248,8 @@ export function useNextActions(options: Options): NextActionsController {
   useEffect(() => () => request.current?.abort(), [key, completedHere]);
 
   useEffect(() => {
+    if (options.input && readiness.current?.key === key)
+      readiness.current.markTyped();
     if (!options.input && !submissionInProgress.current)
       accepted.current = null;
     if (options.status === "error") pending.current = null;
@@ -260,15 +266,85 @@ export function useNextActions(options: Options): NextActionsController {
     request.current = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const eligibleKey = key;
+    const owner = {
+      userId: options.userId,
+      chatId: options.chatId,
+      messageId: options.latestMessageId,
+      mode: options.chatMode,
+    };
+    const requestKind = completedHere ? "generate" : "restore";
+    const attemptId = uuidv4();
+    const startedAt = performance.now();
+    let sent = false;
+    let settled = false;
+    let timedOut = false;
+    let typed = false;
+    const tracking = {
+      key,
+      markTyped: () => {
+        typed = true;
+      },
+    };
+    readiness.current = tracking;
+    // Request kind describes the browser request, not proof of a model call.
+    // Saved restores and empty/gated responses must not inflate generation spend.
+    const report = (
+      outcome: "ready" | "empty" | "failed" | "aborted" | "timeout",
+      ready?: NextActionsBatch,
+    ) => {
+      if (settled) return;
+      settled = true;
+      if (readiness.current === tracking) readiness.current = null;
+      if (!sent || current.current.userId !== owner.userId) return;
+      const sameTurn =
+        keyRef.current === eligibleKey &&
+        current.current.chatMode === owner.mode;
+      const typingNow =
+        outcome === "aborted" || !sameTurn
+          ? undefined
+          : current.current.getInput() !== "";
+      try {
+        captureQueuedAuthenticatedEvent({
+          event: "contextual_next_actions_settled",
+          dedupeKey: attemptId,
+          properties: {
+            definition_version: NEXT_ACTIONS_VERSION,
+            timing_version: 1,
+            attempt_id: attemptId,
+            chat_id: owner.chatId,
+            message_id: owner.messageId,
+            mode: owner.mode,
+            presentation: "inline_composer",
+            request_kind: requestKind,
+            outcome,
+            elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+            typed_before_settle: typed || typingNow === true,
+            page_visible: document.visibilityState === "visible",
+            ...(typingNow !== undefined && {
+              draft_nonempty_at_settle: typingNow,
+            }),
+            ...(ready && {
+              batch_id: ready.batchId,
+              suggestion_count: ready.suggestions.length,
+            }),
+          },
+        });
+      } catch {
+        /* Optional telemetry must never suppress a valid suggestion. */
+      }
+    };
     const run = async (attempt = 0) => {
       try {
         if (
           controller.signal.aborted ||
           keyRef.current !== eligibleKey ||
           !canRetain()
-        )
+        ) {
+          report("aborted");
           return;
+        }
         remember(attempted.current, attemptKey);
+        sent = true;
         const response = await fetch("/api/chat/next-actions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -287,32 +363,52 @@ export function useNextActions(options: Options): NextActionsController {
           timer = setTimeout(() => void run(attempt + 1), 1_000);
           return;
         }
-        if (!response.ok) return;
-        const parsed = nextActionsResponseSchema.safeParse(
-          await response.json(),
-        );
+        if (!response.ok) {
+          report("failed");
+          return;
+        }
+        const data: unknown = await response.json();
+        if (emptyNextActionsResponseSchema.safeParse(data).success) {
+          report("empty");
+          return;
+        }
+        const parsed = nextActionsResponseSchema.safeParse(data);
+        if (!parsed.success) {
+          report("failed");
+          return;
+        }
+        if (!parsed.data.suggestions.length) {
+          report("empty");
+          return;
+        }
         if (
-          !parsed.success ||
-          !parsed.data.suggestions.length ||
           parsed.data.mode !== current.current.chatMode ||
           controller.signal.aborted ||
           keyRef.current !== eligibleKey ||
           !canRetain() ||
           consumed(eligibleKey) ||
           parsed.data.messageId !== current.current.latestMessageId
-        )
+        ) {
+          report("aborted");
           return;
+        }
+        report("ready", parsed.data);
         batchRef.current = parsed.data;
         setBatch(parsed.data);
       } catch {
+        report("failed");
         /* Optional predictions are silent on timeout/network/abort. */
       }
     };
     timer = setTimeout(() => void run(), 500);
-    const deadline = setTimeout(() => controller.abort(), 18_000);
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 18_000);
     controller.signal.addEventListener(
       "abort",
       () => {
+        report(timedOut ? "timeout" : "aborted");
         clearTimeout(timer);
         clearTimeout(deadline);
         if (request.current === controller) request.current = null;
@@ -366,6 +462,10 @@ export function useNextActions(options: Options): NextActionsController {
       : null;
   return {
     batch: visible,
+    recordTyping: () => {
+      if (readiness.current?.key === keyRef.current)
+        readiness.current.markTyped();
+    },
     invalidate,
     dismiss: () => {
       if (batchRef.current) capture("dismissed", batchRef.current);

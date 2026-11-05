@@ -21,6 +21,32 @@ function setup() {
 }
 
 describe("Agent run reporting", () => {
+  it.each([false, true])(
+    "preserves automatic-continuation=%s on setup failure",
+    (isAutoContinue) => {
+      const capture = jest.fn();
+      const reporter = createAgentRunReporting({
+        posthog: { capture } as unknown as PostHog,
+        runId: "synthetic",
+        userId: "synthetic",
+        chatId: "synthetic",
+        subscription: "pro",
+        endpoint: "/api/agent",
+        isAutoContinue,
+      });
+      reporter.fail(new Error("setup failed"));
+      reporter.finalize({ canceled: false });
+      expect(
+        capture.mock.calls.find(
+          ([event]) => event.event === "hackerai-agent_run",
+        )?.[0].properties,
+      ).toMatchObject({
+        is_auto_continue: isAutoContinue,
+        run_metadata_version: 1,
+        outcome: "error",
+      });
+    },
+  );
   it.each(
     (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
       (flag) =>
@@ -112,20 +138,48 @@ describe("Agent run reporting", () => {
   });
 
   it.each([
-    ["usage_limit", "budget_exhausted", "usage_limit"],
-    ["canceled", "request_cancel", "canceled"],
-    ["elapsed_timeout", "elapsed_timeout", "elapsed_timeout"],
+    ["usage_limit", "budget_exhausted"],
+    ["canceled", "request_cancel"],
+    ["elapsed_timeout", "elapsed_timeout"],
   ] as const)(
     "reports %s without calling it a technical error",
-    (kind, abortSource, finishReason) => {
+    (kind, abortSource) => {
       const { reporter, events } = setup();
       reporter.fail(new Error("ignored"), kind);
       reporter.finalize({ canceled: kind === "canceled" });
       expect(events()[0].properties).toMatchObject({
         outcome: "aborted",
         abort_source: abortSource,
-        finish_reason: finishReason,
+        finish_reason: "unknown",
+        failure_kind: kind,
       });
+    },
+  );
+
+  it.each([undefined, "stop", "length", "private arbitrary value"])(
+    "retains only bounded observed finish reasons after failed capture: %s",
+    (finishReason) => {
+      const { reporter, events } = setup();
+      reporter.captureTerminal(
+        () => {
+          throw new Error("enqueue unavailable");
+        },
+        {
+          outcome: "success",
+          finishReason,
+          stepLimitTelemetry: { stepLimitReached: true },
+        },
+      );
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties).toMatchObject({
+        outcome: "success",
+        finish_reason:
+          finishReason === "stop" || finishReason === "length"
+            ? finishReason
+            : "unknown",
+        step_limit_reached: true,
+      });
+      expect(JSON.stringify(events())).not.toContain("private arbitrary value");
     },
   );
 

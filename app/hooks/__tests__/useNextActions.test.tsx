@@ -14,6 +14,11 @@ const batch = {
 const generationCalls = () =>
   jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST");
 const response = () => ({ ok: true, status: 200, json: async () => batch });
+const settledEvents = () =>
+  jest
+    .mocked(captureQueuedAuthenticatedEvent)
+    .mock.calls.map(([event]) => event)
+    .filter((event) => event.event === "contextual_next_actions_settled");
 let input = "";
 let attachments = false;
 const setInput = jest.fn((value: string) => {
@@ -48,13 +53,184 @@ beforeEach(() => {
 });
 afterEach(() => jest.useRealTimers());
 
+test("readiness records scheduled-to-result time once and remains separate from exposure", async () => {
+  let resolve!: (value: ReturnType<typeof response>) => void;
+  jest.mocked(fetch).mockReturnValue(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  const { result } = renderHook(() => useNextActions(base()));
+  await settle();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(1200);
+    resolve(response());
+  });
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toEqual({
+    definition_version: 1,
+    timing_version: 1,
+    attempt_id: expect.any(String),
+    chat_id: "chat",
+    message_id: "answer",
+    mode: "ask",
+    presentation: "inline_composer",
+    request_kind: "generate",
+    outcome: "ready",
+    elapsed_ms: 1700,
+    typed_before_settle: false,
+    draft_nonempty_at_settle: false,
+    page_visible: true,
+    batch_id: "batch",
+    suggestion_count: 2,
+  });
+  expect(result.current.batch).toEqual(batch);
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(settledEvents()).toHaveLength(1);
+});
+
+test.each([false, true])(
+  "readiness remembers typing even after clearing=%s and never writes the draft",
+  async (cleared) => {
+    let resolve!: (value: ReturnType<typeof response>) => void;
+    jest.mocked(fetch).mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const { result, rerender } = renderHook((props) => useNextActions(props), {
+      initialProps: base(),
+    });
+    await settle();
+    // The textarea callback observes even type+erase inside one React batch.
+    act(() => {
+      input = "Independent draft";
+      result.current.recordTyping();
+      if (cleared) input = "";
+    });
+    rerender(base());
+    await act(async () => resolve(response()));
+    expect(settledEvents()[0].properties).toMatchObject({
+      outcome: "ready",
+      typed_before_settle: true,
+      draft_nonempty_at_settle: !cleared,
+    });
+    expect(setInput).not.toHaveBeenCalled();
+    expect(JSON.stringify(settledEvents())).not.toMatch(
+      /Independent draft|missing evidence/,
+    );
+    if (!cleared) {
+      expect(result.current.batch).toBeNull();
+      input = "";
+      rerender(base());
+    }
+    expect(result.current.batch).toEqual(batch);
+    expect(settledEvents()).toHaveLength(1);
+  },
+);
+
+test("restoration has its own request kind and never claims a new generation", async () => {
+  renderHook(() =>
+    useNextActions({
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+    }),
+  );
+  await settle();
+  expect(settledEvents()[0].properties).toMatchObject({
+    request_kind: "restore",
+    outcome: "ready",
+  });
+});
+
+test("a retry revoked by the synchronous attachment guard settles as aborted", async () => {
+  jest.mocked(fetch).mockResolvedValue({ ok: false, status: 409 } as Response);
+  renderHook(() => useNextActions(base()));
+  await settle();
+  // Attachment state can change before React commits the next render.
+  attachments = true;
+  await act(async () => jest.advanceTimersByTimeAsync(1000));
+  expect(generationCalls()).toHaveLength(1);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "aborted",
+    elapsed_ms: 1500,
+  });
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(settledEvents()).toHaveLength(1);
+});
+
+test.each(["empty", "failed", "timeout"])(
+  "reports %s independently of a ready batch",
+  async (outcome) => {
+    if (outcome === "empty")
+      jest.mocked(fetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ suggestions: [] }),
+      } as Response);
+    if (outcome === "failed")
+      jest
+        .mocked(fetch)
+        .mockRejectedValue(new Error("synthetic network failure"));
+    if (outcome === "timeout")
+      jest.mocked(fetch).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useNextActions(base()));
+    await settle();
+    if (outcome === "timeout")
+      await act(async () => jest.advanceTimersByTimeAsync(18_000));
+    expect(settledEvents()).toHaveLength(1);
+    expect(settledEvents()[0].properties).toMatchObject({
+      request_kind: "generate",
+      outcome,
+    });
+    expect(settledEvents()[0].properties).not.toHaveProperty("batch_id");
+    expect(result.current.batch).toBeNull();
+  },
+);
+
+test("navigation reports the source attempt without inspecting the destination draft", async () => {
+  jest.mocked(fetch).mockReturnValue(new Promise(() => {}));
+  const { rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  input = "Destination draft";
+  rerender({ ...base(), chatId: "other", latestMessageId: "other-answer" });
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    chat_id: "chat",
+    message_id: "answer",
+    outcome: "aborted",
+    typed_before_settle: false,
+  });
+  expect(settledEvents()[0].properties).not.toHaveProperty(
+    "draft_nonempty_at_settle",
+  );
+});
+
+test("a telemetry enqueue failure cannot suppress a valid suggestion", async () => {
+  jest.mocked(captureQueuedAuthenticatedEvent).mockImplementationOnce(() => {
+    throw new Error("telemetry unavailable");
+  });
+  const { result } = renderHook(() => useNextActions(base()));
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  expect(setInput).not.toHaveBeenCalled();
+});
+
 test("acceptance creates an editable draft; exposure, submission and finish are separate and content-free", async () => {
   const { result, rerender } = renderHook((props) => useNextActions(props), {
     initialProps: base(),
   });
   await settle();
   expect(result.current.batch?.suggestions).toHaveLength(2);
-  expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+  expect(
+    jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.map(([event]) => event.event),
+  ).toEqual(["contextual_next_actions_settled"]);
   act(() => result.current.exposed());
   act(() => {
     expect(result.current.accept(0, "keyboard")).toBe(true);
@@ -230,7 +406,11 @@ test.each(["pending", "visible"])(
       expect(result.current.accept(0, "keyboard")).toBe(false);
     });
     expect(setInput).not.toHaveBeenCalled();
-    expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+    expect(
+      jest
+        .mocked(captureQueuedAuthenticatedEvent)
+        .mock.calls.map(([event]) => event.event),
+    ).toEqual(["contextual_next_actions_settled"]);
     rerender(base());
     await settle();
     expect(generationCalls()).toHaveLength(1);
@@ -262,7 +442,11 @@ test.each(["pending", "visible"])(
       expect(result.current.accept(0, "keyboard")).toBe(false);
     });
     expect(setInput).not.toHaveBeenCalled();
-    expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+    expect(
+      jest
+        .mocked(captureQueuedAuthenticatedEvent)
+        .mock.calls.map(([event]) => event.event),
+    ).toEqual(["contextual_next_actions_settled"]);
     rerender(base());
     await settle();
     expect(generationCalls()).toHaveLength(1);

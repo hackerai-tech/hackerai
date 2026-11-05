@@ -59,6 +59,7 @@ function Harness({ blocked = false }: { blocked?: boolean }) {
         prediction={controller.batch?.suggestions[0]}
         onAcceptPrediction={() => controller.accept(0, "keyboard")}
         onPredictionExposed={controller.exposed}
+        onPredictionTyping={controller.recordTyping}
         composerFocused
         onDismissPrediction={controller.dismiss}
       />
@@ -241,10 +242,20 @@ test("exposure waits for the inline placeholder to be visible and is deduplicate
   observe(0.2);
   observe(0.5);
   observe(0.99);
-  expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+  expect(
+    jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.map(([event]) => event.event),
+  ).toEqual(["contextual_next_actions_settled"]);
   observe(1);
   observe(1);
-  expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledTimes(1);
+  expect(
+    jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.filter(
+        ([event]) => event.event === "contextual_next_actions_exposed",
+      ),
+  ).toHaveLength(1);
   expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
     expect.objectContaining({
       event: "contextual_next_actions_exposed",
@@ -257,4 +268,48 @@ test("exposure waits for the inline placeholder to be visible and is deduplicate
   expect(
     JSON.stringify(jest.mocked(captureQueuedAuthenticatedEvent).mock.calls),
   ).not.toContain(suggestions[0]);
+});
+
+test("typing then erasing in one update is observed while a prediction is pending", async () => {
+  let resolve!: (value: Response) => void;
+  jest.mocked(fetch).mockReturnValue(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  render(
+    <ComposerStateProvider>
+      <Harness />
+    </ComposerStateProvider>,
+  );
+  await act(async () => jest.advanceTimersByTimeAsync(500));
+  const textarea = screen.getByTestId("chat-input");
+  act(() => {
+    fireEvent.change(textarea, { target: { value: "An independent thought" } });
+    fireEvent.change(textarea, { target: { value: "" } });
+  });
+  await act(async () =>
+    resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        batchId: "batch",
+        messageId: "answer",
+        mode: "ask",
+        suggestions,
+      }),
+    } as Response),
+  );
+  const event = jest
+    .mocked(captureQueuedAuthenticatedEvent)
+    .mock.calls.find(
+      ([event]) => event.event === "contextual_next_actions_settled",
+    )?.[0];
+  expect(event?.properties).toMatchObject({
+    outcome: "ready",
+    typed_before_settle: true,
+    draft_nonempty_at_settle: false,
+  });
+  expect(textarea).toHaveValue("");
+  expect(JSON.stringify(event)).not.toContain("An independent thought");
 });
