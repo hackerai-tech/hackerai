@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "200a501f15a24a4152f92897a6b72af238ee69ef",
+  "sourceCommit": "09536cf1481731c790995bd8060db19a3b75ff48",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -107,10 +107,10 @@
       "filename": "source_aware_whitebox",
       "name": "source-aware-whitebox",
       "description": "Coordination playbook for source-aware white-box testing with static triage and dynamic validation",
-      "contentBytes": 2000,
+      "contentBytes": 2004,
       "internal": true,
       "sourcePath": "coordination/source_aware_whitebox.md",
-      "sourceSha256": "2efc20ae4d6589cbdd962fb66509c8bb3c99c772e856f015ed2f6880c3fb854e"
+      "sourceSha256": "6a61ad6fd8722bb281ea103bedfb0f07b5cbe5ef2e3b0656188dab2aa153efe0"
     },
     {
       "id": "custom/api_spec_testing",
@@ -150,11 +150,11 @@
       "category": "custom",
       "filename": "source_aware_sast",
       "name": "source-aware-sast",
-      "description": "Practical source-aware SAST and AST playbook for semgrep, ast-grep, gitleaks, and trivy fs",
-      "contentBytes": 8093,
+      "description": "Practical source-aware SAST and AST playbook for opengrep, ast-grep, gitleaks, and trivy fs",
+      "contentBytes": 8211,
       "internal": false,
       "sourcePath": "custom/source_aware_sast.md",
-      "sourceSha256": "6746609351bf7bf78d9259fb7d8be558492fbde1df5251256bc9b14d2105bd7d"
+      "sourceSha256": "771a0a54471fe23b91049d84593270061d9ff880a7e311b19539e2f8dad7b931"
     },
     {
       "id": "frameworks/django",
@@ -162,10 +162,10 @@
       "filename": "django",
       "name": "django",
       "description": "Security testing playbook for Django applications covering ORM injection, middleware gaps, auth/session flaws, and template issues",
-      "contentBytes": 10689,
+      "contentBytes": 10728,
       "internal": false,
       "sourcePath": "frameworks/django.md",
-      "sourceSha256": "995afca1c114f5f84b6f828a18ae1fb0a204f0709aaa8dcc5a9773783ac7b319"
+      "sourceSha256": "b3e1dd7ded9ba34c36f7b7be4647a3cd32f9d9ef82316b8801e33445f5a479f0"
     },
     {
       "id": "frameworks/fastapi",
@@ -250,10 +250,10 @@
       "filename": "deep",
       "name": "deep",
       "description": "Exhaustive security assessment with maximum coverage, depth, and vulnerability chaining",
-      "contentBytes": 7232,
+      "contentBytes": 7233,
       "internal": true,
       "sourcePath": "scan_modes/deep.md",
-      "sourceSha256": "a2716675ba0a12da93511460036106d6fd6f3655758f505e1933bd200771fa0b"
+      "sourceSha256": "ac018f9b2db062e790382666b05f03756996ad5cdc2d950ac44d9766434d7ce7"
     },
     {
       "id": "scan_modes/diff",
@@ -272,10 +272,10 @@
       "filename": "quick",
       "name": "quick",
       "description": "Time-boxed rapid assessment targeting high-impact vulnerabilities",
-      "contentBytes": 3002,
+      "contentBytes": 3003,
       "internal": true,
       "sourcePath": "scan_modes/quick.md",
-      "sourceSha256": "98d97940332d543ce21a3d70c5505a1469db191c6c2ee8c9bfa1257ca57693e0"
+      "sourceSha256": "b5cba380721bd09ff206e86250bfed0176afac0ecad30b565cfd860b8d657d8b"
     },
     {
       "id": "scan_modes/standard",
@@ -283,10 +283,10 @@
       "filename": "standard",
       "name": "standard",
       "description": "Balanced security assessment with systematic methodology and full attack surface coverage",
-      "contentBytes": 3895,
+      "contentBytes": 3896,
       "internal": true,
       "sourcePath": "scan_modes/standard.md",
-      "sourceSha256": "8a08601f0f6b08c6b19060f661323c0edbee46d2fdcb135794f6d5f441ee8fe5"
+      "sourceSha256": "f1db97ebf1caaa746c45e64f6ea9808dc3e5faa174581c47a961a2fe5abf7c11"
     },
     {
       "id": "technologies/active_directory",
