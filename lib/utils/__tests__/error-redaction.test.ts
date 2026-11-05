@@ -72,6 +72,36 @@ describe("error redaction", () => {
     }
   });
 
+  it("does not split one credential at a control sequence before an interior sk prefix", () => {
+    const esc = String.fromCharCode(27);
+    const redacted = redactSensitiveErrorMessage(
+      `rejected sk-proj-abc${esc}[1msk-123456789012345; status 401`,
+    );
+    expect(redacted).toBe("rejected [Redacted]; status 401");
+  });
+
+  it("does not count control sequences toward the minimum key length", () => {
+    const esc = String.fromCharCode(27);
+    expect(
+      redactSensitiveErrorMessage(`sk-short${`${esc}[0m`.repeat(30)}`),
+    ).toBe("sk-short");
+  });
+
+  it("redacts ANSI-decorated string values before serializing diagnostics", () => {
+    const esc = String.fromCharCode(27);
+    const redacted = stringifyRedactedError({
+      nested: [
+        `rejected${esc}[31msk-abcdefghijklmnopqrst${esc}[0m`,
+        `sk-proj-abc${esc}[1msk-123456789012345`,
+      ],
+      status: 401,
+    });
+    expect(JSON.parse(redacted)).toEqual({
+      nested: ["rejected[Redacted]", "[Redacted]"],
+      status: 401,
+    });
+  });
+
   it.each([
     "access_token=FAKE_CREDENTIAL",
     "client_secret: FAKE_CREDENTIAL",

@@ -10,11 +10,11 @@ const SENSITIVE_FIELD_PATTERN =
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
-// Provider errors can quote keys without a credential field or auth header.
-// Keep short labels and identifiers intact, and consume the whole token body.
-// Serialized JSON and diagnostic URLs can encode the preceding separator.
-const PROVIDER_KEY_PATTERN =
-  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_-]{20,}/g;
+// Null markers retain stripped control boundaries and are transparent inside
+// a key. Serialized JSON and diagnostic URLs can encode the separator too.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: internal control-boundary marker
+const PROVIDER_KEY_CANDIDATE_PATTERN =
+  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_\x00-]+/g;
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
@@ -32,13 +32,6 @@ const ANSI_ESCAPE_PATTERN =
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-byte cleanup for model/log-facing errors
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
-// Removing a control sequence before a key must not join it to the preceding
-// word. Interior sequences still disappear so split key bodies are redacted.
-const PROVIDER_KEY_CONTROL_BOUNDARY_PATTERN = new RegExp(
-  `(?:${ANSI_ESCAPE_PATTERN.source}|${CONTROL_CHARACTER_PATTERN.source})(?=sk-)`,
-  "g",
-);
-
 export const stripControlSequencesFromErrorMessage = (
   message: string,
 ): string =>
@@ -47,9 +40,15 @@ export const stripControlSequencesFromErrorMessage = (
     .replace(CONTROL_CHARACTER_PATTERN, "");
 
 export const redactSensitiveErrorMessage = (message: string): string =>
-  stripControlSequencesFromErrorMessage(
-    message.replace(PROVIDER_KEY_CONTROL_BOUNDARY_PATTERN, " "),
-  )
+  message
+    .replace(ANSI_ESCAPE_PATTERN, "\0")
+    .replace(CONTROL_CHARACTER_PATTERN, "\0")
+    .replace(PROVIDER_KEY_CANDIDATE_PATTERN, (candidate) => {
+      const key = candidate.replaceAll("\0", "");
+      // Require at least 20 body characters, excluding control markers.
+      return key.length >= 23 ? REDACTED_VALUE : candidate;
+    })
+    .replaceAll("\0", "")
     .replace(URL_PATTERN, (url) => {
       if (!SIGNED_URL_CREDENTIAL_PATTERN.test(url)) return url;
 
@@ -64,8 +63,7 @@ export const redactSensitiveErrorMessage = (message: string): string =>
     .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
       return `${key}${separator}"${REDACTED_VALUE}"`;
     })
-    .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`)
-    .replace(PROVIDER_KEY_PATTERN, REDACTED_VALUE);
+    .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`);
 
 export const stringifyRedactedError = (error: unknown): string => {
   const message =
@@ -75,7 +73,13 @@ export const stringifyRedactedError = (error: unknown): string => {
         ? error
         : (() => {
             try {
-              return JSON.stringify(error) ?? "Unknown error occurred";
+              return (
+                JSON.stringify(error, (_key, value) =>
+                  typeof value === "string"
+                    ? redactSensitiveErrorMessage(value)
+                    : value,
+                ) ?? "Unknown error occurred"
+              );
             } catch {
               return String(error);
             }
