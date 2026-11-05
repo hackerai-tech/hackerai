@@ -22,7 +22,9 @@ This path requires a full-access parent Agent run. It supports visible
 reCAPTCHA v2, hCaptcha and standalone Turnstile widgets that expose their public
 site key and response field. Invisible/enterprise challenges, managed challenge
 pages, multiple pending widgets and GeeTest are not implemented. Unsupported or
-failed challenges require human takeover. Older connected clients without
+failed challenges require human verification. `browser_handoff` can hand over
+only the current Cloud browser; for connected Local, Desktop and remote browsers,
+the Agent stops and explains that in-app takeover is unavailable. Older clients without
 protected stdin support remain ineligible. Normal browser commands still work.
 
 ## Server configuration

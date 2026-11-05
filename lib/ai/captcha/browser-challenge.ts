@@ -107,7 +107,7 @@ export function createBrowserChallengeHandler(
           demoEligible: isCaptchaDemo(observation.url),
           interstitial: observation.interstitial,
           message:
-            "Automatic solving is unavailable for this challenge. Use browser_handoff if human verification is required; do not call external solvers from the terminal.",
+            "Automatic solving is unavailable for this challenge. If human verification is required, use browser_handoff only for the current Cloud browser. For a connected Local, Desktop or remote browser, stop and explain that manual verification is required and in-app takeover is unavailable. Do not call external solvers from the terminal.",
           ...(isCaptchaDemo(observation.url) &&
             !observation.interstitial &&
             pending.length === 1 &&
@@ -180,7 +180,7 @@ export function createBrowserChallengeHandler(
             status: "token_delivered",
             websiteAccepted: false,
             message:
-              "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot, submit the ordinary form and verify the server result. Token delivery does not prove website acceptance. If rejected, use browser_handoff.",
+              "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Token delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.",
           }
         : { status: "handoff_required", reason: "page_changed" };
     } catch {
