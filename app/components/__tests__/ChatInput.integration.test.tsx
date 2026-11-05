@@ -3395,6 +3395,74 @@ describe("ChatInput - Integration Tests", () => {
     );
   });
 
+  it("clears accepted goal intent while preserving text typed during submission", async () => {
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+      chatModeAccessResolved: true,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true }),
+    });
+    window.localStorage.setItem(
+      CONVERSATION_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        drafts: [
+          {
+            id: "new",
+            content: "First goal",
+            goalMode: true,
+            timestamp: Date.now(),
+          },
+        ],
+      }),
+    );
+    let accept: (value: boolean) => void = () => {};
+    mockOnSubmit.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const ui = () => (
+      <TestWrapper>
+        <ChatInput isNewChat onSubmit={mockOnSubmit} status="ready" />
+      </TestWrapper>
+    );
+    const first = render(ui());
+    const input = await screen.findByRole("textbox");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start First goal",
+      ),
+    );
+    fireEvent.change(input, { target: { value: "Next ordinary request" } });
+    await act(async () => {
+      accept(true);
+    });
+    expect(input).toHaveValue("Next ordinary request");
+    expect(
+      screen.queryByRole("button", { name: "Exit goal mode" }),
+    ).not.toBeInTheDocument();
+    first.unmount();
+    render(ui());
+    expect(await screen.findByRole("textbox")).toHaveValue(
+      "Next ordinary request",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Exit goal mode" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("selects a goal from the mobile add menu without losing the draft or attachments", async () => {
     mockIsMobile = true;
     jest.mocked(useAuth).mockReturnValue({

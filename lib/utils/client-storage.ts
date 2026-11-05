@@ -542,6 +542,7 @@ export const isDraftGoalModeById = (id: string): boolean =>
 export const setDraftGoalMode = (id: string, enabled: boolean): void => {
   const store = readDraftStore();
   const existing = store.drafts.find((draft) => draft.id === id);
+  if (!enabled && existing?.goalMode !== true) return;
   const entry: ConversationDraft = {
     ...existing,
     id,

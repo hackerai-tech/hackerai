@@ -1008,6 +1008,7 @@ const ChatInputContent = ({
           goalMode ? `/goal start ${input}` : undefined,
         );
         finishPredictionSubmission(accepted !== false);
+        if (accepted !== false) setGoalMode(false);
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
@@ -1026,8 +1027,6 @@ const ChatInputContent = ({
           isSubmittingAttachmentsRef.current = false;
           return;
         }
-        setGoalMode(false);
-
         if (clearDraftOnSubmit) {
           uploadedFilesRef.current = [];
           removeDraft(draftId);
