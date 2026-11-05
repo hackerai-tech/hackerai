@@ -30,6 +30,43 @@ describe("error redaction", () => {
     ).not.toContain("FAKE_SECRET");
   });
 
+  it("redacts signed URLs before field values can change their boundaries", () => {
+    for (const signature of ["X-Amz-Signature", "X-Amz-\0Signature"]) {
+      const message = `https://example.test/token=public,private.png?${signature}=SIGNATURE`;
+      expect(redactSensitiveErrorMessage(message)).toBe(
+        "[Redacted signed URL]",
+      );
+    }
+  });
+
+  it.each(["to\0ken", "api\0_\0key", "service\0Role\0Key"])(
+    "protects a sensitive field suffix split by controls: %j",
+    (suffix) => {
+      const message = `sk-abcdefghijklmnopqrst-${suffix}=FAKE_SECRET`;
+      expect(redactSensitiveErrorMessage(message)).toBe(
+        '[Redacted]="[Redacted]"',
+      );
+    },
+  );
+
+  it("preserves complete-field normalization and removes keys with shared prefixes", () => {
+    const key = "sk-abcdefghijklmnopqrst";
+    expect(
+      redactSensitiveErrorMessage(`${key} ${key}-longer echo-${key}`),
+    ).toBe("[Redacted] [Redacted] echo-[Redacted]");
+    expect(redactSensitiveErrorMessage('"token"\0=FAKE_SECRET')).not.toContain(
+      "FAKE_SECRET",
+    );
+    expect(
+      redactSensitiveErrorMessage("Authorization: Bea\0rer FAKE_SECRET"),
+    ).not.toContain("FAKE_SECRET");
+    expect(
+      redactSensitiveErrorMessage(
+        "ht\0tps://example.test/private.png?X-Amz-Signature=SIGNATURE",
+      ),
+    ).toBe("[Redacted signed URL]");
+  });
+
   it("preserves short labels and embedded non-credential identifiers", () => {
     const message =
       "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345 task-sk-SYNTHETIC_identifier_012345";

@@ -57,21 +57,20 @@ export const stripControlSequencesFromErrorMessage = (
     .replace(ANSI_ESCAPE_PATTERN, "")
     .replace(CONTROL_CHARACTER_PATTERN, "");
 
-export const redactSensitiveErrorMessage = (message: string): string =>
-  message
+export const redactSensitiveErrorMessage = (message: string): string => {
+  // Discover complete keys before normalization can erase their boundaries.
+  const marked = message
     .replace(ANSI_ESCAPE_PATTERN, "\0")
-    .replace(CONTROL_CHARACTER_PATTERN, "\0")
-    // Protect values before a provider-shaped field name loses its suffix.
-    // The later field pass still handles names revealed by control cleanup.
-    .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
-      return `${key}${separator}"${REDACTED_VALUE}"`;
-    })
-    .replace(PROVIDER_KEY_CANDIDATE_PATTERN, (candidate) => {
-      const key = candidate.replaceAll("\0", "");
-      // Require at least 20 body characters, excluding control markers.
-      return key.length >= 23 ? REDACTED_VALUE : candidate;
-    })
-    .replaceAll("\0", "")
+    .replace(CONTROL_CHARACTER_PATTERN, "\0");
+  const keys = new Set(
+    Array.from(marked.matchAll(PROVIDER_KEY_CANDIDATE_PATTERN), (match) =>
+      match[0].replaceAll("\0", ""),
+    ).filter((key) => key.length >= 23),
+  );
+
+  // Preserve whole-URL and credential-field handling before replacing any key
+  // text that might itself be a field name or part of a URL.
+  let redacted = stripControlSequencesFromErrorMessage(message)
     .replace(URL_PATTERN, (url) => {
       if (!SIGNED_URL_CREDENTIAL_PATTERN.test(url)) return url;
 
@@ -87,6 +86,14 @@ export const redactSensitiveErrorMessage = (message: string): string =>
       return `${key}${separator}"${REDACTED_VALUE}"`;
     })
     .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`);
+
+  // Longest first prevents a shared prefix leaving a longer key's suffix behind.
+  // Once identified as a key, remove every occurrence, including echoed copies.
+  for (const key of [...keys].sort((a, b) => b.length - a.length)) {
+    redacted = redacted.replaceAll(key, REDACTED_VALUE);
+  }
+  return redacted;
+};
 
 export const stringifyRedactedError = (error: unknown): string => {
   const message =
