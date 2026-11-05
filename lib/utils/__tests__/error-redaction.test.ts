@@ -6,6 +6,25 @@ import {
 
 describe("error redaction", () => {
   it.each([
+    "sk-proj-SYNTHETIC_provider_key_with-underscores_012345",
+    "sk-ant-api03-SYNTHETIC_provider_key_with-underscores_012345",
+    "sk-or-v1-SYNTHETIC_provider_key_with-underscores_012345",
+  ])("redacts a standalone provider key: %s", (key) => {
+    const message = `Provider rejected '${key}'; status 401, request req_123.`;
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).toBe(
+      "Provider rejected '[Redacted]'; status 401, request req_123.",
+    );
+    expect(redactSensitiveErrorMessage(redacted)).toBe(redacted);
+  });
+
+  it("preserves short labels and embedded non-credential identifiers", () => {
+    const message =
+      "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345";
+    expect(redactSensitiveErrorMessage(message)).toBe(message);
+  });
+
+  it.each([
     "access_token=FAKE_CREDENTIAL",
     "client_secret: FAKE_CREDENTIAL",
     "refreshToken=FAKE_CREDENTIAL",

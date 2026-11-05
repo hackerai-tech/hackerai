@@ -25,6 +25,59 @@ const {
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
 
+it.each(["/api/chat", "/api/agent"])(
+  "removes standalone provider keys from %s error diagnostics",
+  (endpoint) => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const phErrorSpy = jest
+      .spyOn(phLogger, "error")
+      .mockImplementation(() => {});
+    try {
+      const key = "sk-proj-SYNTHETIC_provider_key_with-underscores_012345";
+      const error = Object.assign(
+        new Error(`Provider rejected '${key}'`, {
+          cause: new Error(`Configuration contains ${key}`),
+        }),
+        { statusCode: 401 },
+      );
+      const chatLogger = createChatLogger({
+        chatId: "redaction-fixture",
+        endpoint,
+      });
+      chatLogger.recordProviderError(error, { model: "test/model" });
+      chatLogger.emitUnexpectedError(error);
+
+      expect(errorSpy).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalled();
+      expect(phErrorSpy).toHaveBeenCalled();
+      // Error properties are non-enumerable, including nested exception causes.
+      const serialized = JSON.stringify(
+        [errorSpy.mock.calls, logSpy.mock.calls, phErrorSpy.mock.calls],
+        (_name, value) =>
+          value instanceof Error
+            ? {
+                ...value,
+                name: value.name,
+                message: value.message,
+                stack: value.stack,
+                cause: value.cause,
+              }
+            : value,
+      );
+      expect(serialized).not.toContain(key);
+      expect(serialized).not.toContain("SYNTHETIC_provider_key");
+      expect(serialized).toContain("[Redacted]");
+      expect(serialized).toContain("401");
+      expect(error.message).toContain(key);
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+      phErrorSpy.mockRestore();
+    }
+  },
+);
+
 it("correlates provider errors and final outcomes to distinct Agent runs in one chat", () => {
   const source = ts.createSourceFile(
     "agent-long.ts",

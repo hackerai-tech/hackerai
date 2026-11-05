@@ -10,6 +10,10 @@ const SENSITIVE_FIELD_PATTERN =
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
+// Provider errors can quote keys without a credential field or auth header.
+// Keep short labels and identifiers intact, and consume the whole token body.
+const PROVIDER_KEY_PATTERN = /(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}/g;
+
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
   /(?<![\w-])(["']?\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,}]+)/g;
@@ -49,7 +53,8 @@ export const redactSensitiveErrorMessage = (message: string): string =>
     .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
       return `${key}${separator}"${REDACTED_VALUE}"`;
     })
-    .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`);
+    .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`)
+    .replace(PROVIDER_KEY_PATTERN, REDACTED_VALUE);
 
 export const stringifyRedactedError = (error: unknown): string => {
   const message =
