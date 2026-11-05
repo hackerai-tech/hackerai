@@ -1,5 +1,6 @@
 import type { Doc } from "../_generated/dataModel";
 import type { QueryCtx } from "./serviceFunctions";
+import { effectiveBrowserHandoffState } from "./browserHandoffState";
 
 /** Only public attention bits belong in a sidebar row. */
 export async function getSidebarChatAttention(
@@ -21,6 +22,9 @@ export async function getSidebarChatAttention(
             .order("desc")
             .first()
         : null;
+      const browserState = browser
+        ? effectiveBrowserHandoffState(browser)
+        : null;
 
       return {
         goal_needs_input:
@@ -33,7 +37,7 @@ export async function getSidebarChatAttention(
           browser?.user_id === chat.user_id &&
           browser.run_id === chat.active_trigger_run_id &&
           browser.expires_at > Date.now() &&
-          (browser.state === "waiting" || browser.state === "recovery"),
+          (browserState === "waiting" || browserState === "recovery"),
       };
     }),
   );

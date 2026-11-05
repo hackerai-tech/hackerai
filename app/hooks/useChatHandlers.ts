@@ -193,6 +193,13 @@ export const useChatHandlers = ({
   const recoveryPendingRef = useRef(false);
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
+  useEffect(() => {
+    currentChatIdRef.current = chatId;
+    return () => {
+      // Pending reply requests may resolve after this chat unmounts.
+      currentChatIdRef.current = "";
+    };
+  }, [chatId, currentChatIdRef]);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
@@ -634,17 +641,20 @@ export const useChatHandlers = ({
     let goalCommand;
     let resumeMessage: string | undefined;
     let goalSettings: Record<string, unknown> = {};
-    try {
-      goalCommand = parseGoalCommand(input);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Invalid goal command",
-      );
-      return false;
+    if (!pendingUserWait) {
+      try {
+        goalCommand = parseGoalCommand(input);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Invalid goal command",
+        );
+        return false;
+      }
     }
     // A reply to a request for help continues that goal; an explicitly paused
     // goal remains paused. The saved state is checked again before admission.
     const resumeOnReply =
+      !pendingUserWait &&
       !goalCommand &&
       isExistingChat &&
       shouldUseAgentLongForAgent({
@@ -874,7 +884,7 @@ export const useChatHandlers = ({
           });
           return false;
         }
-        clearInput();
+        clearSubmittedDraft();
         return true;
       } catch {
         toast.error("Could not send your reply", {

@@ -1830,45 +1830,48 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeVisible();
     });
 
-    it("shows a reply prompt and sends during a paused Agent run", async () => {
-      jest.mocked(useAuth).mockReturnValue({
-        user: { id: "user_123" },
-        entitlements: [],
-      } as ReturnType<typeof useAuth>);
-      render(
-        <TestWrapper>
-          <AgentModeSetter />
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="streaming"
-            chatId="reply-chat"
-            hasMessages
-            pendingUserWait={{
-              runId: "run-1",
-              toolCallId: "tool-1",
-              status: "waiting",
-            }}
-          />
-        </TestWrapper>,
-      );
+    it.each(["streaming", "error"] as const)(
+      "shows a reply prompt and sends during a paused Agent run with %s status",
+      async (status) => {
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        render(
+          <TestWrapper>
+            <AgentModeSetter />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status={status}
+              chatId="reply-chat"
+              hasMessages
+              pendingUserWait={{
+                runId: "run-1",
+                toolCallId: "tool-1",
+                status: "waiting",
+              }}
+            />
+          </TestWrapper>,
+        );
 
-      expect(screen.getByTestId("waiting-for-reply-banner")).toHaveTextContent(
-        "Agent is waiting for your reply",
-      );
-      const input = screen.getByRole("textbox");
-      expect(input).toHaveAttribute(
-        "aria-describedby",
-        "waiting-for-reply-description",
-      );
-      fireEvent.change(input, { target: { value: "Use the first option" } });
-      const send = screen.getByRole("button", {
-        name: "Send reply and resume agent",
-      });
-      expect(send).toBeEnabled();
-      fireEvent.click(send);
-      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
-    });
+        expect(
+          await screen.findByTestId("waiting-for-reply-banner"),
+        ).toHaveTextContent("Agent is waiting for your reply");
+        const input = screen.getByRole("textbox");
+        expect(input).toHaveAttribute(
+          "aria-describedby",
+          "waiting-for-reply-description",
+        );
+        fireEvent.change(input, { target: { value: "Use the first option" } });
+        const send = screen.getByRole("button", {
+          name: "Send reply and resume agent",
+        });
+        expect(send).toBeEnabled();
+        fireEvent.click(send);
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
 
     it("merges the stored reviewer summary into the matching live approval", async () => {
       render(

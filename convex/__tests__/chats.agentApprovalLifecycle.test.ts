@@ -96,6 +96,39 @@ describe("Agent approval lifecycle guards", () => {
     jest.clearAllMocks();
   });
 
+  it.each([
+    { nextRunId: "run-old", keepsWait: true },
+    { nextRunId: "run-new", keepsWait: false },
+  ])(
+    "keeps a reply wait only for the same run: %j",
+    async ({ nextRunId, keepsWait }) => {
+      const wait = {
+        runId: "run-old",
+        toolCallId: "tool-1",
+        tokenId: "token-1",
+        status: "waiting",
+      };
+      const { ctx, patch } = makeCtx({
+        _id: "chat-doc",
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-old",
+        active_agent_user_wait: wait,
+      });
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: nextRunId,
+        }),
+      ).toBe("updated");
+      const fields = patch.mock.calls[0][1];
+      if (keepsWait)
+        expect(fields).not.toHaveProperty("active_agent_user_wait");
+      else expect(fields.active_agent_user_wait).toBeUndefined();
+    },
+  );
+
   it.each([undefined, "stop"])(
     "conditionally detaches recovered crashes without replacing finish reason %s",
     async (finishReason) => {

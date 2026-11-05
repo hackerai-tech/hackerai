@@ -1071,7 +1071,8 @@ const ChatInputContent = ({
     }
 
     const canSubmit =
-      (status === "ready" ||
+      (isWaitingForReply ||
+        status === "ready" ||
         status === "submitted" ||
         status === "streaming") &&
       !isUploadingFiles &&
@@ -1432,6 +1433,7 @@ const ChatInputContent = ({
               describedBy={
                 isWaitingForReply ? WAITING_FOR_REPLY_DESCRIPTION_ID : undefined
               }
+              isReplyingToAgent={isWaitingForReply}
               onCommandKeyDown={(e) => {
                 if (showGoalSuggestion && e.key === "Tab") {
                   e.preventDefault();

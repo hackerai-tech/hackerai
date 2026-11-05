@@ -65,4 +65,18 @@ describe("sidebar attention read model", () => {
       browser_needs_input: false,
     });
   });
+
+  it("shows browser recovery when a control grant has expired", async () => {
+    const [result] = await getSidebarChatAttention(
+      makeContext(null, {
+        user_id: "user-1",
+        run_id: "run-1",
+        state: "human",
+        grant_expires_at: Date.now() - 1,
+        expires_at: Date.now() + 60_000,
+      }),
+      [chat],
+    );
+    expect(result.browser_needs_input).toBe(true);
+  });
 });

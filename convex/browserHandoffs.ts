@@ -8,6 +8,7 @@ import {
 } from "./lib/serviceFunctions";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
+import { effectiveBrowserHandoffState } from "./lib/browserHandoffState";
 
 const state = v.union(
   v.literal("agent"),
@@ -120,12 +121,7 @@ function publicView(row: Doc<"browser_handoffs">) {
     sessionId: row.session_id,
     runId: row.run_id,
     agentId: row.agent_id,
-    state:
-      ((row.state === "human" || row.state === "claiming") &&
-        (row.grant_expires_at ?? 0) <= Date.now()) ||
-      (row.state === "resuming" && row.updated_at + 30_000 <= Date.now())
-        ? ("recovery" as const)
-        : row.state,
+    state: effectiveBrowserHandoffState(row),
     grantExpiresAt: row.grant_expires_at ?? null,
     expiresAt: row.expires_at,
     updatedAt: row.updated_at,

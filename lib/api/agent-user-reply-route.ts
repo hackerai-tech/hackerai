@@ -8,8 +8,8 @@ import { claimAgentUserWaitReply } from "@/lib/db/agent-user-wait";
 import { workos } from "@/app/api/workos";
 import { handleAgentRouteError } from "./agent-route-errors";
 import type { AgentApiEndpoint } from "./agent-endpoints";
+import { MAX_AGENT_USER_REPLY_LENGTH } from "@/lib/chat/agent-user-wait";
 
-const MAX_REPLY_LENGTH = 20_000;
 const TERMINAL_RUN_STATUSES = new Set([
   "COMPLETED",
   "CANCELED",
@@ -81,7 +81,7 @@ export const createAgentUserReplyPost =
         !toolCallId ||
         toolCallId.length > 200 ||
         !text ||
-        text.length > MAX_REPLY_LENGTH
+        text.length > MAX_AGENT_USER_REPLY_LENGTH
       ) {
         return new NextResponse("Invalid Agent reply", { status: 400 });
       }

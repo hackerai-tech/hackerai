@@ -1923,8 +1923,11 @@ export const setActiveTriggerRun = mutation({
             active_agent_approval_request: undefined,
           }
         : {}),
-      // A new or terminal run cannot inherit a previous run's reply token.
-      active_agent_user_wait: undefined,
+      // A same-run retry keeps its wait; a different or terminal run cannot.
+      ...(args.triggerRunId === null ||
+      chat.active_trigger_run_id !== args.triggerRunId
+        ? { active_agent_user_wait: undefined }
+        : {}),
     });
     return "updated" as const;
   },

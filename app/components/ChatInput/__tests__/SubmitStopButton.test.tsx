@@ -94,6 +94,26 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(screen.getByLabelText("Send message")).toBeDisabled();
   });
 
+  it("lets users copy from the reply field without stopping the Agent", async () => {
+    const onStop = jest.fn();
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider>
+        <textarea aria-label="Reply draft" defaultValue="Use option A" />
+        <SubmitStopButton
+          {...defaultProps}
+          chatMode="agent"
+          isReplyingToAgent
+          onStop={onStop}
+        />
+      </TooltipProvider>,
+    );
+    const draft = screen.getByRole("textbox", { name: "Reply draft" });
+    await user.click(draft);
+    await user.keyboard("{Control>}c{/Control}");
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it("prioritizes the loading reason while destination messages load", async () => {
     const user = userEvent.setup();
     render(

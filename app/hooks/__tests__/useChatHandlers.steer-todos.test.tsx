@@ -194,6 +194,91 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it("sends a pending Agent reply as text even when it looks like a goal command", async () => {
+    mockInput = "/goal pause";
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        goalState: "needs_input",
+        pendingUserWait: {
+          runId: "run-1",
+          toolCallId: "tool-1",
+          status: "waiting",
+        },
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agent/reply",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          runId: "run-1",
+          toolCallId: "tool-1",
+          text: "/goal pause",
+        }),
+      }),
+    );
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clear a reply draft after the chat unmounts", async () => {
+    mockInput = "Use option A";
+    let resolveReply!: (response: Response) => void;
+    jest
+      .mocked(global.fetch)
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => (resolveReply = resolve)),
+      );
+    const { result, unmount } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        pendingUserWait: {
+          runId: "run-1",
+          toolCallId: "tool-1",
+          status: "waiting",
+        },
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    let submission!: Promise<boolean>;
+    act(() => {
+      submission = result.current.handleSubmit({
+        preventDefault: jest.fn(),
+      } as any);
+    });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => {
+      resolveReply({ ok: true, status: 200 } as Response);
+      expect(await submission).toBe(true);
+    });
+    expect(mockClearInput).not.toHaveBeenCalled();
+  });
+
   it.each([
     "/goal pause",
     "/goal stop",

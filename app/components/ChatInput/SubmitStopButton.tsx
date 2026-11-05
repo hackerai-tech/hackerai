@@ -107,8 +107,8 @@ export function SubmitStopButton({
     },
     {
       enabled: (isGenerating || isReplyingToAgent) && !hideStop,
-      enableOnFormTags: true,
-      enableOnContentEditable: true,
+      enableOnFormTags: !isReplyingToAgent,
+      enableOnContentEditable: !isReplyingToAgent,
       preventDefault: true,
       description: "Stop AI generation",
     },

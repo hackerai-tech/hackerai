@@ -25,6 +25,7 @@ import type { ChatMode } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useCommittedRef } from "@/app/hooks/useLatestRef";
 import { recordComposerChange } from "@/lib/posthog/composer-change-diagnostics";
+import { MAX_AGENT_USER_REPLY_LENGTH } from "@/lib/chat/agent-user-wait";
 
 export interface ChatInputTextareaProps {
   prediction?: string;
@@ -43,6 +44,7 @@ export interface ChatInputTextareaProps {
   placeholder?: string;
   autoFocus?: boolean;
   describedBy?: string;
+  isReplyingToAgent?: boolean;
   onFocus?: () => void;
   onPointerDown?: () => void;
   onBlur?: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
@@ -65,6 +67,7 @@ export function ChatInputTextarea({
   placeholder,
   autoFocus = true,
   describedBy,
+  isReplyingToAgent = false,
   onFocus,
   onPointerDown,
   onBlur,
@@ -170,6 +173,29 @@ export function ChatInputTextarea({
       if (textareaRef.current !== document.activeElement) return;
 
       const clipboardData = e.clipboardData;
+      if (isReplyingToAgent) {
+        const hasFile = Array.from(clipboardData?.items ?? []).some(
+          (item) => item.kind === "file",
+        );
+        if (hasFile) {
+          e.preventDefault();
+          toast.info("Replies are text only for now");
+          return;
+        }
+        const pastedText = clipboardData?.getData("text") ?? "";
+        const textarea = textareaRef.current;
+        const nextLength =
+          getInput().length -
+          ((textarea?.selectionEnd ?? 0) - (textarea?.selectionStart ?? 0)) +
+          pastedText.length;
+        if (nextLength > MAX_AGENT_USER_REPLY_LENGTH) {
+          e.preventDefault();
+          toast.error("Reply is too long", {
+            description: `Keep your reply under ${MAX_AGENT_USER_REPLY_LENGTH.toLocaleString()} characters.`,
+          });
+        }
+        return;
+      }
       if (!clipboardData) {
         await handlePasteEvent(e);
         return;
@@ -235,8 +261,10 @@ export function ChatInputTextarea({
     return () => document.removeEventListener("paste", handlePaste);
   }, [
     chatMode,
+    getInput,
     handlePasteEvent,
     handlePastedTextAttachment,
+    isReplyingToAgent,
     setInput,
     textareaRef,
     subscription,
@@ -247,6 +275,9 @@ export function ChatInputTextarea({
       <div className="relative">
         <TextareaAutosize
           ref={textareaRef}
+          maxLength={
+            isReplyingToAgent ? MAX_AGENT_USER_REPLY_LENGTH : undefined
+          }
           value={input}
           onChange={(e) => {
             // Record before setInput: React can throw synchronously in the setter.
