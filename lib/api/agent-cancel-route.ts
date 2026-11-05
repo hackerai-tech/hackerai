@@ -13,6 +13,8 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { goalServiceKey } from "@/lib/goals/server";
 
+const GOAL_PAUSE_WAIT_MS = 5_000;
+
 type AgentCancelRejectionReason =
   "chat_owner_mismatch" | "chat_missing" | "stale_run";
 
@@ -164,25 +166,44 @@ export const createAgentCancelPost =
       };
       if (runId) {
         stage = "pause_goal";
+        const goalPauseAbort = new AbortController();
+        let goalPauseTimer: ReturnType<typeof setTimeout> | undefined;
+        const goalPauseDeadline = new Promise<never>((_, reject) => {
+          goalPauseTimer = setTimeout(() => {
+            goalPauseAbort.abort();
+            reject(new Error("Goal pause wait budget exceeded"));
+          }, GOAL_PAUSE_WAIT_MS);
+        });
         try {
-          await getConvexClient().mutation(api.agentGoals.pauseForCanceledRun, {
-            serviceKey: goalServiceKey(),
-            chatId,
-            userId,
-            runId,
-          });
+          // Isolate this best-effort write from the shared mutation queue. The
+          // race also bounds a queued SDK call that does not observe abort.
+          await Promise.race([
+            getConvexClient(goalPauseAbort.signal).mutation(
+              api.agentGoals.pauseForCanceledRun,
+              { serviceKey: goalServiceKey(), chatId, userId, runId },
+            ),
+            goalPauseDeadline,
+          ]);
         } catch {
           // Stopping cost-incurring work must survive a goal-storage failure.
           // Worker cleanup also resolves canceled goal runs to paused.
           logger.warn(
-            "Could not persist goal pause before Agent cancellation",
+            "Could not confirm goal pause before Agent cancellation",
             {
-              event: "agent_cancel_goal_pause_failed",
+              event: goalPauseAbort.signal.aborted
+                ? "agent_cancel_goal_pause_unconfirmed"
+                : "agent_cancel_goal_pause_failed",
+              pause_acknowledgement: "unconfirmed",
               chat_id: chatId,
               trigger_run_id: runId,
               request_id: requestId,
+              failure_reason: goalPauseAbort.signal.aborted
+                ? "deadline_exceeded"
+                : "request_failed",
             },
           );
+        } finally {
+          clearTimeout(goalPauseTimer);
         }
       }
       if (!runId) {
