@@ -102,7 +102,9 @@ configuration failures before continuing. Never use masked configuration values
 as credentials or substitute Production.
 
 Run `pnpm test:changed` for local iteration: it runs Jest tests related to
-uncommitted changes with one worker, plus the Node tooling suites outside Jest.
+uncommitted changes with one worker, plus relevant Node tooling suites outside
+Jest. Tooling selection includes staged, unstaged and untracked paths; unknown
+paths or Git discovery failures run every tooling suite. CI always runs them all.
 The commit hook retains staged lint/format checks and type checking, then uses
 this focused command. It includes staged, unstaged and untracked files.
 Documentation-only changes may select no Jest tests. Configuration changes,
