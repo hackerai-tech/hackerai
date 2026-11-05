@@ -2954,6 +2954,62 @@ it.each([
   },
 );
 
+it.each(["success", "error", "aborted"] as const)(
+  "retains Free Ask first assignment through fallback and %s termination",
+  (outcome) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "free",
+      outcome,
+      hasResponseContent: outcome === "success",
+      finishReason: outcome === "success" ? "stop" : "error",
+      responseMessageId: "recovered-message",
+      selectedModel: "ask-model-free-deepseek-v41",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      abliteratedProviderSummary: undefined,
+      experiment: {
+        key: "free_ask_deepseek_1017_conversion_v2",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls.map(([event]) => event);
+    const terminal = events.filter(
+      (event) => event.event === "free_ask_model_response_outcome",
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      experiment_key: "free_ask_deepseek_1017_conversion_v2",
+      experiment_variant: "test",
+      message_id: "recovered-message",
+      outcome,
+      has_response_content: outcome === "success",
+      natural_completion: outcome === "success",
+      response_model: "z-ai/glm-5.3-flash",
+      fallback_served: true,
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:free-ask-1017-outcome",
+    });
+    expect(terminal[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+    expect(
+      events.some((event) => event.event === "paid_model_response_outcome"),
+    ).toBe(false);
+  },
+);
+
 it("separates marked handoff reads in existing fingerprints without changing ordinary provider groups", () => {
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});

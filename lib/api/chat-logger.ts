@@ -8,6 +8,10 @@ import {
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  FREE_ASK_DEEPSEEK_1017_KEY,
+  FREE_ASK_MODEL_OUTCOME_EVENT,
+} from "@/lib/experiments/free-ask-deepseek-1017";
 import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import {
   regionalFreeLimitsProperties,
@@ -1812,11 +1816,18 @@ export function captureAgentCompletionAnalytics(
     args.hasResponseContent &&
     !args.stepLimitTelemetry?.stepLimitReached &&
     args.finishReason === "stop";
-  if (args.experiment?.key === PAID_DEEPSEEK_1017_KEY) {
+  const isFreeAskExperiment =
+    args.experiment?.key === FREE_ASK_DEEPSEEK_1017_KEY;
+  if (
+    args.experiment &&
+    (args.experiment.key === PAID_DEEPSEEK_1017_KEY || isFreeAskExperiment)
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,
-        event: PAID_MODEL_OUTCOME_EVENT,
+        event: isFreeAskExperiment
+          ? FREE_ASK_MODEL_OUTCOME_EVENT
+          : PAID_MODEL_OUTCOME_EVENT,
         properties: {
           ...getExperimentAnalyticsProperties(args.experiment),
           ...args.usageMeasurement,
@@ -1857,7 +1868,7 @@ export function captureAgentCompletionAnalytics(
             args.stepLimitTelemetry?.stepLimitReached ?? false,
           sandbox_type: sandboxInfo?.type,
           sandbox_provider: sandboxInfo?.provider,
-          $insert_id: `${args.experiment.requestId}:paid-model-outcome`,
+          $insert_id: `${args.experiment.requestId}:${isFreeAskExperiment ? "free-ask-1017" : "paid-model"}-outcome`,
           $process_person_profile: false,
         },
       });

@@ -80,7 +80,6 @@ describe("Flash routing experiments", () => {
 
   it.each([
     freeAgent,
-    freeAsk,
     { ...freeAsk, mode: "agent" as const },
     { ...freeAsk, subscription: "pro" as const },
     { ...freeAsk, selectedModel: "ask-model-free" },

@@ -842,6 +842,7 @@ export const createChatHandler = () => {
         : ((activeFlashRoutingAssignment && {
             ...activeFlashRoutingAssignment,
             requestId: assistantMessageId,
+            startedAt: Date.now(),
           }) ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
