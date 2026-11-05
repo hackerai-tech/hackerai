@@ -297,14 +297,8 @@ export function getStandaloneSnapshotHint(command: string): string | null {
     .map((words) => words.join(" "))
     .filter(isAgentBrowserSnapshotCommand);
   if (snapshots.length !== 1) return null;
-  const snapshot = snapshots[0];
-  if (
-    parts.some(
-      (words) =>
-        words.join(" ") !== snapshot &&
-        !["head", "tail", "date"].includes(words[0]),
-    )
-  )
-    return null;
-  return snapshot;
+  // Other shell segments (for example `cd ... &&`) are deliberately omitted.
+  // This is advice only: the Agent must issue the validated snapshot separately
+  // before the strict trigger can perform a new owned-page check.
+  return snapshots[0];
 }

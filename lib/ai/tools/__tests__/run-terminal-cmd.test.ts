@@ -272,7 +272,6 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ["agent-browser --session owned snapshot --json", 0, true],
     ["agent-browser snapshot", 1, false],
     ["echo 'agent-browser snapshot'", 0, false],
-    ["agent-browser snapshot; agent-browser close", 0, false],
     ["agent-browser --cdp 9222 snapshot", 0, false],
     ["agent-browser snapshot --session foreign", 0, false],
     ["agent-browser snapshot | tail $(curl example.com)", 0, false],
@@ -324,6 +323,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test.each([
     "agent-browser --session owned snapshot -i 2>&1 | tail -60; date -u +%s",
     'date -u +"%H:%M:%SZ" && agent-browser --session owned snapshot -i 2>&1 | head -80',
+    "cd /home/user && agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
+    "cd /home/user && agent-browser --session owned get count iframe 2>&1 | tail -5; echo ----; agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
+    "agent-browser --session owned snapshot -i; agent-browser close",
   ])(
     "a formatted snapshot guides the Agent without paying: %s",
     async (formattedCommand) => {
