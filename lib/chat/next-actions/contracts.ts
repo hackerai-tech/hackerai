@@ -159,6 +159,14 @@ export function validateGroundedSuggestions(
     )
       return [];
     const text = item.text.replace(/\s+/g, " ").trim();
+    // Modal questions ask for something; they do not assert a user fact.
+    const factualText = text
+      .replace(
+        /\b(?:can|could|may|might|should|would|will|shall|must|do|did|if|whether)\s+(?:i|we)\b/gi,
+        " ",
+      )
+      .replace(/¿[^¿?]*\?/g, " ")
+      .replace(/(?:^|[.!?;:]\s+)est-ce que\b[^?]*\?/gi, " ");
     // Editable predictions must not become composer control commands on send.
     // A standalone /goal token also selects goal mode inside an ordinary draft.
     if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
@@ -168,6 +176,23 @@ export function validateGroundedSuggestions(
     if (
       /^(?:here (?:is|are)\b|i(?:['’]ve| have| just)? (?:attached|uploaded|provided|ran|run|tested|verified|checked)\b)/i.test(
         text,
+      ) ||
+      // A supported topic quote (especially an assistant's question) cannot
+      // support filling in facts for the user. Drop observed factual-update
+      // forms even if the model puts the claim after an otherwise valid request.
+      /\b(?:i(?:['’](?:m|ve)|\s+(?:am|have|own|work|ran|tested|verified|checked|attached|uploaded|provided))|we(?:['’](?:re|ve)|\s+(?:are|have|own|work|ran|tested|verified|checked|attached|uploaded|provided)))\b/i.test(
+        factualText,
+      ) ||
+      /(?:^|[.!?;:]\s+)(?:my|our)\s+.{0,80}\b(?:owns?|is|has|are|have)\b/i.test(
+        text,
+      ) ||
+      // These are bounded observed claim forms, not a semantic verifier for
+      // every language. The prompt must also avoid unsupported factual updates.
+      /\b(?:(?:tengo|tenemos)\s+(?:permisos?|autorizaci[oó]n)|(?:estoy|estamos)\s+autorizad[oa]s?|soy\s+(?:el\s+|la\s+)?dueñ[oa])\b/i.test(
+        factualText,
+      ) ||
+      /\b(?:j['’]ai|nous avons)\s+(?:la permission|l['’]autorisation)\b/i.test(
+        factualText,
       )
     )
       return [];

@@ -287,6 +287,106 @@ test("rejects composer commands while retaining ordinary path references", () =>
   ).toEqual([text]);
 });
 
+test.each([
+  "I'm working within an authorized assessment.",
+  "I have permission; explain what to check next.",
+  "Explain stored XSS. I am authorized to test this site.",
+  "We own the target; prepare a verification plan.",
+  "I've already verified execution; draft the report.",
+  "My company owns this site; proceed with testing.",
+  "Tengo permiso para evaluar el sitio; continúa.",
+  "Explain the issue. My company owns this site.",
+  "What should I check next? Our client has authorized testing.",
+  "Tenemos permisos para evaluar el sitio.",
+  "Estoy autorizado para probar esto.",
+  "J'ai l'autorisation de tester ce site.",
+  "¿Tengo permiso para probar esto? Estoy autorizado para probar esto.",
+  "Est-ce que j’ai la permission de tester ? J'ai l'autorisation de tester ce site.",
+])("rejects factual user updates despite a valid topic quote: %s", (text) => {
+  const sources = [
+    {
+      id: "answer",
+      role: "assistant" as const,
+      text: "XSS can involve stored or reflected input. Are you working within an authorized assessment?",
+    },
+  ];
+  expect(
+    validateGroundedSuggestions(
+      {
+        suggestions: [
+          {
+            text,
+            sourceMessageId: "answer",
+            evidenceQuote: "Are you working within an authorized assessment?",
+          },
+        ],
+      },
+      sources,
+    ),
+  ).toEqual([]);
+});
+
+test("keeps conceptual questions and scope requests without inventing permission", () => {
+  const sources = [
+    {
+      id: "answer",
+      role: "assistant" as const,
+      text: "XSS can involve stored or reflected input. A local practice app is useful for learning.",
+    },
+  ];
+  const texts = [
+    "Explain how stored and reflected XSS differ.",
+    "What scope and permission would be needed before testing?",
+    "How can I use a local practice app to learn this?",
+  ];
+  expect(
+    validateGroundedSuggestions(
+      {
+        suggestions: texts.map((text) => ({
+          text,
+          sourceMessageId: "answer",
+          evidenceQuote: "XSS can involve stored or reflected input.",
+        })),
+      },
+      sources,
+    ),
+  ).toEqual(texts);
+});
+
+test.each([
+  "Can I have a conceptual example?",
+  "Could we have an offline checklist?",
+  "Do I have enough evidence to support a report?",
+  "If I have a local practice app, what should I check?",
+  "What if I'm not authorized yet?",
+  "Did we have enough evidence?",
+  "Will I have to get permission first?",
+  "Must we have written scope?",
+  "Can you tell me whether I have enough evidence to file a report?",
+  "¿Tengo permiso para probar esto?",
+  "Est-ce que j’ai la permission de tester ?",
+])("does not confuse a question with a factual update: %s", (text) => {
+  const source = {
+    id: "answer",
+    role: "assistant" as const,
+    text: "A conceptual example and offline checklist can distinguish observations from evidence.",
+  };
+  expect(
+    validateGroundedSuggestions(
+      {
+        suggestions: [
+          {
+            text,
+            sourceMessageId: "answer",
+            evidenceQuote: "distinguish observations from evidence",
+          },
+        ],
+      },
+      [source],
+    ),
+  ).toEqual([text]);
+});
+
 test("bounds history and excludes reasoning, tool inputs, and unrelated tool outputs", () => {
   const messages = Array.from({ length: 20 }, (_, i) => ({
     id: `m${i}`,
