@@ -82,7 +82,10 @@ import {
   terminalSandboxInstance,
 } from "./utils/terminal-execution-record";
 import type { AnySandbox } from "@/types";
-import { isAgentBrowserSnapshotCommand } from "@/lib/utils/agent-browser-command";
+import {
+  getStandaloneSnapshotHint,
+  isAgentBrowserSnapshotCommand,
+} from "@/lib/utils/agent-browser-command";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -1584,12 +1587,25 @@ After opening a page, use a standalone foreground agent-browser snapshot command
             context.checkBrowserChallenge &&
             !input.is_background &&
             !input.interactive &&
-            isAgentBrowserSnapshotCommand(input.command) &&
             output.result.exitCode === 0 &&
             output.result.executionOutcome !== "unknown" &&
             !output.result.error &&
             !output.result.approvalDenied
           ) {
+            if (!isAgentBrowserSnapshotCommand(input.command)) {
+              const snapshot = getStandaloneSnapshotHint(input.command);
+              return snapshot
+                ? {
+                    result: {
+                      ...output.result,
+                      browserChallenge: {
+                        status: "snapshot_required",
+                        message: `To check for automatic CAPTCHA fallback, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
+                      },
+                    },
+                  }
+                : output;
+            }
             const browserChallenge = await context.checkBrowserChallenge(
               options.abortSignal,
             );

@@ -8,6 +8,10 @@ pending challenge can receive one 2Captcha attempt. The result appears in
 `result.browserChallenge`; the Agent must submit the normal form and verify the
 website's response. Token delivery alone is not acceptance.
 
+If a snapshot includes output formatting such as `| tail`, the terminal result
+asks the Agent to repeat the snapshot alone. That formatting command never
+starts a paid solve.
+
 This path requires a full-access parent Agent run. It supports visible
 reCAPTCHA v2, hCaptcha and standalone Turnstile widgets that expose their public
 site key and response field. Invisible/enterprise challenges, managed challenge

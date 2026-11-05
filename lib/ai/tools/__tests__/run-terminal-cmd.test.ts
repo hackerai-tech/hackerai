@@ -275,6 +275,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ["agent-browser snapshot; agent-browser close", 0, false],
     ["agent-browser --cdp 9222 snapshot", 0, false],
     ["agent-browser snapshot --session foreign", 0, false],
+    ["agent-browser snapshot | tail $(curl example.com)", 0, false],
+    ["agent-browser snapshot > /tmp/page", 0, false],
     ["agent-browser open https://example.com", 0, false],
     ["agent-browser close", 0, false],
   ])(
@@ -318,6 +320,46 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       }
     },
   );
+
+  test("a formatted snapshot guides the Agent to one standalone check without paying on the pipeline", async () => {
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "desktop-captcha",
+      isWindows: () => false,
+      commands: {
+        run: jest.fn(async () => ({ stdout: "page", stderr: "", exitCode: 0 })),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    context.checkBrowserChallenge = jest.fn(async () => ({
+      status: "token_delivered",
+    }));
+    const tool = createRunTerminalCmd(context);
+    const command = "agent-browser --session owned snapshot -i";
+    const formatted = await runTool(tool, {
+      command: `${command} 2>&1 | tail -60; date -u +%s`,
+      is_background: false,
+      interactive: false,
+    });
+    expect(context.checkBrowserChallenge).not.toHaveBeenCalled();
+    expect(formatted).toMatchObject({
+      result: {
+        browserChallenge: {
+          status: "snapshot_required",
+          message: expect.stringContaining(command),
+        },
+      },
+    });
+    const standalone = await runTool(tool, {
+      command,
+      is_background: false,
+      interactive: false,
+    });
+    expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(1);
+    expect(standalone).toMatchObject({
+      result: { browserChallenge: { status: "token_delivered" } },
+    });
+  });
 
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();

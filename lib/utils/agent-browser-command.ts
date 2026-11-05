@@ -284,3 +284,18 @@ export function isAgentBrowserSnapshotCommand(command: string): boolean {
   }
   return true;
 }
+
+/** Suggest the read-only command when output formatting hid the opt-in trigger.
+ * This never authorizes a solver call or executes a rewritten shell command.
+ */
+export function getStandaloneSnapshotHint(command: string): string | null {
+  if (/[`$\\<>\n\r]/.test(command.replaceAll("2>&1", ""))) return null;
+  const parts = splitShellCommands(command.trim()).map(splitShellWords);
+  const snapshot = parts[0]?.join(" ");
+  if (!snapshot || !isAgentBrowserSnapshotCommand(snapshot)) return null;
+  if (
+    parts.slice(1).some((words) => !["head", "tail", "date"].includes(words[0]))
+  )
+    return null;
+  return snapshot;
+}
