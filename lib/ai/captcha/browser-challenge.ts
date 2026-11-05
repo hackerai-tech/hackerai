@@ -180,7 +180,7 @@ export function createBrowserChallengeHandler(
             status: "token_delivered",
             websiteAccepted: false,
             message:
-              "Submit the page through its normal form and verify the server result. Token delivery does not prove CAPTCHA acceptance. If rejected, use browser_handoff; do not retry the solver.",
+              "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot, submit the ordinary form and verify the server result. Token delivery does not prove website acceptance. If rejected, use browser_handoff.",
           }
         : { status: "handoff_required", reason: "page_changed" };
     } catch {

@@ -12,6 +12,12 @@ If a snapshot includes output formatting such as `| tail`, the terminal result
 asks the Agent to repeat the snapshot alone. That formatting command never
 starts a paid solve.
 
+`result.browserChallenge` is runtime metadata attached to the terminal tool
+result, not shell output. Searching terminal logs cannot recover this status.
+Keep named sessions short (at most 24 characters) to fit managed Unix socket
+paths. An initializing widget may need an observed-readiness wait followed by
+another standalone snapshot; repeated snapshot polling does not improve solving.
+
 This path requires a full-access parent Agent run. It supports visible
 reCAPTCHA v2, hCaptcha and standalone Turnstile widgets that expose their public
 site key and response field. Invisible/enterprise challenges, managed challenge
