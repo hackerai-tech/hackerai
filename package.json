@@ -17,11 +17,11 @@
     "dev:trigger": "node scripts/trigger-dev-branch.mjs",
     "predev:all": "pnpm run check:local-dependencies",
     "dev:all": "concurrently \"next dev --turbopack\" \"npx convex dev\" \"pnpm dev:trigger\"",
-    "build": "next build && pnpm posthog:sourcemaps",
+    "build": "node scripts/build.mjs && pnpm posthog:sourcemaps",
     "start": "next start",
     "posthog:sourcemaps": "node scripts/upload-posthog-sourcemaps.mjs",
     "lint": "eslint app lib types __mocks__ --ext .ts,.tsx,.js,.jsx",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "setup": "pnpm install && npx tsx scripts/setup.ts",
@@ -201,7 +201,8 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.23.13",
     "tw-animate-css": "^1.4.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-build": "npm:typescript@7.0.2"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [
