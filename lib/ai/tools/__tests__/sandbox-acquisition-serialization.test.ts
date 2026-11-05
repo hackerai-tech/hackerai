@@ -10,11 +10,16 @@ jest.mock("../../captcha/solver", () => ({
   createTwoCaptchaSolver: () => ({ solve: mockCaptchaSolve }),
 }));
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ query: mockNetworkQuery }),
+  getConvexClient: () => ({
+    query: mockNetworkQuery,
+    mutation: jest.fn(async () => true),
+  }),
 }));
 
 jest.mock("../run-terminal-cmd", () => ({
-  createRunTerminalCmd: jest.fn(() => ({})),
+  createRunTerminalCmd: jest.fn((context) => ({
+    execute: async () => context.checkBrowserChallenge?.(),
+  })),
 }));
 jest.mock("../interact-terminal-session", () => ({
   createInteractTerminalSession: jest.fn(() => ({})),
@@ -87,6 +92,7 @@ describe("sandbox acquisition serialization", () => {
     process.env = {
       ...originalEnv,
       HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
       CAPTCHA_SOLVER_PREVIEW_USER_IDS: "user-1",
       TWOCAPTCHA_API_KEY: "test-provider-key",
     };
@@ -124,18 +130,19 @@ describe("sandbox acquisition serialization", () => {
         "agent",
         {} as never,
       ];
+      args[9] = "service-key";
       args[20] = "run-1";
       args[22] = { environment: "PREVIEW" };
       const preview = createTools(...args);
-      expect(preview.tools.browser_challenge).toBeDefined();
+      expect(preview.tools.browser_challenge).toBeUndefined();
       await expect(
-        preview.tools.browser_challenge.execute!(
+        preview.tools.run_terminal_cmd.execute!(
           { action: "solve" },
           { toolCallId: "first", messages: [] },
         ),
       ).resolves.toMatchObject({ status: "token_delivered" });
       await expect(
-        preview.getToolsForModel("fallback-model").browser_challenge.execute!(
+        preview.getToolsForModel("fallback-model").run_terminal_cmd.execute!(
           { action: "solve" },
           { toolCallId: "fallback", messages: [] },
         ),

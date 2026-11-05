@@ -688,6 +688,10 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
+  /** Internal CAPTCHA fallback after a completed browser snapshot; never a model-facing tool. */
+  checkBrowserChallenge?: (
+    signal?: AbortSignal,
+  ) => Promise<Record<string, unknown>>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

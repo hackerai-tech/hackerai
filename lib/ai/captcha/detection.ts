@@ -24,8 +24,8 @@ export type BrowserChallengeObservation = z.infer<
 >;
 export type CaptchaWidget = BrowserChallengeObservation["widgets"][number];
 
-// Public demo URLs only. Never send a customer's URL, cookies or page content
-// to a solver during this pilot. Match complete URLs, including query strings.
+// Public demo defaults. Additional URLs and widget keys require explicit server
+// configuration. Never send cookies or page content. Match complete URLs.
 const DEMOS = new Set([
   "https://www.google.com/recaptcha/api2/demo",
   "https://accounts.hcaptcha.com/demo",
@@ -103,7 +103,8 @@ const configuredTargets = z
 export function isSupportedCaptchaTarget(
   url: string,
   widget: CaptchaWidget,
-  configuration = process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS,
+  configuration = process.env.CAPTCHA_SOLVER_TARGETS ??
+    process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS,
 ): boolean {
   if (isSupportedCaptchaDemo(url, widget)) return true;
   if (!configuration || configuration.length > 16384) return false;

@@ -82,6 +82,7 @@ import {
   terminalSandboxInstance,
 } from "./utils/terminal-execution-record";
 import type { AnySandbox } from "@/types";
+import { isAgentBrowserSnapshotCommand } from "@/lib/utils/agent-browser-command";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -289,6 +290,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
   const terminalTool = tool({
     ...runTerminalCmdTool,
+    ...(context.checkBrowserChallenge && {
+      description: `${runTerminalCmdTool.description ?? ""}
+After opening a page, use a standalone foreground agent-browser snapshot command. Supported pending CAPTCHAs are detected and may be solved automatically in that same browser. Read result.browserChallenge. Never call external CAPTCHA APIs or obtain solver credentials yourself. After token_delivered, take a fresh snapshot, submit the normal form and verify website acceptance; delivery alone is not success. Use browser_handoff for unsupported or failed challenges; never repeat a paid attempt.`,
+    }),
     execute: async (
       {
         command,
@@ -1569,10 +1574,34 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         options,
       ) => {
         // Terminal tools return one result, never an AsyncIterable.
-        const execute = async () =>
-          (await terminalTool.execute!(input, options)) as {
+        const execute = async () => {
+          const output = (await terminalTool.execute!(input, options)) as {
             result: Record<string, unknown>;
           };
+          // Only a completed, direct snapshot can initiate automatic fallback.
+          // The page is inspected through the owned browser, never from stdout.
+          if (
+            context.checkBrowserChallenge &&
+            !input.is_background &&
+            !input.interactive &&
+            isAgentBrowserSnapshotCommand(input.command) &&
+            output.result.exitCode === 0 &&
+            output.result.executionOutcome !== "unknown" &&
+            !output.result.error &&
+            !output.result.approvalDenied
+          ) {
+            const browserChallenge = await context.checkBrowserChallenge(
+              options.abortSignal,
+            );
+            if (
+              browserChallenge.status !== "unavailable" &&
+              browserChallenge.status !== "no_pending_challenge"
+            ) {
+              return { result: { ...output.result, browserChallenge } };
+            }
+          }
+          return output;
+        };
         return input.is_background || input.interactive
           ? execute()
           : trackForegroundCommand(context, execute);

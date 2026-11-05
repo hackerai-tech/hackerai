@@ -24,14 +24,15 @@ export interface CaptchaSolver {
     url: string,
     widget: CaptchaWidget,
     signal: AbortSignal,
-    onTaskCreated?: (taskId: number) => void,
+    onTaskCreated?: (taskId: number) => void | Promise<void>,
+    onCostKnown?: (taskId: number, costDollars: number) => Promise<void>,
   ): Promise<CaptchaSolution>;
 }
 
 /** Fixed provider origin; no caller-controlled endpoints, redirects or retries. */
 export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
   return {
-    async solve(url, widget, signal, onTaskCreated) {
+    async solve(url, widget, signal, onTaskCreated, onCostKnown) {
       if (
         !apiKey ||
         !isSupportedCaptchaTarget(url, widget) ||
@@ -39,7 +40,9 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         widget.invisible
       )
         throw new Error("CAPTCHA provider or challenge is unsupported.");
-      const deadline = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
+      // Real hCaptcha tasks can exceed two minutes. Keep a hard bound while
+      // leaving room for those results; Stop still cancels delivery immediately.
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(180_000)]);
       const request = async (
         method: "createTask" | "getTaskResult",
         payload: Record<string, unknown>,
@@ -82,8 +85,8 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         throw new Error("CAPTCHA provider returned no task identity.");
       // Cancellation cannot cancel a provider's already-created task. Preserve
       // its billing identity for reconciliation even if polling never finishes.
-      onTaskCreated?.(created.taskId);
-      for (let poll = 0; poll < 23; poll++) {
+      await onTaskCreated?.(created.taskId);
+      for (let poll = 0; poll < 35; poll++) {
         await abortableDelay(5000, deadline);
         const result = await request("getTaskResult", {
           taskId: created.taskId,
@@ -94,6 +97,13 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
             ? result.solution?.gRecaptchaResponse
             : result.solution?.token;
         const costDollars = Number(result.cost);
+        if (
+          result.status === "ready" &&
+          Number.isFinite(costDollars) &&
+          costDollars >= 0 &&
+          costDollars <= 1
+        )
+          await onCostKnown?.(created.taskId, costDollars);
         if (
           result.status !== "ready" ||
           !token ||

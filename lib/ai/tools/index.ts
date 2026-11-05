@@ -1,8 +1,9 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
-import { createBrowserChallenge } from "./browser-challenge";
-import { isCaptchaPreviewEligible } from "../captcha/policy";
+import { createBrowserChallengeHandler } from "../captcha/browser-challenge";
+import { createCaptchaJournal } from "../captcha/journal";
+import { isCaptchaEligible } from "../captcha/policy";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -274,7 +275,7 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
-        isCaptchaPreviewEligible(runtimePolicy.environment, userID),
+        isCaptchaEligible(runtimePolicy.environment, userID),
       )
     : undefined;
   const context: ToolContext = {
@@ -309,15 +310,24 @@ export const createTools = (
   };
 
   // Keep attempt accounting across model fallback/schema rebuilds in this run.
-  const browserChallenge =
+  context.checkBrowserChallenge =
     browserSessions &&
+    serviceKey &&
+    triggerRunId &&
     !requestToolApproval &&
     (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
-    isCaptchaPreviewEligible(runtimePolicy.environment, userID)
-      ? createBrowserChallenge(
+    isCaptchaEligible(runtimePolicy.environment, userID)
+      ? createBrowserChallengeHandler(
           context,
           runtimePolicy.environment,
           runtimePolicy.signal,
+          undefined,
+          createCaptchaJournal({
+            serviceKey,
+            userId: userID,
+            chatId,
+            runId: triggerRunId,
+          }),
         )
       : undefined;
 
@@ -332,7 +342,6 @@ export const createTools = (
           runtimePolicy.signal,
         ),
       }),
-      ...(browserChallenge && { browser_challenge: browserChallenge }),
       run_terminal_cmd: createRunTerminalCmd(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),

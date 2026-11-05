@@ -252,3 +252,35 @@ export function detectAgentBrowserUsage(
     usedViaNpx,
   };
 }
+
+/** A narrow opt-in trigger for server-side challenge detection. This is not a
+ * general shell parser: ambiguous commands execute normally without paid work.
+ */
+export function isAgentBrowserSnapshotCommand(command: string): boolean {
+  if (/[`$<>\\\n\r]/.test(command)) return false;
+  const parts = splitShellCommands(command.trim());
+  if (parts.length !== 1) return false;
+  const words = splitShellWords(parts[0]);
+  let index = 0;
+  if (words[index] === "npx") {
+    index++;
+    if (["--yes", "-y"].includes(words[index])) index++;
+  }
+  if (!AGENT_BROWSER_COMMAND_RE.test(words[index++] ?? "")) return false;
+  if (words[index] === "--session") {
+    index++;
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(words[index++] ?? "")) return false;
+  }
+  if (words[index++] !== "snapshot") return false;
+  while (index < words.length) {
+    const option = words[index++];
+    if (["-i", "--interactive", "-c", "--compact", "--json"].includes(option))
+      continue;
+    if (["-d", "--depth"].includes(option)) {
+      if (!/^\d{1,3}$/.test(words[index++] ?? "")) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}

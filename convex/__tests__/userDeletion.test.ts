@@ -776,6 +776,39 @@ describe("userDeletion", () => {
       USER_DELETION_TABLE_POLICY,
     } = await import("../userDeletion");
     const tables = seedTables();
+    tables.captcha_attempts = [
+      {
+        _id: "captcha-user",
+        user_id: "user_123",
+        chat_id: "private-chat",
+        run_id: "private-run",
+        task_id: 123,
+        state: "processing",
+      },
+      {
+        _id: "captcha-other",
+        user_id: "user_other",
+        chat_id: "other-chat",
+        run_id: "other-run",
+        task_id: 456,
+        state: "ready",
+        cost_dollars: 0.003,
+      },
+    ];
+    tables.captcha_daily_limits = [
+      {
+        _id: "captcha-limit-user",
+        bucket: "user:user_123",
+        day: "2026-11-05",
+        attempts: 1,
+      },
+      {
+        _id: "captcha-limit-global",
+        bucket: "global",
+        day: "2026-11-05",
+        attempts: 2,
+      },
+    ];
     const { ctx, scheduler, deletedIds } = createMockCtx(tables);
 
     await deleteAllUserDataByService.handler(ctx as any, {
@@ -791,6 +824,23 @@ describe("userDeletion", () => {
       ).toBe(false);
     }
 
+    expect(row(tables, "captcha_attempts", "captcha-user")).toMatchObject({
+      user_id: DELETED_USER_ID,
+      chat_id: "",
+      run_id: "deleted:captcha-user",
+      task_id: 123,
+      state: "processing",
+    });
+    expect(row(tables, "captcha_attempts", "captcha-other")).toMatchObject({
+      user_id: "user_other",
+      cost_dollars: 0.003,
+    });
+    expect(
+      row(tables, "captcha_daily_limits", "captcha-limit-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "captcha_daily_limits", "captcha-limit-global"),
+    ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();

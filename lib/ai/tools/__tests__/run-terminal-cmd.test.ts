@@ -267,6 +267,58 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test.each([
+    ["agent-browser snapshot -i", 0, true],
+    ["agent-browser --session owned snapshot --json", 0, true],
+    ["agent-browser snapshot", 1, false],
+    ["echo 'agent-browser snapshot'", 0, false],
+    ["agent-browser snapshot; agent-browser close", 0, false],
+    ["agent-browser --cdp 9222 snapshot", 0, false],
+    ["agent-browser snapshot --session foreign", 0, false],
+    ["agent-browser open https://example.com", 0, false],
+    ["agent-browser close", 0, false],
+  ])(
+    "runs internal challenge detection only after a completed owned snapshot: %s (%i)",
+    async (command, exitCode, expected) => {
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        getConnectionId: () => "desktop-captcha",
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(async () => ({
+            stdout: "page snapshot",
+            stderr: "",
+            exitCode,
+          })),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      const challenge = { status: "token_delivered", websiteAccepted: false };
+      context.checkBrowserChallenge = jest.fn(async () => challenge);
+      const tool = createRunTerminalCmd(context);
+      const result = await runTool(tool, {
+        command,
+        is_background: false,
+        interactive: false,
+      });
+      expect(result).toMatchObject({ result: { exitCode } });
+      expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(
+        expected ? 1 : 0,
+      );
+      if (expected) {
+        expect(result).toMatchObject({
+          result: { exitCode: 0, browserChallenge: challenge },
+        });
+        expect(await getModelOutput(tool, result)).toMatchObject({
+          type: "text",
+          value: expect.stringContaining('"websiteAccepted":false'),
+        });
+      } else {
+        expect(result).not.toHaveProperty("result.browserChallenge");
+      }
+    },
+  );
+
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];

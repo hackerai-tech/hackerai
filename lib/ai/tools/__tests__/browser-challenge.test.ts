@@ -1,5 +1,5 @@
 import type { ToolContext } from "@/types";
-import { createBrowserChallenge } from "../browser-challenge";
+import { createBrowserChallengeHandler } from "../../captcha/browser-challenge";
 import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
 import {
   getPostHogBooleanFlagDecisionForUser,
@@ -53,12 +53,22 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
     token: "private-response",
     costDollars: 0.003,
   }));
-  const tool = createBrowserChallenge(context, environment, undefined, () => ({
-    solve,
-  }));
+  const journal = {
+    reserve: jest.fn(async () => true),
+    registerTask: jest.fn(async () => {}),
+    recordCost: jest.fn(async () => {}),
+  };
+  const tool = createBrowserChallengeHandler(
+    context,
+    environment,
+    undefined,
+    () => ({ solve }),
+    journal,
+  );
   return {
     tool,
     context,
+    journal,
     solve,
     evaluate,
     getChallengeBrowser,
@@ -66,11 +76,13 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
   };
 }
 const run = (
-  tool: ReturnType<typeof createBrowserChallenge>,
+  tool: ReturnType<typeof createBrowserChallengeHandler>,
   action: "inspect" | "solve",
   abortSignal?: AbortSignal,
-) =>
-  tool.execute!({ action }, { toolCallId: "test", messages: [], abortSignal });
+) => {
+  if (action === "solve") process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
+  return tool(abortSignal);
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -154,6 +166,7 @@ it("detects without spending, exposes no site key and respects a disabled flag",
     demoEligible: true,
     widgets: [{ kind: "recaptcha_v2", invisible: false }],
     interstitial: false,
+    message: expect.any(String),
     visionGuidance: expect.any(String),
   });
   expect(solve).not.toHaveBeenCalled();
@@ -277,6 +290,24 @@ it("does not retry an ambiguous paid failure, and hands off with a sanitized res
   expect(solve).toHaveBeenCalledTimes(1);
 });
 
+it.each(["denied", "ambiguous write"])(
+  "does not create a paid task after journal admission is %s",
+  async (variant) => {
+    const { tool, solve, journal } = setup();
+    if (variant === "denied") journal.reserve.mockResolvedValue(false);
+    else
+      journal.reserve.mockRejectedValue(new Error("private-database-detail"));
+    const result = await run(tool, "solve");
+    expect(result).toMatchObject({ status: "handoff_required" });
+    expect(JSON.stringify(result)).not.toContain("private-database-detail");
+    await expect(run(tool, "solve")).resolves.toMatchObject({
+      reason: "attempt_limit",
+    });
+    expect(solve).not.toHaveBeenCalled();
+    expect(journal.reserve).toHaveBeenCalledTimes(1);
+  },
+);
+
 it("blocks concurrent calls instead of creating duplicate paid tasks", async () => {
   const { tool, solve } = setup();
   let resolve!: (value: { token: string; costDollars: number }) => void;
@@ -343,7 +374,7 @@ it.each([
 
 it("uses the real solver adapter through HTTP polling and private browser delivery", async () => {
   jest.useFakeTimers();
-  const { context, evaluate, onToolCost } = setup();
+  const { context, journal, evaluate, onToolCost } = setup();
   const fetch = jest.fn();
   global.fetch = fetch;
   fetch.mockResolvedValueOnce({
@@ -359,7 +390,13 @@ it("uses the real solver adapter through HTTP polling and private browser delive
       cost: "0.003",
     }),
   });
-  const tool = createBrowserChallenge(context, "PREVIEW");
+  const tool = createBrowserChallengeHandler(
+    context,
+    "PREVIEW",
+    undefined,
+    undefined,
+    journal,
+  );
   const pending = run(tool, "solve");
   await jest.advanceTimersByTimeAsync(5000);
   await expect(pending).resolves.toMatchObject({
@@ -368,4 +405,6 @@ it("uses the real solver adapter through HTTP polling and private browser delive
   });
   expect(onToolCost).toHaveBeenCalledTimes(1);
   expect(evaluate).toHaveBeenCalledTimes(2);
+  expect(journal.registerTask).toHaveBeenCalledWith(123);
+  expect(journal.recordCost).toHaveBeenCalledWith(123, 0.003);
 });

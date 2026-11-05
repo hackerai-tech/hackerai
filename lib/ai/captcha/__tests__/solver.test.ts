@@ -148,6 +148,43 @@ it("cancels between task creation and polling without a further provider call", 
   expect(onTaskCreated).toHaveBeenCalledWith(123);
 });
 
+it("awaits durable task registration and never creates again when registration fails", async () => {
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+  const register = jest
+    .fn()
+    .mockRejectedValue(new Error("journal unavailable"));
+  await expect(
+    createTwoCaptchaSolver("provider-key").solve(
+      demo,
+      widget,
+      new AbortController().signal,
+      register,
+    ),
+  ).rejects.toThrow("journal unavailable");
+  await jest.advanceTimersByTimeAsync(10000);
+  expect(register).toHaveBeenCalledWith(123);
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+});
+
+it("records a known fee even if the returned token is invalid", async () => {
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+  mockFetch.mockResolvedValueOnce(
+    reply({ errorId: 0, status: "ready", cost: "0.00299", solution: {} }),
+  );
+  const recordCost = jest.fn(async () => {});
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    demo,
+    widget,
+    new AbortController().signal,
+    undefined,
+    recordCost,
+  );
+  const rejected = expect(pending).rejects.toThrow("invalid solution");
+  await jest.advanceTimersByTimeAsync(5000);
+  await rejected;
+  expect(recordCost).toHaveBeenCalledWith(123, 0.00299);
+});
+
 it("bounds polling without issuing another paid creation", async () => {
   mockFetch
     .mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }))
@@ -158,7 +195,7 @@ it("bounds polling without issuing another paid creation", async () => {
     new AbortController().signal,
   );
   const rejected = expect(pending).rejects.toThrow("timed out");
-  await jest.advanceTimersByTimeAsync(115_000);
+  await jest.advanceTimersByTimeAsync(175_000);
   await rejected;
   expect(
     mockFetch.mock.calls.filter(([url]) => url.endsWith("/createTask")),
