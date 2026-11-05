@@ -87,6 +87,26 @@ describe("error redaction", () => {
     ).toBe("sk-short");
   });
 
+  it.each([1, 2])(
+    "redacts a control sequence at prefix offset %s",
+    (offset) => {
+      const esc = String.fromCharCode(27);
+      const key = "sk-proj-SYNTHETIC_provider_key_012345";
+      const decorated = `${key.slice(0, offset)}${esc}[31m${key.slice(offset)}`;
+      expect(redactSensitiveErrorMessage(`rejected ${decorated}`)).toBe(
+        "rejected [Redacted]",
+      );
+    },
+  );
+
+  it.each(["%2D", "\\u002d", "%41", "%5F", "%30"])(
+    "preserves an identifier after encoded identifier character %s",
+    (encoded) => {
+      const message = `task${encoded}sk-proj-SYNTHETIC_identifier_012345`;
+      expect(redactSensitiveErrorMessage(message)).toBe(message);
+    },
+  );
+
   it("redacts ANSI-decorated string values before serializing diagnostics", () => {
     const esc = String.fromCharCode(27);
     const redacted = stringifyRedactedError({

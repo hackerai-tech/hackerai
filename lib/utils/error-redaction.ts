@@ -12,9 +12,10 @@ const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
 // Null markers retain stripped control boundaries and are transparent inside
 // a key. Serialized JSON and diagnostic URLs can encode the separator too.
+// Encoded ASCII boundaries exclude letters, digits, underscores and hyphens.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: internal control-boundary marker
 const PROVIDER_KEY_CANDIDATE_PATTERN =
-  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_\x00-]+/g;
+  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|(?:%|\\u00)(?:[01][\da-fA-F]|2[\da-cA-Ce-fE-F]|3[a-fA-F]|40|5[b-eB-E]|60|7[b-fB-F])))s\x00*k\x00*-[A-Za-z0-9_\x00-]+/g;
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
