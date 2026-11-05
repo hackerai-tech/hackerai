@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockCapture = jest.fn();
 const mockCaptureException = jest.fn();
 const mockGetFlag = jest.fn();
-const mockGetFeatureFlag = jest.fn();
+const mockGetFeatureFlagResult = jest.fn();
 const mockEvaluateFlags = jest.fn();
 const mockPostHogClient = jest.fn(() => ({
   capture: mockCapture,
   captureException: mockCaptureException,
-  getFeatureFlag: mockGetFeatureFlag,
+  getFeatureFlagResult: mockGetFeatureFlagResult,
   evaluateFlags: mockEvaluateFlags,
 }));
 const mockEmitPostHogLog = jest.fn(() => true);
@@ -24,22 +24,104 @@ jest.mock("@/lib/posthog/logs", () => ({
 }));
 
 const {
+  arePostHogSurveyFlagsEnabled,
   getPostHogFeatureFlagForUser,
   getPostHogBooleanFlagDecisionForUser,
   getPostHogFeatureFlagValueForUser,
+  getPostHogFeatureFlagRawValueForUser,
   getPostHogFeatureFlagVariantForUser,
   phLogger,
 } = require("../server") as typeof import("../server");
 
 describe("phLogger", () => {
+  it.each([
+    "access_token=FAKE_CREDENTIAL",
+    "client_secret=FAKE_CREDENTIAL",
+    "refreshToken=FAKE_CREDENTIAL",
+    "Authorization: Bearer FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
+    'token="prefix\\"FAKE_CREDENTIAL"',
+    JSON.stringify({ message: 'client_secret="prefix FAKE_CREDENTIAL"' }),
+    "access_token:\nFAKE_CREDENTIAL",
+  ])("removes %s from error log and exception sinks", (diagnostic) => {
+    const error = Object.assign(new Error(`HTTP 401 ${diagnostic}`), {
+      cause: new Error(diagnostic),
+    });
+    phLogger.error(`provider_failed ${diagnostic}`, {
+      error,
+      requestId: "req_fixture",
+    });
+    const captured = mockCaptureException.mock.calls[0]?.[0] as Error;
+    const serialized = JSON.stringify({
+      message: captured.message,
+      stack: captured.stack,
+      properties: mockCaptureException.mock.calls[0]?.[2],
+      logs: mockEmitPostHogLog.mock.calls,
+    });
+    expect(serialized).not.toContain("FAKE_CREDENTIAL");
+    expect(serialized).toContain("HTTP 401");
+    expect(serialized).toContain("req_fixture");
+    expect(captured.cause).toBeUndefined();
+  });
+
+  it("redacts credential diagnostics when exception capture falls back to console", () => {
+    const spy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockCaptureException.mockImplementationOnce(() => {
+      throw new Error("Authorization: Bearer FAKE_TELEMETRY");
+    });
+    try {
+      phLogger.error("client_secret=FAKE_MESSAGE", {
+        error: new Error("refreshToken=FAKE_ERROR"),
+        detail: "access_token=FAKE_DETAIL",
+        requestId: "req_fixture",
+      });
+      const fields = spy.mock.calls[0][1] as {
+        error: Error;
+        telemetryError: Error;
+      };
+      const serialized = JSON.stringify({
+        calls: spy.mock.calls,
+        error: fields.error.message,
+        stack: fields.error.stack,
+        telemetry: fields.telemetryError.message,
+      });
+      expect(serialized).not.toContain("FAKE_");
+      expect(serialized).toContain("req_fixture");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   beforeEach(() => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();
     mockGetFlag.mockReset();
-    mockGetFeatureFlag.mockReset();
+    mockGetFeatureFlagResult.mockReset();
     mockEvaluateFlags.mockReset();
     mockPostHogClient.mockClear();
     mockEmitPostHogLog.mockClear();
+  });
+
+  it("requires all headless survey targeting flags and fails closed on missing flags", async () => {
+    const keys = ["survey-rollout", "survey-targeting"];
+    mockGetFlag.mockReturnValue(true);
+    mockEvaluateFlags.mockResolvedValue({ getFlag: mockGetFlag });
+    await expect(arePostHogSurveyFlagsEnabled(keys, "user")).resolves.toBe(
+      true,
+    );
+    expect(mockEvaluateFlags).toHaveBeenCalledWith("user", { flagKeys: keys });
+    mockGetFlag.mockImplementation((key: string) =>
+      key === "survey-rollout" ? true : undefined,
+    );
+    await expect(arePostHogSurveyFlagsEnabled(keys, "user")).resolves.toBe(
+      false,
+    );
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("timeout"));
+    await expect(arePostHogSurveyFlagsEnabled(keys, "user")).resolves.toBe(
+      false,
+    );
   });
 
   it("evaluates boolean flags for the authenticated distinct id and fails closed", async () => {
@@ -69,33 +151,44 @@ describe("phLogger", () => {
     await expect(
       getPostHogBooleanFlagDecisionForUser("history", "user"),
     ).resolves.toBeNull();
-    mockGetFeatureFlag.mockResolvedValueOnce(false);
+    mockGetFlag.mockReturnValueOnce(false);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBe(false);
 
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBeNull();
   });
 
   it("evaluates multivariate flags and ignores non-variant values", async () => {
-    mockGetFeatureFlag.mockResolvedValueOnce("test");
+    mockGetFeatureFlagResult.mockResolvedValueOnce({
+      enabled: true,
+      variant: "test",
+    });
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
         "user_123",
-        { sendFeatureFlagEvents: false },
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: { subscription_tier: "pro" },
+        },
       ),
     ).resolves.toBe("test");
-    expect(mockGetFeatureFlag).toHaveBeenLastCalledWith(
+    expect(mockGetFeatureFlagResult).toHaveBeenLastCalledWith(
       "hac46-pro-monthly-29-pricing",
       "user_123",
-      { sendFeatureFlagEvents: false },
+      {
+        sendFeatureFlagEvents: false,
+        personProperties: { subscription_tier: "pro" },
+      },
     );
 
-    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    mockGetFlag.mockReturnValueOnce(true);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
@@ -103,12 +196,76 @@ describe("phLogger", () => {
       ),
     ).resolves.toBeUndefined();
 
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
         "user_123",
       ),
+    ).resolves.toBeUndefined();
+  });
+  it.each([true, false, undefined])(
+    "evaluates deferred boolean assignment %s without emitting flag access",
+    async (enabled) => {
+      mockGetFeatureFlagResult.mockResolvedValueOnce(
+        enabled === undefined ? undefined : { enabled },
+      );
+      await expect(
+        getPostHogBooleanFlagDecisionForUser(
+          "deferred-boolean-test",
+          "user",
+          { subscription_tier: "free" },
+          { sendFeatureFlagEvents: false },
+        ),
+      ).resolves.toBe(enabled ?? null);
+      expect(mockGetFeatureFlagResult).toHaveBeenCalledWith(
+        "deferred-boolean-test",
+        "user",
+        {
+          personProperties: { subscription_tier: "free" },
+          sendFeatureFlagEvents: false,
+        },
+      );
+      expect(mockEvaluateFlags).not.toHaveBeenCalled();
+      expect(mockCapture).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["test", true, false, undefined, 42])(
+    "preserves raw flag value %s and unavailable results",
+    async (value) => {
+      mockGetFlag.mockReturnValueOnce(value);
+      mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
+      await expect(
+        getPostHogFeatureFlagRawValueForUser("retention", "user"),
+      ).resolves.toBe(
+        typeof value === "boolean" || typeof value === "string" ? value : null,
+      );
+      expect(mockEvaluateFlags).toHaveBeenCalledWith("user", {
+        flagKeys: ["retention"],
+      });
+    },
+  );
+
+  it("preserves variant lookups with automatic exposure and suppressed lookup failures", async () => {
+    mockGetFlag.mockReturnValueOnce("control");
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
+    await expect(
+      getPostHogFeatureFlagVariantForUser("experiment", "user", {
+        personProperties: { subscription_tier: "pro" },
+      }),
+    ).resolves.toBe("control");
+    expect(mockEvaluateFlags).toHaveBeenLastCalledWith("user", {
+      flagKeys: ["experiment"],
+      personProperties: { subscription_tier: "pro" },
+    });
+    expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
+
+    mockGetFeatureFlagResult.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagVariantForUser("experiment", "user", {
+        sendFeatureFlagEvents: false,
+      }),
     ).resolves.toBeUndefined();
   });
 

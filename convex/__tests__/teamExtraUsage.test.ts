@@ -13,7 +13,7 @@ import {
   extraUsagePointsToDollars,
 } from "../lib/extraUsagePricing";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
@@ -295,7 +295,12 @@ function makeMockCtx(opts?: {
 
 async function callDeduct(
   ctx: any,
-  args: { organizationId: string; userId: string; amountPoints: number },
+  args: {
+    organizationId: string;
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { deductTeamPoints } = await import("../teamExtraUsage");
   return (deductTeamPoints as any).handler(ctx, {
@@ -306,7 +311,12 @@ async function callDeduct(
 
 async function callRefund(
   ctx: any,
-  args: { organizationId: string; userId: string; amountPoints: number },
+  args: {
+    organizationId: string;
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { refundTeamPoints } = await import("../teamExtraUsage");
   return (refundTeamPoints as any).handler(ctx, {
@@ -345,7 +355,12 @@ async function callGetState(
 
 async function callDeductWithAutoReloadForTeam(
   ctx: any,
-  args: { organizationId: string; userId: string; amountPoints: number },
+  args: {
+    organizationId: string;
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { deductWithAutoReloadForTeam } =
     await import("../teamExtraUsageActions");
@@ -870,6 +885,63 @@ describe("deductWithAutoReloadForTeam", () => {
       id: "in_team_auto",
       deleted: true,
     } as never);
+  });
+
+  it("releases the reload executor if receipt linkage fails before Stripe", async () => {
+    const failure = new Error("deletion fence started");
+    const ctx: any = {
+      runQuery: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+        balanceDollars: 0,
+        balancePoints: 0,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdPoints: 10000,
+        autoReloadAmountDollars: 15,
+        memberDisabled: false,
+      }),
+      runMutation: jest.fn(async (_ref: unknown, args: any) => {
+        if ("auto_reload_operation_id" in args) throw failure;
+        if ("operation_id" in args) return { claimed: true, result: null };
+        if ("candidateOperationId" in args)
+          return {
+            status: "operation",
+            operationId: "reload-op",
+            executorId: "executor",
+            amountDollars: 15,
+            claimed: true,
+            paymentAllowed: true,
+          };
+        if ("outcome" in args) return true;
+        return {
+          success: false,
+          newBalancePoints: 0,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+          memberCapExceeded: false,
+          memberDisabled: false,
+          poolDisabled: false,
+        };
+      }),
+    };
+    await expect(
+      callDeductWithAutoReloadForTeam(ctx, {
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        amountPoints: 10,
+        settlementOperationId: "settlement-link-failure",
+      }),
+    ).rejects.toBe(failure);
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operationId: "reload-op",
+        executorId: "executor",
+        outcome: "executor_released",
+      }),
+    );
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
   });
 
   it("does not charge team auto-reload for a suspended account", async () => {

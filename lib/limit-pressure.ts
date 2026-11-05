@@ -9,6 +9,7 @@ export function getPaidDailyFreeAllowanceCtaText(mode?: ChatMode): string {
 export type LimitCapReason =
   | "free_concurrency"
   | "daily_requests_exhausted"
+  | "free_daily_cost_exhausted"
   | "free_monthly_exhausted"
   | "monthly_exhausted"
   | "extra_usage_cap"
@@ -27,6 +28,7 @@ export type LimitCapReason =
 export type LimitType =
   | "concurrency"
   | "daily_requests"
+  | "free_daily_cost"
   | "free_monthly"
   | "monthly"
   | "extra_usage"
@@ -76,6 +78,7 @@ export function getLimitTypeForCapReason(
   if (capReason.startsWith("paid_daily_free_allowance")) {
     return "paid_daily_free_allowance";
   }
+  if (capReason === "free_daily_cost_exhausted") return "free_daily_cost";
   if (capReason.includes("daily")) return "daily_requests";
   if (capReason === "free_monthly_exhausted") return "free_monthly";
   if (

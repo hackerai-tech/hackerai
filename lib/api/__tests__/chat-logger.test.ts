@@ -1,4 +1,10 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
+import fs from "fs";
+import path from "path";
+import vm from "vm";
+import ts from "typescript";
 
 (globalThis as any).Request = class Request {};
 (globalThis as any).Response = class Response {};
@@ -18,6 +24,128 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+
+it.each(["/api/chat", "/api/agent"])(
+  "removes standalone provider keys from %s error diagnostics",
+  (endpoint) => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const phErrorSpy = jest
+      .spyOn(phLogger, "error")
+      .mockImplementation(() => {});
+    try {
+      const key = "sk-proj-SYNTHETIC_provider_key_with-underscores_012345";
+      const error = Object.assign(
+        new Error(`Provider rejected '${key}'`, {
+          cause: new Error(`Configuration contains ${key}`),
+        }),
+        { statusCode: 401 },
+      );
+      const chatLogger = createChatLogger({
+        chatId: "redaction-fixture",
+        endpoint,
+      });
+      chatLogger.recordProviderError(error, { model: "test/model" });
+      chatLogger.emitUnexpectedError(error);
+
+      expect(errorSpy).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalled();
+      expect(phErrorSpy).toHaveBeenCalled();
+      // Error properties are non-enumerable, including nested exception causes.
+      const serialized = JSON.stringify(
+        [errorSpy.mock.calls, logSpy.mock.calls, phErrorSpy.mock.calls],
+        (_name, value) =>
+          value instanceof Error
+            ? {
+                ...value,
+                name: value.name,
+                message: value.message,
+                stack: value.stack,
+                cause: value.cause,
+              }
+            : value,
+      );
+      expect(serialized).not.toContain(key);
+      expect(serialized).not.toContain("SYNTHETIC_provider_key");
+      expect(serialized).toContain("[Redacted]");
+      expect(serialized).toContain("401");
+      expect(error.message).toContain(key);
+    } finally {
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+      phErrorSpy.mockRestore();
+    }
+  },
+);
+
+it("correlates provider errors and final outcomes to distinct Agent runs in one chat", () => {
+  const source = ts.createSourceFile(
+    "agent-long.ts",
+    fs.readFileSync(
+      path.resolve(__dirname, "../../../trigger/agent-long.ts"),
+      "utf8",
+    ),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const initializers: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "createChatLogger"
+    ) {
+      initializers.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(initializers).toHaveLength(1);
+
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+  const phErrorSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
+  const runIds = ["run_first", "run_second"];
+  try {
+    for (const id of runIds) {
+      // Execute the real caller's initializer and logger, without importing
+      // the task's external services or mocking its diagnostic behavior.
+      const chatLogger = vm.runInNewContext(initializers[0].getText(source), {
+        createChatLogger,
+        chatId: "shared-chat",
+        endpoint: "/api/agent",
+        ctx: { run: { id } },
+      });
+      chatLogger.recordProviderError(
+        Object.assign(new Error("Invalid provider request"), {
+          statusCode: 400,
+        }),
+        { mode: "agent", model: "model-abliterated" },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+    }
+
+    expect(
+      phErrorSpy.mock.calls.map(([, fields]) => fields.request_id),
+    ).toEqual(runIds);
+    expect(phErrorSpy.mock.calls.map(([, fields]) => fields.chatId)).toEqual([
+      "shared-chat",
+      "shared-chat",
+    ]);
+    expect(
+      logSpy.mock.calls.map(([entry]) => JSON.parse(String(entry)).request_id),
+    ).toEqual(runIds);
+  } finally {
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+    phErrorSpy.mockRestore();
+  }
+});
 
 it("emits the complete model history in the final request event", () => {
   const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -157,6 +285,51 @@ describe("captureToolCalls", () => {
 });
 
 describe("captureAgentRun", () => {
+  it.each(
+    (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
+      (flag) =>
+        (["control", "test"] as const).map((variant) => ({ flag, variant })),
+    ),
+  )(
+    "attributes the normal run outcome to $flag $variant",
+    ({ flag, variant }) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "user",
+        chatId: "chat",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome: "success",
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "model-glm-5.3",
+        configuredModelId: "z-ai/glm-5.3",
+        abliteratedProviderSummary: undefined,
+        agentModelContextVariant: variant,
+        agentModelContextFlag: flag,
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "hackerai-agent_run",
+          properties: expect.objectContaining({
+            [`$feature/${flag}`]: variant,
+          }),
+        }),
+      );
+      const outcome = capture.mock.calls.find(
+        ([event]) => event.event === "hackerai-agent_run",
+      )![0];
+      const other =
+        flag === "agent_pro_context_v1"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      expect(outcome.properties[`$feature/${other}`]).toBeUndefined();
+    },
+  );
+
   it("captures one sanitized agent run event with sandbox type", () => {
     const capture = jest.fn();
 
@@ -213,7 +386,11 @@ describe("captureAgentRun", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_123", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -690,6 +867,38 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each(["success", "aborted", "error"] as const)(
+    "keeps unknown termination explicit for %s without inventing a natural finish",
+    (outcome) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "synthetic",
+        chatId: "synthetic",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome,
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "auto",
+        configuredModelId: "synthetic",
+        abliteratedProviderSummary: undefined,
+        isAutoContinue: false,
+      });
+      const event = capture.mock.calls.find(
+        ([entry]) => entry.event === "hackerai-agent_run",
+      )?.[0];
+      expect(event.properties).toMatchObject({
+        outcome,
+        finish_reason: "unknown",
+        is_auto_continue: false,
+        run_metadata_version: 1,
+      });
+      expect(event.properties.finish_reason).not.toBe("stop");
+    },
+  );
   it("enriches existing run and usage events without adding events", () => {
     const capture = jest.fn();
     const shared = {
@@ -900,6 +1109,18 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_max_moderated_v1"],
+    ["agent", "abliterated_max_moderated_v1"],
+    ["ask", "abliterated_paid_first_step_v2"],
+    ["agent", "abliterated_paid_first_step_v2"],
+    ["ask", "abliterated_paid_moderated_default_v1"],
+    ["agent", "abliterated_paid_moderated_default_v1"],
+    ["ask", "abliterated_paid_three_steps_v1"],
+    ["agent", "abliterated_paid_three_steps_v1"],
+    ["ask", "abliterated_paid_moderated_three_steps_default_v1"],
+    ["agent", "abliterated_paid_moderated_three_steps_default_v1"],
+    ["ask", "abliterated_pro_three_steps_v1"],
+    ["agent", "abliterated_pro_three_steps_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
@@ -944,9 +1165,81 @@ describe("captureAgentCompletionAnalytics", () => {
             experiment_variant: "test",
             experiment_request_id: "message",
             fallback_served: true,
+            has_response_content: true,
+            step_limit_reached: false,
           }),
         }),
       );
+    },
+  );
+  it.each([
+    ["ask", "abliterated_free_three_steps_v1"],
+    ["agent", "abliterated_free_three_steps_v1"],
+    ["ask", "abliterated_free_three_steps_default_v1"],
+    ["agent", "abliterated_free_three_steps_default_v1"],
+  ] as const)(
+    "retains Free %s %s cost coverage after an aborted fallback",
+    (mode, key) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        hasResponseContent: false,
+        abliteratedProviderSummary: {
+          free_three_steps_measurement_version: 1,
+          experiment_release: "preview-worker",
+          provider_attempt_count: 2,
+          tool_result_reported_error_count: 1,
+          provider_content_filter_count: 1,
+          time_to_first_visible_content_ms: undefined,
+        } as any,
+        usageMeasurement: {
+          usage_observed_model_cost_dollars: 0.03,
+          usage_summary_cost_dollars: 0,
+          usage_model_calls_started: 2,
+          usage_model_records: 1,
+          usage_observed_non_model_cost_dollars: 0.01,
+        } as any,
+        posthog: { capture } as any,
+        userId: "free",
+        chatId: "fixture",
+        mode,
+        endpoint: mode === "agent" ? "/api/agent" : "/api/chat",
+        subscription: "free",
+        outcome: "aborted",
+        abortSource: "request_cancel",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model-large-flash",
+        responseModel: "z-ai/glm-5.3-flash",
+        fallbackServed: true,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        experiment: {
+          key,
+          variant: "test",
+          requestId: "original",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            experiment_request_id: "original",
+            experiment_variant: "test",
+            outcome: "aborted",
+            abort_source: "request_cancel",
+            natural_completion: false,
+            usage_model_calls_started: 2,
+            usage_model_records: 1,
+            usage_observed_model_cost_dollars: 0.03,
+            usage_observed_non_model_cost_dollars: 0.01,
+            provider_content_filter_count: 1,
+            tool_result_reported_error_count: 1,
+            $insert_id: "original:free-three-step-outcome",
+          }),
+        }),
+      );
+      expect(
+        capture.mock.calls.some(([e]) => e.event === "free_response_completed"),
+      ).toBe(false);
     },
   );
   it("preserves the existing Agent event alongside successful free activation", () => {
@@ -975,6 +1268,9 @@ describe("captureAgentCompletionAnalytics", () => {
       distinctId: "user_123",
       event: "hackerai-agent_run",
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "free",
         subscription_tier: "free",
@@ -1022,7 +1318,11 @@ describe("captureAgentCompletionAnalytics", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_completion", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -1151,9 +1451,7 @@ describe("captureUsageCost", () => {
         midRunCount: 7,
       },
       sandboxUsage: {
-        totalCostDollars: 0.12,
-        miosaRuntimeMs: 2_000,
-        miosaCostDollars: 0.1,
+        totalCostDollars: 0.02,
         e2bRuntimeMs: 1_000,
         e2bCostDollars: 0.02,
       },
@@ -1171,7 +1469,9 @@ describe("captureUsageCost", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-usage_cost",
+      uuid: agentRunEventUuid("run_cost_test", "hackerai-usage_cost"),
       properties: expect.objectContaining({
+        cost_accounting_status: "recorded",
         user_id: "user_123",
         trigger_run_id: "run_cost_test",
         subscription: "pro",
@@ -1207,9 +1507,7 @@ describe("captureUsageCost", () => {
         non_model_cost_dollars: 0.12,
         sandbox_cost_accounting_version: 2,
         sandbox_cost_source: "request_runtime_rate",
-        sandbox_cost_dollars: 0.12,
-        sandbox_miosa_runtime_ms: 2_000,
-        sandbox_miosa_cost_dollars: 0.1,
+        sandbox_cost_dollars: 0.02,
         sandbox_e2b_runtime_ms: 1_000,
         sandbox_e2b_cost_dollars: 0.02,
         trigger_run_cost_accounting_version: 1,
@@ -1587,6 +1885,19 @@ describe("createChatLogger provider stream termination", () => {
         last_message_role: "user",
         last_message_content_types: ["tool-result"],
         serialized_message_bytes: 680000,
+        media_counts: {
+          image_parts: 2,
+          user_image_parts: 1,
+          assistant_image_parts: 0,
+          tool_image_parts: 1,
+          other_image_parts: 0,
+          url_images: 2,
+          inline_images: 0,
+          provider_id_images: 0,
+          unknown_images: 0,
+          pdf_file_parts: 0,
+          other_file_parts: 0,
+        },
         estimated_serialized_message_tokens: 170000,
         context_used_tokens: 171844,
         context_max_tokens: 200000,
@@ -1631,6 +1942,9 @@ describe("createChatLogger provider stream termination", () => {
         estimated_serialized_message_tokens: 170000,
         content_part_counts: { text: 6, "tool-result": 3 },
       });
+      expect(wideEvent.provider_request.media_counts).toEqual(
+        providerRequest.media_counts,
+      );
       expect(wideEvent.provider_error).not.toHaveProperty("request");
       expect(JSON.stringify(wideEvent)).not.toContain("SECRET_PROMPT_TEXT");
       expect(errorSpy.mock.calls.flat().map(String).join("\n")).not.toContain(
@@ -2027,6 +2341,38 @@ describe("createChatLogger ChatSDKError metadata", () => {
     }
   });
 
+  it.each([
+    ["acquisition", "connect", "connect"],
+    ["acquisition", "PRIVATE_STAGE_CANARY", undefined],
+    ["transfer", "connect", undefined],
+  ])(
+    "bounds cloud stage in compact diagnostics %p/%p",
+    (phase, stage, expected) => {
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        createChatLogger({
+          chatId: "chat-opaque",
+          endpoint: "/api/agent",
+        }).emitChatError(
+          new ChatSDKError("bad_request:sandbox", "Upload failed", {
+            upload_failure_kind: "url",
+            upload_failure_phase: phase,
+            upload_failure_acquisition_stage: stage,
+          }),
+        );
+        const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+        expect(wideEvent.error.metadata.upload_failure_acquisition_stage).toBe(
+          expected,
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "PRIVATE_STAGE_CANARY",
+        );
+      } finally {
+        logSpy.mockRestore();
+      }
+    },
+  );
+
   it("marks transient sandbox upload failures retriable", () => {
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
 
@@ -2047,8 +2393,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
             upload_failure_cause:
               "Command timeout after 35000ms [firstMsg: no]",
             upload_failure_transient_sandbox_command: true,
-            upload_failure_sandbox_provider: "miosa",
-            upload_failure_error_name: "MiosaError",
+            upload_failure_sandbox_provider: "e2b",
+            upload_failure_error_name: "E2BAcquisitionError",
             upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
             upload_failure_error_http_status: 503,
             upload_failure_error_request_id: "request-safe-123",
@@ -2075,8 +2421,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
         upload_failure_reason: "local_command_no_response",
         upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
         upload_failure_transient_sandbox_command: true,
-        upload_failure_sandbox_provider: "miosa",
-        upload_failure_error_name: "MiosaError",
+        upload_failure_sandbox_provider: "e2b",
+        upload_failure_error_name: "E2BAcquisitionError",
         upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
         upload_failure_error_http_status: 503,
         upload_failure_error_request_id: "request-safe-123",
@@ -2263,6 +2609,86 @@ describe("createChatLogger ChatSDKError metadata", () => {
 });
 
 describe("createChatLogger OpenRouter metadata", () => {
+  it.each([
+    {},
+    { openrouter_generation_id: "gen-current-error" },
+    {
+      provider_name: "CurrentProvider",
+      openrouter_generation_id: "gen-current-error",
+      openrouter_request_id: "req-current-error",
+      openrouter_upstream_id: "upstream-current-error",
+    },
+  ])(
+    "keeps failed-call attribution separate from the previous response: %j",
+    (metadata) => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const phSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
+      try {
+        const logger = createChatLogger({
+          chatId: "attribution",
+          endpoint: "/api/agent",
+        });
+        logger.setModelResponse("successful/model", {
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        const error = Object.assign(new Error("Bad gateway"), {
+          statusCode: 502,
+        });
+        logger.recordProviderError(error, {
+          mode: "agent",
+          model: "test-model",
+          requestedModelSlug: "test/model",
+          openRouterMetadata: metadata,
+        });
+        const fields = phSpy.mock.calls.at(-1)![1];
+        expect(fields).toMatchObject({
+          provider_name: metadata.provider_name,
+          provider_name_source: metadata.provider_name
+            ? "openrouter_error_metadata"
+            : undefined,
+          provider_attribution_available: Boolean(metadata.provider_name),
+          openrouter_generation_id: metadata.openrouter_generation_id,
+          openrouter_request_id: metadata.openrouter_request_id,
+          openrouter_upstream_id: metadata.openrouter_upstream_id,
+        });
+        const emitted = JSON.stringify([errorSpy.mock.calls, phSpy.mock.calls]);
+        for (const previous of [
+          "PreviousProvider",
+          "gen-previous-success",
+          "req-previous-success",
+          "upstream-previous-success",
+        ])
+          expect(emitted).not.toContain(previous);
+        logger.emitUnexpectedError(error);
+        const wideEvent = JSON.parse(String(logSpy.mock.calls.at(-1)![0]));
+        expect(wideEvent.model).toMatchObject({
+          provider_name: "PreviousProvider",
+          openrouter_generation_id: "gen-previous-success",
+          openrouter_request_id: "req-previous-success",
+          openrouter_upstream_id: "upstream-previous-success",
+        });
+        expect(JSON.stringify(wideEvent.provider_error)).not.toContain(
+          "previous-success",
+        );
+        expect(wideEvent.provider_error.provider_name).toBe(
+          metadata.provider_name,
+        );
+        for (const [key, value] of Object.entries(metadata))
+          expect(wideEvent.provider_error).toHaveProperty(key, value);
+      } finally {
+        errorSpy.mockRestore();
+        logSpy.mockRestore();
+        phSpy.mockRestore();
+      }
+    },
+  );
+
   it("records request and upstream IDs for failed provider streams", () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
@@ -2503,3 +2929,294 @@ describe("createChatLogger provider stream timeout", () => {
     }
   });
 });
+
+it.each([
+  ["ask", "success", true, "stop", false, true],
+  ["agent", "success", true, "stop", false, true],
+  ["ask", "success", false, "stop", false, false],
+  ["agent", "error", false, "error", false, false],
+  ["agent", "aborted", true, "stop", false, false],
+  ["agent", "success", true, "length", false, false],
+  ["agent", "success", true, "doom-loop", false, false],
+  ["agent", "success", true, "compaction-incomplete", false, false],
+  ["agent", "success", true, "context-limit", false, false],
+  ["agent", "success", true, "budget-exhausted", false, false],
+  ["agent", "success", true, "tool-calls", false, false],
+  ["agent", "success", true, "content-filter", false, false],
+  ["agent", "success", true, undefined, false, false],
+  ["agent", "success", true, "stop", true, false],
+] as const)(
+  "records paid experiment terminal outcome (%s %s)",
+  (
+    mode,
+    outcome,
+    hasResponseContent,
+    finishReason,
+    stepLimitReached,
+    naturalCompletion,
+  ) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
+      posthog: { capture } as any,
+      userId: "user",
+      chatId: "chat",
+      endpoint: "/api/chat",
+      mode,
+      subscription: "pro",
+      outcome,
+      hasResponseContent,
+      finishReason,
+      responseMessageId: "recovered-message",
+      selectedModel: "model-deepseek-v4.1-flash-1017-pro",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      stepLimitTelemetry: { stepLimitReached } as any,
+      experiment: {
+        key: "paid_pro_auto_deepseek_1017_v1",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls
+      .map(([e]) => e as any)
+      .filter((e) => e.event === "paid_model_response_outcome");
+    expect(events).toHaveLength(1);
+    expect(events[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      message_id: "recovered-message",
+      experiment_variant: "test",
+      mode,
+      outcome,
+      has_response_content: hasResponseContent,
+      natural_completion: naturalCompletion,
+      natural_completion_version: 2,
+      fallback_served: true,
+      response_model: "z-ai/glm-5.3-flash",
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:paid-model-outcome",
+      $process_person_profile: false,
+    });
+    expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+  },
+);
+
+it.each(["success", "error", "aborted"] as const)(
+  "retains Free Ask first assignment through fallback and %s termination",
+  (outcome) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "free",
+      outcome,
+      hasResponseContent: outcome === "success",
+      finishReason: outcome === "success" ? "stop" : "error",
+      responseMessageId: "recovered-message",
+      selectedModel: "ask-model-free-deepseek-v41",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      abliteratedProviderSummary: undefined,
+      experiment: {
+        key: "free_ask_deepseek_1017_conversion_v2",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls.map(([event]) => event);
+    const terminal = events.filter(
+      (event) => event.event === "free_ask_model_response_outcome",
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      experiment_key: "free_ask_deepseek_1017_conversion_v2",
+      experiment_variant: "test",
+      message_id: "recovered-message",
+      outcome,
+      has_response_content: outcome === "success",
+      natural_completion: outcome === "success",
+      response_model: "z-ai/glm-5.3-flash",
+      fallback_served: true,
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:free-ask-1017-outcome",
+    });
+    expect(terminal[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+    expect(
+      events.some((event) => event.event === "paid_model_response_outcome"),
+    ).toBe(false);
+  },
+);
+
+it("separates marked handoff reads in existing fingerprints without changing ordinary provider groups", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "fixture",
+      endpoint: "/api/chat",
+    });
+    for (const marked of [false, true]) {
+      // An arbitrary public origin property is not evidence of a local read.
+      const error = Object.assign(new Error("read ECONNRESET"), {
+        origin: "browser_handoff_read",
+      });
+      if (marked) {
+        try {
+          rethrowBrowserHandoffReadError(error);
+        } catch (failure) {
+          expect(failure).toBe(error);
+        }
+      }
+      logger.recordProviderError(error, { requestedModelSlug: "test/model" });
+    }
+    const fields = phWarn.mock.calls.map(
+      (call) => call[1] as Record<string, unknown>,
+    );
+    expect(fields).toHaveLength(2);
+    expect(fields[0].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|provider_test|model_test/model",
+    );
+    expect(fields[1].providerErrorFingerprint).toBe(
+      "provider_error|stream_terminated|origin_browser_handoff_read",
+    );
+    expect(fields[0].errorOrigin).toBeUndefined();
+    expect(fields[1].errorOrigin).toBe("browser_handoff_read");
+  } finally {
+    warn.mockRestore();
+    phWarn.mockRestore();
+  }
+});
+
+it("does not attribute a handoff read failure to the preceding provider request", () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const log = jest.spyOn(console, "log").mockImplementation(() => {});
+  const phWarn = jest.spyOn(phLogger, "warn").mockImplementation(() => {});
+  try {
+    const logger = createChatLogger({
+      chatId: "handoff",
+      endpoint: "/api/agent",
+    });
+    const metadata = {
+      provider_name: "PreviousProvider",
+      openrouter_generation_id: "gen-previous",
+      openrouter_request_id: "req-previous",
+      openrouter_upstream_id: "upstream-previous",
+    };
+    const request = {
+      model: "previous-configured",
+      requested_model_slug: "previous/model",
+      step_index: 27,
+      source: "prepare_step",
+    };
+    logger.setModelResponse("previous/response", metadata);
+    logger.recordProviderRequestDiagnostics(request);
+    const cause = Object.freeze(
+      Object.assign(new Error("socket reset"), { code: "ECONNRESET" }),
+    );
+    const error = Object.freeze(new Error("read ECONNRESET", { cause }));
+    try {
+      rethrowBrowserHandoffReadError(error);
+    } catch (failure) {
+      expect(failure).toBe(error);
+    }
+    logger.recordProviderError(error, {
+      mode: "agent",
+      model: request.model,
+      requestedModelSlug: request.requested_model_slug,
+      fallbackModelSlugs: ["previous/fallback"],
+      providerRequest: request,
+      openRouterMetadata: metadata,
+    });
+    expect(error.cause).toBe(cause);
+    expect(phWarn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const fields = phWarn.mock.calls[0][1] as Record<string, unknown>;
+    expect(fields).toMatchObject({
+      errorOrigin: "browser_handoff_read",
+      provider_attribution_available: false,
+      providerErrorFingerprint:
+        "provider_error|stream_terminated|origin_browser_handoff_read",
+    });
+    expect(fields.provider_request).toBeUndefined();
+    const failureEvents = JSON.stringify([warn.mock.calls, phWarn.mock.calls]);
+    expect(failureEvents).not.toMatch(/previous|PreviousProvider/);
+    logger.emitUnexpectedError(error);
+    const wideEvent = JSON.parse(String(log.mock.calls.at(-1)![0]));
+    expect(JSON.stringify(wideEvent.provider_error)).not.toMatch(
+      /previous|PreviousProvider/,
+    );
+    expect(wideEvent.provider_error.provider_error_fingerprint).toBe(
+      fields.providerErrorFingerprint,
+    );
+    // Prior successful-call history remains useful, but does not own this failure.
+    expect(wideEvent.model.provider_name).toBe("PreviousProvider");
+    expect(wideEvent.provider_request).toEqual(request);
+  } finally {
+    warn.mockRestore();
+    log.mockRestore();
+    phWarn.mockRestore();
+  }
+});
+
+// These events use separate branches in the shared reporter. Both must reject
+// interrupted work even when earlier steps produced usable assistant text.
+it.each(["ask", "agent"] as const)(
+  "classifies Free %s natural completions using the final stop reason",
+  (mode) => {
+    for (const finishReason of [
+      "stop",
+      "doom-loop",
+      "timeout",
+      "step-limit",
+      undefined,
+    ]) {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "fixture-user",
+        chatId: "fixture-chat",
+        endpoint: "/api/chat",
+        mode,
+        subscription: "free",
+        outcome: "success",
+        hasResponseContent: true,
+        finishReason,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        abliteratedProviderSummary: undefined,
+        selectedModel: "model-abliterated",
+        experiment: {
+          key: "abliterated_free_three_steps_default_v1",
+          variant: "test",
+          requestId: "fixture-request",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            outcome: "success",
+            natural_completion: finishReason === "stop",
+            natural_completion_version: 2,
+          }),
+        }),
+      );
+    }
+  },
+);

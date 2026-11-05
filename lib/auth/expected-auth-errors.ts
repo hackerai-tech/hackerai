@@ -6,6 +6,17 @@ const INVALID_CODE_VERIFIER_MESSAGE = "invalid code verifier";
 const SIGN_IN_SESSION_UNVERIFIED_MESSAGE =
   "sign-in session could not be verified";
 
+/** A structured Convex auth rejection is terminal, unlike a transport failure. */
+export const isUnauthenticatedConvexError = (value: unknown): boolean => {
+  if (!value || typeof value !== "object") return false;
+  const data = (value as { data?: unknown }).data;
+  return (
+    !!data &&
+    typeof data === "object" &&
+    (data as { code?: unknown }).code === "UNAUTHORIZED"
+  );
+};
+
 const getStringValue = (
   value: Record<string, unknown>,
   key: string,
@@ -55,6 +66,23 @@ export const isEndedSessionRefreshError = (value: unknown): boolean => {
     errorText.includes(INVALID_GRANT_ERROR) &&
     (errorText.includes(SESSION_ENDED_MESSAGE) ||
       errorText.includes(SESSION_ENDED_DUE_TO_INACTIVITY_MESSAGE))
+  );
+};
+
+/** Match only WorkOS's terminal provider response, not arbitrary invalid_grant text. */
+export const isInvalidRefreshTokenError = (value: unknown): boolean => {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.name === "TokenRefreshError" && record.isTransient !== false) {
+    return false;
+  }
+  const cause = record.name === "TokenRefreshError" ? record.cause : record;
+  if (!cause || typeof cause !== "object") return false;
+  const provider = cause as Record<string, unknown>;
+  return (
+    provider.status === 400 &&
+    provider.error === "invalid_grant" &&
+    provider.errorDescription === "Invalid refresh token."
   );
 };
 

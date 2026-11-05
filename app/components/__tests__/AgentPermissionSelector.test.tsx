@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const setAgentPermissionMode = jest.fn();
@@ -7,6 +7,9 @@ const resolveAgentAutoReviewAvailability = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
 let agentPermissionMode = "full_access";
 let agentAutoReviewAvailable: boolean | null = true;
+let mockIsMobile = false;
+
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -33,11 +36,47 @@ const { AgentPermissionSelector } = jest.requireActual<
 describe("AgentPermissionSelector", () => {
   beforeEach(() => {
     agentPermissionMode = "full_access";
+    mockIsMobile = false;
     agentAutoReviewAvailable = true;
     setAgentPermissionMode.mockClear();
     resolveAgentAutoReviewAvailability.mockClear();
     captureAuthenticatedEvent.mockClear();
   });
+
+  it.each([true, false])(
+    "closes the permission menu when the mobile layout changes from %s",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const view = (
+        <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
+      );
+      const { rerender } = render(view);
+      fireEvent.click(screen.getByRole("button", { name: /full access/i }));
+      expect(
+        screen.getByRole("button", {
+          name: /ask for approval always ask before commands and file changes/i,
+        }),
+      ).toBeVisible();
+      mockIsMobile = !mobile;
+      rerender(
+        <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />,
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", {
+            name: /ask for approval always ask before commands and file changes/i,
+          }),
+        ).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /full access/i }));
+      expect(
+        screen.getByRole("button", {
+          name: /ask for approval always ask before commands and file changes/i,
+        }),
+      ).toBeVisible();
+      expect(setAgentPermissionMode).not.toHaveBeenCalled();
+    },
+  );
 
   it("resolves availability when the selector is encountered", () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
@@ -167,5 +206,40 @@ describe("AgentPermissionSelector", () => {
       screen.getByRole("button", { name: /^ask for approval$/i }),
     ).toBeInTheDocument();
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+  });
+
+  it("opens the mobile sheet from a named icon and closes after selecting a permission", () => {
+    mockIsMobile = true;
+    render(<AgentPermissionSelector analyticsSurface="chat_input" iconOnly />);
+
+    const trigger = screen.getByRole("button", {
+      name: "Agent permissions: Full access",
+    });
+    expect(trigger.textContent).toBe("");
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("dialog", {
+        name: /how should HackerAI actions be approved/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /full access run commands/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(
+      screen.getByRole("button", { name: /ask for approval always ask/i }),
+    );
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("preserves the availability gate in the mobile sheet", () => {
+    mockIsMobile = true;
+    agentAutoReviewAvailable = false;
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+    fireEvent.click(screen.getByRole("button", { name: /^full access$/i }));
+    expect(screen.queryByText("Approve for me")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /ask for approval always ask/i }),
+    ).toBeInTheDocument();
   });
 });

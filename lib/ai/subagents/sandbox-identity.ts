@@ -1,8 +1,5 @@
 import type { AnySandbox } from "@/types";
-import {
-  isCentrifugoSandbox,
-  isMiosaSandbox,
-} from "@/lib/ai/tools/utils/sandbox-types";
+import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { localEnvironmentIdentity } from "@/lib/sandbox/environment";
 
 export const getSubagentSandboxIdentity = (sandbox: AnySandbox): string => {
@@ -13,7 +10,6 @@ export const getSubagentSandboxIdentity = (sandbox: AnySandbox): string => {
         : { connectionId: sandbox.getConnectionId() };
     return `connection:${localEnvironmentIdentity(connection)}`;
   }
-  if (isMiosaSandbox(sandbox)) return `miosa:${sandbox.sandboxId}`;
   return `e2b:${sandbox.sandboxId}`;
 };
 

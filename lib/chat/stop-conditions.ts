@@ -1,3 +1,4 @@
+import type { ToolResultCycle } from "./tool-loop-observer";
 import type { StopCondition } from "ai";
 import {
   detectDoomLoop,
@@ -12,6 +13,7 @@ export const OUTPUT_LIMIT_FINISH_REASON = "length";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 export const STEP_LIMIT_FINISH_REASON = "step-limit";
+export const CLIENT_SAVED_FINISH_REASON = "trigger_crashed_client_saved";
 
 export function stepLimitReached(state: {
   maxSteps: number;
@@ -44,10 +46,11 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToPostSummarizationIncomplete: boolean;
   stoppedDueToStepLimit?: boolean;
 }): AgentAutoContinueStopSource | null {
-  // A hard step ceiling must win over overlapping context/compaction flags.
+  // Hard stops must win over overlapping context/compaction flags.
   if (
     state.stoppedDueToStepLimit ||
-    state.finishReason === STEP_LIMIT_FINISH_REASON
+    state.finishReason === STEP_LIMIT_FINISH_REASON ||
+    state.finishReason === DOOM_LOOP_FINISH_REASON
   )
     return null;
   if (state.stoppedDueToTokenExhaustion) {
@@ -113,11 +116,18 @@ export const DOOM_LOOP_FINISH_REASON = "doom-loop";
 export const POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON =
   "compaction-incomplete";
 
+/** Evaluate after onStepFinish so the result cycle includes the settled step. */
 export function doomLoopDetected(state: {
+  getToolResultCycle?: () => ToolResultCycle | undefined;
   onFired: (result: DoomLoopResult) => void;
 }): StopCondition<any> {
   return ({ steps }) => {
-    const result = detectDoomLoop(steps as unknown as MinimalStep[]);
+    const result = detectDoomLoop(
+      steps as unknown as MinimalStep[],
+      state.getToolResultCycle
+        ? (state.getToolResultCycle() ?? null)
+        : undefined,
+    );
     if (result.severity === "halt") {
       state.onFired(result);
       return true;

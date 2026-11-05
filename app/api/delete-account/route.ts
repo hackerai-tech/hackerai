@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
@@ -7,6 +7,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { logger } from "@/lib/logger";
+import { phLogger } from "@/lib/posthog/server";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
@@ -44,12 +45,62 @@ type ParsedConvexCleanupResult = {
   progress?: ConvexCleanupProgress;
 };
 
-function isMissingWorkosUserError(error: unknown): boolean {
+function isMissingWorkosUserError(error: unknown, userId: string): boolean {
   return (
     error instanceof Error &&
     error.name === "NotFoundException" &&
-    error.message.startsWith("User not found:")
+    error.message === `User not found: '${userId}'.`
   );
+}
+
+async function deleteWorkosUserAfterOrganizationCleanup(
+  userId: string,
+  deletedOrganizationIds: Set<string>,
+  requestId: string,
+) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await workos.userManagement.deleteUser(userId);
+      return;
+    } catch (error) {
+      if (isMissingWorkosUserError(error, userId)) return;
+      const missingOrganization =
+        error instanceof Error && error.name === "NotFoundException"
+          ? /^Organization not found: '([^']+)'\.$/.exec(error.message)?.[1]
+          : undefined;
+      // Retry only the provider consistency failure for an organization this
+      // request already deleted. Unrelated 404s must remain failures.
+      if (
+        !missingOrganization ||
+        !deletedOrganizationIds.has(missingOrganization)
+      )
+        throw error;
+      try {
+        await workos.userManagement.getUser(userId);
+      } catch (readError) {
+        if (isMissingWorkosUserError(readError, userId)) return;
+        throw readError;
+      }
+      logger.warn("account_identity_deletion_recovery", {
+        user_id: userId,
+        request_id: requestId,
+        organization_id: missingOrganization,
+        attempt,
+        user_still_exists: true,
+        reason:
+          attempt === 3
+            ? "reconciliation_required"
+            : "organization_propagation",
+      });
+      if (attempt === 3) {
+        throw new Error(
+          "Account deletion needs identity-provider reconciliation. Please contact support so we can finish deleting your account.",
+          { cause: error },
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
 }
 
 function sumCleanupCounts(value: unknown): number | undefined {
@@ -288,6 +339,7 @@ export const POST = async (req: NextRequest) => {
   let freeQuotaSubjectPresent: boolean | undefined;
   const requestId = req.headers.get("x-vercel-id") ?? "unknown";
   const membershipLocks: TeamInvitationLock[] = [];
+  const deletedOrganizationIds = new Set<string>();
 
   const assertMembershipLocksOwned = async () => {
     for (const lock of membershipLocks) {
@@ -405,6 +457,8 @@ export const POST = async (req: NextRequest) => {
     );
 
     stage = "terminate_cloud_sandboxes";
+    // Keep below-threshold lifecycle events on both success and failure paths.
+    after(() => phLogger.flush());
     await terminateCloudSandboxesForUser(userId, { permanent: true });
 
     // Own app-data cleanup on the server so account deletion does not depend
@@ -470,6 +524,7 @@ export const POST = async (req: NextRequest) => {
           );
 
           await workos.organizations.deleteOrganization(orgId);
+          deletedOrganizationIds.add(orgId);
         },
       ),
     );
@@ -494,14 +549,11 @@ export const POST = async (req: NextRequest) => {
 
     // Finally, delete the WorkOS user
     stage = "delete_workos_user";
-    try {
-      await workos.userManagement.deleteUser(userId);
-    } catch (error) {
-      // Account deletion is idempotent once all owned app data is gone.
-      // WorkOS can report this exact state when a previous attempt already
-      // removed the external identity but the client retried the request.
-      if (!isMissingWorkosUserError(error)) throw error;
-    }
+    await deleteWorkosUserAfterOrganizationCleanup(
+      userId,
+      deletedOrganizationIds,
+      requestId,
+    );
 
     return NextResponse.json({ ok: true });
   } catch (error) {

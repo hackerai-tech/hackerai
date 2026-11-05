@@ -83,6 +83,51 @@ describe("MessageErrorState", () => {
     jest.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    "renders a region conflict (serialized=%s) as an explicit choice without replaying the prompt",
+    async (serialized) => {
+      const originalFetch = global.fetch;
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: "selection_required",
+          token: "a".repeat(64),
+          choices: [
+            { id: "us-existing", region: "us-east-1", lastStartedAt: null },
+            { id: "eu-existing", region: "eu-central-1", lastStartedAt: null },
+          ],
+        }),
+      }) as typeof fetch;
+      const onRetry = jest.fn();
+      try {
+        const error = new ChatSDKError(
+          "bad_request:sandbox",
+          "Choose your workspace",
+          { cloud_workspace_region_selection_required: true },
+        );
+        render(
+          <MessageErrorState
+            error={
+              serialized
+                ? new Error(serializeChatSDKErrorForStream(error))
+                : error
+            }
+            onRetry={onRetry}
+            onReconnect={jest.fn()}
+          />,
+        );
+        expect(
+          await screen.findByRole("radio", { name: /Europe workspace/ }),
+        ).toBeEnabled();
+        expect(
+          screen.queryByRole("button", { name: "Retry" }),
+        ).not.toBeInTheDocument();
+        expect(onRetry).not.toHaveBeenCalled();
+      } finally {
+        global.fetch = originalFetch;
+      }
+    },
+  );
   it("does not offer same-payload retry for provider content blocks", () => {
     const error = new ChatSDKError(
       "forbidden:stream",
@@ -114,6 +159,34 @@ describe("MessageErrorState", () => {
     expect(
       screen.getByRole("button", { name: /new task/i }),
     ).toBeInTheDocument();
+  });
+
+  it("offers a fresh retry for a serialized offline computer error without resuming its finished stream", () => {
+    const onRetry = jest.fn();
+    const onReconnect = jest.fn();
+    const cause =
+      "The selected computer is disconnected. Reconnect that computer to continue this task.";
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={
+            new Error(
+              serializeChatSDKErrorForStream(
+                new ChatSDKError("offline:sandbox", cause),
+              ),
+            )
+          }
+          onRetry={onRetry}
+          onReconnect={onReconnect}
+          mode="agent"
+        />
+      </TestWrapper>,
+    );
+    expect(screen.getByText(cause)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reconnect$/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onReconnect).not.toHaveBeenCalled();
   });
 
   it("keeps retry available for ordinary errors", () => {

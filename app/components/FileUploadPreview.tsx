@@ -67,6 +67,7 @@ export const FileUploadPreview = ({
     file: File | LocalDesktopFile;
     name: string;
     fileId?: string;
+    localPath?: string;
   } | null>(null);
 
   // Use ref to store base64 previews to avoid regenerating them
@@ -216,6 +217,7 @@ export const FileUploadPreview = ({
   );
 
   useEffect(() => {
+    let cancelled = false;
     const loadPreviews = async () => {
       const previews: FilePreview[] = [];
 
@@ -257,7 +259,7 @@ export const FileUploadPreview = ({
         previews.push(preview);
       }
 
-      setFilePreviews(previews);
+      if (!cancelled) setFilePreviews(previews);
     };
 
     if (uploadedFiles && uploadedFiles.length > 0) {
@@ -266,6 +268,10 @@ export const FileUploadPreview = ({
       setFilePreviews([]);
       // Don't clear cache when no files - we might get the same files back
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [uploadedFiles, generateFileKey]);
 
   useEffect(() => {
@@ -311,8 +317,9 @@ export const FileUploadPreview = ({
     file: File | LocalDesktopFile,
     fileName: string,
     fileId?: string,
+    localPath?: string,
   ) => {
-    setSelectedFile({ file, name: fileName, fileId });
+    setSelectedFile({ file, name: fileName, fileId, localPath });
   };
 
   return (
@@ -347,7 +354,7 @@ export const FileUploadPreview = ({
               return (
                 <div
                   key={`${filePreview.file.name}-${index}`}
-                  className="group text-token-text-primary relative inline-block text-sm"
+                  className="group text-token-text-primary relative inline-block max-w-full shrink-0 text-sm"
                   data-testid="attached-file"
                 >
                   <div
@@ -363,10 +370,15 @@ export const FileUploadPreview = ({
                   >
                     <div
                       className={
-                        isImageFile(filePreview.file)
-                          ? hasMultipleFiles
-                            ? "h-14.5 w-14.5"
-                            : "h-36 w-36"
+                        isImageFile(filePreview.file) &&
+                        (filePreview.preview ||
+                          filePreview.loading ||
+                          filePreview.error)
+                          ? filePreview.error
+                            ? "size-[100px]"
+                            : hasMultipleFiles
+                              ? "h-14.5 w-14.5"
+                              : "size-[min(9rem,25dvh)]"
                           : ""
                       }
                     >
@@ -376,7 +388,7 @@ export const FileUploadPreview = ({
                         </div>
                       ) : isGeneratedPastedText ? (
                         <div
-                          className="relative w-72 p-2"
+                          className="relative w-72 max-w-full p-2"
                           title={`Text · ${formatFileSize(filePreview.file.size)}`}
                         >
                           <button
@@ -481,7 +493,7 @@ export const FileUploadPreview = ({
                             </div>
                           </div>
                         ) : (
-                          <div className="p-2 w-80">
+                          <div className="p-2 w-80 max-w-full">
                             <div className="flex flex-row items-center gap-2">
                               <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center bg-red-500">
                                 <X className="h-6 w-6 text-white" />
@@ -529,9 +541,10 @@ export const FileUploadPreview = ({
                               filePreview.file,
                               filePreview.file.name,
                               uploadedFile?.fileId,
+                              uploadedFile?.localPath,
                             )
                           }
-                          className="w-80 p-2 text-left transition-colors hover:bg-accent"
+                          className="w-80 max-w-full p-2 pr-8 text-left transition-colors hover:bg-accent"
                           aria-label={`View ${filePreview.file.name}`}
                         >
                           <div className="flex flex-row items-center gap-2">
@@ -718,6 +731,7 @@ export const FileUploadPreview = ({
           file={selectedFile.file}
           fileName={selectedFile.name}
           fileId={selectedFile.fileId}
+          localPath={selectedFile.localPath}
         />
       )}
     </>

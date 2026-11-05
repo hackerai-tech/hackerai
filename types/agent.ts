@@ -8,13 +8,12 @@ import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager
 import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatter";
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
-import type { MiosaSandbox } from "@/lib/ai/tools/utils/miosa-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
 
 // Union type for cloud providers and local CentrifugoSandbox.
-export type AnySandbox = Sandbox | MiosaSandbox | CentrifugoSandbox;
+export type AnySandbox = Sandbox | CentrifugoSandbox;
 
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
@@ -27,6 +26,8 @@ export interface SandboxInfo {
   name?: string;
   /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
+  /** Image generation from the attached E2B workspace, never the current default. */
+  sandboxVersion?: string;
 }
 
 export interface SandboxManager {
@@ -195,8 +196,7 @@ export type AgentToolApprovalGrant = "full_access" | "target_prefix";
 export type AgentToolApprovalGrantKind =
   "terminal_command" | "terminal_interaction" | "file_change";
 
-export type AgentApprovalSandboxIdentity =
-  "e2b" | "miosa" | `connection:${string}`;
+export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
 
 const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
   "agent-approval-sandbox-scope-v1" as const;
@@ -216,7 +216,6 @@ const isAgentApprovalSandboxIdentity = (
   value: unknown,
 ): value is AgentApprovalSandboxIdentity =>
   value === "e2b" ||
-  value === "miosa" ||
   (typeof value === "string" &&
     value.startsWith("connection:") &&
     value.length > "connection:".length &&
@@ -689,6 +688,7 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
+  browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
   userLocation: Geo;

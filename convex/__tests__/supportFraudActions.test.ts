@@ -10,7 +10,7 @@ import {
 
 const upsertActiveRef = Symbol("userSuspensions.upsertActive");
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalAction: jest.fn((config: any) => config),
 }));
 jest.mock("../_generated/api", () => ({

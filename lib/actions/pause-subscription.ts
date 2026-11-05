@@ -114,6 +114,7 @@ export default async function pauseSubscriptionAction(
       api.cancellationReasons.recordCancellationStarted,
       {
         serviceKey,
+        operation: "pause",
         userId: user.id,
         organizationId,
         stripeCustomerId,
@@ -175,6 +176,9 @@ export default async function pauseSubscriptionAction(
       },
       metadata: {
         ...subscription.metadata,
+        ...(cancellationReasonId && {
+          hackerai_cancellation_reason_id: cancellationReasonId,
+        }),
         ...subscriptionPauseMetadata({
           pauseId,
           months,

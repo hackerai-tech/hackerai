@@ -1,8 +1,14 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { NextRequest, NextResponse } from "next/server";
-import { Centrifuge, type Subscription } from "centrifuge";
+import {
+  Centrifuge,
+  type Subscription,
+  type SubscriptionErrorContext,
+} from "centrifuge";
+import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -11,7 +17,7 @@ import {
   presenceHasConnectionId,
 } from "@/lib/centrifugo/presence";
 
-export async function GET(request: NextRequest) {
+async function handlePresence(request: NextRequest) {
   let userId: string;
   try {
     userId = await getUserID(request);
@@ -40,7 +46,7 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const convex = new ConvexHttpClient(convexUrl);
+  const convex = createServiceConvexClient(convexUrl);
   const connections = await convex.query(
     api.localSandbox.listConnectionsForBackend,
     { serviceKey, userId },
@@ -51,10 +57,12 @@ export async function GET(request: NextRequest) {
 
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
+  const finishTraffic: Array<() => void> = [];
+  const cleanups: Array<() => void> = [];
   const probeStart = Date.now();
   try {
     const token = await generateCentrifugoToken(userId, 30);
-    client = new Centrifuge(wsUrl, { token });
+    client = new Centrifuge(wsUrl, { token, name: "hackerai-presence-route" });
 
     const probes = connections.map(
       (connection) =>
@@ -63,6 +71,7 @@ export async function GET(request: NextRequest) {
             sandboxConnectionChannel(userId, connection.connectionId),
           );
           subscriptions.push(sub);
+          finishTraffic.push(trackPresenceTraffic(sub, "presence-route"));
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -75,10 +84,12 @@ export async function GET(request: NextRequest) {
 
           const cleanup = () => {
             clearTimeout(timeout);
-            sub.removeAllListeners();
+            sub.removeListener("subscribed", onSubscribed);
+            sub.removeListener("error", onError);
           };
+          cleanups.push(cleanup);
 
-          sub.on("subscribed", async () => {
+          const onSubscribed = async () => {
             try {
               const result = await sub.presence();
               if (presenceHasConnectionId(result, connection.connectionId)) {
@@ -90,15 +101,17 @@ export async function GET(request: NextRequest) {
               cleanup();
               reject(e);
             }
-          });
+          };
 
-          sub.on("error", (ctx) => {
+          const onError = (ctx: SubscriptionErrorContext) => {
             cleanup();
             reject(
               new Error(ctx.error?.message ?? "Centrifugo subscription error"),
             );
-          });
+          };
 
+          sub.on("subscribed", onSubscribed);
+          sub.on("error", onError);
           sub.subscribe();
         }),
     );
@@ -116,6 +129,8 @@ export async function GET(request: NextRequest) {
       error: err,
     });
   } finally {
+    cleanups.forEach((cleanup) => cleanup());
+    finishTraffic.forEach((finish) => finish());
     for (const sub of subscriptions) {
       sub.removeAllListeners();
       sub.unsubscribe();
@@ -179,3 +194,7 @@ export async function GET(request: NextRequest) {
     onlineCount: onlineConnectionIds.size,
   });
 }
+
+export const GET = withServiceQueryRecovery(handlePresence);
+
+export const runtime = "nodejs";

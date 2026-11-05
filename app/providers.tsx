@@ -2,7 +2,7 @@
 
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import {
   enrichFrontendExceptionEvent,
@@ -24,6 +24,26 @@ import {
   type FirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 
+import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
+import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
+import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
+import {
+  captureXReferralVisit,
+  clearXReferralDedupe,
+  isXReferralLanding,
+  sanitizeXReferralEvent,
+  X_REFERRAL_EVENT,
+} from "@/lib/analytics/x-referral";
+
+import {
+  captureInfluencerVisit,
+  clearInfluencerVisit,
+  pendingInfluencerVisit,
+  sanitizeInfluencerVisit,
+} from "@/lib/influencers/browser-visits";
+import { INFLUENCER_VISIT_EVENT } from "@/lib/influencers/visit-handoff";
+
 let lastIdentifiedSignature: string | null = null;
 
 function isEnglishLocale(locale: string | null | undefined) {
@@ -41,11 +61,13 @@ export function PostHogProvider({
   analyticsAllowed,
   children,
   consentRequired = false,
+  consentDeclined = false,
   firstTouchAttribution = null,
 }: {
   analyticsAllowed: boolean;
   children: React.ReactNode;
   consentRequired?: boolean;
+  consentDeclined?: boolean;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {
   const { subscription } = useGlobalState();
@@ -55,6 +77,7 @@ export function PostHogProvider({
   const userFirstName = user?.firstName;
   const userLastName = user?.lastName;
   const userLocale = user?.locale;
+  const referralHandled = useRef(false);
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -73,10 +96,27 @@ export function PostHogProvider({
       const posthog = getPostHogClient();
       if (posthog?.__loaded) {
         posthog.stopSessionRecording();
-        posthog.reset();
-        posthog.opt_out_capturing();
+        // Preserve an anonymous X visitor through navigation and signup. Only
+        // reset an identified account (logout) or a withdrawn consent choice.
+        posthog.set_config({
+          before_send: () => null,
+          capture_exceptions: false,
+        });
+        if (!analyticsAllowed || posthog.get_property("$user_id")) {
+          posthog.reset();
+        }
+        if (!analyticsAllowed) posthog.opt_out_capturing();
       }
-      return;
+      if (!analyticsAllowed) {
+        clearXReferralDedupe();
+        if (consentDeclined) clearInfluencerVisit();
+      }
+      if (
+        !analyticsAllowed ||
+        (!pendingInfluencerVisit() &&
+          (referralHandled.current || !isXReferralLanding()))
+      )
+        return;
     }
 
     let cancelled = false;
@@ -89,21 +129,43 @@ export function PostHogProvider({
           api_host:
             process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
           capture_pageview: false,
+          capture_pageleave: false,
           autocapture: false,
           advanced_disable_feature_flags: true,
-          capture_exceptions: {
-            capture_unhandled_errors: true,
-            capture_unhandled_rejections: true,
-            capture_console_errors: false,
-          },
+          person_profiles: "identified_only",
+          save_referrer: Boolean(userId),
+          save_campaign_params: Boolean(userId),
+          disable_surveys: !userId,
+          capture_exceptions: userId
+            ? {
+                capture_unhandled_errors: true,
+                capture_unhandled_rejections: true,
+                capture_console_errors: false,
+              }
+            : false,
           disable_session_recording: true,
           before_send: (event) => {
             if (!event) {
               return null;
             }
+            if (event.event === INFLUENCER_VISIT_EVENT)
+              return sanitizeInfluencerVisit(event);
+            if (event.event === X_REFERRAL_EVENT) {
+              return sanitizeXReferralEvent(event);
+            }
+            // Anonymous visitors emit only the bounded referral event. Keep
+            // incidental component events and SDK autocapture out of the stream.
+            if (!userId) return null;
 
-            const sanitizedEvent =
-              sanitizeFrontendExceptionUrlProperties(event);
+            const sanitizedEvent = sanitizeContextFeedbackEvent(
+              sanitizeChatPerformanceEvent(
+                sanitizeDesktopAckEvent(
+                  sanitizeAgentCancellationEvent(
+                    sanitizeFrontendExceptionUrlProperties(event),
+                  ),
+                ),
+              ),
+            );
             if (shouldDropExpectedFrontendException(sanitizedEvent)) {
               return null;
             }
@@ -121,8 +183,22 @@ export function PostHogProvider({
           posthog.set_config(config);
         }
 
+        // A freshly initialized SDK can restore the last signed-in account
+        // from its cookie after logout. Never attach a new visitor to it.
+        if (!userId && posthog.get_property("$user_id")) posthog.reset();
+
         if (posthog.has_opted_out_capturing()) {
           posthog.opt_in_capturing({ captureEventName: false });
+        }
+
+        captureInfluencerVisit(posthog);
+
+        if (!userId) {
+          posthog.stopSessionRecording();
+          if (!referralHandled.current) {
+            referralHandled.current = captureXReferralVisit(posthog);
+          }
+          return;
         }
 
         const name =
@@ -177,6 +253,9 @@ export function PostHogProvider({
         }
 
         confirmAuthenticatedAnalyticsUserId(userId!);
+        if (!referralHandled.current) {
+          referralHandled.current = captureXReferralVisit(posthog);
+        }
 
         const replayLocale =
           userLocale == null ? window.navigator.language : userLocale;
@@ -202,6 +281,7 @@ export function PostHogProvider({
   }, [
     analyticsAllowed,
     consentRequired,
+    consentDeclined,
     firstTouchAttribution,
     subscription,
     userEmail,

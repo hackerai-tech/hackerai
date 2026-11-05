@@ -1,3 +1,5 @@
+import { after } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
 import { POST } from "../route";
 import { getUserIDWithFreshLoginContext } from "@/lib/auth/get-user-id";
 import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
@@ -16,6 +18,7 @@ const mockMembershipLockRelease = jest.fn();
 const mockConvexQuery = jest.fn().mockResolvedValue("complete");
 
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextResponse: {
     json: jest.fn((body: unknown, init?: { status?: number }) => ({
       status: init?.status ?? 200,
@@ -106,12 +109,17 @@ jest.mock("../../workos", () => ({
       listInvitations: jest.fn(),
       deleteOrganizationMembership: jest.fn(),
       deleteUser: jest.fn(),
+      getUser: jest.fn(),
     },
     organizations: {
       getOrganization: jest.fn(),
       deleteOrganization: jest.fn(),
     },
   },
+}));
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { flush: jest.fn().mockResolvedValue(undefined) },
 }));
 
 const mockGetUserIDWithFreshLoginContext =
@@ -236,6 +244,31 @@ describe("POST /api/delete-account", () => {
     mockCancelSubscription.mockResolvedValue({} as never);
     mockDeleteCustomer.mockResolvedValue({} as never);
   });
+
+  it.each([false, true])(
+    "flushes buffered diagnostics after the response when cleanup fails=%s",
+    async (fails) => {
+      mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+      if (fails)
+        mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+          new Error("cleanup failed"),
+        );
+      const response = await POST(request() as any);
+      expect(response.status).toBe(fails ? 500 : 200);
+      expect(after).toHaveBeenCalledTimes(1);
+      expect(phLogger.flush).not.toHaveBeenCalled();
+      const task = jest.mocked(after).mock.calls[0][0] as () => Promise<void>;
+      let finishFlush!: () => void;
+      const flush = new Promise<void>((resolve) => {
+        finishFlush = resolve;
+      });
+      jest.mocked(phLogger.flush).mockReturnValueOnce(flush);
+      expect(task()).toBe(flush);
+      expect(phLogger.flush).toHaveBeenCalledTimes(1);
+      finishFlush();
+      await flush;
+    },
+  );
 
   it("removes only the caller's membership for shared organizations", async () => {
     mockCancelSubagentsForUserDeletion.mockResolvedValue({
@@ -639,6 +672,18 @@ describe("POST /api/delete-account", () => {
     expect(body.error).toBe("WorkOS temporarily unavailable");
   });
 
+  it("does not accept absence of a different WorkOS user as success", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockDeleteUser.mockRejectedValueOnce(
+      Object.assign(new Error("User not found: 'user_other'."), {
+        name: "NotFoundException",
+      }),
+    );
+    expect((await POST(request() as any)).status).toBe(500);
+  });
+
   it("keeps other WorkOS NotFoundExceptions visible", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
@@ -655,6 +700,74 @@ describe("POST /api/delete-account", () => {
     expect(response.status).toBe(500);
     expect(body.error).toBe("Organization not found: 'org_123'.");
   });
+
+  it.each(["retry", "already_deleted", "exhausted", "read_failed"] as const)(
+    "reconciles the just-deleted organization failure: %s",
+    async (outcome) => {
+      jest.useFakeTimers();
+      try {
+        const membership = {
+          id: "membership_user",
+          organizationId: "org_solo",
+          userId: "user_123",
+          role: { slug: "admin" },
+        };
+        mockListOrganizationMemberships
+          .mockResolvedValueOnce({ data: [membership] } as never)
+          .mockResolvedValueOnce({ data: [membership] } as never);
+        mockGetOrganization.mockResolvedValueOnce({ id: "org_solo" } as never);
+        const failure = Object.assign(
+          new Error("Organization not found: 'org_solo'."),
+          { name: "NotFoundException" },
+        );
+        const missingUser = Object.assign(
+          new Error("User not found: 'user_123'."),
+          { name: "NotFoundException" },
+        );
+        mockDeleteUser.mockRejectedValueOnce(failure);
+        const getUser = jest.mocked(workos.userManagement.getUser);
+        getUser.mockResolvedValue({ id: "user_123" } as never);
+        if (outcome === "already_deleted")
+          getUser.mockRejectedValueOnce(missingUser);
+        if (outcome === "read_failed")
+          getUser.mockRejectedValueOnce(new Error("read unavailable"));
+        if (outcome === "exhausted") mockDeleteUser.mockRejectedValue(failure);
+
+        const pending = POST(request() as any);
+        await jest.runAllTimersAsync();
+        const response = await pending;
+        expect(response.status).toBe(
+          outcome === "exhausted" || outcome === "read_failed" ? 500 : 200,
+        );
+        expect(mockDeleteOrganization).toHaveBeenCalledTimes(1);
+        expect(mockDeleteUser).toHaveBeenCalledTimes(
+          outcome === "exhausted" ? 3 : outcome === "retry" ? 2 : 1,
+        );
+        expect(getUser).toHaveBeenCalledWith("user_123");
+        if (outcome === "exhausted") {
+          expect(await response.json()).toEqual({
+            error:
+              "Account deletion needs identity-provider reconciliation. Please contact support so we can finish deleting your account.",
+          });
+          expect(mockLoggerError).toHaveBeenCalledWith(
+            "account_deletion_failed",
+            expect.objectContaining({ cause: failure }),
+            expect.objectContaining({ stage: "delete_workos_user" }),
+          );
+          expect(mockLoggerWarn).toHaveBeenLastCalledWith(
+            "account_identity_deletion_recovery",
+            expect.objectContaining({
+              attempt: 3,
+              user_still_exists: true,
+              reason: "reconciliation_required",
+            }),
+          );
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it("does not delete WorkOS or billing resources if Convex cleanup fails", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({

@@ -1,13 +1,19 @@
 "use server";
 
+import { annualSwitchTier } from "@/lib/billing/annual-switch";
 import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingStatusContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
-import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  subscriptionCurrentPeriodEndMs,
+  subscriptionPlanFromPrice,
+} from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
+import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
+import { isPayableRenewalInvoice } from "@/lib/billing/renewal-invoice";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import {
   invoicePaymentIntentId,
@@ -56,19 +62,32 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     stripe_customer_id: stripeCustomerId,
   };
 
-  let subscriptions: Awaited<ReturnType<typeof stripe.subscriptions.list>>;
+  const subscriptions: Awaited<
+    ReturnType<typeof stripe.subscriptions.list>
+  >["data"] = [];
   try {
-    subscriptions = await stripe.subscriptions.list({
-      customer: stripeCustomerId,
-      status: "all",
-      limit: 10,
-      expand: [
-        "data.items.data.price",
-        "data.schedule",
-        "data.latest_invoice",
-        "data.latest_invoice.payments",
-      ],
-    });
+    let startingAfter: string | undefined;
+    // Use the same bounded complete history as canceled-renewal recovery.
+    for (let page = 0; page < 10; page += 1) {
+      const history = await stripe.subscriptions.list({
+        customer: stripeCustomerId,
+        status: "all",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+        expand: [
+          "data.items.data.price",
+          "data.schedule",
+          "data.latest_invoice",
+          "data.latest_invoice.payments",
+        ],
+      });
+      subscriptions.push(...history.data);
+      if (!history.has_more) break;
+      startingAfter = history.data.at(-1)?.id;
+      if (!startingAfter || page === 9) {
+        throw new Error("Unable to determine a single current subscription");
+      }
+    }
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
       event: "billing_subscription_status_action_failed",
@@ -79,21 +98,42 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   }
-  const currentSubscriptions = subscriptions.data.filter(
+  const currentSubscriptions = subscriptions.filter(
     hasCurrentSubscriptionStatus,
   );
   // A customer can temporarily retain overlapping subscriptions after checkout
   // or migration. Never choose a card-recovery target from ambiguous or partial
   // history; both Account settings and blocked chat must request billing review.
-  if (subscriptions.has_more || currentSubscriptions.length > 1) {
+  if (currentSubscriptions.length > 1) {
     throw new Error("Unable to determine a single current subscription");
   }
   const currentSubscription = currentSubscriptions[0];
 
   if (!currentSubscription) {
+    let checkoutRequiresReview: boolean;
+    let billingReviewUnavailable = false;
+    try {
+      checkoutRequiresReview = await hasRecentCanceledRenewalAtRisk(
+        stripe,
+        stripeCustomerId,
+      );
+    } catch (error) {
+      phLogger.error("billing_subscription_status_action_failed", {
+        event: "billing_subscription_status_action_failed",
+        ...billingFields,
+        stage: "canceled_renewal_risk",
+        duration_ms: Date.now() - startedAt,
+        error,
+      });
+      checkoutRequiresReview = true;
+      billingReviewUnavailable = true;
+    }
     return {
       hasActiveSubscription: false,
       cancelAtPeriodEnd: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview,
+      ...(billingReviewUnavailable && { billingReviewUnavailable: true }),
     };
   }
 
@@ -160,6 +200,19 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   );
   const pendingPrice = pendingChange?.price;
   return {
+    billingAccountAvailable: true,
+    ...(renewalPaymentRequired &&
+      typeof invoice === "object" &&
+      invoice && {
+        renewalInvoiceAmountRemaining: invoice.amount_remaining,
+        renewalInvoiceCurrency: invoice.currency,
+        renewalInvoicePayable: isPayableRenewalInvoice(
+          currentSubscription,
+          invoice,
+          stripeCustomerId,
+        ),
+      }),
+    ...(annualSwitchTier(currentSubscription) && { canSwitchToAnnual: true }),
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
     currentPeriodEnd,
@@ -191,7 +244,9 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       invoice.status === "paid" && { renewalInvoicePaid: true }),
     ...(renewalPaymentFailure && { renewalPaymentFailure }),
     ...(price?.id && { stripePriceId: price.id }),
-    ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
+    ...(subscriptionPlanFromPrice(price) && {
+      stripePriceLookupKey: subscriptionPlanFromPrice(price),
+    }),
     ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),
     ...(price?.currency && { renewalCurrency: price.currency }),
     ...(price?.recurring?.interval && {

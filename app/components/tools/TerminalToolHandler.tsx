@@ -29,6 +29,7 @@ interface TerminalToolHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  canRequestApproval?: boolean;
   /** Pre-computed streaming output for this toolCallId (avoids filtering message.parts in every instance) */
   precomputedStreamingOutput?: string;
 }
@@ -39,10 +40,12 @@ function areTerminalPropsEqual(
   next: TerminalToolHandlerProps,
 ): boolean {
   if (prev.status !== next.status) return false;
+  if (prev.canRequestApproval !== next.canRequestApproval) return false;
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
   if (prev.part.input !== next.part.input) return false;
+  if (prev.part.errorText !== next.part.errorText) return false;
   if (prev.part.approval?.id !== next.part.approval?.id) return false;
   // Compare message.parts length for streaming output updates
   if (prev.message.parts.length !== next.message.parts.length) return false;
@@ -55,6 +58,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   message,
   part,
   status,
+  canRequestApproval,
   precomputedStreamingOutput,
 }: TerminalToolHandlerProps) {
   const { toolCallId, state, input, output, errorText } = part;
@@ -111,6 +115,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const executionPhase = getTerminalExecutionPhase({
     toolState: state,
     autoReviewStatus: streamedAutoReviewLifecycle?.status,
+    errorText,
   });
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
@@ -203,6 +208,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     case "approval-requested":
       return (
         <ToolApprovalControls
+          canRequestApproval={canRequestApproval}
           key={toolCallId}
           approvalId={part.approval?.id}
           toolCallId={toolCallId}

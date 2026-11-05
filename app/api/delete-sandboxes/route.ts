@@ -1,9 +1,10 @@
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { NextRequest } from "next/server";
+import { after, NextRequest } from "next/server";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { phLogger } from "@/lib/posthog/server";
 
 export const maxDuration = 60;
 const SANDBOX_DELETION_REASON = "terminal-sandbox-deleted";
@@ -62,6 +63,9 @@ export async function POST(req: NextRequest) {
       ],
       SANDBOX_DELETION_REASON,
     );
+    // A cleanup emits fewer events than PostHog's batch threshold. Flush on
+    // success or failure without delaying the response for telemetry.
+    after(() => phLogger.flush());
     await terminateCloudSandboxesForUser(userId);
 
     // Cleanup counts and provider details are operational telemetry. A 204 is

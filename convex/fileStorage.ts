@@ -3,7 +3,7 @@ import {
   internalQuery,
   mutation,
   query,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";

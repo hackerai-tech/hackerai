@@ -19,7 +19,7 @@ import {
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterEncryptedReasoning,
   supportsMultimodalToolResults,
-  resolveTierToProviderKey,
+  resolveAgentTierToProviderKey,
 } from "@/lib/ai/providers";
 
 const edgeFetchPrimitives =
@@ -108,14 +108,14 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("model-abliterated") as { modelId: string })
         .modelId,
-    ).toBe("abliterated-model");
+    ).toBe("abliterated-model-large-flash");
     expect(
       (
         myProvider.languageModel("model-abliterated-large-v2") as {
           modelId: string;
         }
       ).modelId,
-    ).toBe("abliterated-model-large-v2");
+    ).toBe("abliterated-model-large-flash");
     expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
     ).toBe("x-ai/grok-4.6");
@@ -125,7 +125,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (myProvider.languageModel("ask-model-free-glm") as { modelId: string })
         .modelId,
@@ -136,7 +136,7 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(isDeepSeekModel("ask-model-free-deepseek-v41")).toBe(true);
     expect(supportsMultimodalToolResults("ask-model-free-deepseek-v41")).toBe(
       true,
@@ -147,7 +147,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -157,7 +157,9 @@ describe("provider registry", () => {
     ).toBe("minimax/minimax-m3");
     expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
     expect(GLM_5_3_FLASH_SLUG).toBe("z-ai/glm-5.3-flash");
-    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe("deepseek/deepseek-v4.1-flash");
+    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe(
+      "deepseek/deepseek-v4.1-flash-1017",
+    );
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
@@ -206,7 +208,7 @@ describe("provider registry", () => {
           modelId: string;
         }
       ).modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (
         myProvider.languageModel("model-deepseek-v4-pro-0813") as {
@@ -241,7 +243,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
@@ -252,10 +254,10 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-grok-4.6-pro")).toBe("xAI Grok 4.6");
     expect(getModelCutoffDate("model-grok-4.6-pro")).toBe("August 2026");
     expect(getModelDisplayName("model-deepseek-v4-flash-0731")).toBe(
-      "DeepSeek V4 Flash 0731",
+      "DeepSeek V4.1 Flash",
     );
     expect(getModelCutoffDate("model-deepseek-v4-flash-0731")).toBe(
-      "July 2026",
+      "August 2026",
     );
     expect(getModelDisplayName("model-deepseek-v4-pro-0813")).toBe(
       "DeepSeek V4 Pro 0813",
@@ -269,9 +271,7 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
     expect(getModelDisplayName("model-opus-4.6")).toBe("Moonshot Kimi K3");
-    expect(getModelDisplayName("title-generator-model")).toBe(
-      "DeepSeek V4 Flash",
-    );
+    expect(getModelDisplayName("title-generator-model")).toBe("GLM 5.3 Flash");
   });
 
   it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
@@ -280,14 +280,21 @@ describe("provider registry", () => {
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
-  it("resolves Agent Pro to V4.1 Flash with native image support", () => {
-    const mode = "agent";
-    const key = resolveTierToProviderKey("hackerai-pro", mode)!;
+  it("resolves Standard to the exact native multimodal Flash snapshot", () => {
+    const key = resolveAgentTierToProviderKey("hackerai-standard");
     expect(myProvider.languageModel(key).modelId).toBe(
-      "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4.1-flash-1017",
     );
     expect(supportsMultimodalToolResults(key)).toBe(true);
-    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
+  });
+
+  it("resolves Agent Pro to V4.1 Flash with native image support", () => {
+    const key = resolveAgentTierToProviderKey("hackerai-pro");
+    expect(myProvider.languageModel(key).modelId).toBe(
+      "deepseek/deepseek-v4.1-flash-1017",
+    );
+    expect(supportsMultimodalToolResults(key)).toBe(true);
+    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash 1017");
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
@@ -298,7 +305,7 @@ describe("provider registry", () => {
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
   });
 
-  it("keeps tracked free Ask on GLM, rescue on 0731, and Agent on V4.1", () => {
+  it("keeps tracked free Ask on GLM, rescue on V4.1, and Agent on V4.1", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free-glm") as { modelId: string })
@@ -306,11 +313,11 @@ describe("provider registry", () => {
     ).toBe("z-ai/glm-5.3-flash");
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4.1-flash");
+    ).toBe("deepseek/deepseek-v4.1-flash-1017");
   });
 
   it.each([
@@ -1164,6 +1171,10 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response.headers.get(PDF_PARSER_ENGINE_HEADER)).toBe(
       "cloudflare-ai",
     );
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warnSpy.mock.calls[0][0]).event).toBe(
+      "openrouter_pdf_parser_recovery",
+    );
   });
 
   it.each([PDF_PARSER_RATE_LIMIT_ERROR, PDF_PARSER_INVALID_DOCUMENT_ERROR])(
@@ -1206,6 +1217,13 @@ describe("OpenRouter PDF parser recovery", () => {
         MALFORMED_PDF_USER_RESPONSE,
       );
       expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(
+        warnSpy.mock.calls.every(
+          ([value]) =>
+            JSON.parse(value).event === "openrouter_pdf_parser_recovery",
+        ),
+      ).toBe(true);
     },
   );
 
@@ -1232,6 +1250,119 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response).toBe(cloudflareError);
     expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBeNull();
   });
+
+  it.each(["mistral-ocr", "cloudflare-ai", "generic"])(
+    "diagnoses unavailable sandbox recovery after %s without another request",
+    async (engine) => {
+      const request = createPdfParserRequest(false);
+      if (engine === "cloudflare-ai") request.plugins[0].pdf.engine = engine;
+      const failure =
+        engine === "generic"
+          ? "Failed to parse the file"
+          : PDF_PARSER_INVALID_DOCUMENT_ERROR;
+      const originalResponse = parserErrorResponse(failure);
+      const fetchMock = jest.fn();
+      if (engine === "mistral-ocr") {
+        fetchMock.mockResolvedValueOnce(parserErrorResponse(failure));
+      }
+      fetchMock.mockResolvedValueOnce(originalResponse);
+      const controller = new AbortController();
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", {
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(engine === "mistral-ocr" ? 2 : 1);
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(init.signal).toBe(controller.signal);
+      }
+      const unavailable = warnSpy.mock.calls
+        .map(([value]) => JSON.parse(value))
+        .filter(
+          (value) =>
+            value.event === "openrouter_pdf_parser_recovery_unavailable",
+        );
+      expect(unavailable).toEqual([
+        {
+          timestamp: expect.any(String),
+          level: "warn",
+          event: "openrouter_pdf_parser_recovery_unavailable",
+          service: "openrouter",
+          environment: expect.any(String),
+          from_engine: engine === "generic" ? "unknown" : "cloudflare-ai",
+          to_engine: "sandbox",
+          reason: engine === "generic" ? "generic_parse" : "invalid_document",
+          unavailable_reason: "no_staged_attachments",
+        },
+      ]);
+    },
+  );
+
+  it.each(["duplicate", "different_message", "different_filename"])(
+    "keeps strict file matching and diagnoses %s ambiguity",
+    async (scenario) => {
+      const request = createPdfParserRequest();
+      request.plugins[0].pdf.engine = "cloudflare-ai";
+      const file = request.messages[0].content[1];
+      if (scenario === "duplicate") request.messages[0].content.push(file);
+      if (scenario === "different_filename")
+        file.file!.filename = "private.pdf";
+      if (scenario === "different_message") {
+        const tag = request.messages[0].content.shift()!;
+        request.messages.unshift({ role: "assistant", content: [tag] });
+      }
+      const serialized = JSON.stringify(request);
+      const originalResponse = parserErrorResponse(
+        PDF_PARSER_INVALID_DOCUMENT_ERROR,
+      );
+      const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", { body: serialized });
+
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      expect(JSON.stringify(request)).toBe(serialized);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
+      expect(diagnostic).toMatchObject({
+        event: "openrouter_pdf_parser_recovery_unavailable",
+        unavailable_reason: "no_unique_matching_file",
+      });
+      expect(JSON.stringify(diagnostic)).not.toMatch(
+        /private\.pdf|report\.pdf|\/home\/user|file_data|messages/,
+      );
+    },
+  );
+
+  it.each(["unsupported_request_shape", "no_user_message"])(
+    "preserves the response when recovery has %s",
+    async (reason) => {
+      const request = createPdfParserRequest();
+      request.plugins[0].pdf.engine = "cloudflare-ai";
+      request.messages[0].role = "assistant";
+      const originalResponse = parserErrorResponse("Failed to parse the file");
+      const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", {
+        body: JSON.stringify(
+          reason === "unsupported_request_shape" ? {} : request,
+        ),
+      });
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warnSpy.mock.calls[0][0])).toMatchObject({
+        event: "openrouter_pdf_parser_recovery_unavailable",
+        unavailable_reason: reason,
+      });
+    },
+  );
 
   it("recovers directly to the sandbox when a later step already uses Cloudflare", async () => {
     const request = createPdfParserRequest();
@@ -1289,6 +1420,23 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response).toBe(originalResponse);
   });
 
+  it("preserves the parser error without an OCR plugin or matching sandbox attachment", async () => {
+    const request = { ...createPdfParserRequest(false), plugins: [] };
+    const originalResponse = parserErrorResponse(
+      PDF_PARSER_INVALID_DOCUMENT_ERROR,
+    );
+    const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+    const patchedFetch = createOpenRouterPatchFetch(fetchMock as typeof fetch);
+
+    const response = await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+
+    expect(response).toBe(originalResponse);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["Failed to parse ", "Failed to parse : report.pdf"])(
     "falls back to sandbox paths for generic file parsing error %s",
     async (providerMessage) => {
@@ -1340,7 +1488,10 @@ describe("supportsMultimodalToolResults", () => {
   });
 
   it("allows active multimodal keys and slugs used after image tool results", () => {
-    expect(supportsMultimodalToolResults("ask-model-free")).toBe(false);
+    expect(supportsMultimodalToolResults("ask-model-free")).toBe(true);
+    expect(supportsMultimodalToolResults("model-deepseek-v4-flash-0731")).toBe(
+      true,
+    );
     expect(supportsMultimodalToolResults("model-glm-5.3-flash")).toBe(true);
     expect(supportsMultimodalToolResults("model-glm-5.3-flash-pro")).toBe(true);
     expect(
@@ -1351,6 +1502,9 @@ describe("supportsMultimodalToolResults", () => {
     ).toBe(true);
     expect(supportsMultimodalToolResults(GLM_5_3_FLASH_SLUG)).toBe(true);
     expect(supportsMultimodalToolResults(DEEPSEEK_V4_FLASH_VISION_SLUG)).toBe(
+      true,
+    );
+    expect(supportsMultimodalToolResults("deepseek/deepseek-v4.1-flash")).toBe(
       true,
     );
     expect(

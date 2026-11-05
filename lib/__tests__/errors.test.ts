@@ -142,3 +142,14 @@ describe("ChatSDKError stream serialization", () => {
     ).toBeNull();
   });
 });
+
+it("does not offer response-stream reconnection for a disconnected computer", () => {
+  expect(
+    isNetworkStreamError(
+      new ChatSDKError(
+        "offline:sandbox",
+        "Network connection closed. Reconnect the computer.",
+      ),
+    ),
+  ).toBe(false);
+});

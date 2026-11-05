@@ -1,7 +1,7 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),

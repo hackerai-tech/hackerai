@@ -4,7 +4,7 @@ import {
   extraUsagePointsToDollars,
 } from "../lib/extraUsagePricing";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalMutation: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),

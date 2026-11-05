@@ -1,0 +1,203 @@
+import "@testing-library/jest-dom";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { ImageViewer } from "../ImageViewer";
+
+jest.mock("next/image", () => ({
+  __esModule: true,
+  default: ({ alt, ...props }: any) => <img alt={alt} {...props} />,
+}));
+
+describe("ImageViewer downloads", () => {
+  const imageSrc = "https://files.example/screenshot.png";
+  const originalFetch = global.fetch;
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  let fetchMock: jest.Mock;
+  let downloaded: Array<{ href: string; name: string }>;
+  let rerender: ReturnType<typeof render>["rerender"];
+  let unmount: ReturnType<typeof render>["unmount"];
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+    URL.createObjectURL = jest.fn(() => "blob:image-fixture");
+    URL.revokeObjectURL = jest.fn();
+    downloaded = [];
+    jest.spyOn(window, "open").mockReturnValue(null);
+    jest
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloaded.push({ href: this.href, name: this.download });
+      });
+    ({ rerender, unmount } = render(
+      <ImageViewer
+        isOpen
+        onClose={jest.fn()}
+        imageSrc={imageSrc}
+        imageAlt="Screenshot"
+        fileName="screenshot.png"
+      />,
+    ));
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    URL.createObjectURL = originalCreateObjectURL;
+    URL.revokeObjectURL = originalRevokeObjectURL;
+    jest.restoreAllMocks();
+  });
+
+  async function download() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    });
+  }
+
+  it.each([403, 500])(
+    "does not save an HTTP %s error body and permits a successful retry",
+    async (status) => {
+      const errorBlob = jest.fn(
+        async () => new Blob(["<Error>Denied</Error>"]),
+      );
+      const imageBlob = new Blob(["image fixture"], { type: "image/png" });
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, status, blob: errorBlob })
+        .mockResolvedValueOnce({ ok: true, blob: async () => imageBlob });
+
+      await download();
+
+      expect(errorBlob).not.toHaveBeenCalled();
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(downloaded).toEqual([]);
+      expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+      const fallback = within(screen.getByRole("dialog")).getByRole("link", {
+        name: "Open image",
+      });
+      expect(fallback).toHaveAttribute("href", imageSrc);
+      expect(fallback).toHaveAttribute("target", "_blank");
+      expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
+      expect(window.open).toHaveBeenCalledWith(
+        imageSrc,
+        "_blank",
+        "noopener,noreferrer",
+      );
+      expect(
+        screen.getByRole("button", { name: "Download image" }),
+      ).toBeEnabled();
+
+      await download();
+
+      expect(URL.createObjectURL).toHaveBeenCalledWith(imageBlob);
+      expect(downloaded).toEqual([
+        { href: "blob:image-fixture", name: "screenshot.png" },
+      ]);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:image-fixture");
+      expect(window.open).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("preserves the direct-open fallback for a rejected network request", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await download();
+
+    expect(window.open).toHaveBeenCalledWith(
+      imageSrc,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(downloaded).toEqual([]);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Open image" })).toHaveAttribute(
+      "href",
+      imageSrc,
+    );
+  });
+
+  it.each([true, false])(
+    "keeps the latest download recovery state when an older attempt succeeds: %s",
+    async (olderSucceeds) => {
+      let settleOlder!: (response: unknown) => void;
+      fetchMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          settleOlder = resolve;
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+      const success = { ok: true, blob: async () => new Blob(["image"]) };
+      const failure = { ok: false, status: 403 };
+      fetchMock.mockResolvedValueOnce(olderSucceeds ? failure : success);
+      await download();
+      const popupCount = olderSucceeds ? 1 : 0;
+
+      await act(async () => {
+        settleOlder(olderSucceeds ? success : failure);
+      });
+
+      expect(window.open).toHaveBeenCalledTimes(popupCount);
+      if (olderSucceeds) {
+        expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+      } else {
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+      expect(downloaded).toHaveLength(1);
+    },
+  );
+
+  it("does not open a failed download after the viewer unmounts", async () => {
+    let rejectDownload!: (error: Error) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectDownload = reject;
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    unmount();
+
+    await act(async () => {
+      rejectDownload(new Error("offline"));
+    });
+
+    expect(window.open).not.toHaveBeenCalled();
+    expect(downloaded).toEqual([]);
+  });
+
+  it("keeps the current image's recovery link when an older download fails later", async () => {
+    let rejectDownload!: (error: Error) => void;
+    fetchMock.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectDownload = reject;
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Download image" }));
+    rerender(
+      <ImageViewer
+        isOpen
+        onClose={jest.fn()}
+        imageSrc="https://files.example/other.png"
+        imageAlt="Other image"
+      />,
+    );
+
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403 });
+    await download();
+
+    await act(async () => {
+      rejectDownload(new Error("offline"));
+    });
+
+    expect(
+      within(screen.getByRole("dialog")).getByRole("link", {
+        name: "Open image",
+      }),
+    ).toHaveAttribute("href", "https://files.example/other.png");
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(window.open).toHaveBeenCalledWith(
+      "https://files.example/other.png",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(downloaded).toEqual([]);
+  });
+});

@@ -1,3 +1,4 @@
+import { LocalFileRequestError } from "../local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { describe, expect, it, jest } from "@jest/globals";
 import { phLogger } from "@/lib/posthog/server";
@@ -21,7 +22,7 @@ const createSandbox = ({
   statSizeBytes,
   listedFiles = [],
 }: {
-  sandboxKind?: "centrifugo" | "miosa";
+  sandboxKind?: "centrifugo";
   nativeFileRelay?: boolean;
   statSizeBytes?: number;
   listedFiles?: Array<{ name: string }>;
@@ -52,91 +53,163 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
-  it.each([
-    { status: 422, retryable: true },
-    { status: 503, retryable: false },
-    { status: 504, retryable: true },
-  ])(
-    "does not replay Miosa rejected or ambiguous saves: %j",
-    async (details) => {
-      const sandbox = createSandbox({ sandboxKind: "miosa" });
-      sandbox.files.write.mockRejectedValueOnce(
-        Object.assign(new Error("network private-output"), {
-          ...details,
-          name: "MiosaError",
-          code: "UNKNOWN_ERROR",
-          requestId: "request-safe",
+  it("delegates Windows directory setup to the file adapter", async () => {
+    const sandbox = {
+      ...createSandbox({ sandboxKind: "centrifugo" }),
+      isWindows: () => true,
+    };
+    sandbox.commands.run.mockRejectedValue(new Error("POSIX mkdir is invalid"));
+    expect(await saveFullOutputToFile(sandbox as any, "output")).not.toBeNull();
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+  });
+
+  it.each(["saved", "recovered", "failed"] as const)(
+    "emits one eligible save outcome for %s, with bounded client context",
+    async (result) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo", nativeFileRelay: true }),
+        supportsCommandStdin: () => false,
+        getConnectionInfo: () => ({
+          isDesktop: true,
+          name: "PRIVATE host",
+          osInfo: { platform: "darwin", hostname: "PRIVATE hostname" },
+          capabilities: {
+            files: true,
+            commandStdin: false,
+            operationChannels: true,
+          },
         }),
-      );
-      const eventSpy = jest
-        .spyOn(phLogger, "event")
-        .mockImplementation(() => {});
-      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      };
+      if (result !== "saved")
+        sandbox.files.write.mockRejectedValueOnce(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      if (result === "failed")
+        sandbox.files.write.mockRejectedValue(
+          new LocalFileRequestError("dispatch_error", "PRIVATE error"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
       try {
-        await expect(
-          saveFullOutputToFile(sandbox as any, "private-output", CHAT_ID),
-        ).resolves.toBeNull();
-        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
-        expect(eventSpy).toHaveBeenCalledWith(
-          "terminal_output_persistence_failure",
-          expect.objectContaining({
-            failure_stage: "write_output",
-            error_http_status: details.status,
-            error_request_id: "request-safe",
-            retry_decision: "not_retryable",
-          }),
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output");
+        const outcomes = event.mock.calls.filter(
+          ([name]) => name === "terminal_output_persistence_result",
         );
-        expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
-          "private-output",
-        );
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0][1]).toMatchObject({
+          result,
+          client_surface: "desktop",
+          client_platform: "darwin",
+          native_file_relay: true,
+          command_stdin: false,
+        });
+        if (result !== "saved")
+          expect(outcomes[0][1]).toMatchObject({
+            local_file_failure: "dispatch_error",
+          });
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
       } finally {
-        eventSpy.mockRestore();
-        warnSpy.mockRestore();
+        event.mockRestore();
       }
     },
   );
-
-  it("retries a provider-confirmed transient 503 only for the fixed output save", async () => {
-    jest.useFakeTimers();
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
-    sandbox.files.write.mockRejectedValueOnce(
-      Object.assign(new Error("unavailable"), {
-        status: 503,
-        retryable: true,
-        requestId: "request-503",
-      }),
+  it("does not retry canceled native persistence or classify transport text as filesystem permission", async () => {
+    expect(
+      classifyTerminalOutputPersistenceFailure(
+        new LocalFileRequestError(
+          "dispatch_error",
+          "PRIVATE permission denied",
+        ),
+      ),
+    ).toBe("transport");
+    const sandbox = createSandbox({
+      sandboxKind: "centrifugo",
+      nativeFileRelay: true,
+    });
+    sandbox.files.write.mockRejectedValue(
+      new LocalFileRequestError("aborted", "PRIVATE canceled path"),
     );
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const pending = saveFullOutputToFile(
-        sandbox as any,
-        "full-output",
-        CHAT_ID,
-      );
-      await jest.advanceTimersByTimeAsync(250);
-      expect(await pending).not.toBeNull();
-      expect(sandbox.files.write).toHaveBeenCalledTimes(2);
-      expect(sandbox.files.write.mock.calls[0]).toEqual(
-        sandbox.files.write.mock.calls[1],
-      );
-      expect(eventSpy).toHaveBeenCalledWith(
+      expect(
+        await saveFullOutputToFile(sandbox as any, "PRIVATE output"),
+      ).toBeNull();
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(event).toHaveBeenCalledWith(
         "terminal_output_persistence_failure",
         expect.objectContaining({
-          result: "recovered",
-          error_request_id: "request-503",
+          failure_category: "aborted",
           failure_stage: "write_output",
+          retry_decision: "not_retryable",
         }),
       );
+      expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
     } finally {
-      eventSpy.mockRestore();
-      infoSpy.mockRestore();
-      jest.useRealTimers();
+      event.mockRestore();
+      warn.mockRestore();
     }
   });
 
+  it("reports the mkdir cause without leaking shell output or retrying an unusable root", async () => {
+    const sandbox = createSandbox();
+    sandbox.commands.run.mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "mkdir: /private/customer-root: Read-only file system",
+    });
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        await saveFullOutputToFile(sandbox as any, "private-output"),
+      ).toBeNull();
+      const payload = JSON.parse(warning.mock.calls.at(-1)![0] as string);
+      expect(payload).toMatchObject({
+        failure_category: "read_only_filesystem",
+        failure_stage: "ensure_directory",
+        attempt_count: 1,
+      });
+      expect(JSON.stringify(payload)).not.toMatch(
+        /customer-root|private-output/,
+      );
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it.each(["/Users/test/My Project", "C:\\Users\\test\\My Project"])(
+    "writes and prunes native artifacts inside %s without shell setup",
+    async (project) => {
+      const sandbox = {
+        ...createSandbox({
+          sandboxKind: "centrifugo",
+          nativeFileRelay: true,
+          listedFiles: Array.from({ length: 12 }, (_, i) => ({
+            name: `2026-10-${String(i + 1).padStart(2, "0")}.txt`,
+          })),
+        }),
+        getWorkingDirectory: () => project,
+        isWindows: () => project.startsWith("C:"),
+      };
+      const directory = `${project.replaceAll("\\", "/")}/.hackerai/terminal_full_output/chat-${CHAT_KEY}`;
+      const savedPath = await saveFullOutputToFile(
+        sandbox as any,
+        "output",
+        CHAT_ID,
+      );
+      expect(savedPath?.startsWith(`${directory}/`)).toBe(true);
+      expect(sandbox.files.write).toHaveBeenCalledWith(savedPath, "output");
+      expect(sandbox.files.list).toHaveBeenCalledWith(directory);
+      expect(sandbox.files.remove.mock.calls).toEqual([
+        [`${directory}/2026-10-02.txt`],
+        [`${directory}/2026-10-01.txt`],
+      ]);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
   it("does not attempt a file write when directory creation exits unsuccessfully", async () => {
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
+    const sandbox = createSandbox();
     sandbox.commands.run.mockResolvedValueOnce({
       stdout: "",
       stderr: "private stderr",
@@ -153,7 +226,7 @@ describe("saveFullOutputToFile", () => {
         "terminal_output_persistence_failure",
         expect.objectContaining({
           failure_stage: "ensure_directory",
-          file_operation_exit_code: 1,
+          result: "failed",
         }),
       );
       expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
@@ -212,22 +285,42 @@ describe("saveFullOutputToFile", () => {
     jest.useRealTimers();
   });
 
-  it("fails closed on remote clients without private stdin transport", async () => {
-    const sandbox = createSandbox({ sandboxKind: "centrifugo" });
-    sandbox.supportsCommandStdin = () => false;
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    try {
-      await expect(
-        saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
-      ).resolves.toBeNull();
-      expect(sandbox.files.write).not.toHaveBeenCalled();
-      expect(sandbox.commands.run).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-      eventSpy.mockRestore();
-    }
-  });
+  it.each([
+    [undefined, "unsupported_client"],
+    [false, "private_storage_unavailable"],
+  ] as const)(
+    "fails closed with capability %s and reports %s",
+    async (commandStdin, category) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo" }),
+        getConnectionInfo: () => ({ capabilities: { commandStdin } }),
+      };
+      sandbox.supportsCommandStdin = () => false;
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const eventSpy = jest
+        .spyOn(phLogger, "event")
+        .mockImplementation(() => {});
+      try {
+        await expect(
+          saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
+        ).resolves.toBeNull();
+        expect(sandbox.files.write).not.toHaveBeenCalled();
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+        expect(eventSpy).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            failure_category: category,
+            retry_decision: "not_retryable",
+            attempt_count: 1,
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+        eventSpy.mockRestore();
+      }
+    },
+  );
 
   it("retries one transient desktop relay failure and records recovery", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
@@ -269,51 +362,6 @@ describe("saveFullOutputToFile", () => {
       "terminal_output_persistence_failure",
       expect.objectContaining({
         provider: "desktop",
-        attempt_count: 2,
-        result: "recovered",
-        failure_category: "transport",
-        retry_decision: "retried",
-      }),
-    );
-
-    infoSpy.mockRestore();
-    eventSpy.mockRestore();
-    jest.useRealTimers();
-  });
-
-  it("retries one transient Miosa file transport failure and records recovery", async () => {
-    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
-    sandbox.files.write
-      .mockRejectedValueOnce(
-        new Error("MiosaError: Sandbox file transport is unavailable"),
-      )
-      .mockResolvedValueOnce(undefined);
-    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-
-    const savePromise = saveFullOutputToFile(
-      sandbox as any,
-      "full output",
-      CHAT_ID,
-      {
-        service: "agent-long",
-        environment: "prod",
-        requestId: "run-1",
-        triggerRunId: "run-1",
-        chatId: CHAT_ID,
-      },
-    );
-    await jest.advanceTimersByTimeAsync(250);
-
-    await expect(savePromise).resolves.toContain(
-      `/home/user/terminal_full_output/chat-${CHAT_KEY}/`,
-    );
-    expect(sandbox.files.write).toHaveBeenCalledTimes(2);
-    expect(eventSpy).toHaveBeenCalledWith(
-      "terminal_output_persistence_failure",
-      expect.objectContaining({
-        provider: "miosa",
         attempt_count: 2,
         result: "recovered",
         failure_category: "transport",
@@ -403,6 +451,47 @@ describe("saveFullOutputToFile", () => {
     eventSpy.mockRestore();
   });
 
+  it.each(["size_mismatch", "probe_failed"] as const)(
+    "does not replay an uncertain write after %s",
+    async (verification) => {
+      const sandbox = createSandbox({
+        sandboxKind: "centrifugo",
+        nativeFileRelay: true,
+        statSizeBytes: 1,
+      });
+      sandbox.files.write.mockRejectedValueOnce(
+        new LocalFileRequestError("timeout", "PRIVATE output path"),
+      );
+      if (verification === "probe_failed")
+        (sandbox.files.stat as jest.Mock<any>).mockRejectedValueOnce(
+          new LocalFileRequestError("relay_unsubscribed", "PRIVATE host"),
+        );
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        expect(await saveFullOutputToFile(sandbox as any, "output")).toBeNull();
+        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+        expect(
+          event.mock.calls.filter(
+            ([name]) => name === "terminal_output_persistence_result",
+          ),
+        ).toHaveLength(1);
+        expect(event).toHaveBeenCalledWith(
+          "terminal_output_persistence_result",
+          expect.objectContaining({
+            result: "failed",
+            timeout_verification: verification,
+            ...(verification === "probe_failed"
+              ? { verification_failure_category: "relay_unavailable" }
+              : {}),
+          }),
+        );
+        expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+      } finally {
+        event.mockRestore();
+      }
+    },
+  );
+
   it("accepts a completed desktop write whose timeout only lost the ack", async () => {
     const output = "full output";
     const sandbox = createSandbox({
@@ -475,6 +564,51 @@ describe("saveFullOutputToFile", () => {
     warnSpy.mockRestore();
   });
 
+  it.each([
+    [true, undefined],
+    [false, undefined],
+    [true, false],
+    [false, false],
+  ])(
+    "explains unavailable private storage (Desktop=%s, commandStdin=%s) without unsafe fallback",
+    async (isDesktop, commandStdin) => {
+      const sandbox = {
+        ...createSandbox({ sandboxKind: "centrifugo" }),
+        supportsCommandStdin: () => false,
+        getConnectionInfo: () => ({
+          isDesktop,
+          capabilities: { commandStdin },
+        }),
+      };
+      const terminalWriter = jest.fn(async () => undefined);
+      const message = await saveTruncatedOutput({
+        handler: {
+          wasTruncated: () => true,
+          getFullOutput: () => "full output",
+        } as any,
+        sandbox: sandbox as any,
+        terminalWriter,
+      });
+      expect(message).toContain(
+        commandStdin === false
+          ? "startup storage diagnostics"
+          : isDesktop
+            ? "restart or update the Desktop app"
+            : "private-storage startup error",
+      );
+      if (commandStdin === false) {
+        expect(message).not.toMatch(/up-to-date|update/);
+        expect(message).toContain(
+          "resolve the reported ownership or filesystem problem",
+        );
+      }
+      expect(message).toContain("Do not rerun the original command unchanged");
+      expect(terminalWriter).toHaveBeenCalledWith(message);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+    },
+  );
+
   it("removes saved outputs beyond the per-chat retention limit", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
     const listedFiles = [
@@ -541,7 +675,8 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
       "relay_unavailable",
     ],
     ["Direct file mutation path is outside its allowed root", "permission"],
-    ["ENOSPC: no space left on device", "filesystem"],
+    ["Path is outside the allowed project folder: /tmp/output", "permission"],
+    ["ENOSPC: no space left on device", "no_space"],
     ["opaque failure", "unknown"],
   ])("classifies %s as %s", (message, category) => {
     expect(classifyTerminalOutputPersistenceFailure(new Error(message))).toBe(
@@ -549,3 +684,15 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
     );
   });
 });
+
+it.each([
+  ["bash: syntax error near unexpected token PRIVATE", "shell_syntax"],
+  ["base64: command not found PRIVATE", "missing_utility"],
+])(
+  "classifies shell diagnostics without including content: %s",
+  (message, category) => {
+    expect(classifyTerminalOutputPersistenceFailure(new Error(message))).toBe(
+      category,
+    );
+  },
+);

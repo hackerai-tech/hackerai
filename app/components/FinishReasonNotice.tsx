@@ -1,10 +1,15 @@
-import { useState } from "react";
+import type { LimitRescueRequest } from "@/types/chat";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { Button } from "@/components/ui/button";
 import { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 import {
   BUDGET_EXHAUSTION_FINISH_REASON,
+  DOOM_LOOP_FINISH_REASON,
+  STEP_LIMIT_FINISH_REASON,
+  CLIENT_SAVED_FINISH_REASON,
   OUTPUT_LIMIT_FINISH_REASON,
   POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
@@ -15,15 +20,37 @@ interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void;
+  onContinue?: (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => void | Promise<void>;
 }
 
 export const FinishReasonNotice = ({
   finishReason,
+  mode,
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
-  const [hasContinued, setHasContinued] = useState(false);
+  const pendingRef = useRef(false);
+  const [pending, setPending] = useState(false);
+  const resume = async (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => {
+    if (!onContinue || pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    try {
+      if (limitRescue) await onContinue(selectedModelOverride, limitRescue);
+      else await onContinue(selectedModelOverride);
+    } catch {
+      toast.error("Could not resume. Your saved progress is still available.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  };
 
   if (!finishReason) return null;
 
@@ -38,19 +65,40 @@ export const FinishReasonNotice = ({
   }
 
   if (isAutoResuming) return null;
-  if (hasContinued) return null;
 
   if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
     // A manual attempt goes through normal server admission and resumes the
     // existing task. It does not regenerate completed work or bypass billing.
-    return <BudgetExhaustedNotice onContinue={onContinue} />;
+    return (
+      <BudgetExhaustedNotice
+        onContinue={onContinue ? resume : undefined}
+        pending={pending}
+        mode={mode}
+      />
+    );
   }
 
   const getNoticeContent = () => {
-    if (finishReason === "tool-calls") {
+    if (finishReason === DOOM_LOOP_FINISH_REASON) {
+      return (
+        <>
+          Agent stopped after repeating work without progress. Send a new
+          instruction to change the approach.
+        </>
+      );
+    }
+
+    if (
+      finishReason === STEP_LIMIT_FINISH_REASON ||
+      finishReason === "tool-calls"
+    ) {
       return (
         <>Reached the step limit for this turn. Completed work was saved.</>
       );
+    }
+
+    if (finishReason === CLIENT_SAVED_FINISH_REASON) {
+      return <>Agent stopped unexpectedly. Saved progress is available.</>;
     }
 
     if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
@@ -94,12 +142,13 @@ export const FinishReasonNotice = ({
 
   if (!content) return null;
 
-  const showContinue = onContinue && !hasContinued;
-  const continuationModel = undefined;
-  const continueButtonLabel = "Continue";
+  // Replaying an unchanged request can restart the cycle that was just halted.
+  const showContinue = !!onContinue && finishReason !== DOOM_LOOP_FINISH_REASON;
+  const continueButtonLabel =
+    finishReason === CLIENT_SAVED_FINISH_REASON ? "Resume task" : "Continue";
 
   return (
-    <div className="mt-2 w-full">
+    <div className="mt-2 w-full" role="status">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span>{content}</span>
         {showContinue && (
@@ -107,12 +156,10 @@ export const FinishReasonNotice = ({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => {
-              setHasContinued(true);
-              onContinue(continuationModel);
-            }}
+            disabled={pending}
+            onClick={() => void resume()}
           >
-            {continueButtonLabel}
+            {pending ? "Resuming…" : continueButtonLabel}
           </Button>
         )}
       </div>

@@ -1,9 +1,23 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { DatabaseReader } from "./_generated/server";
+import { DatabaseReader } from "./lib/serviceFunctions";
 import { SignJWT } from "jose";
 import { isEnvironmentPreference } from "../lib/sandbox/environment";
+
+function validatePrivateArtifactNamespace(
+  capabilities:
+    { privateArtifactNamespace?: string; commandStdin?: boolean } | undefined,
+) {
+  const namespace = capabilities?.privateArtifactNamespace;
+  if (
+    namespace !== undefined &&
+    (!/^uid-(0|[1-9][0-9]{0,9})$/.test(namespace) ||
+      capabilities?.commandStdin !== true)
+  ) {
+    throw new ConvexError("Invalid private terminal artifact namespace");
+  }
+}
 
 function validateEnvironmentId(id: string | undefined) {
   if (
@@ -274,6 +288,8 @@ export const connect = mutation({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
+        operationChannels: v.optional(v.boolean()),
       }),
     ),
   },
@@ -286,6 +302,7 @@ export const connect = mutation({
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
+    validatePrivateArtifactNamespace(args.capabilities);
     // Verify token
     const tokenRecord = await ctx.db
       .query("local_sandbox_tokens")
@@ -533,6 +550,8 @@ export const connectDesktop = mutation({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
+        operationChannels: v.optional(v.boolean()),
       }),
     ),
   },
@@ -542,6 +561,7 @@ export const connectDesktop = mutation({
     centrifugoWsUrl: v.string(),
   }),
   handler: async (ctx, args) => {
+    validatePrivateArtifactNamespace(args.capabilities);
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new ConvexError({
@@ -777,6 +797,8 @@ export const listConnections = query({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
+        operationChannels: v.optional(v.boolean()),
       }),
     }),
   ),
@@ -831,6 +853,8 @@ export const listConnectionsForBackend = query({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
+        operationChannels: v.optional(v.boolean()),
       }),
     }),
   ),

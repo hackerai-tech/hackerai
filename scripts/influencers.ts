@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { writeFile } from "node:fs/promises";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import Stripe from "stripe";
 import { z } from "zod";
 import { api } from "../convex/_generated/api";
@@ -113,7 +113,7 @@ async function main() {
     throw new Error(
       "Stripe account or mode does not match the requested target",
     );
-  const convex = new ConvexHttpClient(request.targetUrl);
+  const convex = createServiceConvexClient(request.targetUrl);
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   console.error(
     `Target: ${request.targetUrl}; Stripe ${account.id}; ${request.live ? "LIVE" : "TEST"}`,
@@ -221,7 +221,7 @@ async function main() {
     monthlyBps: partner.monthly_bps,
     annualBps: partner.annual_bps,
     signups,
-    linkOpens: partner.link_opens ?? 0,
+    legacyLinkOpens: partner.link_opens ?? 0,
     sponsorshipCostCents: partner.sponsorship_cost_cents ?? 0,
     netRevenueCents: invoices
       .filter((row) => row.currency === "usd")

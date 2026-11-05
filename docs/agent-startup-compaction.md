@@ -14,7 +14,7 @@ below the compaction threshold do not enter the pilot.
 Treatment starts with the existing GLM 5.3 Flash low-reasoning summary model.
 That attempt has a 30-second AI SDK timeout and no SDK retries. A timeout,
 retryable upstream error, malformed JSON, or unusable summary triggers one
-fallback to the existing DeepSeek V4 Flash 0731 route with low reasoning,
+fallback to the existing DeepSeek V4.1 Flash route with low reasoning,
 latency routing, and `data_collection: deny`. The fallback uses normal SDK
 retry behavior and the original run cancellation signal. **30 seconds is a
 primary-attempt deadline, not a total compaction deadline.** Preparation and

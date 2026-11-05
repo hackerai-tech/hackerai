@@ -174,6 +174,19 @@ describe("QueuedMessagesPanel", () => {
 
     const editor = screen.getByRole("textbox", { name: "Edit queued message" });
     fireEvent.change(editor, { target: { value: "do ping carefully" } });
+    for (const compositionEvent of [{ isComposing: true }, { keyCode: 229 }]) {
+      fireEvent.keyDown(editor, { key: "Escape", ...compositionEvent });
+      fireEvent.keyDown(editor, {
+        key: "Enter",
+        ctrlKey: true,
+        ...compositionEvent,
+      });
+      expect(
+        screen.getByRole("textbox", { name: "Edit queued message" }),
+      ).toHaveValue("do ping carefully");
+      expect(onEdit).not.toHaveBeenCalled();
+      expect(onEditingMessageChange).toHaveBeenLastCalledWith("message-1");
+    }
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(onEdit).toHaveBeenCalledWith("message-1", "do ping carefully");
@@ -182,4 +195,32 @@ describe("QueuedMessagesPanel", () => {
       screen.queryByRole("button", { name: /Reorder queued message/ }),
     ).not.toBeInTheDocument();
   });
+});
+
+it("shows a held failure with explicit Retry and disables sends while checking", () => {
+  const props = {
+    onSendNow: jest.fn(),
+    onEdit: jest.fn(),
+    onEditingMessageChange: jest.fn(),
+    onDelete: jest.fn(),
+    isStreaming: false,
+  };
+  const { rerender } = render(
+    <QueuedMessagesPanel
+      {...props}
+      messages={[{ ...messages[0], deliveryStatus: "failed" }]}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Delivery not confirmed",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(props.onSendNow).toHaveBeenCalledWith(messages[0].id);
+  rerender(
+    <QueuedMessagesPanel
+      {...props}
+      messages={[{ ...messages[0], deliveryStatus: "sending" }]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
 });

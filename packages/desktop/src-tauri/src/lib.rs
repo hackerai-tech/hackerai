@@ -1,12 +1,21 @@
 mod platform;
+mod update_safety;
+#[cfg(test)]
+mod update_safety_tests;
+mod child_environment;
 mod environment_identity;
+mod file_save;
 mod pty;
+#[cfg(test)]
+mod updater_tests;
+#[cfg(test)]
+mod file_acl_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -16,6 +25,8 @@ use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
@@ -83,6 +94,42 @@ fn get_cmd_server_info() -> CmdServerInfo {
         port: CMD_SERVER_PORT.load(Ordering::Relaxed),
         token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
     }
+}
+
+/// Write only after the user selects a destination in the native save dialog.
+/// No path supplied by the webview is accepted as a write destination.
+#[tauri::command]
+async fn save_file_with_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    tokio::task::spawn_blocking(move || {
+        let _operation = update_safety::UPDATE_GATE.operation()?;
+        let suggested_name = Path::new(&filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Invalid filename".to_string())?;
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name(suggested_name);
+        if let Ok(downloads) = app.path().download_dir() {
+            dialog = dialog.set_directory(downloads);
+        }
+        let Some(selected) = dialog.blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|error| error.to_string())?;
+        file_save::save_text(&path, &content).map_err(|error| error.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]
@@ -244,6 +291,7 @@ fn write_generated_text_attachment(
     file_name: String,
     content: String,
 ) -> Result<LocalFileMetadata, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
     fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
     get_local_file_metadata(path.to_string_lossy().to_string())
@@ -275,6 +323,7 @@ fn remove_generated_text_attachment(
     attachment_id: String,
     file_name: String,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -285,10 +334,36 @@ fn remove_generated_text_attachment(
 
 #[tauri::command]
 fn read_local_file(path: String) -> Result<LocalFileData, String> {
+    read_local_file_data(path, None)
+}
+
+#[tauri::command(async)]
+fn read_local_preview_file(path: String) -> Result<LocalFileData, String> {
+    read_local_file_data(path, Some(10 * 1024 * 1024))
+}
+
+fn read_local_file_data(path: String, max_bytes: Option<u64>) -> Result<LocalFileData, String> {
     use base64::Engine;
+    use std::io::Read;
 
     let metadata = get_local_file_metadata(path.clone())?;
-    let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
+    let bytes = if let Some(limit) = max_bytes {
+        let limit = limit.min(10 * 1024 * 1024);
+        if metadata.size > limit {
+            return Err("File exceeds preview limit".into());
+        }
+        let file = fs::File::open(&path).map_err(|_| "File is no longer available")?;
+        let mut bytes = Vec::new();
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not read file")?;
+        if bytes.len() as u64 > limit {
+            return Err("File exceeds preview limit".into());
+        }
+        bytes
+    } else {
+        fs::read(&path).map_err(|e| format!("Read error: {}", e))?
+    };
 
     Ok(LocalFileData {
         path: metadata.path,
@@ -298,6 +373,38 @@ fn read_local_file(path: String) -> Result<LocalFileData, String> {
         last_modified: metadata.last_modified,
         base64: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
+}
+
+#[cfg(test)]
+mod local_preview_tests {
+    use super::*;
+
+    #[test]
+    fn preview_reads_bytes_and_rejects_oversized_or_missing_files() {
+        let path = std::env::temp_dir().join(format!(
+            "hackerai-preview-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"local preview").unwrap();
+        let name = path.to_string_lossy().into_owned();
+        let result = read_local_preview_file(name.clone()).unwrap();
+        assert_eq!(result.base64, "bG9jYWwgcHJldmlldw==");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(10 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            matches!(read_local_preview_file(name.clone()), Err(e) if e == "File exceeds preview limit")
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(read_local_preview_file(name).is_err());
+    }
 }
 
 // ── Command Execution Server ──────────────────────────────────────────
@@ -675,6 +782,7 @@ async fn handle_cmd_request(
 }
 
 async fn handle_execute(body: &str) -> Result<String, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: ExecRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -725,8 +833,9 @@ async fn handle_execute(body: &str) -> Result<String, String> {
 ///   {"type":"error","message":"..."}
 async fn handle_execute_stream(
     body: &str,
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl tokio::io::AsyncWrite + Unpin),
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: ExecRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
@@ -747,10 +856,12 @@ async fn handle_execute_stream(
 
     // Send chunked response headers
     let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
-    stream
-        .write_all(headers.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
+    if let Err(error) = stream.write_all(headers.as_bytes()).await {
+        // The command has already started. Keep update admission blocked until
+        // it is stopped and reaped, even if the HTTP client disconnected.
+        platform::graceful_kill(&mut child).await;
+        return Err(error.to_string());
+    }
 
     let timeout = Duration::from_millis(req.timeout_ms);
     let mut stdout = child.stdout.take().unwrap();
@@ -827,7 +938,7 @@ async fn handle_execute_stream(
 }
 
 /// Write a single HTTP chunked-transfer chunk
-async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
+async fn write_chunk(stream: &mut (impl tokio::io::AsyncWrite + Unpin), data: &str) {
     let payload = if data.is_empty() {
         "0\r\n\r\n".to_string()
     } else {
@@ -956,6 +1067,7 @@ fn write_desktop_file(
     bytes: &[u8],
     append: bool,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let allowed_root = allowed_root.filter(|root| !root.trim().is_empty());
     if let Some(allowed_root) = allowed_root {
         let mut file = open_scoped_mutation_file(path, allowed_root, append)?;
@@ -1152,6 +1264,7 @@ async fn handle_file_append(body: &str) -> Result<String, String> {
 }
 
 async fn handle_file_remove(body: &str) -> Result<String, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let req: FileRemoveRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
     let path = std::path::Path::new(&req.path);
@@ -1246,8 +1359,47 @@ enum StreamEvent {
     },
 }
 
-type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
+#[derive(Default)]
+struct StreamCommandRegistry {
+    running: HashMap<String, u32>,
+    // Keep cancellation until app exit, including IPCs that arrive before launch.
+    canceled: HashSet<String>,
+}
 
+type StreamCommandState = std::sync::Arc<std::sync::Mutex<StreamCommandRegistry>>;
+
+fn spawn_stream_command(
+    state: &StreamCommandState,
+    command_id: &str,
+    cmd: &mut tokio::process::Command,
+) -> Result<Option<tokio::process::Child>, String> {
+    // Spawn and PID registration must be atomic with respect to cancellation.
+    let mut commands = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned")?;
+    if commands.canceled.contains(command_id) {
+        return Ok(None);
+    }
+    if commands.running.contains_key(command_id) {
+        return Err("Command is already running".to_string());
+    }
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    if let Some(pid) = child.id() {
+        commands.running.insert(command_id.to_string(), pid);
+    }
+    Ok(Some(child))
+}
+
+fn request_stream_command_cancel(
+    state: &StreamCommandState,
+    command_id: &str,
+) -> Result<Option<u32>, String> {
+    let mut commands = state
+        .lock()
+        .map_err(|_| "stream command state lock poisoned")?;
+    commands.canceled.insert(command_id.to_string());
+    Ok(commands.running.get(command_id).copied())
+}
 #[tauri::command]
 async fn execute_command(
     command: String,
@@ -1255,6 +1407,7 @@ async fn execute_command(
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
 ) -> Result<ExecResponse, String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
@@ -1298,13 +1451,12 @@ async fn execute_stream_command(
     timeout_ms: Option<u64>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
+    let _operation = update_safety::UPDATE_GATE.operation()?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
-    if let Some(pid) = child.id() {
-        if let Ok(mut commands) = state.lock() {
-            commands.insert(command_id.clone(), pid);
-        }
-    }
+    let Some(mut child) = spawn_stream_command(&state, &command_id, &mut cmd)? else {
+        let _ = on_event.send(StreamEvent::Exit { exit_code: 130 });
+        return Ok(());
+    };
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -1365,7 +1517,7 @@ async fn execute_stream_command(
         }
     }
     if let Ok(mut commands) = state.lock() {
-        commands.remove(&command_id);
+        commands.running.remove(&command_id);
     }
     Ok(())
 }
@@ -1375,17 +1527,13 @@ async fn cancel_stream_command(
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
 ) -> Result<bool, String> {
-    let pid = state
-        .lock()
-        .map_err(|_| "stream command state lock poisoned".to_string())?
-        .get(&command_id)
-        .copied();
+    let pid = request_stream_command_cancel(&state, &command_id)?;
 
     if let Some(pid) = pid {
         Ok(platform::cancel_process_tree(pid).await)
     } else {
-        // Cancellation is idempotent. The command may have exited and removed
-        // itself from the map while the cancellation request was in flight.
+        // Either it already exited, or its future launch is now fenced. A
+        // concurrent launch cannot pass the fence before registering its PID.
         Ok(true)
     }
 }
@@ -1714,67 +1862,131 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     }
 }
 
+async fn check_update(
+    builder: tauri_plugin_updater::UpdaterBuilder,
+    check_timeout: Duration,
+    download_timeout: Duration,
+) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
+    let updater = builder.timeout(check_timeout).build()?;
+    let mut update = updater.check().await?;
+    if let Some(update) = update.as_mut() {
+        // The updater does not propagate the check timeout to the returned download.
+        // Bound HTTP activity without timing out user approval or native installation.
+        update.timeout = Some(download_timeout);
+    }
+    Ok(update)
+}
+
+// Attach updater prompts to the app window. Parentless macOS alerts use a
+// separate system notification surface and can leave the app awaiting an
+// approval that is not visible in its window.
+fn update_dialog(
+    app: &tauri::AppHandle,
+    message: impl Into<String>,
+) -> tauri_plugin_dialog::MessageDialogBuilder<tauri::Wry> {
+    use tauri_plugin_dialog::DialogExt;
+    let dialog = app.dialog().message(message);
+    match app.get_webview_window("main") {
+        Some(window) => dialog.parent(&window),
+        None => dialog,
+    }
+}
+
 async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let Some(_check) = update_safety::CheckGuard::acquire() else { return; };
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
 
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            if silent {
-                log::warn!("Auto-update check failed to get updater: {}", e);
-            } else {
-                log::error!("Failed to get updater: {}", e);
-                let _ = app
-                    .dialog()
-                    .message(format!("Failed to check for updates: {}", e))
-                    .kind(MessageDialogKind::Error)
-                    .title("Update Error")
-                    .blocking_show();
-            }
-            return;
-        }
-    };
-
-    match updater.check().await {
+    match check_update(
+        app.updater_builder(),
+        UPDATE_CHECK_TIMEOUT,
+        UPDATE_DOWNLOAD_TIMEOUT,
+    )
+    .await
+    {
         Ok(Some(update)) => {
             let version = update.version.clone();
             log::info!("Update available: {}", version);
 
-            let should_update = app
-                .dialog()
-                .message(format!(
-                    "A new version ({}) is available. Would you like to update now?",
+            let should_update = update_dialog(&app, format!(
+                    "Version {} is available. Download the update? You will be asked before anything is installed.",
                     version
                 ))
                 .title("Update Available")
                 .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancel)
+                .buttons(MessageDialogButtons::OkCancelCustom("Download".into(), "Not now".into()))
                 .blocking_show();
 
             if should_update {
-                log::info!("User accepted update to version {}", version);
-                if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-                    log::error!("Failed to install update: {}", e);
-                    let _ = app
-                        .dialog()
-                        .message(format!("Failed to install update: {}", e))
+                let bytes = match update.download(|_, _| {}, || {}).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        log::warn!("Desktop update download or signature verification failed: {error}");
+                        update_dialog(&app, "The update could not be downloaded or verified. Your current app has not been changed. Choose Help > Check for Updates to try again.")
+                            .kind(MessageDialogKind::Error).title("Update download failed").blocking_show();
+                        return;
+                    }
+                };
+                // Windows exits inside install(), so this is the final consent
+                // on every platform. Never put restart approval after install.
+                let approved = update_dialog(&app, format!("Install version {}? Desktop will close. Save your work and close terminal sessions first. It will not install while local commands or file operations are active. If Desktop does not reopen, open it yourself to confirm the version.", version))
+                    .title("Ready to install")
+                    .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
+                    .blocking_show();
+                if !approved {
+                    return;
+                }
+                let directory = match app.path().app_data_dir() {
+                    Ok(directory) => directory,
+                    Err(_) => {
+                        update_dialog(
+                            &app,
+                            "The update could not be prepared. No installation was started.",
+                        )
+                        .title("Update not started")
                         .kind(MessageDialogKind::Error)
-                        .title("Update Error")
                         .blocking_show();
-                } else {
-                    log::info!("Update installed successfully");
-                    let restart_now = app
-                        .dialog()
-                        .message("Update installed successfully. Restart now to apply changes?")
-                        .kind(MessageDialogKind::Info)
-                        .title("Update Complete")
-                        .buttons(MessageDialogButtons::OkCancelCustom(
-                            "Restart Now".into(),
-                            "Later".into(),
-                        ))
-                        .blocking_show();
-                    if restart_now {
-                        app.restart();
+                        return;
+                    }
+                };
+                let mut download = Some(bytes);
+                loop {
+                    let result = update_safety::install_after_approval(
+                        &update_safety::UPDATE_GATE,
+                        &directory,
+                        &app.package_info().version.to_string(),
+                        &version,
+                        approved,
+                        || {
+                            let bytes = download
+                                .take()
+                                .expect("verified download available before installation");
+                            update.install(bytes).map_err(|error| {
+                                log::error!("Desktop update installation failed: {error}");
+                                "The installer reported an error, and Desktop cannot confirm what changed. Close and reopen HackerAI Desktop to check its version before trying again.".to_string()
+                            })?;
+                            app.restart();
+                        },
+                    );
+                    match result {
+                        Err(message) if download.is_some() => {
+                            // A busy gate or receipt failure never handed bytes to
+                            // the installer. Keep the verified download for retry.
+                            let retry = update_dialog(&app, format!("{}\n\nChoose Install now to try again. Desktop will close.", message))
+                                .title("Update not started")
+                                .buttons(MessageDialogButtons::OkCancelCustom("Install now".into(), "Later".into()))
+                                .blocking_show();
+                            if !retry {
+                                return;
+                            }
+                        }
+                        Err(message) => {
+                            update_dialog(&app, message)
+                                .title("Update did not finish")
+                                .kind(MessageDialogKind::Error)
+                                .blocking_show();
+                            return;
+                        }
+                        Ok(()) => return,
                     }
                 }
             }
@@ -1784,9 +1996,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::info!("No updates available (auto-check)");
             } else {
                 log::info!("No updates available");
-                let _ = app
-                    .dialog()
-                    .message("You're running the latest version.")
+                let _ = update_dialog(&app, "You're running the latest version.")
                     .kind(MessageDialogKind::Info)
                     .title("No Updates")
                     .blocking_show();
@@ -1797,9 +2007,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                 log::warn!("Auto-update check failed: {}", e);
             } else {
                 log::error!("Failed to check for updates: {}", e);
-                let _ = app
-                    .dialog()
-                    .message(format!("Failed to check for updates: {}", e))
+                let _ = update_dialog(&app, format!("Failed to check for updates: {}", e))
                     .kind(MessageDialogKind::Error)
                     .title("Update Error")
                     .blocking_show();
@@ -1833,8 +2041,14 @@ async fn execute_pty_input(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
-    manager.send_input(&session_id, &data)
+    let writer = {
+        let manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        manager.input_writer(&session_id)?
+    };
+    // Backpressure must not hold manager locks or block a Tauri async worker.
+    tauri::async_runtime::spawn_blocking(move || pty::PtyManager::write_input(writer, &data))
+        .await
+        .map_err(|error| format!("PTY input task failed: {}", error))?
 }
 
 #[tauri::command]
@@ -1860,6 +2074,51 @@ async fn execute_pty_kill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stream_cancel_before_launch_prevents_a_native_process() {
+        let state = StreamCommandState::default();
+        assert_eq!(
+            request_stream_command_cancel(&state, "stopped").unwrap(),
+            None
+        );
+        let mut cmd = platform::build_command("echo should-not-run", None, None);
+        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
+            .unwrap()
+            .is_none());
+        // A duplicate late delivery must remain canceled as well.
+        assert!(spawn_stream_command(&state, "stopped", &mut cmd)
+            .unwrap()
+            .is_none());
+        let mut replacement = platform::build_command("echo replacement", None, None);
+        let mut child = spawn_stream_command(&state, "replacement", &mut replacement)
+            .unwrap()
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_cancel_after_launch_stops_the_registered_process_group() {
+        let state = StreamCommandState::default();
+        let mut cmd = platform::build_command("sleep 30", None, None);
+        cmd.kill_on_drop(true);
+        let mut child = spawn_stream_command(&state, "running", &mut cmd)
+            .unwrap()
+            .unwrap();
+        let pid = request_stream_command_cancel(&state, "running")
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(pid), child.id());
+        // Reap concurrently: an unreaped shell can keep its process group alive.
+        let (canceled, exited) = tokio::join!(platform::cancel_process_tree(pid), child.wait());
+        assert!(canceled);
+        assert!(!exited.unwrap().success());
+        state.lock().unwrap().running.remove("running");
+        assert!(spawn_stream_command(&state, "running", &mut cmd)
+            .unwrap()
+            .is_none());
+    }
 
     fn unique_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -2078,20 +2337,38 @@ mod tests {
     }
 }
 
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .menu(|app| {
+            let menu = tauri::menu::Menu::default(app)?;
+            if let Some(tauri::menu::MenuItemKind::Submenu(help)) = menu.get(tauri::menu::HELP_SUBMENU_ID) {
+                help.append(&tauri::menu::MenuItem::with_id(app, "check-for-updates", "Check for Updates…", true, None::<&str>)?)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "check-for-updates" {
+                tauri::async_runtime::spawn(check_for_updates(app.clone(), false));
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             environment_identity::get_environment_id,
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            save_file_with_dialog,
             desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,
             read_generated_text_attachment,
             remove_generated_text_attachment,
             read_local_file,
+            read_local_preview_file,
             execute_command,
             execute_stream_command,
             cancel_stream_command,
@@ -2131,7 +2408,7 @@ pub fn run() {
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
         .manage(
-            std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
+            std::sync::Arc::new(std::sync::Mutex::new(StreamCommandRegistry::default()))
                 as StreamCommandState,
         )
         .manage(PendingDesktopAuthStates(std::sync::Mutex::new(
@@ -2184,6 +2461,20 @@ pub fn run() {
             // Check for updates on every launch
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                use tauri_plugin_dialog::MessageDialogKind;
+                if let Ok(directory) = handle.path().app_data_dir() {
+                    match update_safety::Receipt::take(&directory, &handle.package_info().version.to_string()) {
+                        Ok(Some((receipt, update_safety::RestartResult::Applied))) => {
+                            log::info!("Desktop update verified after restart: {}", receipt.target);
+                        }
+                        Ok(Some((receipt, update_safety::RestartResult::NotApplied))) => {
+                            update_dialog(&handle, format!("The update to {} did not finish. This app is still version {}. You can try the update again.", receipt.target, receipt.from))
+                                .title("Update needs another attempt").kind(MessageDialogKind::Warning).blocking_show();
+                        }
+                        Ok(_) => {},
+                        Err(_) => log::warn!("Desktop update verification unavailable; continuing startup"),
+                    }
+                }
                 log::info!("Running update check on launch");
                 save_update_check_timestamp(&handle);
                 check_for_updates(handle.clone(), true).await;
@@ -2202,7 +2493,7 @@ pub fn run() {
             log::info!("HackerAI Desktop initialized");
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {

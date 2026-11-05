@@ -1,4 +1,4 @@
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   query: (config: unknown) => config,
   internalQuery: (config: unknown) => config,
   internalMutation: (config: unknown) => config,

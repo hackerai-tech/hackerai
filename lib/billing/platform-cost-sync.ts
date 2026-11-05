@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import { api } from "@/convex/_generated/api";
 import type {
   PlatformCostRow,
@@ -122,7 +122,7 @@ export async function replaceCostWindow(args: {
 }): Promise<CostSyncResult> {
   const convexUrl = requireEnvironment("NEXT_PUBLIC_CONVEX_URL");
   const serviceKey = requireEnvironment("CONVEX_SERVICE_ROLE_KEY");
-  const convex = new ConvexHttpClient(convexUrl);
+  const convex = createServiceConvexClient(convexUrl);
   return await convex.mutation(api.platformCosts.replaceVendorCostWindow, {
     serviceKey,
     ...args,

@@ -30,6 +30,11 @@ contracts and authorization boundaries.
 
 ## Documentation and Skills
 
+Repository documentation is public. Keep internal product and business plans,
+experiment plans and readouts, rollout evidence, and account-specific operational
+notes in Linear under the owning issue or a team document. Do not recreate
+`docs/internal/` or commit those materials elsewhere in the repository.
+
 Keep documentation for decisions, cross-service constraints, operational
 procedures, and pitfalls that are hard to infer from the code. Put local
 implementation explanations beside the code they explain. Avoid file catalogs,
@@ -44,6 +49,11 @@ sources under `third_party/` are a separate application dependency.
 
 ## Focused Validation
 
+When writing, reviewing, or removing HackerAI tests, follow the
+[test-quality skill](.agents/skills/hackerai-test-quality/SKILL.md). Require a
+concrete failure each test would catch; preserve unique regression coverage
+when simplifying the suite. Test count and coverage percentage are not goals.
+
 Use the smallest check that proves the changed behavior: targeted tests, lint,
 and type checking for the affected scope. Test outcomes and meaningful logic,
 not assertions that repeat the implementation. Preserve required commit hooks
@@ -54,6 +64,78 @@ For cross-cutting changes, identify the affected paths: Ask and Agent, web and
 desktop, cloud and local sandboxes, and relevant model providers. Check recovery
 as well as the happy path, including cancellation, retry, and reconnect when
 applicable. Apply the visual and manual verification rules below.
+
+For fixes affecting Linux execution, shell commands, file transfers, or network
+behavior, reproduce the failure and verify the fix in an isolated Linux Docker
+container or VM using the actual application code and relevant system tools.
+Check available local Docker contexts and VMs before asking the user for a test
+machine; a missing default Docker socket does not establish that Docker is
+unavailable. Exercise the affected success and failure/recovery paths, record
+the OS and tool versions, and clean up task-owned resources. Distinguish injected
+lab failures from independently confirmed customer causes. Linux checks
+supplement required Windows CI and native Desktop acceptance; they do not replace
+them. Documentation-only changes do not require a container run.
+
+For Windows-specific reproduction, check available Windows VMs before asking
+for another test machine. Record the guest architecture and whether the tested
+executable uses emulation; Windows ARM with an x64 executable is not physical
+x64 Windows evidence. Follow the [Windows VM checks](docs/desktop-local-acceptance.md#windows-vm-checks)
+and retain required Windows CI and native Desktop acceptance.
+
+For native Desktop Computer Use, use the
+[hackerai-desktop-qa skill](.agents/skills/hackerai-desktop-qa/SKILL.md) and its
+local QA runner to reuse builds, record diagnostics and clean up owned processes.
+
+## Preview-First Validation and Shared Host Resources
+
+For browser and web UI acceptance, prefer the task's Vercel Preview deployment
+instead of starting another local Next.js server or production build. Push a
+reviewable branch, wait for its Preview deployment, verify the deployed commit
+and the designated Preview backend/worker, and test through Computer Use. Keep
+Preview and Production environment boundaries; do not use Production as a test
+fallback. Preview UI success does not replace required tests or CI.
+
+Before detailed Preview QA, verify the designated Preview backend and Trigger
+worker, then use the existing Preview test account to complete one harmless
+Agent request and confirm its saved response survives reload. Resolve
+configuration failures before continuing. Never use masked configuration values
+as credentials or substitute Production.
+
+Run `pnpm test:changed` for local iteration: it runs Jest tests related to
+uncommitted changes with one worker, plus relevant Node tooling suites outside
+Jest. Tooling selection includes staged, unstaged and untracked paths; unknown
+paths or Git discovery failures run every tooling suite. CI always runs them all.
+The commit hook retains staged lint/format checks and type checking, then uses
+this focused command. It includes staged, unstaged and untracked files.
+Documentation-only changes may select no Jest tests. Configuration changes,
+dynamic imports, and missing dependency links can escape automatic selection, so
+this is a feedback shortcut, not full acceptance: required CI still runs the
+entire suite with coverage. Run an explicit affected suite when the dependency
+graph cannot represent the change. Do not rerun the full suite locally for every
+review correction; use `pnpm test` when a local full run is needed.
+
+Run focused local tests first, with one worker for small suites. The repository
+limits Jest to two workers by default so concurrent worktrees do not each consume
+half the host's CPU cores. Do not increase concurrency on a shared host without
+checking capacity. Avoid overlapping a full suite, typecheck, and frontend/native
+build in the same task. Let required hooks and CI complete; do not run duplicate
+full suites when an unchanged result already provides the needed evidence.
+
+For Desktop changes, still build and operate the actual local native app through
+Computer Use. Prefer a prebuilt local frontend for acceptance when practical;
+finish the build before starting the test so on-demand compilation cannot consume
+request deadlines. Retain local backend/worker/relay and transport verification.
+Use local web development when debugging requires it or Preview cannot exercise
+the affected behavior, and state that reason in the verification record.
+
+For process health and authentication troubleshooting, use the fixed-field
+[local diagnostic helpers](docs/safe-local-diagnostics.md). Avoid raw process
+arguments/environment dumps and full login-page snapshots; these can expose
+credentials or verification codes.
+
+Track task-owned process IDs and ports. Stop unused servers, watchers, and test
+runners when finished; never stop another task's processes to reclaim capacity.
+Report any services intentionally left running for continued testing.
 
 ## Worktree Dependencies
 
@@ -102,6 +184,17 @@ For production Vercel logs, use `--no-branch` unless intentionally investigating
 a preview branch. Avoid hard-coding current revenue, user counts, team-share
 percentages, pricing, or other volatile metrics in durable instructions; use
 qualitative direction and source-of-truth references instead.
+
+## OpenRouter Request Diagnostics
+
+Check existing provider telemetry first. If attribution or usage metadata is
+missing and a recorded generation ID is available, call
+`GET https://openrouter.ai/api/v1/generation?id=<generation_id>` using the existing
+`OPENROUTER_API_KEY` from the authorized environment source. Load the key inside
+the request process; never print it, place it in command arguments, or copy
+environment files between checkouts. Return only provider, model, timing, token
+usage, cost, and finish reason. Report missing records or lookup failures without
+inferring an upstream provider or requesting a new key before checking access.
 
 ## Feature Rollouts and Measurement
 
@@ -206,6 +299,11 @@ avoiding overlap, and integrating results.
 
 ## Visual Verification
 
+For new user-facing workflows, define one concrete acceptance example before
+implementation, including relevant history or environment changes. Inspect the
+first functional desktop and narrow-screen layouts early, before extensive
+polish. Ask the user only when a material product decision remains unclear.
+
 Use visual verification in the same PR thread by default when the PR changes UI,
 chat message rendering, file/image display, onboarding, pricing, sandbox
 selection, frontend routes/components, or prompt behavior that creates a
@@ -218,6 +316,29 @@ is a plausible user-facing UI impact.
 Create a separate visual QA thread only for broad or high-risk UI changes where
 independent review is worth the handoff cost, such as multi-page flows, many
 responsive states, login/session setup, or visual polish passes.
+
+## Local Desktop Acceptance
+
+For changes affecting Desktop behavior, native commands, or the Desktop sandbox
+transport, follow [Local Desktop acceptance](docs/desktop-local-acceptance.md).
+Build and launch the actual native app from the task's source and exercise the
+affected journey through Computer Use before claiming Desktop verification.
+PR creation, CI, unit tests, and website testing alone do not establish native
+acceptance. Rebuild and retest after native-code changes.
+
+Use an isolated checkout with its own dependencies, environment files, local
+Convex state, and services. Verify the frontend, backend, worker, relay, account
+environment, and actual command transport independently. Prefer local services;
+verify designated Development/Preview targets before using external services.
+Never use Production as a local-test fallback or copy credentials/state between
+checkouts. Preserve the installed app and unrelated services.
+
+Test completion and relevant failure/recovery paths, including reload/reconnect,
+normal/narrow windows, and native file dialogs when affected. Report PASS, FAIL,
+or BLOCKED with screenshots and recorded commit/build/runtime identities. If
+login or graphical access needs human action, explain the exact blocker and
+preserve partial evidence. Keep researcher-feedback and human release gates;
+testing does not authorize merging or releasing.
 
 ## Manual Verification Notes
 

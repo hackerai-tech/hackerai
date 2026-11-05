@@ -9,6 +9,11 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { logger } from "@/lib/logger";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { goalServiceKey } from "@/lib/goals/server";
+
+const GOAL_PAUSE_WAIT_MS = 5_000;
 
 type AgentCancelRejectionReason =
   "chat_owner_mismatch" | "chat_missing" | "stale_run";
@@ -44,6 +49,48 @@ function logAgentCancelRejection({
 export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
+    let stage:
+      | "read_request"
+      | "authenticate"
+      | "get_chat"
+      | "pause_goal"
+      | "close_approval_session"
+      | "cancel_trigger_run"
+      | "clear_active_run" = "read_request";
+    let userId: string | undefined;
+    let ownedChat:
+      | { chatId: string; runId?: string; approvalSessionId?: string }
+      | undefined;
+    const requestStartedAt = Date.now();
+    const platformRequestId = req.headers.get("x-vercel-id");
+    const requestId =
+      platformRequestId && /^[A-Za-z0-9:_-]{1,128}$/.test(platformRequestId)
+        ? platformRequestId
+        : "unknown";
+    // A platform hard timeout bypasses catch/finally. Keep the warning budget
+    // at two for the entire request, even when several dependencies are slow.
+    const slowRequestTimers = [10_000, 20_000].map((delay) =>
+      setTimeout(() => {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_cancel_slow_request",
+            service: "hackerai-web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            endpoint,
+            request_id: requestId,
+            user_id: userId,
+            chat_id: ownedChat?.chatId,
+            trigger_run_id: ownedChat?.runId,
+            approval_session_id: ownedChat?.approvalSessionId,
+            stage,
+            elapsed_ms: Date.now() - requestStartedAt,
+          }),
+        );
+      }, delay),
+    );
     try {
       let body: { chatId?: string; expectedTriggerRunId?: string };
       try {
@@ -65,8 +112,11 @@ export const createAgentCancelPost =
         });
       }
 
-      const { userId } = await getUserIDAndPro(req);
+      stage = "authenticate";
+      const authContext = await getUserIDAndPro(req);
+      userId = authContext.userId;
 
+      stage = "get_chat";
       const chat = await getChatById({ id: chatId });
       if (chat && chat.user_id !== userId) {
         logAgentCancelRejection({
@@ -109,9 +159,61 @@ export const createAgentCancelPost =
           { status: 409 },
         );
       }
-      await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
+      ownedChat = {
+        chatId: chat.id,
+        runId: runId ?? undefined,
+        approvalSessionId: approvalSessionId ?? undefined,
+      };
+      if (runId) {
+        stage = "pause_goal";
+        const goalPauseAbort = new AbortController();
+        let goalPauseTimer: ReturnType<typeof setTimeout> | undefined;
+        const goalPauseDeadline = new Promise<never>((_, reject) => {
+          goalPauseTimer = setTimeout(() => {
+            goalPauseAbort.abort();
+            reject(new Error("Goal pause wait budget exceeded"));
+          }, GOAL_PAUSE_WAIT_MS);
+        });
+        try {
+          // Isolate this best-effort write from the shared mutation queue. The
+          // race also bounds a queued SDK call that does not observe abort.
+          await Promise.race([
+            getConvexClient(goalPauseAbort.signal).mutation(
+              api.agentGoals.pauseForCanceledRun,
+              { serviceKey: goalServiceKey(), chatId, userId, runId },
+            ),
+            goalPauseDeadline,
+          ]);
+        } catch {
+          // Stopping cost-incurring work must survive a goal-storage failure.
+          // Worker cleanup also resolves canceled goal runs to paused.
+          logger.warn(
+            "Could not confirm goal pause before Agent cancellation",
+            {
+              event: goalPauseAbort.signal.aborted
+                ? "agent_cancel_goal_pause_unconfirmed"
+                : "agent_cancel_goal_pause_failed",
+              pause_acknowledgement: "unconfirmed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              request_id: requestId,
+              failure_reason: goalPauseAbort.signal.aborted
+                ? "deadline_exceeded"
+                : "request_failed",
+            },
+          );
+        } finally {
+          clearTimeout(goalPauseTimer);
+        }
+      }
       if (!runId) {
+        stage = "close_approval_session";
+        await closeAgentApprovalSession(
+          approvalSessionId,
+          "agent-run-canceled",
+        );
         if (approvalSessionId) {
+          stage = "clear_active_run";
           await setActiveTriggerRun({
             chatId,
             triggerRunId: null,
@@ -124,7 +226,36 @@ export const createAgentCancelPost =
         return NextResponse.json({ canceled: false, reason: "no_active_run" });
       }
 
-      await cancelAgentTriggerRun(runId);
+      stage = "cancel_trigger_run";
+      // Approval cleanup must not prevent Stop from reaching the worker.
+      // Await both outcomes before clearing ownership or acknowledging success.
+      const [cancellation, approvalClose] = await Promise.allSettled([
+        cancelAgentTriggerRun(runId).finally(() => {
+          stage = "close_approval_session";
+        }),
+        closeAgentApprovalSession(approvalSessionId, "agent-run-canceled"),
+      ]);
+      if (cancellation.status === "rejected") {
+        if (approvalClose.status === "rejected") {
+          logger.warn(
+            "Approval cleanup also failed during Agent cancellation",
+            {
+              event: "agent_cancel_approval_cleanup_failed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              approval_session_id: approvalSessionId,
+              request_id: requestId,
+            },
+          );
+        }
+        stage = "cancel_trigger_run";
+        throw cancellation.reason;
+      }
+      if (approvalClose.status === "rejected") {
+        stage = "close_approval_session";
+        throw approvalClose.reason;
+      }
+      stage = "clear_active_run";
       await setActiveTriggerRun({
         chatId,
         triggerRunId: null,
@@ -143,6 +274,16 @@ export const createAgentCancelPost =
         endpoint,
         action: "cancel",
         fallbackMessage: "Failed to cancel run",
+        context: {
+          requestId,
+          userId,
+          chatId: ownedChat?.chatId,
+          runId: ownedChat?.runId,
+          approvalSessionId: ownedChat?.approvalSessionId,
+          stage,
+        },
       });
+    } finally {
+      slowRequestTimers.forEach(clearTimeout);
     }
   };

@@ -61,3 +61,5 @@ packages/desktop/src-tauri/target/
 
 .trigger
 /.artifacts/
+__pycache__/
+*.pyc

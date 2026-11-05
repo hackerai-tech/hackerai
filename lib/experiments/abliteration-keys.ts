@@ -1,1 +1,33 @@
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
+export const ABLITERATED_MAX_EXPERIMENT_KEY = "abliterated_max_moderated_v1";
+export const ABLITERATED_PAID_FIRST_STEP_KEY = "abliterated_paid_first_step_v2";
+export const ABLITERATED_PAID_THREE_STEPS_KEY =
+  "abliterated_paid_three_steps_v1";
+
+// Routing attribution for the shipped default; this is not a feature flag.
+export const ABLITERATED_PAID_MODERATED_DEFAULT_KEY =
+  "abliterated_paid_moderated_default_v1";
+
+// Paid three-step policy, separate from the retired paid trial/default.
+export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
+  "abliterated_paid_moderated_three_steps_default_v1";
+
+// Historical attribution only. New requests cannot enroll in this stopped experiment.
+export const ABLITERATED_PRO_THREE_STEPS_KEY = "abliterated_pro_three_steps_v1";
+
+// Historical experiment attribution; new requests use the shipped policy below.
+export const ABLITERATED_FREE_THREE_STEPS_KEY =
+  "abliterated_free_three_steps_v1";
+
+// Routing attribution only, not a feature flag or a new experiment.
+export const ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY =
+  "abliterated_free_three_steps_default_v1";
+
+export function isFreeThreeStepsPolicy(key: string | undefined): boolean {
+  return (
+    key === ABLITERATED_FREE_THREE_STEPS_KEY ||
+    key === ABLITERATED_FREE_THREE_STEPS_DEFAULT_KEY
+  );
+}
+
+export const INFERENCE_CYBER_FLAG = "inference_cyber_v1";

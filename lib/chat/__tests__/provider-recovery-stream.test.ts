@@ -1,4 +1,7 @@
+import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
+import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import {
+  createUIMessageStream,
   convertToModelMessages,
   readUIMessageStream,
   stepCountIs,
@@ -15,8 +18,11 @@ import {
   isProviderResponseTimeout,
 } from "@/lib/ai/provider-stream-timeout";
 import {
+  appendProviderEmptyResponseFailure,
   decideProviderRecovery,
+  isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
+  PROVIDER_EMPTY_RESPONSE_MESSAGE,
   shouldRetryProviderStreamWithFallback,
 } from "../agent-long-provider-retry";
 import { getProviderToolCallDiagnostics } from "../provider-tool-call-batches";
@@ -69,6 +75,214 @@ const response = (parts: unknown[]) => ({
 
 afterEach(() => jest.useRealTimers());
 
+it("reproduces a successful empty stop through the SDK UI stream", async () => {
+  const primary = jest.fn().mockResolvedValue(response([finish("stop")]));
+  const result = streamText({
+    model: model(primary),
+    prompt: "Say hello.",
+    maxRetries: 0,
+  });
+  let final: UIMessage | undefined;
+  for await (const message of readUIMessageStream({
+    stream: result.toUIMessageStream(),
+  }))
+    final = message;
+
+  expect(primary).toHaveBeenCalledTimes(1);
+  expect(await result.finishReason).toBe("stop");
+  expect(final).toBeUndefined();
+  const hasCandidate = shouldRetryProviderStreamWithFallback(
+    final?.parts ?? [],
+    { finishReason: "stop", hasTerminalProviderStreamError: false },
+  );
+  expect(hasCandidate).toBe(true);
+  const eligible = {
+    hasCandidate,
+    modelEligible: true,
+    userCancelled: false,
+    unrecoverableVision: false,
+    alreadyRetried: false,
+    streamAborted: false,
+    loopRecovery: false,
+  };
+  expect(decideProviderRecovery(eligible).attempt).toBe(true);
+  expect(
+    decideProviderRecovery({ ...eligible, userCancelled: true }).attempt,
+  ).toBe(false);
+  expect(
+    decideProviderRecovery({ ...eligible, alreadyRetried: true }).attempt,
+  ).toBe(false);
+  expect(
+    decideProviderRecovery({ ...eligible, modelEligible: false }).attempt,
+  ).toBe(false);
+});
+
+it("streams and retains a visible failure when an empty stop cannot recover", async () => {
+  const primary = streamText({
+    model: model(jest.fn().mockResolvedValue(response([finish("stop")]))),
+    prompt: "Say hello.",
+    maxRetries: 0,
+  });
+  let persisted: UIMessage[] = [];
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.merge(
+        primary.toUIMessageStream({
+          generateMessageId: () => "assistant-empty",
+          onFinish: ({ messages }) => {
+            expect(isTerminalEmptyAssistantResponse([], "stop")).toBe(true);
+            appendProviderEmptyResponseFailure(
+              messages,
+              "assistant-empty",
+              writer,
+            );
+            persisted = messages;
+          },
+        }),
+      );
+    },
+  });
+  let final: UIMessage | undefined;
+  for await (const message of readUIMessageStream({ stream })) final = message;
+
+  expect(final?.parts).toContainEqual({
+    type: "text",
+    text: PROVIDER_EMPTY_RESPONSE_MESSAGE,
+    state: "done",
+  });
+  expect(persisted[0].parts).toContainEqual({
+    type: "text",
+    text: PROVIDER_EMPTY_RESPONSE_MESSAGE,
+    state: "done",
+  });
+  expect(
+    JSON.parse(JSON.stringify(persisted))[0].parts.some(
+      (part: { text?: string }) =>
+        part.text === PROVIDER_EMPTY_RESPONSE_MESSAGE,
+    ),
+  ).toBe(true);
+});
+
+it("continues a tool-only stop from the completed result without replaying its action", async () => {
+  const execute = jest.fn(async () => ({ saved: true }));
+  const tools = { save: tool({ inputSchema: z.object({}), execute }) };
+  const primaryModel = jest
+    .fn()
+    .mockResolvedValueOnce(
+      response([
+        {
+          type: "tool-call",
+          toolCallId: "saved-once",
+          toolName: "save",
+          input: "{}",
+        },
+        finish("tool-calls"),
+      ]),
+    )
+    .mockResolvedValueOnce(response([finish("stop")]));
+  const primary = streamText({
+    model: model(primaryModel),
+    messages: [{ role: "user", content: "Save, then tell me what happened." }],
+    tools,
+    stopWhen: stepCountIs(3),
+    maxRetries: 0,
+  });
+  let toolOnly: UIMessage | undefined;
+  for await (const message of readUIMessageStream({
+    stream: primary.toUIMessageStream(),
+  }))
+    toolOnly = message;
+
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(await primary.finishReason).toBe("stop");
+  expect(isTerminalEmptyAssistantResponse(toolOnly!.parts, "stop")).toBe(true);
+  expect(
+    shouldRetryProviderStreamWithFallback(toolOnly!.parts, {
+      finishReason: "stop",
+      hasTerminalProviderStreamError: false,
+    }),
+  ).toBe(false);
+  const continuation = prepareProviderDisconnectContinuation([toolOnly!]);
+  expect(continuation?.preservedCompletedToolCount).toBe(1);
+  const messages = await convertToModelMessages(continuation!.messages, {
+    tools,
+  });
+  const recovered = streamText({
+    model: model(
+      jest
+        .fn()
+        .mockResolvedValue(
+          response([
+            { type: "text-start", id: "answer" },
+            { type: "text-delta", id: "answer", delta: "Saved once." },
+            { type: "text-end", id: "answer" },
+            finish("stop"),
+          ]),
+        ),
+    ),
+    messages,
+    tools,
+    maxRetries: 0,
+  });
+  let final: UIMessage | undefined;
+  for await (const message of readUIMessageStream({
+    stream: recovered.toUIMessageStream(),
+  }))
+    final = message;
+  expect(final?.parts).toContainEqual({
+    type: "text",
+    text: "Saved once.",
+    state: "done",
+  });
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it("shows an unknown tool outcome as failed before the saved empty-answer failure", async () => {
+  const messages = [
+    {
+      id: "assistant-unknown",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-save",
+          toolCallId: "unknown",
+          state: "input-available",
+          input: {},
+        },
+      ],
+    },
+  ] as UIMessage[];
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: "start", messageId: "assistant-unknown" });
+      writer.write({
+        type: "tool-input-available",
+        toolCallId: "unknown",
+        toolName: "save",
+        input: {},
+      });
+      appendProviderEmptyResponseFailure(messages, "assistant-unknown", writer);
+      writer.write({ type: "finish" });
+    },
+  });
+  let final: UIMessage | undefined;
+  for await (const message of readUIMessageStream({ stream })) final = message;
+  expect(final?.parts).toContainEqual(
+    expect.objectContaining({
+      type: "tool-save",
+      toolCallId: "unknown",
+      state: "output-error",
+      errorText: expect.stringContaining("outcome is unknown"),
+    }),
+  );
+  expect(messages[0].parts).toContainEqual(
+    expect.objectContaining({
+      toolCallId: "unknown",
+      state: "output-error",
+    }),
+  );
+});
+
 it.each([
   [false, false, true],
   [true, false, true],
@@ -78,7 +292,7 @@ it.each([
   [true, true, false],
 ])(
   "settles an unfinished retained tool before fallback (later step: %s, completed tail: %s, completed tool: %s)",
-  async (laterStep, allowCompletedTail, hasCompletedTool) => {
+  async (laterStep, completedTail, hasCompletedTool) => {
     const execute = jest.fn();
     const tools = { save: tool({ inputSchema: z.object({}), execute }) };
     const unfinished = {
@@ -102,14 +316,12 @@ it.each([
         unfinished,
         ...(laterStep ? [{ type: "step-start" }] : []),
         ...(hasCompletedTool ? [completed] : []),
-        ...(allowCompletedTail
+        ...(completedTail
           ? []
           : [{ type: "text", text: "incomplete", state: "streaming" }]),
       ],
     } as UIMessage;
-    const continuation = prepareProviderDisconnectContinuation([partial], {
-      allowCompletedTail,
-    });
+    const continuation = prepareProviderDisconnectContinuation([partial]);
     const messages = await convertToModelMessages(
       [
         { id: "user", role: "user", parts: [{ type: "text", text: "Save" }] },
@@ -173,13 +385,27 @@ it.each([
   },
 );
 
-it.each(["504", "idle_timeout", "response_timeout"])(
+it.each([
+  "504",
+  "read_econnreset",
+  "completed_tool_econnreset",
+  "idle_timeout",
+  "response_timeout",
+])(
   "recovers %s after tool execution through real SDK/UI streams without executing the tool twice",
   async (failureMode) => {
-    if (failureMode !== "504") jest.useFakeTimers();
+    const watchdogFailure =
+      failureMode === "idle_timeout" || failureMode === "response_timeout";
+    if (watchdogFailure) jest.useFakeTimers();
     const execute = jest.fn(async () => ({ saved: true }));
     const tools = { save: tool({ inputSchema: z.object({}), execute }) };
-    const upstreamError = { code: 504, message: "The operation was aborted" };
+    const upstreamError =
+      failureMode === "read_econnreset" ||
+      failureMode === "completed_tool_econnreset"
+        ? new TypeError("fetch failed", {
+            cause: new Error("read ECONNRESET"),
+          })
+        : { code: 504, message: "The operation was aborted" };
     const primary = jest
       .fn()
       .mockResolvedValueOnce(
@@ -193,27 +419,29 @@ it.each(["504", "idle_timeout", "response_timeout"])(
           finish("tool-calls"),
         ]),
       )
-      .mockResolvedValueOnce(
-        failureMode === "response_timeout"
-          ? new Promise(() => {})
-          : failureMode === "idle_timeout"
-            ? {
-                stream: new ReadableStream({
-                  start(output) {
-                    output.enqueue({ type: "text-start", id: "partial" });
-                    output.enqueue({
-                      type: "text-delta",
-                      id: "partial",
-                      delta: "incomplete",
-                    });
-                  },
-                }),
-              }
-            : response([
-                { type: "text-start", id: "partial" },
-                { type: "text-delta", id: "partial", delta: "incomplete" },
-                { type: "error", error: upstreamError },
-              ]),
+      .mockImplementationOnce(() =>
+        failureMode === "completed_tool_econnreset"
+          ? Promise.reject(upstreamError)
+          : failureMode === "response_timeout"
+            ? new Promise(() => {})
+            : failureMode === "idle_timeout"
+              ? {
+                  stream: new ReadableStream({
+                    start(output) {
+                      output.enqueue({ type: "text-start", id: "partial" });
+                      output.enqueue({
+                        type: "text-delta",
+                        id: "partial",
+                        delta: "incomplete",
+                      });
+                    },
+                  }),
+                }
+              : response([
+                  { type: "text-start", id: "partial" },
+                  { type: "text-delta", id: "partial", delta: "incomplete" },
+                  { type: "error", error: upstreamError },
+                ]),
       );
     let failure: unknown;
     const initial = streamText({
@@ -234,36 +462,37 @@ it.each(["504", "idle_timeout", "response_timeout"])(
       }))
         partial = message;
     })();
-    if (failureMode !== "504") await jest.advanceTimersByTimeAsync(1100);
+    if (watchdogFailure) await jest.advanceTimersByTimeAsync(1100);
     await readInitial;
     expect(execute).toHaveBeenCalledTimes(1);
     expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
-    const continuation = prepareProviderDisconnectContinuation([partial!], {
-      allowCompletedTail: isProviderResponseTimeout(failure),
-    });
+    const continuation = prepareProviderDisconnectContinuation([partial!]);
     expect(isProviderResponseTimeout(failure)).toBe(
       failureMode === "response_timeout",
     );
     expect(continuation?.preservedCompletedToolCount).toBe(1);
-    if (failureMode === "response_timeout") {
+    if (
+      failureMode === "response_timeout" ||
+      failureMode === "completed_tool_econnreset"
+    ) {
       expect(continuation?.removedPartCount).toBe(0);
-      const decision = {
-        userCancelled: false,
-        unrecoverableVision: false,
-        alreadyRetried: false,
-        streamAborted: false,
-        loopRecovery: false,
-        hasCandidate: Boolean(continuation),
-        modelEligible: Boolean(continuation),
-      };
-      expect(decideProviderRecovery(decision).attempt).toBe(true);
-      expect(
-        decideProviderRecovery({ ...decision, userCancelled: true }).reason,
-      ).toBe("user_cancelled");
-      expect(
-        decideProviderRecovery({ ...decision, alreadyRetried: true }).reason,
-      ).toBe("retry_budget_exhausted");
     }
+    const decision = {
+      userCancelled: false,
+      unrecoverableVision: false,
+      alreadyRetried: false,
+      streamAborted: false,
+      loopRecovery: false,
+      hasCandidate: Boolean(continuation),
+      modelEligible: Boolean(continuation),
+    };
+    expect(decideProviderRecovery(decision).attempt).toBe(true);
+    expect(
+      decideProviderRecovery({ ...decision, userCancelled: true }).reason,
+    ).toBe("user_cancelled");
+    expect(
+      decideProviderRecovery({ ...decision, alreadyRetried: true }).reason,
+    ).toBe("retry_budget_exhausted");
     const messages = await convertToModelMessages(continuation!.messages, {
       tools,
     });
@@ -354,4 +583,40 @@ it("recognizes HTTP rejection delivered asynchronously before any content, with 
   expect(
     decideProviderRecovery({ ...eligible, alreadyRetried: true }).attempt,
   ).toBe(false);
+});
+
+it("keeps safety-read ownership through real SDK prepareStep error delivery", async () => {
+  const failure = Object.freeze(
+    Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("read ECONNRESET"), {
+        code: "ECONNRESET",
+      }),
+    }),
+  );
+  const call = jest.fn();
+  const observed = jest.fn();
+  const prepare = jest.fn(async () => rethrowBrowserHandoffReadError(failure));
+  const result = streamText({
+    model: model(call),
+    prompt: "fixture",
+    prepareStep: prepare,
+    onError: ({ error }) => {
+      observed(error);
+    },
+  });
+  await result.consumeStream();
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(call).not.toHaveBeenCalled();
+  expect(observed).toHaveBeenCalledWith(failure);
+  const terminal = wrapProviderTerminalError(observed.mock.calls[0][0], {
+    model: "previous/model",
+  });
+  expect(terminal).toMatchObject({
+    origin: "browser_handoff_read",
+    category: "stream_terminated",
+    provider: "unknown",
+    model: "unknown",
+    cause: failure,
+  });
+  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
 });

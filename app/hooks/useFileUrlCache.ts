@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback } from "react";
-import { useAction } from "convex/react";
+import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useAction, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
@@ -7,10 +7,27 @@ import type { ChatMessage } from "@/types";
 
 interface CachedUrl {
   url: string;
-  timestamp: number;
+  expiresAt: number;
 }
 
-const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 hour)
+const URL_CACHE_EXPIRATION = 50 * 60 * 1000;
+const SIGNED_URL_SAFETY_MARGIN = 60 * 1000;
+
+function getCacheLifetime(url: string): number {
+  try {
+    const lifetimes = new URL(url).searchParams.getAll("X-Amz-Expires");
+    if (lifetimes.length === 0) return URL_CACHE_EXPIRATION;
+    if (lifetimes.length !== 1 || !/^\d+$/.test(lifetimes[0])) return 0;
+    const seconds = Number(lifetimes[0]);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) return 0;
+    return Math.max(
+      0,
+      Math.min(URL_CACHE_EXPIRATION, seconds * 1000 - SIGNED_URL_SAFETY_MARGIN),
+    );
+  } catch {
+    return 0;
+  }
+}
 const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.ts
 
 /**
@@ -18,11 +35,13 @@ const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.t
  *
  * Features:
  * - Batch prefetches URLs for all S3 image files in messages (images need eager loading)
- * - Caches URLs with expiration handling (50 min, before 1 hour S3 expiry)
+ * - Caches fresh URLs for at most 50 minutes, shortened for their signed lifetime
  * - Provides methods to get and set cached URLs (for lazy-loaded non-image files)
  * - Automatically cleans up expired URLs
  */
 export function useFileUrlCache(messages: ChatMessage[]) {
+  const { isAuthenticated, isLoading, isRefreshing } = useConvexAuth();
+  const authReady = isAuthenticated && !isLoading && !isRefreshing;
   const getFileUrlsBatchAction = useAction(
     api.s3Actions.getFileUrlsBatchAction,
   );
@@ -30,6 +49,23 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
   const pendingIdsRef = useRef<Set<string>>(new Set());
   const prefetchQueueRef = useRef<Promise<void> | null>(null);
+  const authScopeRef = useRef(new AbortController());
+
+  useLayoutEffect(() => {
+    const scope = new AbortController();
+    authScopeRef.current = scope;
+    // Each scope owns its reservations, including React's effect replay.
+    pendingIdsRef.current.clear();
+    prefetchQueueRef.current = null;
+    if (!authReady) {
+      urlCacheRef.current.clear();
+      prefetchedIdsRef.current.clear();
+    }
+    // Invalidate during commit, before pending responses can resume.
+    // Pending reads cannot be canceled by Convex, but their results and queued
+    // batches must not survive a loss of authentication or an unmount.
+    return () => scope.abort();
+  }, [authReady]);
 
   // Get cached URL for a file (returns null if expired or not cached)
   const getCachedUrl = useCallback((fileId: string): string | null => {
@@ -38,7 +74,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
     // Check if URL has expired
     const now = Date.now();
-    if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+    if (now >= cached.expiresAt) {
       urlCacheRef.current.delete(fileId);
       prefetchedIdsRef.current.delete(fileId);
       return null;
@@ -49,13 +85,22 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
   // Set/update cached URL for a file (used for lazy-loaded non-image files)
   const setCachedUrl = useCallback((fileId: string, url: string) => {
-    const now = Date.now();
-    urlCacheRef.current.set(fileId, { url, timestamp: now });
+    const lifetime = getCacheLifetime(url);
+    if (lifetime <= 0) {
+      urlCacheRef.current.delete(fileId);
+      prefetchedIdsRef.current.delete(fileId);
+      return;
+    }
+    // Actions sign fresh URLs on demand. Start their TTL on receipt so server
+    // and browser clock differences cannot extend or prematurely expire it.
+    urlCacheRef.current.set(fileId, { url, expiresAt: Date.now() + lifetime });
     prefetchedIdsRef.current.add(fileId);
   }, []);
 
   // Prefetch image URLs for messages
   useEffect(() => {
+    if (!authReady) return;
+    const scope = authScopeRef.current;
     async function prefetchImageUrls() {
       // Track seen fileIds within this run to avoid duplicates
       const seenInThisRun = new Set<string>();
@@ -129,21 +174,23 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
       const runBatches = async () => {
         for (const chunk of chunks) {
+          if (scope.signal.aborted) return;
           try {
             const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
-            const now = Date.now();
+            if (scope.signal.aborted) return;
             if (urlMap && typeof urlMap === "object") {
               for (const [fileId, url] of Object.entries(urlMap) as Array<
                 [string, string]
               >) {
-                urlCacheRef.current.set(fileId, { url, timestamp: now });
-                prefetchedIdsRef.current.add(fileId);
+                setCachedUrl(fileId, url);
               }
             }
           } catch (error) {
-            console.error("Failed to prefetch image URLs:", error);
+            if (!scope.signal.aborted)
+              console.error("Failed to prefetch image URLs:", error);
           } finally {
-            for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
+            if (!scope.signal.aborted)
+              for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
           }
         }
       };
@@ -157,7 +204,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
     }
 
     prefetchImageUrls();
-  }, [messages, getFileUrlsBatchAction]);
+  }, [messages, getFileUrlsBatchAction, authReady, setCachedUrl]);
 
   // Cleanup expired URLs periodically
   useEffect(() => {
@@ -167,7 +214,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         const entriesToDelete: string[] = [];
 
         for (const [fileId, cached] of urlCacheRef.current.entries()) {
-          if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+          if (now >= cached.expiresAt) {
             entriesToDelete.push(fileId);
           }
         }

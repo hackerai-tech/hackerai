@@ -1,5 +1,8 @@
 import type { NoUserInfo, UserInfo } from "@workos-inc/authkit-nextjs";
-import { isEndedSessionRefreshError } from "./expected-auth-errors";
+import {
+  isEndedSessionRefreshError,
+  isInvalidRefreshTokenError,
+} from "./expected-auth-errors";
 
 type ServerAuth = UserInfo | NoUserInfo;
 
@@ -14,6 +17,15 @@ export async function resolveClientInitialAuth(
       await loadAuth();
     return initialAuth;
   } catch (error) {
+    if (isInvalidRefreshTokenError(error)) {
+      console.warn(
+        JSON.stringify({
+          event: "auth.invalid_refresh_token",
+          boundary: "initial_auth",
+        }),
+      );
+      return { user: null };
+    }
     if (isEndedSessionRefreshError(error)) {
       return { user: null };
     }

@@ -1,6 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -33,6 +36,39 @@ const DataControlsTab = () => {
   const [showDeleteSandboxes, setShowDeleteSandboxes] = useState(false);
   const [isDeletingSandboxes, setIsDeletingSandboxes] = useState(false);
   const [showManageSharedChats, setShowManageSharedChats] = useState(false);
+  const modelImprovement = useQuery(
+    api.userCustomization.getModelImprovementPreference,
+    {},
+  );
+  const saveModelImprovement = useMutation(
+    api.userCustomization.setModelImprovementPreference,
+  );
+  const [pendingModelImprovement, setPendingModelImprovement] = useState<
+    boolean | null
+  >(null);
+  const [failedModelImprovement, setFailedModelImprovement] = useState<
+    boolean | null
+  >(null);
+  const isSavingModelImprovement = pendingModelImprovement !== null;
+
+  const handleModelImprovementChange = async (enabled: boolean) => {
+    if (!modelImprovement || isSavingModelImprovement) return;
+    setPendingModelImprovement(enabled);
+    setFailedModelImprovement(null);
+    try {
+      await saveModelImprovement({ enabled });
+      toast.success(
+        enabled ? "Model improvement enabled." : "Model improvement disabled.",
+      );
+    } catch {
+      setFailedModelImprovement(enabled);
+      toast.error(
+        "Couldn't save your model improvement preference. Please try again.",
+      );
+    } finally {
+      setPendingModelImprovement(null);
+    }
+  };
 
   const handleDeleteAllChats = async () => {
     if (isDeletingChats) return;
@@ -88,6 +124,64 @@ const DataControlsTab = () => {
 
   return (
     <div className="space-y-6 min-h-0">
+      <div className="flex items-start justify-between gap-4 py-3">
+        <div className="min-w-0">
+          <label htmlFor="model-improvement" className="font-medium">
+            Improve the model for everyone
+          </label>
+          <p
+            id="model-improvement-description"
+            className="mt-1 text-sm text-muted-foreground"
+          >
+            Control whether your chats are used for model training.
+          </p>
+          <p
+            id="model-improvement-status"
+            role="status"
+            className="mt-2 text-sm text-muted-foreground empty:mt-0"
+          >
+            {modelImprovement === undefined
+              ? "Loading preference…"
+              : modelImprovement === null
+                ? "Sign in with an active account to manage this preference."
+                : isSavingModelImprovement
+                  ? "Saving…"
+                  : null}
+          </p>
+          {modelImprovement && failedModelImprovement !== null && (
+            <div className="mt-2 space-y-2">
+              <p role="alert" className="text-sm text-destructive">
+                Your change wasn&apos;t saved. The switch shows your saved
+                preference.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  handleModelImprovementChange(failedModelImprovement)
+                }
+              >
+                Retry saving preference
+              </Button>
+            </div>
+          )}
+        </div>
+        <Switch
+          id="model-improvement"
+          className="mt-1 shrink-0 data-[state=checked]:bg-blue-600"
+          aria-describedby="model-improvement-description model-improvement-status"
+          checked={
+            modelImprovement
+              ? (pendingModelImprovement ?? modelImprovement.enabled)
+              : false
+          }
+          disabled={!modelImprovement || isSavingModelImprovement}
+          onCheckedChange={handleModelImprovementChange}
+        />
+      </div>
+
+      <div className="border-t" />
+
       {/* Manage Shared Chats Section */}
       <div>
         <div className="flex items-center justify-between py-3">

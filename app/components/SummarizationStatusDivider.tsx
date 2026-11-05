@@ -48,6 +48,7 @@ export function SummarizationStatusDivider({
       "Couldn’t summarize earlier messages. Your existing context is unchanged."
     : normalizeSummarizationLabel(status, message);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const isSlow = isStarted && elapsedSeconds >= 30;
 
   useEffect(() => {
     if (!isStarted) return;
@@ -86,7 +87,11 @@ export function SummarizationStatusDivider({
           data-testid="summarization-status-icon"
         />
       )}
-      {isStarted ? (
+      {isSlow ? (
+        <span className="min-w-0 break-words">
+          Compacting context · This can take a few minutes
+        </span>
+      ) : isStarted ? (
         <div className="min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-2">
             <Shimmer
@@ -109,12 +114,6 @@ export function SummarizationStatusDivider({
             <p className="text-xs leading-5">
               Summarizing earlier messages to make room. Your task will resume
               automatically.
-            </p>
-          )}
-          {elapsedSeconds >= 30 && (
-            <p className="text-xs leading-5">
-              This is taking longer than usual. You can stop the task at any
-              time.
             </p>
           )}
         </div>

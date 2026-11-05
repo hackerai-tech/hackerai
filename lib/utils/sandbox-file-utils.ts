@@ -1,5 +1,18 @@
 import "server-only";
 
+import {
+  CloudAcquisitionBudgetExhaustedError,
+  CloudAcquisitionTimeoutError,
+  isCloudAcquisitionBudgetSpent,
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
+
+import {
+  checkAttachmentReadiness,
+  sampleAttachmentFailureMetrics,
+} from "./sandbox-upload-readiness";
+import { probeSandboxUploadWrite } from "./sandbox-upload-diagnostics";
 import { abortableDelay as delay } from "./abortable-delay";
 import {
   runAttachmentCommand,
@@ -11,7 +24,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
-import { miosaErrorDiagnostics } from "@/lib/ai/tools/utils/miosa-acquisition-diagnostics";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
 import { getSandboxLogFields } from "@/lib/ai/tools/utils/sandbox-types";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
@@ -39,7 +51,7 @@ export type SandboxUploadResult = {
   failedCount: number;
   pathRewrites: SandboxFilePathRewrite[];
   failureDetails?: SandboxUploadFailureDetail[];
-  retriedWithFreshSandbox?: boolean;
+  retriedAfterReconnect?: boolean;
 };
 
 export type SandboxUploadFailureReason =
@@ -47,6 +59,9 @@ export type SandboxUploadFailureReason =
   | "local_command_unavailable"
   | "local_file_prepare_failed"
   | "windows_command_syntax"
+  | "attachment_client_unavailable"
+  | "attachment_dns_failure"
+  | "attachment_resource_exhausted"
   | "sandbox_placement_failure"
   | "sandbox_operation_timeout"
   | "attachment_download_timeout"
@@ -64,16 +79,55 @@ type SandboxCommandResult = {
   error?: string;
 };
 
+type LocalCopyFailureReason =
+  | "permission_denied"
+  | "path_missing"
+  | "same_file"
+  | "destination_invalid"
+  | "disk_full"
+  | "unclassified";
+
+// Combined fallback errors retain both messages for existing reporting, but
+// terminal copy diagnostics describe the last attempt only.
+const finalLocalCopyReasons = new WeakMap<Error, LocalCopyFailureReason>();
+
+// Diagnostic only: do not change retries or forward local paths/stderr.
+const classifyLocalCopyFailure = (error: unknown): LocalCopyFailureReason => {
+  const finalReason =
+    error instanceof Error ? finalLocalCopyReasons.get(error) : undefined;
+  if (finalReason) return finalReason;
+  const message = errorMessage(error);
+  if (
+    /permission denied|operation not permitted|access is denied|read-only file system/i.test(
+      message,
+    )
+  )
+    return "permission_denied";
+  if (/are identical|are the same file/i.test(message)) return "same_file";
+  if (/no space left on device|disk quota exceeded/i.test(message))
+    return "disk_full";
+  if (/not a directory|is a directory/i.test(message))
+    return "destination_invalid";
+  if (
+    /no such file or directory|cannot stat|cannot find the file/i.test(message)
+  )
+    return "path_missing";
+  return "unclassified";
+};
+
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
-  phase?: "acquisition" | "transfer";
+  phase?: "acquisition" | "readiness" | "transfer";
   error: string;
   exitCode: number | null;
   reason: SandboxUploadFailureReason;
+  localCopyFailureReason?: LocalCopyFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
-  sandboxProvider?: "miosa" | "e2b";
+  readinessProbeReason?: SandboxReadinessFailureReason;
+  sandboxProvider?: "e2b";
   errorName?: string;
+  acquisitionStage?: CloudAcquisitionStage;
   errorCode?: string;
   errorHttpStatus?: number;
   errorRequestId?: string;
@@ -93,12 +147,14 @@ type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
 
 type UploadSandboxFilesOptions = {
   signal?: AbortSignal;
-  retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
+  retryAfterReconnectOnTransientFailure?: boolean | (() => boolean);
   logContext?: {
     service: "agent-long" | "chat-handler" | "hackerai-web";
     requestId?: string;
     userId: string;
     chatId: string;
+    environment?: string;
+    release?: string;
   };
 };
 
@@ -118,9 +174,10 @@ type CollectSandboxFilesOptions = {
 
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 const ACQUISITION_ERROR_NAMES = new Set([
+  "CloudAcquisitionTimeoutError",
+  "CloudAcquisitionBudgetExhaustedError",
   "E2BAcquisitionError",
-  "MiosaWorkspaceUnavailableError",
-  "CloudMigrationUnavailableError",
+  "CloudWorkspaceUnavailableError",
 ]);
 
 const logLocalAttachmentDebug = (
@@ -174,7 +231,7 @@ const WRAPPED_FILE_TRANSFER_ERROR_PATTERN =
 const LOCAL_COMMAND_NO_RESPONSE_PATTERN =
   /\bCommand timeout after \d+ms\b[^\n]*\bpublished:\s*\d+ms\b[^\n]*\bfirstMsg:\s*no\b[^\n]*\bconnectionId=/i;
 const LOCAL_COMMAND_UNAVAILABLE_PATTERN =
-  /\blocal sandbox connection\b.*\bis not subscribed to the command relay\b/i;
+  /\blocal sandbox connection\b.*\bis not subscribed to the command relay\b|\bthe selected computer is disconnected\b|\bselected connection is unavailable\b/i;
 const LOCAL_FILE_PREPARE_FAILURE_PATTERN = /\bFailed to prepare local file\b/i;
 const WINDOWS_COMMAND_SYNTAX_PATTERN =
   /\bthe syntax of the command is incorrect\b|\bis not recognized as an internal or external command\b/i;
@@ -214,6 +271,28 @@ const classifySandboxUploadFailureReason = (
   }
   if (LOCAL_COMMAND_UNAVAILABLE_PATTERN.test(message)) {
     return "local_command_unavailable";
+  }
+  if (
+    /No supported Windows attachment transfer client is available/i.test(
+      message,
+    )
+  ) {
+    return "attachment_client_unavailable";
+  }
+  if (
+    /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
+      message,
+    )
+  ) {
+    return "attachment_resource_exhausted";
+  }
+  if (
+    file.kind === "url" &&
+    /curl:\s*\(6\)|could not resolve host|unable to resolve host address/i.test(
+      message,
+    )
+  ) {
+    return "attachment_dns_failure";
   }
   if (WINDOWS_COMMAND_SYNTAX_PATTERN.test(message)) {
     return "windows_command_syntax";
@@ -258,13 +337,15 @@ const classifySandboxUploadFailureReason = (
 const logSandboxAcquisitionRecovery = (
   options: UploadSandboxFilesOptions | undefined,
   event:
+    | "sandbox_attachment_acquisition_retry_skipped"
     | "sandbox_attachment_acquisition_retry_scheduled"
     | "sandbox_attachment_acquisition_recovered"
     | "sandbox_attachment_acquisition_retry_failed",
   level: "info" | "warn",
   initialFailureReason: SandboxReadinessFailureReason,
   finalFailureReason?: SandboxReadinessFailureReason,
-  recoveryStrategy?: "fresh_sandbox",
+  recoveryStrategy?: "reconnect",
+  skipReason?: "budget_exhausted",
 ): void => {
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -283,6 +364,7 @@ const logSandboxAcquisitionRecovery = (
     initial_failure_reason: initialFailureReason,
     final_failure_reason: finalFailureReason ?? null,
     recovery_strategy: recoveryStrategy ?? null,
+    ...(skipReason ? { skip_reason: skipReason } : {}),
   });
 
   if (level === "warn") console.warn(payload);
@@ -344,12 +426,15 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
+type AttachmentStaging = "requested_this_run" | "not_requested_this_run";
+
 const formatSandboxAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
-  `<attachment filename="${sanitizedName}" local_path="${localPath}"${
+  `<attachment filename="${sanitizedName}" local_path="${localPath}" staging="${staging}"${
     legacyFallbackPath
       ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
       : ""
@@ -358,9 +443,10 @@ const formatSandboxAttachmentTag = (
 const formatInlineImageAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
-  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}"${
+  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}" staging="${staging}"${
     legacyFallbackPath
       ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
       : ""
@@ -370,15 +456,22 @@ const formatSandboxFileTag = (
   kind: SandboxAttachmentTagKind,
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
   kind === "inline-image"
     ? formatInlineImageAttachmentTag(
         sanitizedName,
         localPath,
+        staging,
         legacyFallbackPath,
       )
-    : formatSandboxAttachmentTag(sanitizedName, localPath, legacyFallbackPath);
+    : formatSandboxAttachmentTag(
+        sanitizedName,
+        localPath,
+        staging,
+        legacyFallbackPath,
+      );
 
 const getSandboxAttachmentIdentity = (part: any): string => {
   if (part?.storage === "local-desktop") {
@@ -456,6 +549,8 @@ export const collectSandboxFiles = (
   updatedMessages.forEach((msg, i) => {
     if (msg.role !== "user" || !msg.parts) return;
 
+    const staging: AttachmentStaging =
+      i === lastUserIdx ? "requested_this_run" : "not_requested_this_run";
     const tags: string[] = [];
     (msg.parts as any[]).forEach((part) => {
       if (part?.type !== "file") return;
@@ -487,6 +582,7 @@ export const collectSandboxFiles = (
           formatSandboxAttachmentTag(
             sanitizedName,
             localPath,
+            staging,
             i === lastUserIdx
               ? undefined
               : getLegacySandboxAttachmentLocalPath(
@@ -517,6 +613,7 @@ export const collectSandboxFiles = (
             options.getAttachmentTagKind?.(part) ?? "attachment",
             sanitizedName,
             localPath,
+            staging,
             i === lastUserIdx
               ? undefined
               : getLegacySandboxAttachmentLocalPath(
@@ -681,7 +778,7 @@ export const recoverProviderVisibleImagesAfterSandboxUploadFailure = (
       failed_image_count: failedImageFiles.length,
       failure_reason: failure?.reason ?? "unknown",
       sandbox_readiness_reason: failure?.sandboxReadinessReason ?? "unknown",
-      retried_with_fresh_sandbox: uploadResult.retriedWithFreshSandbox ?? false,
+      retried_after_reconnect: uploadResult.retriedAfterReconnect ?? false,
     }),
   );
 
@@ -735,6 +832,9 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
         formatSandboxAttachmentTag(
           sanitizedName,
           localPath,
+          messageIndex === lastUserIdx
+            ? "requested_this_run"
+            : "not_requested_this_run",
           messageIndex === lastUserIdx
             ? undefined
             : getLegacySandboxAttachmentLocalPath(
@@ -822,20 +922,6 @@ const downloadFileToSandbox = async (
     result = await runSandboxCommand(sandbox, curlCmd, signal);
   }
 
-  // Best-effort diagnostics probe — never let this mask the original error.
-  let diagnostics = "";
-  try {
-    const probe = await runSandboxCommand(
-      sandbox,
-      `df -h /home/user 2>&1 || true; id 2>&1 || true`,
-      signal,
-    );
-    diagnostics = (probe.stdout || "").slice(0, 1024);
-  } catch (error) {
-    throwIfAttachmentAborted(signal, error);
-    // ignore probe failures
-  }
-
   // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
   let safeUrl = url;
   try {
@@ -849,8 +935,7 @@ const downloadFileToSandbox = async (
     `Failed to download file: ${result.stderr}\n` +
       `  url: ${safeUrl}\n` +
       `  path: ${localPath}\n` +
-      `  exitCode: ${result.exitCode}` +
-      (diagnostics ? `\n  diagnostics:\n${diagnostics}` : ""),
+      `  exitCode: ${result.exitCode}`,
   );
 };
 
@@ -905,6 +990,7 @@ const resolveWritableUploadFallbackPath = async (
   sandbox: any,
   originalLocalPath: string,
   signal?: AbortSignal,
+  requireFreeSpace = false,
 ): Promise<string | null> => {
   signal?.throwIfAborted();
   const fileName = originalLocalPath.split(/[/\\]/).pop();
@@ -915,6 +1001,11 @@ const resolveWritableUploadFallbackPath = async (
     `filename=${shellQuote(fileName)}`,
     `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
     `  [ -n "$base" ] || continue`,
+    ...(requireFreeSpace
+      ? [
+          `  df -Pk "$base" 2>/dev/null | awk 'NR > 1 && $4 > 0 { free = 1 } END { exit !free }' || continue`,
+        ]
+      : []),
     `  root="$base/hackerai-upload"`,
     `  mkdir -p "$root" 2>/dev/null && [ -w "$root" ] || continue`,
     `  root="$(cd "$root" 2>/dev/null && pwd -P)" || continue`,
@@ -941,8 +1032,11 @@ const resolveWritableUploadFallbackPath = async (
 const stageSandboxFile = async (
   sandbox: any,
   file: SandboxFile,
-  signal?: AbortSignal,
+  options: UploadSandboxFilesOptions | undefined,
+  probeBudget: { remaining: number },
+  stagingAttempt: "initial" | "reconnect_retry",
 ): Promise<SandboxFilePathRewrite | null> => {
+  const signal = options?.signal;
   signal?.throwIfAborted();
   try {
     if (file.kind === "url") {
@@ -957,26 +1051,92 @@ const stageSandboxFile = async (
       throw error;
     }
 
+    const sandboxFields = getSandboxLogFields(sandbox);
+    const diagnostics =
+      sandboxFields.sandbox_provider === "e2b" && probeBudget.remaining-- > 0
+        ? await probeSandboxUploadWrite(sandbox, file.localPath, signal)
+        : {
+            probe_status:
+              sandboxFields.sandbox_provider === "e2b"
+                ? "budget_exhausted"
+                : "not_e2b",
+          };
+    const initialReason = classifySandboxUploadFailureReason(
+      file,
+      error,
+      classifySandboxUploadReadinessFailure(error),
+    );
+    const recordOutcome = (
+      outcome: "retrying" | "recovered" | "failed" | "unavailable",
+      finalError?: unknown,
+    ) => {
+      const fields = {
+        ...sandboxFields,
+        staging_attempt: stagingAttempt,
+        failure_kind: file.kind,
+        initial_failure_reason: initialReason,
+        initial_failure_exit_code: extractCommandExitCode(error),
+        fallback_outcome: outcome,
+        ...(finalError !== undefined && {
+          final_failure_reason: classifySandboxUploadFailureReason(
+            file,
+            finalError,
+            classifySandboxUploadReadinessFailure(finalError),
+          ),
+          final_failure_exit_code: extractCommandExitCode(finalError),
+        }),
+        ...Object.fromEntries(
+          Object.entries(diagnostics).map(([key, value]) => [
+            `diagnostics_${key}`,
+            value,
+          ]),
+        ),
+      };
+      logSandboxUploadEvent(
+        "sandbox_attachment_staging_fallback",
+        sandbox,
+        options,
+        fields,
+        outcome === "recovered" ? "info" : "warn",
+      );
+    };
+    // curl's exit 23 hides ENOSPC. A one-byte probe can succeed even when
+    // no blocks remain. Allow a fallback on another filesystem, but avoid
+    // transferring again to a destination that also has no free blocks.
+    const diskFull =
+      diagnostics.probe_status === "ok" &&
+      (diagnostics.available_bytes === 0 ||
+        diagnostics.write_probe_result === "disk_full" ||
+        diagnostics.write_probe_result === "quota_exceeded");
+    const transferError = diskFull
+      ? Object.assign(
+          new Error("No space left on device while staging attachment", {
+            cause: error,
+          }),
+          { exitCode: extractCommandExitCode(error) },
+        )
+      : error;
     let fallbackPath: string | null;
     try {
       fallbackPath = await resolveWritableUploadFallbackPath(
         sandbox,
         file.localPath,
         signal,
+        diskFull,
       );
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
+      recordOutcome("unavailable", transferError);
       // E2B throws for a nonzero exit instead of returning it. A failed
       // best-effort directory probe must not replace the transfer cause.
-      throw error;
+      throw transferError;
     }
     if (!fallbackPath || fallbackPath === file.localPath) {
-      throw error;
+      recordOutcome("unavailable", transferError);
+      throw transferError;
     }
 
-    console.warn(
-      "[sandbox-upload] destination is not writable, retrying attachment staging in a reserved fallback directory",
-    );
+    recordOutcome("retrying");
 
     const fallbackFile = { ...file, localPath: fallbackPath } as SandboxFile;
     try {
@@ -997,20 +1157,31 @@ const stageSandboxFile = async (
       }
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
+      recordOutcome("failed", fallbackError);
       const originalMessage =
-        error instanceof Error ? error.message : String(error);
+        transferError instanceof Error
+          ? transferError.message
+          : String(transferError);
       const fallbackMessage =
         fallbackError instanceof Error
           ? fallbackError.message
           : String(fallbackError);
-      throw Object.assign(
+      const combinedError = Object.assign(
         new Error(
           `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
         ),
         { exitCode: extractCommandExitCode(fallbackError) },
       );
+      if (file.kind === "localPath") {
+        finalLocalCopyReasons.set(
+          combinedError,
+          classifyLocalCopyFailure(fallbackError),
+        );
+      }
+      throw combinedError;
     }
 
+    recordOutcome("recovered");
     return { from: file.localPath, to: fallbackPath };
   }
 };
@@ -1055,7 +1226,7 @@ const redactSensitiveValues = (
 const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
-  phase: "acquisition" | "transfer" = "transfer",
+  phase: "acquisition" | "readiness" | "transfer" = "transfer",
   sandbox?: any,
 ): SandboxUploadFailureDetail => {
   const sandboxReadinessReason =
@@ -1063,10 +1234,6 @@ const summarizeSandboxUploadFailure = (
       ? classifySandboxUploadReadinessFailure(error)
       : "unknown";
   const sandboxFields = sandbox ? getSandboxLogFields(sandbox) : undefined;
-  const providerDiagnostics =
-    sandboxFields?.sandbox_provider === "miosa"
-      ? miosaErrorDiagnostics(error)
-      : undefined;
   // Acquisition has no sandbox instance yet. Preserve only known wrapper names
   // for terminal diagnostics, independently of the retry-driving classifier.
   const errorName =
@@ -1074,7 +1241,14 @@ const summarizeSandboxUploadFailure = (
     error instanceof Error &&
     ACQUISITION_ERROR_NAMES.has(error.name)
       ? error.name
-      : providerDiagnostics?.error_name;
+      : undefined;
+  const acquisitionError =
+    error instanceof CloudAcquisitionBudgetExhaustedError ? error.cause : error;
+  const acquisitionStage =
+    phase === "acquisition" &&
+    acquisitionError instanceof CloudAcquisitionTimeoutError
+      ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1085,29 +1259,24 @@ const summarizeSandboxUploadFailure = (
       error,
       sandboxReadinessReason,
     ),
+    ...(file.kind === "localPath" &&
+      phase === "transfer" && {
+        localCopyFailureReason: classifyLocalCopyFailure(error),
+      }),
     transientSandboxCommand: isTransientSandboxCommandError(error),
     sandboxReadinessReason,
+    // Probe attribution is diagnostic only; acquisition and retry policy keep
+    // their existing classification and budget.
+    ...(phase === "readiness" && {
+      readinessProbeReason: classifySandboxUploadReadinessFailure(error),
+    }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
     ...(errorName && {
       errorName,
     }),
-    ...(providerDiagnostics?.error_code && {
-      errorCode: providerDiagnostics.error_code,
-    }),
-    ...(providerDiagnostics?.error_http_status && {
-      errorHttpStatus: providerDiagnostics.error_http_status,
-    }),
-    ...(providerDiagnostics?.error_request_id && {
-      errorRequestId: providerDiagnostics.error_request_id,
-    }),
-    ...(providerDiagnostics?.error_retryable !== undefined && {
-      errorRetryable: providerDiagnostics.error_retryable,
-    }),
-    ...(providerDiagnostics?.validation_fields && {
-      validationFields: providerDiagnostics.validation_fields,
-    }),
+    ...(acquisitionStage && { acquisitionStage }),
   };
 
   if (file.kind === "url") {
@@ -1118,24 +1287,103 @@ const summarizeSandboxUploadFailure = (
   return summary;
 };
 
-const shouldRetryWithFreshSandbox = (
+const shouldRetryAfterReconnect = (
   options: UploadSandboxFilesOptions | undefined,
 ): boolean => {
-  const value = options?.retryWithFreshSandboxOnTransientFailure;
+  const value = options?.retryAfterReconnectOnTransientFailure;
   if (typeof value === "function") return value();
   return value === true;
+};
+
+/** Sandbox IDs stay in operational logs, never product analytics. */
+const logSandboxUploadEvent = (
+  event: string,
+  sandbox: any,
+  options: UploadSandboxFilesOptions | undefined,
+  fields: Record<string, unknown>,
+  level: "info" | "warn",
+) => {
+  try {
+    const context = options?.logContext;
+    const release =
+      context?.release ??
+      process.env.VERCEL_GIT_COMMIT_SHA ??
+      process.env.GITHUB_SHA;
+    const common = {
+      ...fields,
+      service: context?.service ?? "chat-handler",
+      environment:
+        context?.environment ??
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      request_id: context?.requestId ?? null,
+      chat_id: context?.chatId ?? null,
+      release:
+        typeof release === "string" && /^[\w.-]{1,128}$/.test(release)
+          ? release
+          : "unknown",
+      ...(context?.service === "agent-long" && {
+        trigger_run_id: context.requestId ?? null,
+      }),
+      sandbox_attachment_diagnostics_version: 1,
+    };
+    const sandboxId =
+      typeof sandbox.sandboxId === "string" &&
+      /^[\w-]{1,128}$/.test(sandbox.sandboxId)
+        ? sandbox.sandboxId
+        : undefined;
+    const payload = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level,
+      event,
+      ...common,
+      ...(sandboxId && { sandbox_id: sandboxId }),
+    });
+    if (level === "warn") console.warn(payload);
+    else console.info(payload);
+    if (context?.userId)
+      phLogger.event(event, { userId: context.userId, ...common });
+  } catch {
+    // Diagnostics must never turn a recovered attachment into a chat failure.
+  }
 };
 
 const uploadSandboxFilesOnce = async (
   sandboxFiles: SandboxFile[],
   sandbox: any,
   options?: UploadSandboxFilesOptions,
+  stagingAttempt: "initial" | "reconnect_retry" = "initial",
 ): Promise<SandboxUploadResult> => {
-  const results = await Promise.allSettled(
-    sandboxFiles.map((file) =>
-      stageSandboxFile(sandbox, file, options?.signal),
-    ),
-  );
+  // Concurrent attachments share a cap; diagnostics must not amplify a failure.
+  const probeBudget = { remaining: 3 };
+  let readinessFailure: unknown;
+  let readinessFailed = false;
+  try {
+    await checkAttachmentReadiness(sandbox, options?.signal);
+  } catch (error) {
+    throwIfAttachmentAborted(options?.signal, error);
+    readinessFailure = error;
+    readinessFailed = true;
+  }
+  const results: PromiseSettledResult<SandboxFilePathRewrite | null>[] =
+    readinessFailed
+      ? sandboxFiles.map(() => ({
+          status: "rejected",
+          reason: readinessFailure,
+        }))
+      : await Promise.allSettled(
+          sandboxFiles.map((file) =>
+            stageSandboxFile(
+              sandbox,
+              file,
+              options,
+              probeBudget,
+              stagingAttempt,
+            ),
+          ),
+        );
 
   const cleanupFailure = results.find(
     (result) =>
@@ -1156,13 +1404,47 @@ const uploadSandboxFilesOnce = async (
     summarizeSandboxUploadFailure(
       sandboxFiles[i],
       (results[i] as PromiseRejectedResult).reason,
-      "transfer",
+      readinessFailed ? "readiness" : "transfer",
       sandbox,
     ),
   );
 
+  logSandboxUploadEvent(
+    "sandbox_attachment_staging_completed",
+    sandbox,
+    options,
+    {
+      ...getSandboxLogFields(sandbox),
+      staging_attempt: stagingAttempt,
+      total_count: sandboxFiles.length,
+      failed_count: failedIndices.length,
+      recovered_count: pathRewrites.length,
+      direct_success_count:
+        sandboxFiles.length - failedIndices.length - pathRewrites.length,
+    },
+    "info",
+  );
+
   if (failureDetails.length > 0) {
     const primaryFailure = failureDetails[0];
+    logSandboxUploadEvent(
+      "sandbox_attachment_failure_diagnostics",
+      sandbox,
+      options,
+      {
+        ...getSandboxLogFields(sandbox),
+        staging_attempt: stagingAttempt,
+        failure_phase: readinessFailed ? "readiness" : "transfer",
+        failure_reason: primaryFailure.reason,
+        failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...(await sampleAttachmentFailureMetrics(sandbox)),
+      },
+      "warn",
+    );
+    options?.signal?.throwIfAborted();
     const failureReasonCounts = failureDetails.reduce<Record<string, number>>(
       (counts, failure) => {
         counts[failure.reason] = (counts[failure.reason] ?? 0) + 1;
@@ -1193,8 +1475,11 @@ const uploadSandboxFilesOnce = async (
           ? { source_path: "[redacted-local-path]" }
           : {}),
         failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
@@ -1202,7 +1487,7 @@ const uploadSandboxFilesOnce = async (
         error_request_id: primaryFailure.errorRequestId ?? null,
         error_retryable: primaryFailure.errorRetryable ?? null,
         validation_fields: primaryFailure.validationFields,
-        failure_stage: "transfer",
+        failure_stage: readinessFailed ? "readiness" : "transfer",
         transfer_operation:
           primaryFailure.kind === "url" ? "download_url" : "copy_local_file",
         protocol: primaryFailure.protocol ?? null,
@@ -1229,17 +1514,20 @@ const uploadSandboxFilesOnce = async (
         failure_reason_counts: failureReasonCounts,
         failure_kind: primaryFailure.kind,
         failure_exit_code: primaryFailure.exitCode,
+        local_copy_failure_reason:
+          primaryFailure.localCopyFailureReason ?? null,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
-        sandbox_type: primaryFailure.sandboxProvider ? "cloud" : "unknown",
+        sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
         error_request_id: primaryFailure.errorRequestId ?? null,
         error_retryable: primaryFailure.errorRetryable ?? null,
         validation_fields: primaryFailure.validationFields,
-        failure_stage: "transfer",
+        failure_stage: readinessFailed ? "readiness" : "transfer",
         transfer_operation:
           primaryFailure.kind === "url" ? "download_url" : "copy_local_file",
         protocol: primaryFailure.protocol ?? null,
@@ -1265,18 +1553,31 @@ export const getSandboxUploadFailureMetadata = (
   result: SandboxUploadResult,
 ): Record<string, unknown> | undefined => {
   const failure = result.failureDetails?.[0];
-  if (!failure && !result.retriedWithFreshSandbox) return undefined;
+  if (!failure && !result.retriedAfterReconnect) return undefined;
 
   const cause = failure?.error
     ? failure.error.length > MAX_UPLOAD_FAILURE_CAUSE_LENGTH
       ? `${failure.error.slice(0, MAX_UPLOAD_FAILURE_CAUSE_LENGTH)}...`
       : failure.error
     : undefined;
+  const acquisitionStage =
+    failure?.phase === "acquisition"
+      ? parseCloudAcquisitionStage(failure.acquisitionStage)
+      : undefined;
 
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
+    ...(acquisitionStage
+      ? { upload_failure_acquisition_stage: acquisitionStage }
+      : {}),
+    ...(failure?.readinessProbeReason
+      ? { upload_failure_readiness_probe_reason: failure.readinessProbeReason }
+      : {}),
     ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
+    ...(failure?.localCopyFailureReason
+      ? { upload_failure_local_copy_reason: failure.localCopyFailureReason }
+      : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined
       ? {
@@ -1315,9 +1616,9 @@ export const getSandboxUploadFailureMetadata = (
     ...(typeof failure?.urlLength === "number"
       ? { upload_failure_url_length: failure.urlLength }
       : {}),
-    ...(result.retriedWithFreshSandbox !== undefined
+    ...(result.retriedAfterReconnect !== undefined
       ? {
-          upload_retried_with_fresh_sandbox: result.retriedWithFreshSandbox,
+          upload_retried_after_reconnect: result.retriedAfterReconnect,
         }
       : {}),
   };
@@ -1333,11 +1634,29 @@ export const getSandboxUploadUserMessage = (
       return "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.";
     case "local_command_unavailable":
       return "The selected computer disconnected while preparing the attachment. Reconnect it in Remote Control, then try again.";
+    case "attachment_client_unavailable":
+      return "The selected Windows computer needs curl or PowerShell to transfer attachments. Install one or restore it to PATH, then try again.";
+    case "attachment_resource_exhausted":
+      return "The selected computer could not start the attachment download because system resources are unavailable. Stop unnecessary processes or free memory, then try again.";
+    case "attachment_dns_failure":
+      return "The selected computer could not resolve the attachment server. Check its DNS and network connection, then try again.";
+    case "command_channel_failure":
+      return "The computer is not responding to attachment commands. Wait for it to recover, then try again. Your workspace has been preserved.";
     case "windows_command_syntax":
       return "The selected Windows computer could not prepare the attachment. Reconnect it and try again.";
     case "sandbox_placement_failure":
       return "The Cloud sandbox could not start to receive the attachment. Please try again.";
     case "sandbox_operation_timeout":
+      if (
+        result.failureDetails?.[0]?.phase === "acquisition" &&
+        [
+          "CloudAcquisitionTimeoutError",
+          "CloudAcquisitionBudgetExhaustedError",
+          "E2BAcquisitionError",
+        ].includes(result.failureDetails[0].errorName ?? "")
+      ) {
+        return "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.";
+      }
       return "The computer took too long to become ready for the attachment. Please try again.";
     case "attachment_download_timeout":
       return "The attachment download timed out on the selected computer. Check its network connection and try again.";
@@ -1348,6 +1667,12 @@ export const getSandboxUploadUserMessage = (
     case "attachment_write_failed":
       return "The computer could not save the attachment. Check available disk space and filesystem permissions, then try again.";
     default: {
+      if (
+        result.failureDetails?.[0]?.phase === "acquisition" &&
+        result.failureDetails[0].sandboxReadinessReason === "connection_error"
+      ) {
+        return "Cloud connection failed before preparing your attachment. Your workspace is preserved. Try again shortly.";
+      }
       const noun = result.failedCount === 1 ? "attachment" : "attachments";
       return `Failed to upload ${result.failedCount} ${noun} to the computer. Please try again.`;
     }
@@ -1426,7 +1751,7 @@ export const uploadSandboxFiles = async (
   });
 
   let sandbox: any;
-  let retriedWithFreshSandbox = false;
+  let retriedAfterReconnect = false;
   try {
     sandbox = await ensureSandbox();
     signal?.throwIfAborted();
@@ -1434,10 +1759,22 @@ export const uploadSandboxFiles = async (
     signal?.throwIfAborted();
     const initialFailureReason = classifySandboxUploadReadinessFailure(error);
     const shouldRetryAcquisition =
+      !isCloudAcquisitionBudgetSpent(error) &&
       RETRYABLE_SANDBOX_ACQUISITION_FAILURES.has(initialFailureReason) &&
-      shouldRetryWithFreshSandbox(options);
+      shouldRetryAfterReconnect(options);
 
     if (!shouldRetryAcquisition) {
+      if (isCloudAcquisitionBudgetSpent(error)) {
+        logSandboxAcquisitionRecovery(
+          options,
+          "sandbox_attachment_acquisition_retry_skipped",
+          "warn",
+          initialFailureReason,
+          undefined,
+          undefined,
+          "budget_exhausted",
+        );
+      }
       console.error("Failed to acquire sandbox for upload:", error);
       return {
         failedCount: sandboxFiles.length,
@@ -1448,8 +1785,8 @@ export const uploadSandboxFiles = async (
       };
     }
 
-    retriedWithFreshSandbox = true;
-    const recoveryStrategy = "fresh_sandbox" as const;
+    retriedAfterReconnect = true;
+    const recoveryStrategy = "reconnect" as const;
     logSandboxAcquisitionRecovery(
       options,
       "sandbox_attachment_acquisition_retry_scheduled",
@@ -1502,7 +1839,7 @@ export const uploadSandboxFiles = async (
         failureDetails: sandboxFiles.map((file) =>
           summarizeSandboxUploadFailure(file, retryError, "acquisition"),
         ),
-        retriedWithFreshSandbox: true,
+        retriedAfterReconnect: true,
       };
     }
   }
@@ -1511,13 +1848,14 @@ export const uploadSandboxFiles = async (
     sandboxFiles,
     sandbox,
     options,
+    retriedAfterReconnect ? "reconnect_retry" : "initial",
   );
 
   if (
     firstResult.failedCount > 0 &&
     hasTransientSandboxCommandFailure(firstResult) &&
-    !retriedWithFreshSandbox &&
-    shouldRetryWithFreshSandbox(options)
+    !retriedAfterReconnect &&
+    shouldRetryAfterReconnect(options)
   ) {
     const shouldQuarantineConnection = firstResult.failureDetails?.some(
       (failure) => failure.reason === "local_command_no_response",
@@ -1536,20 +1874,38 @@ export const uploadSandboxFiles = async (
         ...(excludeConnectionId ? { excludeConnectionId } : {}),
       });
       signal?.throwIfAborted();
+      const previousId = sandbox.sandboxId ?? getSandboxConnectionId(sandbox);
+      const nextId =
+        refreshedSandbox.sandboxId ?? getSandboxConnectionId(refreshedSandbox);
+      logSandboxUploadEvent(
+        "sandbox_attachment_reconnect",
+        refreshedSandbox,
+        options,
+        {
+          ...getSandboxLogFields(refreshedSandbox),
+          recovery_strategy: "reconnect",
+          same_sandbox:
+            typeof previousId === "string" && typeof nextId === "string"
+              ? previousId === nextId
+              : null,
+        },
+        "info",
+      );
       const retryResult = await uploadSandboxFilesOnce(
         sandboxFiles,
         refreshedSandbox,
         options,
+        "reconnect_retry",
       );
-      return { ...retryResult, retriedWithFreshSandbox: true };
+      return { ...retryResult, retriedAfterReconnect: true };
     } catch (error) {
       throwIfAttachmentAborted(signal, error);
       console.error("Failed to refresh sandbox for upload retry:", error);
-      return { ...firstResult, retriedWithFreshSandbox: true };
+      return { ...firstResult, retriedAfterReconnect: true };
     }
   }
 
-  return retriedWithFreshSandbox
-    ? { ...firstResult, retriedWithFreshSandbox: true }
+  return retriedAfterReconnect
+    ? { ...firstResult, retriedAfterReconnect: true }
     : firstResult;
 };

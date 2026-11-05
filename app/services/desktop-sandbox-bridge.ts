@@ -1,8 +1,26 @@
+import {
+  registerDesktopCommand,
+  wasDesktopRunStopped,
+} from "./desktop-command-cancellation";
+import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  DesktopFileBridgeError,
+  getDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
+import {
+  isDesktopAckStopSource,
+  type DesktopAckStopSource,
+} from "@/lib/analytics/desktop-ack-privacy";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   sandboxConnectionChannel,
+  DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type SandboxMessage,
   type CommandCancelMessage,
   type CommandMessage,
@@ -22,9 +40,16 @@ import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
-import { CentrifugoPublishQueue } from "@/packages/local/src/centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  CentrifugoPublishQueue,
+  RELAY_QUEUE_MAX_BYTES,
+  RELAY_QUEUE_MAX_MESSAGES,
+  RelayOutputOverflowError,
+} from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import { normalizeSandboxPlatform } from "@/lib/ai/tools/utils/platform-utils";
 
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
@@ -53,18 +78,30 @@ type DesktopBridgeTerminationReason =
   | "unauthenticated"
   | "connection_not_found"
   | "ownership_mismatch"
+  | "session_replaced"
   | "connection_inactive"
   | "transport_disconnected";
 
 type DesktopBridgeConnectionState = "connecting" | "connected";
+
+function terminationReason(
+  result: Extract<RefreshTokenResult, { ok: false }>,
+): DesktopBridgeTerminationReason {
+  return result.reason === "connection_inactive" &&
+    result.disconnectReason === "desktop_kicked_by_new_session"
+    ? "session_replaced"
+    : result.reason;
+}
 
 type DesktopStreamPublishFailureReason = "connection_closed" | "timeout";
 
 const DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS = 3;
 const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
-const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
+const DESKTOP_STREAM_PENDING_MAX_BYTES = 256 * 1024;
+const DESKTOP_STREAM_PENDING_MAX_CHUNKS = 256;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -83,6 +120,7 @@ interface StreamChunk {
 }
 
 interface DesktopStreamPublishRecoveryState {
+  initialRelayGeneration: number;
   failureReported: boolean;
   recoveryReported: boolean;
   exhaustionReported: boolean;
@@ -138,7 +176,15 @@ function classifyDesktopStreamPublishFailure(
   return null;
 }
 
+type OutputControl = {
+  type: "command_output_ack" | "command_output_resume";
+  commandId: string;
+  targetConnectionId: string;
+  sequence: number;
+};
+
 type TargetedIncomingMessage =
+  | OutputControl
   | CommandMessage
   | CommandCancelMessage
   | FileRequestMessage
@@ -161,6 +207,8 @@ function isTargetedIncomingMessage(
     typeof targetConnectionId === "string" &&
     (type === "command" ||
       type === "command_cancel" ||
+      type === "command_output_ack" ||
+      type === "command_output_resume" ||
       type === "file_stat" ||
       type === "file_read" ||
       type === "file_write" ||
@@ -174,17 +222,41 @@ function isTargetedIncomingMessage(
   );
 }
 
-// "Unauthenticated" UNAUTHORIZED still throws server-side (the user's auth
-// identity is missing/expired, not a connection lifecycle event), so the
-// catch path needs to recognize it as a terminate-the-loop signal too.
-function isUnauthenticatedError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const data = (error as { data?: unknown }).data;
-  if (!data || typeof data !== "object") return false;
-  return (data as { code?: string }).code === "UNAUTHORIZED";
+// Join an existing auth-stop event to its backend failure without copying error
+// text. SDK formats may change; missing/malformed markers simply omit the ID.
+function nativeAuthDiagnostics(
+  error: unknown,
+  convexFunction:
+    | "localSandbox:heartbeatDesktop"
+    | "localSandbox:refreshCentrifugoTokenDesktop",
+): Record<string, string | number> {
+  const diagnostics: Record<string, string | number> = {
+    native_auth_diagnostic_version: 1,
+    // Distinguish this pending-heartbeat guard from older loaded bridges.
+    // This identifies the heartbeat policy, not the native binary or build.
+    heartbeat_backpressure_version: 1,
+    convex_function: convexFunction,
+  };
+  try {
+    const message = error instanceof Error ? error.message : undefined;
+    const match =
+      typeof message === "string"
+        ? message
+            .slice(0, 512)
+            .match(
+              /^\[CONVEX M\((localSandbox:(?:heartbeatDesktop|refreshCentrifugoTokenDesktop))\)\] \[Request ID: ([a-f0-9]{16})\]/,
+            )
+        : null;
+    if (match?.[1] === convexFunction) diagnostics.convex_request_id = match[2];
+  } catch {
+    // Diagnostics must not interrupt the existing authentication stop path.
+  }
+  return diagnostics;
 }
 
 interface DesktopBridgeConfig {
+  // The recovery owner keeps one telemetry window across replacement bridges.
+  relayTelemetry?: DesktopRelayTelemetry;
   connectDesktop: (args: {
     environmentId?: string;
     connectionName: string;
@@ -198,6 +270,7 @@ interface DesktopBridgeConfig {
       commands: boolean;
       pty: boolean;
       files?: boolean;
+      operationChannels?: boolean;
     };
   }) => Promise<{
     connectionId: string;
@@ -213,7 +286,10 @@ interface DesktopBridgeConfig {
   heartbeatDesktop: (args: {
     connectionId: string;
   }) => Promise<{ success: boolean }>;
-  onConnectionState?: (state: DesktopBridgeConnectionState) => void;
+  onConnectionState?: (
+    state: DesktopBridgeConnectionState,
+    environmentId?: string,
+  ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
 }
 
@@ -227,21 +303,35 @@ export class DesktopSandboxBridge {
   private subscription: Subscription | null = null;
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
+  private commandDeliveryDeadlines = new Map<string, number>();
+  private commandDeliveryCleanupTimers = new Set<
+    ReturnType<typeof setTimeout>
+  >();
   private isStoppingOrStopped = true;
+  private commandOutputStopSource: DesktopAckStopSource = "command_cleanup";
   private startupGeneration = 0;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
+  private operationRouter: OperationChannelRouter<Subscription> | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
+  private nativeFileIpcFailure: DesktopFileFailure | undefined;
+  private nativeAppVersion = "unknown";
+  private nativePlatform = "unknown";
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private heartbeatInFlightGeneration: number | null = null;
   private consecutiveHeartbeatFailures = 0;
   private relayUnavailableAt: number | null = null;
   private successfulRelayConnections = 0;
-  private readonly relayTelemetry = new DesktopRelayTelemetry(
-    captureAuthenticatedEvent,
-  );
+  private relayStarted = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly relayTelemetry: DesktopRelayTelemetry;
+  private readonly ackTelemetry = new DesktopAckTelemetry();
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
+    this.relayTelemetry =
+      config.relayTelemetry ??
+      new DesktopRelayTelemetry(captureAuthenticatedEvent);
   }
 
   getConnectionId(): string | null {
@@ -279,17 +369,45 @@ export class DesktopSandboxBridge {
 
   private async sendHeartbeat(): Promise<void> {
     const connectionId = this.connectionId;
-    if (this.isStoppingOrStopped || !connectionId) return;
+    const generation = this.startupGeneration;
+    if (
+      this.isStoppingOrStopped ||
+      !connectionId ||
+      this.heartbeatInFlightGeneration === generation
+    )
+      return;
 
+    // Convex queues unresolved mutations across disconnects. Keep the timer from
+    // building a heartbeat backlog while the current request is still pending.
+    this.heartbeatInFlightGeneration = generation;
     try {
       const result = await this.config.heartbeatDesktop({ connectionId });
-      if (this.isStoppingOrStopped || this.connectionId !== connectionId)
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
         return;
       if (!result.success) {
+        // The legacy heartbeat response has no reason. Resolve it through the
+        // existing token endpoint so a displaced session cannot kick its replacement.
+        const state = await this.config.refreshCentrifugoTokenDesktop({
+          connectionId,
+        });
+        if (
+          this.isStoppingOrStopped ||
+          this.connectionId !== connectionId ||
+          this.startupGeneration !== generation
+        )
+          return;
+        const reason = state.ok
+          ? "connection_inactive"
+          : terminationReason(state);
         this.logRelayState("disconnected", {
           reason: "heartbeat_connection_inactive",
+          ...(isDesktopAckStopSource(reason) && { terminationReason: reason }),
         });
-        this.terminateClient("connection_inactive");
+        this.terminateClient(reason);
         return;
       }
       if (this.consecutiveHeartbeatFailures > 0) {
@@ -300,10 +418,16 @@ export class DesktopSandboxBridge {
         this.consecutiveHeartbeatFailures = 0;
       }
     } catch (error) {
-      if (this.isStoppingOrStopped) return;
-      if (isUnauthenticatedError(error)) {
+      if (
+        this.isStoppingOrStopped ||
+        this.connectionId !== connectionId ||
+        this.startupGeneration !== generation
+      )
+        return;
+      if (isUnauthenticatedConvexError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
+          ...nativeAuthDiagnostics(error, "localSandbox:heartbeatDesktop"),
         });
         this.terminateClient("unauthenticated");
         return;
@@ -319,6 +443,10 @@ export class DesktopSandboxBridge {
           error:
             error instanceof Error ? error.message : String(error ?? "unknown"),
         });
+      }
+    } finally {
+      if (this.heartbeatInFlightGeneration === generation) {
+        this.heartbeatInFlightGeneration = null;
       }
     }
   }
@@ -338,16 +466,61 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private watchRelayReconnect(): void {
+    if (!this.relayStarted || this.reconnectTimer || this.isStoppingOrStopped)
+      return;
+    // Centrifuge pins its first working transport. A fresh bridge lets its
+    // WebSocket/HTTP fallback negotiation run again after a persistent outage.
+    // Only a ready subscription clears this deadline, not a socket handshake.
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.isStoppingOrStopped) return;
+      // An executing command and its retained output belong to this connection.
+      // Re-registering while the worker still awaits it abandons that output.
+      // Keep the SDK reconnecting until the bounded command delivery window ends.
+      if (
+        [...this.commandDeliveryDeadlines.values()].some(
+          (deadline) => deadline > Date.now(),
+        )
+      ) {
+        this.watchRelayReconnect();
+        return;
+      }
+      this.logRelayState("error", { errorType: "reconnect_readiness" });
+      this.terminateClient("transport_disconnected");
+    }, DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS);
+  }
+
   private terminateClient(reason: DesktopBridgeTerminationReason): void {
     if (this.isStoppingOrStopped) return;
+    this.commandOutputStopSource = reason;
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
+    this.acknowledgedOutputs.clear();
+    this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
-    this.relayTelemetry.flush();
+    this.relayStarted = false;
+    this.clearReconnectTimer();
+    if (!this.config.relayTelemetry) {
+      this.relayTelemetry.flush();
+      this.relayTelemetry.reset();
+    }
     const client = this.client;
     const subscription = this.subscription;
     this.client = null;
     this.subscription = null;
+    this.publishQueue?.close();
     this.publishQueue = null;
+    this.operationRouter?.stop();
+    this.operationRouter = null;
     this.connectionId = null;
     try {
       subscription?.unsubscribe();
@@ -372,7 +545,9 @@ export class DesktopSandboxBridge {
     const wasStopped = () =>
       this.isStoppingOrStopped || generation !== this.startupGeneration;
     this.isStoppingOrStopped = false;
+    this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
+    this.nativeFileIpcFailure = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -388,9 +563,26 @@ export class DesktopSandboxBridge {
       )
         throw error;
     }
-    this.environmentId = environmentId;
-    const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    this.environmentId = environmentId;
+    // Identity is local; saved tasks must recognize this computer even when
+    // backend registration or relay readiness fails during startup.
+    if (environmentId) {
+      this.config.onConnectionState?.("connecting", environmentId);
+    }
+    const [osInfo, nativeAppVersion] = await Promise.all([
+      this.getOsInfo(),
+      this.getNativeAppVersion(),
+    ]);
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    this.nativeAppVersion = nativeAppVersion;
+    const platform =
+      osInfo?.platform === "win32" ? "windows" : osInfo?.platform;
+    this.nativePlatform = ["darwin", "linux", "windows"].includes(
+      platform ?? "",
+    )
+      ? platform!
+      : "unknown";
     const files = await this.probeFileBridge();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
@@ -399,13 +591,18 @@ export class DesktopSandboxBridge {
         ...(environmentId ? { environmentId } : {}),
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
-        capabilities: { commands: true, pty: true, files },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files,
+          operationChannels: true,
+        },
       });
 
     if (wasStopped()) {
       // stop() could not see this connection while registration was pending.
       // Clean up only this attempt, without touching a newer start's relay.
-      await this.config.disconnectDesktop({ connectionId }).catch(() => {
+      void this.config.disconnectDesktop({ connectionId }).catch(() => {
         console.warn(
           "[DesktopSandboxBridge] Failed to disconnect canceled startup",
         );
@@ -431,11 +628,15 @@ export class DesktopSandboxBridge {
             connectionId: this.connectionId,
           });
         } catch (error) {
-          if (isUnauthenticatedError(error)) {
+          if (isUnauthenticatedConvexError(error)) {
             const eventProps = {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
               reason: "unauthenticated" as const,
+              ...nativeAuthDiagnostics(
+                error,
+                "localSandbox:refreshCentrifugoTokenDesktop",
+              ),
             };
             console.warn(
               "[DesktopSandboxBridge] Centrifugo refresh aborted — user not authenticated; stopping client to break retry loop",
@@ -473,7 +674,7 @@ export class DesktopSandboxBridge {
           eventProps,
         );
         captureAuthenticatedEvent("sandbox_connection_terminated", eventProps);
-        this.terminateClient(result.reason);
+        this.terminateClient(terminationReason(result));
         throw new Error(`Centrifugo refresh aborted: ${result.reason}`);
       },
     });
@@ -496,6 +697,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         code: ctx.code,
@@ -537,6 +739,7 @@ export class DesktopSandboxBridge {
       if (this.relayUnavailableAt === null) {
         this.relayUnavailableAt = Date.now();
       }
+      this.watchRelayReconnect();
       this.config.onConnectionState?.("connecting");
       this.logRelayState("connecting", {
         source: "subscription",
@@ -546,6 +749,7 @@ export class DesktopSandboxBridge {
     });
     subscription.on("subscribed", (ctx) => {
       if (this.isStoppingOrStopped) return;
+      this.clearReconnectTimer();
       this.config.onConnectionState?.("connected");
       this.logRelayState("connected", {
         source: "subscription",
@@ -572,9 +776,7 @@ export class DesktopSandboxBridge {
       });
     });
 
-    this.subscription.on("publication", (ctx) => {
-      const message = ctx.data;
-
+    const handleIncoming = (message: unknown) => {
       if (!isTargetedIncomingMessage(message)) {
         return;
       }
@@ -592,6 +794,15 @@ export class DesktopSandboxBridge {
             );
           });
           break;
+
+        case "command_output_ack":
+        case "command_output_resume": {
+          const stream = this.acknowledgedOutputs.get(message.commandId);
+          if (message.type === "command_output_ack")
+            stream?.acknowledge(message.sequence);
+          else stream?.resume(message.sequence);
+          break;
+        }
 
         case "command_cancel":
           this.handleCommandCancel(message as CommandCancelMessage).catch(
@@ -663,6 +874,44 @@ export class DesktopSandboxBridge {
         default:
           break;
       }
+    };
+    const operationRouter = new OperationChannelRouter<Subscription>(
+      client,
+      userId,
+      connectionId,
+      (operation) => {
+        void import("@tauri-apps/api/core")
+          .then(({ invoke }) => {
+            if (operation.kind === "pty")
+              return invoke("execute_pty_kill", { sessionId: operation.id });
+            if (operation.kind === "command")
+              return invoke("cancel_stream_command", {
+                commandId: operation.id,
+              });
+          })
+          .catch(() => {
+            console.error(
+              "[DesktopSandboxBridge] Output overflow cleanup failed",
+            );
+          });
+      },
+    );
+    this.operationRouter = operationRouter;
+    const reassembler = new CentrifugoMessageReassembler();
+    this.subscription.on("publication", (ctx) => {
+      const message = reassembler.accept(ctx.data);
+      if (
+        !message ||
+        this.isStoppingOrStopped ||
+        this.operationRouter !== operationRouter
+      )
+        return;
+      void operationRouter.dispatch(message, handleIncoming).catch((error) => {
+        console.error(
+          "[DesktopSandboxBridge] Operation subscription failed:",
+          error,
+        );
+      });
     });
 
     this.subscription.subscribe();
@@ -684,6 +933,7 @@ export class DesktopSandboxBridge {
     if (wasStopped() || this.connectionId !== connectionId) {
       throw new Error("Desktop bridge stopped before relay became ready");
     }
+    this.relayStarted = true;
     this.config.onConnectionState?.("connected");
     this.startHeartbeat();
 
@@ -700,6 +950,29 @@ export class DesktopSandboxBridge {
       throw new Error("JWT missing 'sub' claim");
     }
     return payload.sub;
+  }
+
+  private async getNativeAppVersion(): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const version = await Promise.race([
+        invoke<unknown>("plugin:app|version"),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 500);
+        }),
+      ]);
+      // Only the native package version, never the fixed browser user agent or
+      // arbitrary error text. Diagnostics must not delay or prevent recovery.
+      return typeof version === "string" &&
+        /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)
+        ? version
+        : "unknown";
+    } catch {
+      return "unknown";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async getOsInfo(): Promise<
@@ -719,12 +992,11 @@ export class DesktopSandboxBridge {
       if (result.exit_code === 0) {
         const lines = result.stdout.trim().split("\n");
         const [uname, hostname] = [lines[0] || "", lines[1] || "Desktop"];
-        const parts = uname.split(" ");
+        const parts = uname.trim().split(/\s+/);
         return {
-          platform:
-            parts[0]?.toLowerCase() === "darwin"
-              ? "darwin"
-              : parts[0]?.toLowerCase() || "unknown",
+          platform: normalizeSandboxPlatform(
+            parts[0]?.toLowerCase() || "unknown",
+          ),
           release: parts[1] || "unknown",
           arch: parts[2] || "unknown",
           hostname: hostname.trim(),
@@ -771,8 +1043,128 @@ export class DesktopSandboxBridge {
     return undefined;
   }
 
+  private acknowledgedOutputs = new Map<string, AcknowledgedCommandOutput>();
+
+  private async handleAcknowledgedCommand(
+    command: CommandMessage,
+  ): Promise<void> {
+    const router = this.operationRouter!;
+    const connectionId = this.connectionId;
+    const deadline =
+      Date.now() +
+      (command.timeout ?? 30_000) +
+      DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+    let terminalExitCode: number | null = null;
+    const onSettled = this.ackTelemetry.start({
+      connectionId,
+      commandId: command.commandId,
+      chatId: command.chatId,
+      triggerRunId: command.triggerRunId,
+    });
+    const stream = new AcknowledgedCommandOutput(
+      command.commandId,
+      deadline,
+      (frame) => router.publish(frame as unknown as Record<string, unknown>),
+      () =>
+        !this.isStoppingOrStopped &&
+        this.operationRouter === router &&
+        this.connectionId === connectionId,
+      (settlement) =>
+        onSettled(
+          { ...settlement, terminalExitCode },
+          this.commandOutputStopSource,
+        ),
+    );
+    this.acknowledgedOutputs.set(command.commandId, stream);
+    this.commandDeliveryDeadlines.set(command.commandId, deadline);
+    this.activeCommands.add(command.commandId);
+    try {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+      const channel = new Channel<StreamChunk>();
+      channel.onmessage = (chunk) => {
+        if (chunk.type === "exit") terminalExitCode = chunk.exitCode ?? null;
+        if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
+      };
+      try {
+        if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          terminalExitCode = 130;
+          stream.append({ type: "exit", exitCode: 130 });
+        } else {
+          await invoke("execute_stream_command", {
+            commandId: command.commandId,
+            command: command.command,
+            cwd: command.cwd,
+            env: command.env,
+            timeoutMs: command.timeout ?? 30_000,
+            onEvent: channel,
+          });
+        }
+      } catch (error) {
+        stream.append({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.activeCommands.delete(command.commandId);
+      }
+      // Native completion and result delivery have separate lifetimes.
+      await stream.delivered;
+    } catch (error) {
+      if (stream.canceled) return;
+      console.warn("[desktop-bridge] acknowledged output incomplete", {
+        commandId: command.commandId,
+      });
+      // Explicitly fail completeness, never synthesize successful exit or rerun.
+      if (this.operationRouter === router && !this.isStoppingOrStopped) {
+        await router
+          .publish({
+            type: "command_output_unavailable",
+            commandId: command.commandId,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Command output recovery failed",
+          })
+          .catch(() => {});
+      }
+    } finally {
+      stream.stop();
+      this.acknowledgedOutputs.delete(command.commandId);
+      this.commandDeliveryDeadlines.delete(command.commandId);
+      this.activeCommands.delete(command.commandId);
+      // Retain only the lightweight route after cancellation: a lost cancel
+      // response must still be answerable on retry. Its existing TTL closes it.
+      if (!stream.canceled) router.closeCommand(command.commandId);
+    }
+  }
+
   private async handleCommand(command: CommandMessage): Promise<void> {
+    const unregister = registerDesktopCommand(
+      command.commandId,
+      command.chatId,
+      command.triggerRunId,
+    );
+    try {
+      await this.executeCommand(command);
+    } finally {
+      unregister();
+    }
+  }
+
+  private async executeCommand(command: CommandMessage): Promise<void> {
+    if (
+      command.outputProtocol === "ack-v1" &&
+      this.operationRouter?.retainCommandOutput(command.commandId)
+    ) {
+      return this.handleAcknowledgedCommand(command);
+    }
     const { commandId } = command;
+    const commandConnectionId = this.connectionId;
+    const commandRouter = this.operationRouter;
+    const canPublish = () =>
+      !this.isStoppingOrStopped &&
+      this.connectionId === commandConnectionId &&
+      this.operationRouter === commandRouter;
     const telemetryContext: DesktopStreamTelemetryContext = {
       chatId: command.chatId,
       triggerRunId: command.triggerRunId,
@@ -780,6 +1172,7 @@ export class DesktopSandboxBridge {
     this.activeCommands.add(commandId);
     const commandStartedAt = Date.now();
     const recoveryState: DesktopStreamPublishRecoveryState = {
+      initialRelayGeneration: this.successfulRelayConnections,
       failureReported: false,
       recoveryReported: false,
       exhaustionReported: false,
@@ -790,6 +1183,27 @@ export class DesktopSandboxBridge {
       terminalChunkPublished: false,
     };
 
+    let nativeInvocationSettled = false;
+    let terminalDeliverySettled = false;
+    let settlementReported = false;
+    const reportSettlement = (deadlineReached = false) => {
+      if (
+        !recoveryState.failureReported ||
+        settlementReported ||
+        (!terminalDeliverySettled && !deadlineReached)
+      )
+        return;
+      settlementReported = true;
+      recoveryState.exhaustedChunks =
+        recoveryState.observedChunks - recoveryState.publishedChunks;
+      this.reportDesktopStreamCommandSettlement(
+        commandId,
+        recoveryState,
+        Date.now() - commandStartedAt,
+        telemetryContext,
+      );
+    };
+
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
@@ -797,9 +1211,102 @@ export class DesktopSandboxBridge {
       const recoveryDeadlineAt =
         Date.now() +
         (command.timeout ?? 30_000) +
-        DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS;
+        DESKTOP_COMMAND_DELIVERY_GRACE_MS;
+      this.commandDeliveryDeadlines.set(commandId, recoveryDeadlineAt);
       let nextSequence = 0;
       let streamPublishTail: Promise<void> = Promise.resolve();
+      const pendingChunks = new Map<
+        number,
+        { chunk: StreamChunk; bytes: number }
+      >();
+      let pendingBytes = 0;
+      let deliveryBlocked = false;
+      let bufferLimitExceeded = false;
+      const retainChunk = (sequence: number, chunk: StreamChunk) => {
+        if (bufferLimitExceeded) return;
+        const bytes = new TextEncoder().encode(
+          chunk.data ?? chunk.message ?? "",
+        ).byteLength;
+        if (
+          pendingChunks.size >= DESKTOP_STREAM_PENDING_MAX_CHUNKS ||
+          pendingBytes + bytes > DESKTOP_STREAM_PENDING_MAX_BYTES
+        ) {
+          bufferLimitExceeded = true;
+          return;
+        }
+        pendingChunks.set(sequence, { chunk, bytes });
+        pendingBytes += bytes;
+      };
+      const acknowledgeChunk = (sequence: number) => {
+        const pending = pendingChunks.get(sequence);
+        if (pending) pendingBytes -= pending.bytes;
+        pendingChunks.delete(sequence);
+      };
+
+      const flushPending = async () => {
+        if (bufferLimitExceeded) return;
+        for (const [sequence, { chunk }] of pendingChunks) {
+          if (!canPublish() || Date.now() >= recoveryDeadlineAt) return;
+          try {
+            await this.forwardChunkWithRetry(
+              commandId,
+              chunk,
+              sequence,
+              recoveryState,
+              recoveryDeadlineAt,
+              telemetryContext,
+              canPublish,
+            );
+            if (canPublish()) acknowledgeChunk(sequence);
+          } catch (error) {
+            if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            return;
+          }
+        }
+        deliveryBlocked = pendingChunks.size > 0;
+      };
+      let recoveryTask: Promise<void> | undefined;
+      const startRecovery = () => {
+        if (recoveryTask) return;
+        // Native callbacks are not awaited by Tauri. Drain retained output even
+        // while the process is still running, and keep trying after it exits.
+        // Serialize retries with new output; preserve original sequence numbers
+        // so uncertain publish acknowledgments cannot duplicate tool output.
+        recoveryTask = (async () => {
+          while (
+            canPublish() &&
+            deliveryBlocked &&
+            !bufferLimitExceeded &&
+            Date.now() < recoveryDeadlineAt
+          ) {
+            await new Promise((resolve) =>
+              setTimeout(
+                resolve,
+                Math.min(1_000, recoveryDeadlineAt - Date.now()),
+              ),
+            );
+            const retry = streamPublishTail.then(flushPending);
+            streamPublishTail = retry.catch(() => undefined);
+            await retry;
+          }
+        })()
+          .catch(() => {
+            // forwardChunkWithRetry already reports non-transient failures.
+            // Do not produce an unhandled rejection from this background drain.
+          })
+          .finally(() => {
+            recoveryTask = undefined;
+            void streamPublishTail.then(() => {
+              if (
+                recoveryState.terminalChunkObserved !== null &&
+                !recoveryTask
+              ) {
+                terminalDeliverySettled = true;
+                if (nativeInvocationSettled) reportSettlement();
+              }
+            });
+          });
+      };
 
       channel.onmessage = (chunk) => {
         if (!shouldForwardStreamChunk(chunk)) return;
@@ -810,6 +1317,13 @@ export class DesktopSandboxBridge {
           recoveryState.terminalChunkObserved = chunk.type;
         }
         const operation = streamPublishTail.then(async () => {
+          if (!canPublish()) return;
+          if (deliveryBlocked) {
+            // Bound recovery history, without limiting healthy output streams.
+            // Never send a later sequence or exit after losing retained data.
+            retainChunk(sequence, chunk);
+            return;
+          }
           try {
             await this.forwardChunkWithRetry(
               commandId,
@@ -818,7 +1332,9 @@ export class DesktopSandboxBridge {
               recoveryState,
               recoveryDeadlineAt,
               telemetryContext,
+              canPublish,
             );
+            if (canPublish()) acknowledgeChunk(sequence);
           } catch (error) {
             // Tauri does not await Channel callbacks. Exhausted known
             // transients are already reported above, so keep them from
@@ -826,21 +1342,60 @@ export class DesktopSandboxBridge {
             // Unknown failures are logged before reaching this catch and
             // remain rejected for callers that directly await this operation.
             if (!classifyDesktopStreamPublishFailure(error)) throw error;
+            deliveryBlocked = true;
+            retainChunk(sequence, chunk);
+            startRecovery();
           }
         });
         streamPublishTail = operation.catch(() => undefined);
+        void streamPublishTail.then(() => {
+          if (
+            (chunk.type === "exit" || chunk.type === "error") &&
+            !recoveryTask
+          ) {
+            terminalDeliverySettled = true;
+            if (nativeInvocationSettled) reportSettlement();
+          }
+        });
         return operation;
       };
 
-      await invoke("execute_stream_command", {
-        commandId,
-        command: command.command,
-        cwd: command.cwd,
-        env: command.env,
-        timeoutMs: command.timeout ?? 30000,
-        onEvent: channel,
-      });
-      await streamPublishTail;
+      try {
+        if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          channel.onmessage({ type: "exit", exitCode: 130 });
+        } else {
+          await invoke("execute_stream_command", {
+            commandId,
+            command: command.command,
+            cwd: command.cwd,
+            env: command.env,
+            timeoutMs: command.timeout ?? 30000,
+            onEvent: channel,
+          });
+        }
+      } finally {
+        // Delivery can outlive the process. A later Stop must still acknowledge
+        // that there is no native process left to cancel.
+        this.activeCommands.delete(commandId);
+        nativeInvocationSettled = true;
+      }
+      const settledDelivery = streamPublishTail.then(flushPending);
+      streamPublishTail = settledDelivery.catch(() => undefined);
+      await settledDelivery;
+      await recoveryTask;
+      if (recoveryState.exhaustionReported || bufferLimitExceeded) {
+        recoveryState.exhaustedChunks =
+          recoveryState.observedChunks - recoveryState.publishedChunks;
+      }
+      if (bufferLimitExceeded) {
+        captureAuthenticatedEvent("desktop_stream_buffer_limit_exceeded", {
+          connectionId: commandConnectionId,
+          commandId,
+          ...telemetryContext,
+          pendingChunks: pendingChunks.size,
+          pendingBytes,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
@@ -852,18 +1407,33 @@ export class DesktopSandboxBridge {
           message,
         }),
       );
-      await this.publishResult({
-        type: "error",
-        commandId,
-        message,
-      });
+      if (canPublish()) {
+        await this.publishResult({
+          type: "error",
+          commandId,
+          message,
+        });
+      }
     } finally {
-      this.reportDesktopStreamCommandSettlement(
-        commandId,
-        recoveryState,
-        Date.now() - commandStartedAt,
-        telemetryContext,
-      );
+      const deadline = this.commandDeliveryDeadlines.get(commandId);
+      if (!terminalDeliverySettled && deadline !== undefined) {
+        // IPC invocation completion does not wait for Channel delivery. Preserve
+        // ownership for callbacks still in transit, but never beyond the window.
+        const timer = setTimeout(
+          () => {
+            this.commandDeliveryCleanupTimers.delete(timer);
+            if (this.commandDeliveryDeadlines.get(commandId) === deadline) {
+              this.commandDeliveryDeadlines.delete(commandId);
+            }
+            reportSettlement(true);
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+        this.commandDeliveryCleanupTimers.add(timer);
+      } else {
+        this.commandDeliveryDeadlines.delete(commandId);
+      }
+      reportSettlement(!canPublish());
       this.activeCommands.delete(commandId);
     }
   }
@@ -879,7 +1449,8 @@ export class DesktopSandboxBridge {
     const outcome =
       recoveryState.exhaustedChunks > 0
         ? "incomplete"
-        : recoveryState.publishedChunks === recoveryState.observedChunks
+        : recoveryState.publishedChunks === recoveryState.observedChunks &&
+            recoveryState.terminalChunkPublished
           ? "recovered"
           : "interrupted";
     const properties = {
@@ -933,26 +1504,50 @@ export class DesktopSandboxBridge {
     return error instanceof Error ? error.message : String(error);
   }
 
+  private fileReplyPublisher(): (message: SandboxMessage) => Promise<void> {
+    const router = this.operationRouter;
+    const subscription = this.subscription;
+    return (message) => {
+      // Native I/O may finish after stop/re-registration. Never send an old
+      // operation's result on the replacement connection.
+      if (this.operationRouter !== router || this.subscription !== subscription)
+        return Promise.resolve();
+      return this.publishResult(message);
+    };
+  }
+
   private async publishFileError(
     requestId: string,
     error: unknown,
+    reply: (message: SandboxMessage) => Promise<void>,
   ): Promise<void> {
-    await this.publishResult({
+    const fileFailure = getDesktopFileFailure(error);
+    await reply({
       type: "file_error",
       requestId,
       message: this.getErrorMessage(error),
+      ...(fileFailure !== "unknown" ? { fileFailure } : {}),
     });
   }
 
-  private isUnavailableNativeFileCommandError(error: unknown): boolean {
-    const message = this.getErrorMessage(error).toLowerCase();
-    return (
-      message.includes("desktop_file_request") &&
-      (message.includes("not found") ||
-        message.includes("unknown command") ||
-        message.includes("not registered") ||
-        message.includes("not allowed by acl"))
-    );
+  private unavailableNativeFileCommand(
+    error: unknown,
+  ): DesktopFileFailure | undefined {
+    const message = this.getErrorMessage(error);
+    if (
+      /^(?:command )?desktop_file_request not allowed(?: by acl)?\b/i.test(
+        message,
+      )
+    )
+      return "native_ipc_denied";
+    if (
+      /^(?:command )?desktop_file_request (?:not found|not registered)$/i.test(
+        message,
+      ) ||
+      /^unknown command:? ['"]?desktop_file_request['"]?$/i.test(message)
+    )
+      return "native_ipc_unavailable";
+    return undefined;
   }
 
   private async callLegacyLocalFileServer<T>(
@@ -964,7 +1559,10 @@ export class DesktopSandboxBridge {
       "get_cmd_server_info",
     );
     if (!info.port || !info.token) {
-      throw new Error("Desktop file server is not ready");
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
+        "Desktop file server is not ready. Fully reopen HackerAI Desktop and reconnect.",
+      );
     }
 
     const response = await fetch(`http://127.0.0.1:${info.port}${route}`, {
@@ -977,7 +1575,8 @@ export class DesktopSandboxBridge {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
         typeof payload?.error === "string"
           ? payload.error
           : `Desktop file server request failed: ${response.status}`,
@@ -988,6 +1587,18 @@ export class DesktopSandboxBridge {
 
   /** Check file transport availability without creating files or hanging terminal startup. */
   private async probeFileBridge(): Promise<boolean> {
+    // A startup transport hiccup must not pin this connection to files=false.
+    // Retry only this read-only probe, within the original total startup budget.
+    const deadline = Date.now() + DESKTOP_FILE_PROBE_TIMEOUT_MS;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const remainingMs = deadline - Date.now();
+      if (this.isStoppingOrStopped || remainingMs <= 0) return false;
+      if (await this.probeFileBridgeOnce(remainingMs)) return true;
+    }
+    return false;
+  }
+
+  private async probeFileBridgeOnce(timeoutMs: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // A read-only directory stat checks the transport without creating files
@@ -1001,7 +1612,7 @@ export class DesktopSandboxBridge {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("Desktop file probe timed out")),
-            DESKTOP_FILE_PROBE_TIMEOUT_MS,
+            timeoutMs,
           );
         }),
       ]);
@@ -1010,7 +1621,10 @@ export class DesktopSandboxBridge {
         payload.kind !== "not_file" ||
         typeof payload.path !== "string"
       ) {
-        throw new Error("Invalid desktop file probe response");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Invalid desktop file probe response",
+        );
       }
       return true;
     } catch (error) {
@@ -1025,7 +1639,15 @@ export class DesktopSandboxBridge {
         transport:
           this.nativeFileIpcAvailable === false ? "legacy_http" : "native_ipc",
         reason: permissionDenied ? "permission_denied" : "unavailable",
+        native_failure: this.nativeFileIpcFailure,
+        file_failure: getDesktopFileFailure(error),
+        native_app_version: this.nativeAppVersion,
+        native_platform: this.nativePlatform,
       });
+      // A native ACL rejection cannot recover through relay retries. Do not
+      // register a connected computer that every subsequent Agent will reject,
+      // or bypass the denial through the HTTP/command adapters.
+      if (getDesktopFileFailure(error) === "native_ipc_denied") throw error;
       return permissionDenied;
     } finally {
       if (timer) clearTimeout(timer);
@@ -1050,13 +1672,22 @@ export class DesktopSandboxBridge {
           request: { ...body, type: requestType },
         });
         this.nativeFileIpcAvailable = true;
+        this.nativeFileIpcFailure = undefined;
         return payload;
       } catch (error) {
-        if (!this.isUnavailableNativeFileCommandError(error)) {
+        const unavailable = this.unavailableNativeFileCommand(error);
+        if (!unavailable) {
           if (isFileTransportError(error)) {
             throw this.fileTransportFailure(requestType, "native_ipc");
           }
           throw error;
+        }
+        this.nativeFileIpcFailure = unavailable;
+        if (unavailable === "native_ipc_denied") {
+          throw new DesktopFileBridgeError(
+            unavailable,
+            "Desktop native file access is denied by the app permissions. Update and fully reopen HackerAI Desktop, then reconnect.",
+          );
         }
         this.nativeFileIpcAvailable = false;
         console.warn(
@@ -1065,6 +1696,18 @@ export class DesktopSandboxBridge {
       }
     }
 
+    // Binaries predating IPC may silently ignore allowed_root. Never send a
+    // scoped mutation to a handler whose containment support is unverified.
+    if (
+      (requestType === "file_write" || requestType === "file_append") &&
+      typeof body.allowed_root === "string" &&
+      body.allowed_root.trim()
+    ) {
+      throw new DesktopFileBridgeError(
+        "scoped_write_requires_native",
+        "Project-folder writes require the native file API. Update HackerAI Desktop, fully reopen it and reconnect before retrying. No file write was sent.",
+      );
+    }
     try {
       return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
     } catch (error) {
@@ -1084,9 +1727,13 @@ export class DesktopSandboxBridge {
       connectionId: this.connectionId,
       operation,
       transport,
+      native_failure: this.nativeFileIpcFailure,
     });
-    return new Error(
-      `Desktop file bridge transport failed (${transport}, ${operation}). Reconnect the Desktop app and retry after it is ready. A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+    return new DesktopFileBridgeError(
+      transport === "legacy_http"
+        ? "legacy_http_transport"
+        : "native_ipc_transport",
+      `Desktop file bridge transport failed (${transport}, ${operation}). ${transport === "legacy_http" ? "Update and fully reopen HackerAI Desktop, then reconnect." : "Reconnect the Desktop app and retry after it is ready."}${["file_write", "file_append", "file_remove"].includes(operation) ? " A file change may have completed; verify the file before retrying a mutation." : ""} This is not a file-permission diagnosis.`,
     );
   }
 
@@ -1158,6 +1805,7 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileStat(message: FileStatMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const payload = await this.callDesktopFileBridge<{
@@ -1171,12 +1819,18 @@ export class DesktopSandboxBridge {
           payload.kind !== "not_file" &&
           payload.kind !== "missing")
       ) {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
       if (payload.kind === "file" && typeof payload.sizeBytes !== "number") {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
-      await this.publishResult({
+      await reply({
         type: "file_stat_result",
         requestId,
         kind: payload.kind,
@@ -1184,11 +1838,12 @@ export class DesktopSandboxBridge {
         ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRead(message: FileReadMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, range, maxFullBytes, maxResultBytes } = message;
     try {
       const payload = await this.callDesktopFileBridge<unknown>(
@@ -1202,17 +1857,18 @@ export class DesktopSandboxBridge {
           max_result_bytes: maxResultBytes,
         },
       );
-      await this.publishResult({
+      await reply({
         type: "file_read_result",
         requestId,
         ...this.normalizeReadPayload(path, payload, range),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileWrite(message: FileWriteMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_write", "/files/write", {
@@ -1221,13 +1877,14 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_append", "/files/append", {
@@ -1236,25 +1893,27 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRemove(message: FileRemoveMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       await this.callDesktopFileBridge("file_remove", "/files/remove", {
         path,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileList(message: FileListMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const entries = await this.callDesktopFileBridge<Array<{ name: string }>>(
@@ -1262,13 +1921,13 @@ export class DesktopSandboxBridge {
         "/files/list",
         { path },
       );
-      await this.publishResult({
+      await reply({
         type: "file_list_result",
         requestId,
         entries,
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
@@ -1302,6 +1961,7 @@ export class DesktopSandboxBridge {
       commandId: command.commandId,
       canceled,
     });
+    if (canceled) this.acknowledgedOutputs.get(command.commandId)?.cancel();
   }
 
   private async forwardChunk(
@@ -1376,6 +2036,7 @@ export class DesktopSandboxBridge {
     recoveryState: DesktopStreamPublishRecoveryState,
     recoveryDeadlineAt: number,
     telemetryContext: DesktopStreamTelemetryContext,
+    canPublish: () => boolean,
   ): Promise<void> {
     let firstFailureAt: number | null = null;
     let firstFailureReason: DesktopStreamPublishFailureReason | null = null;
@@ -1385,10 +2046,34 @@ export class DesktopSandboxBridge {
       attempt <= DESKTOP_STREAM_PUBLISH_MAX_ATTEMPTS;
       attempt++
     ) {
-      if (this.isStoppingOrStopped) return;
+      if (!canPublish()) return;
 
       try {
+        // The Desktop socket can reconnect before the worker. With broker
+        // history disabled, flushing in that gap loses output despite publish
+        // succeeding. Keep recovery bounded by the existing delivery deadline.
+        if (
+          (recoveryState.failureReported ||
+            this.successfulRelayConnections !==
+              recoveryState.initialRelayGeneration) &&
+          this.operationRouter &&
+          !(await this.operationRouter
+            .hasCommandReceiver(commandId)
+            .catch((error: unknown) => {
+              if (classifyDesktopStreamPublishFailure(error)) throw error;
+              // An inconclusive lookup is never proof of a receiver. Retain
+              // output and retry within the same bounded delivery window.
+              return false;
+            }))
+        ) {
+          throw {
+            code: errorCodes.timeout,
+            message: "Command receiver has not rejoined",
+          };
+        }
+        if (!canPublish()) return;
         await this.forwardChunk(commandId, chunk, sequence);
+        if (!canPublish()) return;
         recoveryState.publishedChunks += 1;
         if (chunk.type === "exit" || chunk.type === "error") {
           recoveryState.terminalChunkPublished = true;
@@ -1435,6 +2120,7 @@ export class DesktopSandboxBridge {
         }
         return;
       } catch (error) {
+        if (!canPublish()) return;
         const reason = classifyDesktopStreamPublishFailure(error);
         if (!reason) throw error;
 
@@ -1482,7 +2168,7 @@ export class DesktopSandboxBridge {
           Date.now() < recoveryDeadlineAt
         ) {
           await this.waitForRelayReady(attempt, recoveryDeadlineAt);
-          if (this.isStoppingOrStopped) return;
+          if (!canPublish()) return;
           if (Date.now() < recoveryDeadlineAt) continue;
         }
 
@@ -1573,11 +2259,21 @@ export class DesktopSandboxBridge {
       );
     }
     try {
-      await this.publishQueue.publish(
-        message as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const subscription = this.subscription;
+      const payload = message as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          subscription!.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (error) {
-      if (!classifyDesktopStreamPublishFailure(error)) {
+      if (
+        !(error instanceof RelayOutputOverflowError) &&
+        !classifyDesktopStreamPublishFailure(error)
+      ) {
         console.error(
           "[DesktopSandboxBridge] Failed to publish result:",
           error,
@@ -1589,26 +2285,40 @@ export class DesktopSandboxBridge {
 
   private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
     const { sessionId, command, cols, rows, cwd, env } = msg;
+    const router = this.operationRouter;
+    const subscription = this.subscription;
 
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<string>();
-      // Serialize publishes: Rust now flushes per-read (could be per-char on
-      // interactive echo). Firing 12 unawaited publishes at the Centrifuge
-      // client caused reordered arrival at the server, producing garbled
-      // terminal rendering. Chain through this promise to preserve order.
-      let publishQueue: Promise<void> = Promise.resolve();
-      const enqueuePublish = (msg: SandboxMessage) => {
-        publishQueue = publishQueue.then(() =>
-          this.publishResult(msg).catch((err) => {
-            console.error(
-              "[DesktopSandboxBridge] Failed to publish",
-              msg.type,
-              err,
-            );
-          }),
+      let ready = false;
+      const pendingChunks: string[] = [];
+      let pendingBytes = 0;
+      let failed = false;
+      const failOutput = () => {
+        if (failed) return;
+        failed = true;
+        pendingChunks.length = 0;
+        pendingBytes = 0;
+        ptyBuffer = "";
+        if (ptyDebounceTimer) clearTimeout(ptyDebounceTimer);
+        ptyDebounceTimer = null;
+        router?.failOutput({ sessionId }, (value) =>
+          subscription!.publish(value),
         );
+      };
+      // publishResult synchronously admits to the bounded operation queue;
+      // another promise chain here would retain output outside that budget.
+      const enqueuePublish = (message: SandboxMessage) => {
+        if (failed || this.operationRouter !== router) return;
+        void this.publishResult(message).catch((error) => {
+          if (error instanceof RelayOutputOverflowError) failOutput();
+          else
+            console.error(
+              "[DesktopSandboxBridge] Failed to publish PTY output",
+            );
+        });
       };
 
       // Debounce buffer for PTY output - accumulate chunks before publishing
@@ -1629,7 +2339,13 @@ export class DesktopSandboxBridge {
         ptyDebounceTimer = null;
       };
 
-      channel.onmessage = (chunk: string) => {
+      const forwardPtyChunk = (chunk: string) => {
+        if (
+          failed ||
+          this.isStoppingOrStopped ||
+          this.operationRouter !== router
+        )
+          return;
         // The Tauri PTY backend sends raw output strings and a final JSON
         // exit sentinel: {"type":"exit","exitCode":N,"sessionId":"..."}.
         // We require ALL three sentinel fields before treating a chunk as an
@@ -1664,9 +2380,33 @@ export class DesktopSandboxBridge {
 
         // Accumulate chunks and debounce publish
         ptyBuffer += chunk;
-        if (!ptyDebounceTimer) {
+        if (ptyBuffer.length >= 16 * 1024) {
+          if (ptyDebounceTimer) clearTimeout(ptyDebounceTimer);
+          flushPtyBuffer();
+        } else if (!ptyDebounceTimer) {
           ptyDebounceTimer = setTimeout(flushPtyBuffer, PTY_DEBOUNCE_MS);
         }
+      };
+
+      channel.onmessage = (chunk: string) => {
+        if (
+          failed ||
+          this.isStoppingOrStopped ||
+          this.operationRouter !== router
+        )
+          return;
+        if (!ready) {
+          const bytes = new TextEncoder().encode(chunk).byteLength;
+          if (
+            pendingChunks.length >= RELAY_QUEUE_MAX_MESSAGES ||
+            pendingBytes + bytes > RELAY_QUEUE_MAX_BYTES
+          ) {
+            failOutput();
+            return;
+          }
+          pendingBytes += bytes;
+          pendingChunks.push(chunk);
+        } else forwardPtyChunk(chunk);
       };
 
       const result = (await invoke("execute_pty_create", {
@@ -1679,6 +2419,16 @@ export class DesktopSandboxBridge {
         onData: channel,
       })) as { pid: number | null; session_id: string };
 
+      if (
+        failed ||
+        this.isStoppingOrStopped ||
+        this.operationRouter !== router
+      ) {
+        // Creation may have registered the process after the first kill attempt.
+        await invoke("execute_pty_kill", { sessionId });
+        return;
+      }
+
       // Rust's PtyCreateResult.pid is Option<u32> — serializes to `null` when
       // the child didn't expose a pid. Reject that case explicitly so the
       // server doesn't get a pty_ready with a bogus pid cast.
@@ -1688,15 +2438,17 @@ export class DesktopSandboxBridge {
         );
       }
 
-      // Route pty_ready through the same publishQueue that pty_data/pty_exit
-      // use. Direct publishResult can arrive AFTER already-queued pty_data
-      // chunks on fast-starting commands — the server-side adapter would then
-      // see pty_data with no matching pty_ready and drop the output.
+      // Native output can arrive before invoke resolves. Announce readiness
+      // first: an early exit otherwise closes the route before pty_ready.
       enqueuePublish({
         type: "pty_ready",
         sessionId,
         pid: result.pid,
       });
+      ready = true;
+      for (const chunk of pendingChunks) forwardPtyChunk(chunk);
+      pendingChunks.length = 0;
+      pendingBytes = 0;
     } catch (err) {
       // The failure path never reaches the channel.onmessage listener, so
       // no pty_data was queued for this session — publishResult direct is
@@ -1769,19 +2521,27 @@ export class DesktopSandboxBridge {
 
   async stop(): Promise<void> {
     this.startupGeneration += 1;
+    this.commandOutputStopSource = "bridge_stop";
     this.isStoppingOrStopped = true;
+    for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
+    this.acknowledgedOutputs.clear();
+    this.commandDeliveryDeadlines.clear();
+    for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
+    this.commandDeliveryCleanupTimers.clear();
     this.stopHeartbeat();
-    this.relayTelemetry.flush();
-    this.publishQueue = null;
-    if (this.connectionId) {
-      try {
-        await this.config.disconnectDesktop({
-          connectionId: this.connectionId,
-        });
-      } catch (error) {
-        console.warn("[DesktopSandboxBridge] Failed to disconnect:", error);
-      }
+    this.relayStarted = false;
+    this.clearReconnectTimer();
+    if (!this.config.relayTelemetry) {
+      this.relayTelemetry.flush();
+      this.relayTelemetry.reset();
     }
+    this.publishQueue?.close();
+    this.publishQueue = null;
+    this.operationRouter?.stop();
+    this.operationRouter = null;
+    const connectionId = this.connectionId;
+    this.connectionId = null;
 
     if (this.subscription) {
       try {
@@ -1805,6 +2565,12 @@ export class DesktopSandboxBridge {
       this.client = null;
     }
 
-    this.connectionId = null;
+    // Convex queues mutations while offline. Local cleanup and recovery must
+    // never wait for that network request to settle.
+    if (connectionId) {
+      void this.config.disconnectDesktop({ connectionId }).catch((error) => {
+        console.warn("[DesktopSandboxBridge] Failed to disconnect:", error);
+      });
+    }
   }
 }

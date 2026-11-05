@@ -1,18 +1,184 @@
 import {
+  AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+  appendAgentFinishContinuationLimit,
+  classifyAgentRetryFinalization,
+  appendProviderEmptyResponseFailure,
+  prepareAgentFinishContinuation,
+  prepareAgentLoopContinuation,
   createAssistantContentLoopMonitor,
   decideProviderRecovery,
   getProviderOutputDiagnostics,
+  hasUncertainProviderToolOutcome,
+  isConfirmedToolFailureLoopStop,
+  isTerminalEmptyAssistantResponse,
   detectAssistantContentLoopFromText,
-  getNextDeepSeekProDisconnectRetryModel,
+  getNextProviderDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryAgentLongWithFallback,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
 } from "../agent-long-provider-retry";
-import type { UIMessage } from "ai";
+import { convertToModelMessages, type UIMessage } from "ai";
+
+describe("prepareAgentFinishContinuation", () => {
+  const completedTool = {
+    type: "tool-run_terminal_cmd",
+    toolCallId: "completed",
+    state: "output-available",
+    input: { command: "check" },
+    output: { ok: true },
+  };
+  const assistant = (parts: unknown[]) =>
+    [{ id: "assistant", role: "assistant", parts }] as UIMessage[];
+
+  it("continues an empty normal stop after completed work without repeating the tool", () => {
+    const messages = assistant([
+      { type: "step-start" },
+      completedTool,
+      { type: "step-start" },
+      { type: "reasoning", text: "private" },
+    ]);
+    const continuation = prepareAgentFinishContinuation(messages, "stop");
+    expect(continuation?.reason).toBe("empty_after_tools");
+    expect(continuation?.messages[0].parts).toEqual([
+      { type: "step-start" },
+      completedTool,
+    ]);
+    expect(prepareAgentFinishContinuation(messages, "error")).toBeUndefined();
+  });
+
+  it("preserves the transcript when the assistant promises a next action but stops", () => {
+    const messages = assistant([
+      { type: "step-start" },
+      completedTool,
+      { type: "step-start" },
+      { type: "text", text: "I'll verify the result now." },
+    ]);
+    expect(prepareAgentFinishContinuation(messages, "stop")).toEqual({
+      reason: "announced_next_action",
+      messages,
+    });
+  });
+
+  it.each([
+    "The result is verified and the task is complete.",
+    "I found a blocker: the service is unavailable. Here is what I verified.",
+    "I verified the first result. The second needs your approval.",
+    "If you want, I'll check another case.",
+    "I'll check the result. The result is good.",
+  ])("allows a genuine result or blocker to finish: %s", (text) => {
+    expect(
+      prepareAgentFinishContinuation(
+        assistant([{ type: "text", text }]),
+        "stop",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("refuses an uncertain tool outcome even if a later tool completed", () => {
+    expect(
+      prepareAgentFinishContinuation(
+        assistant([
+          { type: "step-start" },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "unknown",
+            state: "input-available",
+            input: {},
+          },
+          completedTool,
+          { type: "text", text: "I'll verify the result now." },
+        ]),
+        "stop",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reports an unfinished second stop in both the saved answer and live stream", () => {
+    const messages = assistant([
+      { type: "text", text: "I'll check the remaining result." },
+    ]);
+    const write = jest.fn();
+    appendAgentFinishContinuationLimit(messages, { write } as any, "assistant");
+    expect(messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        type: "text",
+        text: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      }),
+    );
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "text-delta",
+        delta: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      }),
+    );
+  });
+
+  it("uses the bounded finish message when the second stop has only completed tool output", () => {
+    const messages = assistant([{ type: "step-start" }, completedTool]);
+    const options = {
+      messages,
+      finishReason: "stop",
+      aborted: false,
+    };
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: true,
+      }),
+    ).toBe("finish_continuation_limit");
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: false,
+      }),
+    ).toBe("terminal_empty");
+    expect(
+      classifyAgentRetryFinalization({
+        ...options,
+        finishContinuationAttempted: true,
+        aborted: true,
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("prepareProviderDisconnectContinuation", () => {
+  it.each([
+    [[], "missing_assistant"],
+    [
+      [
+        {
+          id: "assistant",
+          role: "assistant",
+          parts: [{ type: "text", text: "private output" }],
+        },
+      ],
+      "missing_step_boundary",
+    ],
+  ])(
+    "explains a rejected transcript without exposing its contents (%s)",
+    (messages, reason) => {
+      const onRejected = jest.fn();
+      const options = { onRejected };
+
+      expect(
+        prepareProviderDisconnectContinuation(messages as UIMessage[], options),
+      ).toBeUndefined();
+      expect(onRejected.mock.calls).toEqual([[reason]]);
+    },
+  );
+
+  it("keeps the existing rejection when diagnostic collection throws", () => {
+    const options = {
+      onRejected: () => {
+        throw new Error("diagnostics unavailable");
+      },
+    };
+    expect(prepareProviderDisconnectContinuation([], options)).toBeUndefined();
+  });
+
   it("leaves provider-executed pending calls under provider ownership", () => {
     const pending = {
       type: "tool-search",
@@ -108,7 +274,7 @@ describe("prepareProviderDisconnectContinuation", () => {
     expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
   });
 
-  it("preserves tools completed before an Abliteration error even without a partial tail", () => {
+  it("continues after a completed tool without requiring a discarded suffix", () => {
     const messages = [
       {
         id: "assistant",
@@ -125,16 +291,15 @@ describe("prepareProviderDisconnectContinuation", () => {
         ],
       },
     ] as UIMessage[];
-    expect(prepareProviderDisconnectContinuation(messages)).toBeUndefined();
+    const onRejected = jest.fn();
     expect(
-      prepareProviderDisconnectContinuation(messages, {
-        allowCompletedTail: true,
-      }),
+      prepareProviderDisconnectContinuation(messages, { onRejected }),
     ).toMatchObject({
       messages,
       removedPartCount: 0,
       preservedCompletedToolCount: 1,
     });
+    expect(onRejected).not.toHaveBeenCalled();
   });
 
   it("removes an entirely incomplete first assistant step", () => {
@@ -157,10 +322,10 @@ describe("prepareProviderDisconnectContinuation", () => {
   });
 });
 
-describe("getNextDeepSeekProDisconnectRetryModel", () => {
+describe("getNextProviderDisconnectRetryModel", () => {
   it("uses GLM 5.3 and then one final Kimi retry", () => {
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-deepseek-v4-pro-0813",
         completedRetryCount: 0,
@@ -168,7 +333,7 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
     ).toBe("model-glm-5.3");
 
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-glm-5.3",
         completedRetryCount: 1,
@@ -178,21 +343,21 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 
   it("stops after Kimi and does not affect other original models", () => {
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-grok-4.6",
         completedRetryCount: 1,
       }),
     ).toBeUndefined();
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-deepseek-v4-pro-0813",
         failedModel: "model-kimi-k3",
         completedRetryCount: 2,
       }),
     ).toBeUndefined();
     expect(
-      getNextDeepSeekProDisconnectRetryModel({
+      getNextProviderDisconnectRetryModel({
         originalModel: "model-grok-4.6",
         failedModel: "model-grok-4.6",
         completedRetryCount: 0,
@@ -202,6 +367,94 @@ describe("getNextDeepSeekProDisconnectRetryModel", () => {
 });
 
 describe("shouldRetryAgentLongWithFallback", () => {
+  it("treats a completed terminal result with unknown execution as unsafe to retry", () => {
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: {
+            result: { exitCode: null, executionOutcome: "unknown" },
+          },
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      hasUncertainProviderToolOutcome([
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-error",
+          errorText: "transport failed",
+          executionOutcome: "unknown",
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("keeps an unknown tool outcome out of automatic empty-answer recovery", () => {
+    const parts = [
+      {
+        type: "tool-save",
+        toolCallId: "unconfirmed",
+        state: "input-available",
+        input: {},
+      },
+      {
+        type: "tool-save",
+        toolCallId: "confirmed",
+        state: "output-available",
+        output: { ok: true },
+      },
+    ];
+    expect(isTerminalEmptyAssistantResponse(parts, "stop")).toBe(true);
+    expect(hasUncertainProviderToolOutcome(parts)).toBe(true);
+    expect(
+      shouldRetryAgentLongWithFallback(parts, {
+        finishReason: "stop",
+        hasTerminalProviderStreamError: false,
+      }),
+    ).toBe(false);
+    const messages = [
+      { id: "assistant", role: "assistant", parts },
+    ] as UIMessage[];
+    const write = jest.fn();
+    appendProviderEmptyResponseFailure(messages, "assistant", {
+      write,
+    } as any);
+    expect(messages[0].parts).toContainEqual(
+      expect.objectContaining({
+        toolCallId: "unconfirmed",
+        state: "output-error",
+        errorText: expect.stringContaining("outcome is unknown"),
+      }),
+    );
+    expect(messages[0].parts).toContainEqual(parts[1]);
+    expect(write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "tool-output-error",
+        toolCallId: "unconfirmed",
+      }),
+    );
+  });
+
+  it.each([
+    [[], true],
+    [[{ type: "step-start" }, { type: "reasoning", text: "hidden" }], true],
+    [[{ type: "text", text: " \n" }], true],
+    [[{ type: "text", text: "Done" }], false],
+    [
+      [{ type: "tool-save", state: "output-available", output: { ok: true } }],
+      true,
+    ],
+    [[{ type: "file", mediaType: "text/plain" }], false],
+  ])(
+    "classifies normal-stop output without relying on hidden reasoning: %s",
+    (parts, empty) => {
+      expect(isTerminalEmptyAssistantResponse(parts, "stop")).toBe(empty);
+      expect(isTerminalEmptyAssistantResponse(parts, "tool-calls")).toBe(false);
+    },
+  );
+
   it.each([
     { label: "empty output", parts: [] },
     { label: "only a step boundary", parts: [{ type: "step-start" }] },
@@ -339,6 +592,8 @@ describe("shouldRetryAgentLongWithFallback", () => {
       },
     ];
 
+    expect(hasUncertainProviderToolOutcome(parts)).toBe(false);
+
     expect(
       shouldRetryAgentLongWithFallback(parts, {
         hasTerminalProviderStreamError: true,
@@ -434,6 +689,63 @@ describe("shouldRetryAgentLongWithFallback", () => {
         },
       ),
     ).toBe(true);
+  });
+
+  it("does not switch providers after a confirmed non-executed tool failure loop", () => {
+    expect(
+      shouldRetryAgentLongWithFallback(
+        [
+          { type: "step-start" },
+          {
+            type: "tool-file",
+            toolCallId: "call_1",
+            state: "output-available",
+          },
+        ],
+        {
+          hasTerminalProviderStreamError: false,
+          stoppedDueToDoomLoop: true,
+          confirmedToolFailureLoop: true,
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("only skips fallback for a single unchanged rejected call", () => {
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 4,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 1,
+      }),
+    ).toBe(true);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 2,
+        confirmedNonExecution: true,
+        toolCallCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+      }),
+    ).toBe(false);
+    expect(
+      isConfirmedToolFailureLoopStop(true, {
+        toolNames: ["file"],
+        repeatCount: 5,
+        cycleLength: 1,
+        confirmedNonExecution: true,
+        toolCallCount: 2,
+      }),
+    ).toBe(false);
   });
 
   it("can disable fresh repeated-text detection for aborted streams", () => {
@@ -737,7 +1049,240 @@ describe("provider recovery decisions", () => {
       completed_tool_count: 1,
       has_durable_output: true,
       has_step_boundary: true,
+      uncertain_tool_outcome: false,
     });
     expect(JSON.stringify(diagnostics)).not.toContain("private");
+  });
+  it.each([
+    [
+      "unconfirmed execution",
+      { state: "input-available", input: "private input" },
+      true,
+    ],
+    [
+      "nested unknown execution despite an available result",
+      {
+        state: "output-available",
+        output: { result: { executionOutcome: "unknown" } },
+      },
+      true,
+    ],
+    [
+      "confirmed execution",
+      { state: "output-available", output: "private" },
+      false,
+    ],
+    [
+      "interrupted input before execution",
+      { state: "input-streaming", input: "private partial input" },
+      false,
+    ],
+    ["incomplete tool identity", { state: "input-streaming" }, true],
+  ])("distinguishes %s in output diagnostics", (_name, tool, uncertain) => {
+    const diagnostics = getProviderOutputDiagnostics([
+      { type: "step-start" },
+      { type: "text", text: "private answer" },
+      { type: "tool-save", ...tool },
+    ]);
+    // Durable output and a step boundary alone cannot explain recovery safety.
+    expect(diagnostics.has_durable_output).toBe(true);
+    expect(diagnostics.has_step_boundary).toBe(true);
+    expect(diagnostics.uncertain_tool_outcome).toBe(uncertain);
+    expect(JSON.stringify(diagnostics)).not.toContain("private");
+  });
+});
+
+describe("Agent Max final recovery admission", () => {
+  it.each([213999, 214000, 214001, undefined, NaN, -1])(
+    "checks Grok capacity for %s estimated tokens",
+    (requiredContextTokens) => {
+      expect(
+        getNextProviderDisconnectRetryModel({
+          originalModel: "model-glm-5.3",
+          failedModel: "model-deepseek-v4.1-flash-1017-pro",
+          completedRetryCount: 1,
+          selectedModelOverride: "hackerai-max",
+          agentModelContextEnabled: true,
+          requiredContextTokens,
+        }),
+      ).toBe(
+        requiredContextTokens === 213999 || requiredContextTokens === 214000
+          ? "model-grok-4.6"
+          : undefined,
+      );
+    },
+  );
+  it.each([256_000, 256_001])(
+    "enforces the 256k compaction threshold for %s estimated tokens",
+    (requiredContextTokens) => {
+      expect(
+        getNextProviderDisconnectRetryModel({
+          originalModel: "model-glm-5.3",
+          failedModel: "model-deepseek-v4.1-flash-1017-pro",
+          completedRetryCount: 1,
+          selectedModelOverride: "hackerai-max",
+          requiredContextTokens,
+        }),
+      ).toBe(requiredContextTokens === 256_000 ? "model-grok-4.6" : undefined);
+    },
+  );
+  it("never starts a third recovery or returns to Kimi", () => {
+    expect(
+      getNextProviderDisconnectRetryModel({
+        originalModel: "model-glm-5.3",
+        failedModel: "model-grok-4.6",
+        completedRetryCount: 2,
+        selectedModelOverride: "hackerai-max",
+        requiredContextTokens: 1000,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+it("allows an explicitly enabled empty pre-stream recovery but never drops an uncertain tool", () => {
+  expect(prepareProviderDisconnectContinuation([])).toBeUndefined();
+  expect(
+    prepareProviderDisconnectContinuation([], { allowEmptyResponse: true }),
+  ).toEqual({
+    messages: [],
+    removedPartCount: 0,
+    preservedCompletedToolCount: 0,
+    preservedUnknownToolCount: 0,
+    preservedTextPartCount: 0,
+  });
+  expect(
+    prepareProviderDisconnectContinuation(
+      [
+        {
+          id: "pending",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "uncertain",
+              state: "input-available",
+              input: { cmd: "mutation" },
+            },
+          ],
+        },
+      ],
+      { allowEmptyResponse: true },
+    ),
+  ).toBeUndefined();
+});
+
+describe("prepareAgentLoopContinuation", () => {
+  const write = {
+    type: "tool-file_write",
+    toolCallId: "write-once",
+    state: "output-available",
+    input: { path: "/tmp/fixture.txt", text: "fixture\n" },
+    output: { success: true },
+  };
+  const missing = {
+    type: "tool-file_read",
+    toolCallId: "read-missing",
+    state: "output-error",
+    input: { path: "/tmp/missing" },
+    errorText: "File not found",
+  };
+  const assistant = (parts: unknown[]) =>
+    [{ id: "primary", role: "assistant", parts }] as UIMessage[];
+
+  it("keeps completed actions and failed attempts exactly once in the fallback provider request", async () => {
+    const messages = assistant([
+      { type: "step-start" },
+      write,
+      { type: "text", text: "Repeating prose" },
+      { type: "step-start" },
+      missing,
+      { type: "reasoning", text: "Repeating reasoning" },
+    ]);
+    const before = JSON.parse(JSON.stringify(messages));
+    const continuation = prepareAgentLoopContinuation(messages)!;
+    expect(messages).toEqual(before);
+    expect(continuation.messages).toEqual(
+      assistant([
+        { type: "step-start" },
+        write,
+        { type: "step-start" },
+        missing,
+      ]),
+    );
+    const providerMessages = await convertToModelMessages(
+      continuation.messages,
+    );
+    const parts = providerMessages.flatMap((message) =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    expect(
+      parts
+        .filter((part) => part.type === "tool-call")
+        .map((part) => part.toolCallId),
+    ).toEqual(["write-once", "read-missing"]);
+    expect(
+      parts
+        .filter((part) => part.type === "tool-result")
+        .map((part) => part.toolCallId),
+    ).toEqual(["write-once", "read-missing"]);
+    expect(JSON.stringify(providerMessages)).not.toContain("Repeating");
+    expect(JSON.stringify(providerMessages)).toContain("File not found");
+  });
+
+  it.each([
+    { ...write, output: undefined, state: "input-available" },
+    { ...write, output: undefined, state: "input-streaming" },
+    { ...write, output: { executionOutcome: "unknown" } },
+    { ...write, output: { result: { executionOutcome: "unknown" } } },
+    { ...write, type: "dynamic-tool", toolName: "file_write" },
+    { ...write, providerExecuted: true },
+  ])(
+    "blocks fallback rather than erasing an uncertain action: %j",
+    (uncertain) => {
+      expect(
+        prepareAgentLoopContinuation([
+          ...assistant([uncertain]),
+          { id: "later", role: "assistant", parts: [write] } as UIMessage,
+        ]),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not pass provider item IDs or signatures into the replacement model", async () => {
+    const continuation = prepareAgentLoopContinuation(
+      assistant([
+        {
+          ...write,
+          callProviderMetadata: { openai: { itemId: "old-provider-item" } },
+          resultProviderMetadata: {
+            openrouter: { reasoning_details: "old-signature" },
+          },
+        },
+      ]),
+    )!;
+    expect(continuation.messages[0].parts).toEqual([write]);
+    expect(
+      JSON.stringify(await convertToModelMessages(continuation.messages)),
+    ).not.toMatch(/old-provider-item|old-signature/);
+  });
+
+  it("permits a bounded clean replacement for a prose-only loop", () => {
+    expect(
+      prepareAgentLoopContinuation(
+        assistant([
+          { type: "text", text: "looping text" },
+          { type: "reasoning", text: "looping reasoning" },
+        ]),
+      ),
+    ).toEqual({ messages: [] });
+  });
+
+  it("keeps transaction order across multiple assistant messages", () => {
+    expect(
+      prepareAgentLoopContinuation([
+        ...assistant([write]),
+        { id: "second", role: "assistant", parts: [missing] } as UIMessage,
+      ])?.messages.map((message) => message.id),
+    ).toEqual(["primary", "second"]);
   });
 });

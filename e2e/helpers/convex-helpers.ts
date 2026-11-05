@@ -1,9 +1,9 @@
 import * as dotenv from "dotenv";
 import * as path from "path";
 import { WorkOS } from "@workos-inc/node";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "../../lib/db/service-client";
 import { api } from "../../convex/_generated/api";
-import { getTestUsersRecord } from "../../scripts/test-users-config";
+import { getTestUserEmails } from "../../scripts/test-users-config";
 
 function loadEnv(): void {
   dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -28,7 +28,7 @@ export async function getProUserId(): Promise<string | null> {
   if (!workosKey || !workosClientId) return null;
   try {
     const workos = new WorkOS(workosKey, { clientId: workosClientId });
-    const proEmail = getTestUsersRecord().pro.email;
+    const proEmail = getTestUserEmails().pro;
     const { data } = await workos.userManagement.listUsers({
       email: proEmail,
     });
@@ -48,7 +48,7 @@ export async function deleteTestUserChats(): Promise<void> {
   try {
     const userId = await getProUserId();
     if (!userId) return;
-    const convex = new ConvexHttpClient(env.convexUrl);
+    const convex = createServiceConvexClient(env.convexUrl);
     await convex.mutation(api.chats.deleteAllChatsForUser, {
       serviceKey: env.serviceKey,
       userId,
@@ -69,7 +69,7 @@ export async function createManyTestChatsForProUser(
   if (!env) return;
   const userId = await getProUserId();
   if (!userId) return;
-  const convex = new ConvexHttpClient(env.convexUrl);
+  const convex = createServiceConvexClient(env.convexUrl);
   const { randomUUID } = await import("crypto");
   for (let i = 0; i < count; i++) {
     await convex.mutation(api.chats.saveChat, {

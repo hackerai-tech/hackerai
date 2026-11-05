@@ -9,6 +9,36 @@ export function classifySandboxReadinessFailureSignal(
 ): SandboxReadinessFailureReason | undefined {
   if (!(error instanceof Error)) return undefined;
 
+  // A spent request budget blocks new work; it must not erase the reason the
+  // acquisition failed. Unwrap only our own wrapper, never arbitrary chains.
+  if (
+    error.name === "CloudAcquisitionBudgetExhaustedError" &&
+    error.cause instanceof Error &&
+    error.cause.name !== "CloudAcquisitionBudgetExhaustedError"
+  ) {
+    return classifySandboxReadinessFailureSignal(error.cause);
+  }
+
+  // The acquisition boundary deliberately replaces provider prose with safe
+  // copy. Classify its finite diagnostics, not that replacement message.
+  if (error.name === "E2BAcquisitionError" && "diagnostics" in error) {
+    const diagnostics = error.diagnostics;
+    if (diagnostics && typeof diagnostics === "object") {
+      const fields = diagnostics as Record<string, unknown>;
+      if (
+        fields.e2b_http_status === 504 ||
+        fields.e2b_error_code === "TIMEOUT" ||
+        fields.e2b_error_code === "GATEWAY_TIMEOUT"
+      )
+        return "operation_timeout";
+      if (
+        fields.e2b_error_category === "transient" ||
+        fields.e2b_error_category === "rate_limit"
+      )
+        return "connection_error";
+    }
+  }
+
   const name = error.name.toLowerCase();
   const message = error.message.toLowerCase();
 

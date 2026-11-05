@@ -47,6 +47,9 @@ libc = "0.2"
 objc2 = "0.5"
 objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

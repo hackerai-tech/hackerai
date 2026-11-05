@@ -30,6 +30,22 @@ in the transcript, with no new step or partial tail to trim. That specific local
 error may retain the completed tail for the existing bounded continuation;
 provider-supplied error wording alone does not enable it.
 
+Image-description requests have a separate two-attempt budget: a 20-second
+initial deadline and one 35-second retry for a local timeout or transient
+provider failure. Cancellation prevents retries. Abliteration image preparation
+also bounds the entire batch to 120 seconds and stops new calls/retries once
+reported vision spend reaches $0.25; already-running calls still settle and
+their reported charges count. Permanent input errors and content blocks are
+not retried.
+
+Completed attachment descriptions are saved through the existing owner-checked
+file cache before a sibling failure is reported. Later runs reuse descriptions
+from the server's attachment metadata reload, including when signed URLs have
+changed. Raw images remain stored unchanged. Tool screenshots only use the
+current run's content cache because they do not have a durable owned-file
+identity. Timeout errors retain their cause and surface as
+`category=timeout origin=auxiliary_vision`, with image-specific retry guidance.
+
 A rejection delivered through `streamText.onError` before any output can use
 the existing fallback, including an active Abliteration experiment's baseline
 route. This does not enable replay of arbitrary output-bearing 400 failures.
@@ -42,6 +58,21 @@ Abliteration histories, request preparation splits assistant batches exceeding
 and their IDs are retained; incomplete or ambiguous batches are left unchanged
 and reported by shape diagnostics. Storage's hard byte limit can still remove
 old parts as before.
+
+Conversation compaction shares the `inference_cyber_v1` rollout control with
+eligible security generation. With the flag enabled and Inference configured,
+all plans use Inference for ordinary and expanded-context summaries, with
+Abliteration as the first recovery provider when configured. Existing
+OpenRouter recovery follows if both direct providers fail. The summary must
+finish normally and contain every required checkpoint section before it can
+replace history; discarded output usage is still accounted to its actual
+model. Cancellation stops the chain. Disabling the flag restores the previous
+compaction policy for new runs; an active run retains its initial assignment.
+
+Eligible Free three-step treatment uses the same Inference-first provider
+route. Its separate experiment controls enrollment, and control users retain
+their baseline. Compare outcomes by actual provider and release: the historical
+experiment key alone does not identify which direct provider served a request.
 
 ## Diagnosing a failure
 

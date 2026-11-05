@@ -1,4 +1,5 @@
 import { resolveCurrentAgentEntitlementContext } from "@/lib/auth/agent-auto-review-entitlements";
+import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
 
 type Clients = NonNullable<
   Parameters<typeof resolveCurrentAgentEntitlementContext>[1]
@@ -14,7 +15,11 @@ const createClients = ({
   subscriptions?: Array<{
     id?: string;
     status: string;
-    items: { data: Array<{ price?: { lookup_key?: string | null } }> };
+    items: {
+      data: Array<{
+        price?: { id?: string; lookup_key?: string | null; product?: string };
+      }>;
+    };
   }>;
 } = {}) =>
   ({
@@ -98,6 +103,88 @@ describe("getCurrentAgentEntitlementContext", () => {
       organizationId: "org_1",
     });
   });
+
+  it("recognizes the grandfathered Pro price without a lookup key", async () => {
+    const clients = createClients({
+      subscriptions: [
+        {
+          status: "active",
+          items: {
+            data: [
+              {
+                price: {
+                  id: HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+                  lookup_key: null,
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    await expect(
+      resolveCurrentAgentEntitlementContext(
+        { userId: "user_1", organizationId: "org_1" },
+        clients,
+      ),
+    ).resolves.toEqual({ subscription: "pro", organizationId: "org_1" });
+  });
+
+  it("does not grant Pro for an unrecognized price without a lookup key", async () => {
+    const clients = createClients({
+      subscriptions: [
+        {
+          status: "active",
+          items: {
+            data: [{ price: { id: "price_unknown", lookup_key: null } }],
+          },
+        },
+      ],
+    });
+
+    await expect(
+      resolveCurrentAgentEntitlementContext(
+        { userId: "user_1", organizationId: "org_1" },
+        clients,
+      ),
+    ).resolves.toEqual({ subscription: "free", organizationId: "org_1" });
+  });
+
+  it.each([
+    ["trialing", "prod_Swj3ieGCSAzTtj", "pro"],
+    ["active", "prod_Swj3ieGCSAzTtj", "pro"],
+    ["canceled", "prod_Swj3ieGCSAzTtj", "free"],
+    ["trialing", "prod_unknown", "free"],
+  ])(
+    "resolves a lookup-less legacy price with %s status on %s as %s",
+    async (status, product, subscription) => {
+      const clients = createClients({
+        subscriptions: [
+          {
+            status,
+            items: {
+              data: [
+                {
+                  price: {
+                    id: "price_legacy_yearly",
+                    lookup_key: null,
+                    product,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+      await expect(
+        resolveCurrentAgentEntitlementContext(
+          { userId: "user_1", organizationId: "org_1" },
+          clients,
+        ),
+      ).resolves.toEqual({ subscription, organizationId: "org_1" });
+    },
+  );
 
   it("propagates provider failures so automatic approval fails closed", async () => {
     const clients = createClients();

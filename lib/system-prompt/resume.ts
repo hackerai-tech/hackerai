@@ -1,10 +1,15 @@
 import {
   OUTPUT_LIMIT_FINISH_REASON,
+  STEP_LIMIT_FINISH_REASON,
+  CLIENT_SAVED_FINISH_REASON,
   POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 
 export const getResumeSection = (finishReason?: string): string => {
-  if (finishReason === "tool-calls") {
+  if (
+    finishReason === STEP_LIMIT_FINISH_REASON ||
+    finishReason === "tool-calls"
+  ) {
     return `<resume_context>
 Your previous response was interrupted during tool calls before completing the user's original request. \
 The last user message in the conversation history contains the original task you were working on. \
@@ -30,7 +35,14 @@ First inspect the latest assistant progress, todos, files, and current sandbox s
 with only the remaining work. Consult the transcript file on the sandbox if you need to recover \
 specific details from the earlier conversation.
 </resume_context>`;
-  } else if (finishReason === "preemptive-timeout") {
+  } else if (finishReason === CLIENT_SAVED_FINISH_REASON) {
+    return `<resume_context>
+The previous Agent run ended unexpectedly. Continue the original task using the saved messages, tool results, files, and current todos. Do not repeat completed work. If a tool has no confirmed result, inspect the current state before repeating an action that may already have taken effect.
+</resume_context>`;
+  } else if (
+    finishReason === "preemptive-timeout" ||
+    finishReason === "timeout"
+  ) {
     return `<resume_context>
 Your previous response was stopped because the streaming duration exceeded the server time limit. \
 This is a normal operational limit, not an error. The conversation is intact and your work is preserved. \

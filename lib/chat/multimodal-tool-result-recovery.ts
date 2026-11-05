@@ -151,6 +151,7 @@ export const isProviderMultimodalToolResultRejectionError = (
     statusCode != null &&
     statusCode !== 400 &&
     statusCode !== 404 &&
+    statusCode !== 415 &&
     statusCode !== 422
   ) {
     return false;
@@ -158,6 +159,10 @@ export const isProviderMultimodalToolResultRejectionError = (
 
   const text = detailsToSearchText(details);
   if (!text || MEDIA_OVERFLOW_PATTERN.test(text)) return false;
+
+  // Together can reject a tool image URL with this specific HTTP 415 error.
+  // Generic unsupported-media responses do not establish a safe image retry.
+  if (statusCode === 415) return /\bURL did not return an image\b/i.test(text);
 
   return MULTIMODAL_REJECTION_PATTERNS.some((pattern) => pattern.test(text));
 };

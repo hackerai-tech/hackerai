@@ -1,6 +1,6 @@
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
-import { internalAction } from "./_generated/server";
+import { internalAction } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 
 const FEEDBACK_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;

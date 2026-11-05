@@ -22,6 +22,9 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<target_request_limits>");
+      expect(ask).not.toContain("<target_request_limits>");
+      expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
       );
@@ -43,6 +46,7 @@ describe("systemPrompt security instructions", () => {
       expect(agent).toContain("disclose changes that could not be restored");
       expect(agent).toContain("<finding_quality>");
       expect(ask).not.toContain("<agent_lifecycle>");
+      expect(ask).not.toContain("<agent_deliverables>");
       expect(ask).not.toContain("requested outcome is sufficiently supported");
     },
   );
@@ -90,7 +94,7 @@ describe("systemPrompt security instructions", () => {
     expect(disabled).not.toContain("<generic_delegation>");
     expect(enabled).toContain("<generic_delegation>");
     expect(enabled).toContain("Use delegate_task");
-    expect(enabled).not.toContain("vulnerability_report");
+    expect(enabled).toContain("create_vulnerability_report");
     expect(enabled).not.toContain("security_validation");
     expect(enabled).not.toContain("security_task");
     expect(enabled).toContain("two siblings may be active");
@@ -273,58 +277,66 @@ describe("systemPrompt security instructions", () => {
     expect(prompt).toBe(baseline);
   });
 
-  it("shares response style and freshness guidance across modes", async () => {
-    const askPrompt = await systemPrompt(
-      "user_123",
-      "ask",
-      "pro",
-      "ask-model",
-      null,
-      null,
-    );
-    const agentPrompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-    );
+  it.each([
+    ["ask-model", "agent-model"],
+    ["ask-model-free", "agent-model-free"],
+    ["model-deepseek-v4-pro-0813", "model-deepseek-v4-pro-0813"],
+  ] as const)(
+    "shares response style and freshness guidance across modes (%s, %s)",
+    async (askModel, agentModel) => {
+      const askPrompt = await systemPrompt(
+        "user_123",
+        "ask",
+        "pro",
+        askModel,
+        null,
+        null,
+      );
+      const agentPrompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        agentModel,
+        null,
+        null,
+      );
 
-    for (const prompt of [askPrompt, agentPrompt]) {
-      expect(prompt).toContain("<response_style>");
-      expect(prompt).toContain(
-        "For simple or conversational requests, respond naturally and concisely",
-      );
-      expect(prompt).toContain(
-        "Give the best useful answer before asking a follow-up question.",
-      );
-      expect(prompt).toContain(
-        "Do not use emojis unless the user asks for them",
-      );
-      expect(prompt.match(/emojis/gi)).toHaveLength(1);
+      for (const prompt of [askPrompt, agentPrompt]) {
+        expect(prompt).toContain("<response_style>");
+        expect(prompt).toContain(
+          "For simple or conversational requests, respond naturally and concisely",
+        );
+        expect(prompt).toContain(
+          "Give the best useful answer before asking a follow-up question.",
+        );
+        expect(prompt).toContain(
+          "Do not use emojis unless the user asks for them",
+        );
+        expect(prompt.match(/emojis/gi)).toHaveLength(1);
 
-      expect(prompt).toContain("<freshness_and_web_search>");
-      expect(prompt).toContain("Your reliable knowledge cutoff is");
-      expect(prompt).toContain(
-        "Use web_search when the user asks for current or time-sensitive information",
-      );
-      expect(prompt).toContain(
-        "Use open_url when the user provides a specific page to inspect",
-      );
-      expect(prompt).toContain("Do not search for stable general concepts");
+        expect(prompt).toContain("<freshness_and_web_search>");
+        expect(prompt).toContain("Your reliable knowledge cutoff is");
+        expect(prompt).toContain(
+          "Use web_search when the user asks for current or time-sensitive information",
+        );
+        expect(prompt).toContain(
+          "Use open_url when the user provides a specific page to inspect",
+        );
+        expect(prompt).toContain("Do not search for stable general concepts");
 
-      expect(prompt.match(/<response_style>/g)).toHaveLength(1);
-      expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
-      expect(prompt).toContain("<evidence_and_inference>");
-      expect(prompt).toContain(
-        "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
-      );
-      expect(prompt).toContain(
-        "Clearly distinguish observations, inferences, and unresolved uncertainty.",
-      );
-    }
-  });
+        expect(prompt.match(/<response_style>/g)).toHaveLength(1);
+        expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
+        expect(prompt).not.toContain("<web_tool_usage>");
+        expect(prompt).toContain("<evidence_and_inference>");
+        expect(prompt).toContain(
+          "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
+        );
+        expect(prompt).toContain(
+          "Clearly distinguish observations, inferences, and unresolved uncertainty.",
+        );
+      }
+    },
+  );
 
   it("does not invent a cutoff for the free Ask route", async () => {
     const prompt = await systemPrompt(
@@ -373,24 +385,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("Python 3.12.11");
     expect(prompt).not.toContain("Node.js 20.19.4");
     expect(prompt).not.toContain("Golang 1.24.2");
-  });
-
-  it("describes the HackerAI tools container for MIOSA sandboxes", async () => {
-    const prompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
-    );
-
-    expect(prompt).toContain("4 vCPU");
-    expect(prompt).toContain("Pre-installed Pentesting Tools:");
-    expect(prompt).toContain("agent-browser is installed in the cloud sandbox");
   });
 
   it("keeps all three Agent approval mode contracts distinct", async () => {
@@ -487,7 +481,35 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
       );
       expect(prompt).toContain(
-        "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
+      );
+      expect(prompt).toContain(
+        "persist at most one successful create_vulnerability_report for that distinct root cause",
+      );
+      expect(prompt).toContain(
+        "explicitly returns retryable: true, retry the same report once",
+      );
+      expect(prompt).toContain(
+        'Do not also save the confirmed vulnerability as a Notes "findings" entry',
+      );
+      expect(prompt).toContain(
+        "If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item",
+      );
+      expect(prompt).toContain(
+        "Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case",
+      );
+      expect(prompt).toContain(
+        "Set Scope to Changed only when the demonstrated impact crosses a security authority boundary",
+      );
+      expect(prompt).toContain(
+        "Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone",
+      );
+      expect(prompt).toContain("<finding_quality>");
+      expect(prompt).toContain(
+        "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
+      );
+      expect(prompt).toContain(
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
       );
       expect(prompt).toContain(
         "Calibrate severity to only the weakness and impact actually demonstrated",
@@ -655,7 +677,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("Chromium and agent-browser");
     expect(prompt).toContain("agent-browser snapshot -i");
     expect(prompt).toContain("agent-browser set viewport 1920 1080");
-    expect(prompt).toContain("/home/user/agent-browser-screenshots");
+    expect(prompt).toContain("view action on the returned path");
     expect(prompt).toContain("file tool's view action");
     expect(prompt).toContain("Inline image attachments are already visible");
     expect(prompt).toContain("do not call the file view action");
@@ -720,12 +742,16 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "authenticate again through the user-approved flow",
     );
     expect(cloudPrompt).toContain(
-      "Do not save cookies, local storage, or other authentication state to sandbox files",
+      "Only when HACKERAI_BROWSER_STATE_DIR is set",
     );
-    expect(cloudPrompt).not.toContain("agent-browser state save");
-    expect(cloudPrompt).not.toContain("agent-browser --state");
+    expect(cloudPrompt).toContain("runtime encrypts it");
+    expect(cloudPrompt).toContain("Do not promise recovery across Agent runs");
+    expect(cloudPrompt).not.toContain("npm install -g agent-browser");
+    expect(localPrompt).toContain(
+      "On Local, Desktop, and remote hosts, choose a unique session name",
+    );
 
-    for (const prompt of [localPrompt, askPrompt]) {
+    for (const prompt of [askPrompt]) {
       expect(prompt).not.toContain("<agent_browser>");
       expect(prompt).not.toContain("agent-browser doctor --fix");
       expect(prompt).not.toContain("authentication state to sandbox files");
@@ -798,7 +824,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("keeps the false-positive port-scan warning specific to E2B", async () => {
+  it("keeps networking limitations specific to cloud Agent", async () => {
     const cloudPrompt = await systemPrompt(
       "user_123",
       "agent",
@@ -809,17 +835,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "full_access",
       false,
       "e2b",
-    );
-    const miosaPrompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
     );
     const localPrompt = await systemPrompt(
       "user_123",
@@ -846,18 +861,19 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain(
       "Narrow application-level checks remain appropriate when they verify expected protocol behavior",
     );
-    const portScanningPolicy = cloudPrompt.match(
-      /Port-scanning limitation:[\s\S]*?\n\nSystem Environment:/,
+    const cloudNetworkingPolicy = cloudPrompt.match(
+      /Cloud networking limitations:[\s\S]*?\n\nSystem Environment:/,
     )?.[0];
-    expect(portScanningPolicy).toBeDefined();
-    expect(portScanningPolicy).not.toMatch(
+    expect(cloudNetworkingPolicy).toBeDefined();
+    expect(cloudNetworkingPolicy).toContain(
+      "this sandbox lacks TUN/TAP support",
+    );
+    expect(cloudNetworkingPolicy).toContain("attempting VPN setup");
+    expect(cloudNetworkingPolicy).not.toMatch(
       /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
     );
-    expect(miosaPrompt).not.toContain("Port-scanning limitation:");
-    expect(miosaPrompt).not.toContain(
-      "Cloud Agent networking can produce false-positive port results",
-    );
-    expect(localPrompt).not.toContain("Port-scanning limitation:");
+    expect(localPrompt).not.toContain("Cloud networking limitations:");
+    expect(localPrompt).not.toContain("this sandbox lacks TUN/TAP support");
     expect(localPrompt).not.toContain(
       "Cloud Agent networking can produce false-positive port results",
     );

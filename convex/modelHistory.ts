@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, type MutationCtx } from "./_generated/server";
+import { mutation, type MutationCtx } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 

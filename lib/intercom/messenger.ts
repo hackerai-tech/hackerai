@@ -38,6 +38,10 @@ export type IntercomMessengerIdentity = {
 export async function createIntercomMessengerIdentity(
   user: IntercomUser,
 ): Promise<IntercomMessengerIdentity | null> {
+  // The production Messenger rejects Preview domains. Do not boot it with QA
+  // identities or send background requests from deployment previews.
+  if (process.env.VERCEL_ENV === "preview") return null;
+
   const secret = process.env.INTERCOM_MESSENGER_SECRET?.trim();
   if (!secret) return null;
 

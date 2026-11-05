@@ -73,7 +73,19 @@ describe("Agent Auto review terminal evidence", () => {
     ["bash scripts/test.sh", "script"],
     ["pnpm run test", "package_task"],
     ["pnpm test", "package_task"],
-    ["pnpm install", null],
+    ["pnpm install", "package_task"],
+    ["npm --prefix ./pkg run test", "package_task"],
+    ["env bash scripts/link.sh", "script"],
+    ["env ./scripts/link.sh", "script"],
+    ["env -S 'bash scripts/link.sh'", "script"],
+    ["timeout 10 ./scripts/link.sh", "script"],
+    ["node --version", null],
+    ["python3 --version", null],
+    ["pnpm --version", null],
+    ["bash -v scripts/link.sh", "script"],
+    ["python3 -v x.py", "script"],
+    ["env bash -v scripts/link.sh", "script"],
+    ["bash -v scripts/link.sh && echo done", "script"],
     ["sh -c 'rm -rf build'", "script"],
     ["sudo -u root rm -rf build", "filesystem_delete"],
     ["git status", null],
@@ -165,7 +177,7 @@ describe("Agent Auto review terminal evidence", () => {
     });
   });
 
-  it("resolves exact local script contents", async () => {
+  it("keeps a regular local script on the human path without reading it", async () => {
     const sandbox = makeSandbox({
       "/home/user/scripts/test.sh": {
         type: "file",
@@ -173,25 +185,71 @@ describe("Agent Auto review terminal evidence", () => {
         content: "#!/bin/sh\npnpm exec jest --runInBand\n",
       },
     });
-    await expect(
-      collectAgentAutoReviewTerminalInspection({
-        command: "bash scripts/test.sh",
-        sandbox,
-      }),
-    ).resolves.toMatchObject({
-      kind: "script",
-      status: "resolved",
-      scripts: [
-        {
-          source: "file",
-          path: "/home/user/scripts/test.sh",
-          content: "#!/bin/sh\npnpm exec jest --runInBand\n",
-        },
-      ],
+    const inspection = await collectAgentAutoReviewTerminalInspection({
+      command: "bash scripts/test.sh",
+      sandbox,
     });
+    expect(inspection).toMatchObject({
+      kind: "script",
+      status: "unresolved",
+      reason: "inspection_failed",
+    });
+    expect(inspection?.scripts).toBeUndefined();
+    expect(sandbox.files.read).not.toHaveBeenCalled();
   });
 
-  it("resolves package lifecycle scripts without sending the full package file", async () => {
+  it.each(["bash scripts/link.sh", "pnpm run test"])(
+    "does not send native local file contents for %s to auto-review",
+    async (command) => {
+      const readText = jest.fn(async () => ({
+        content: "HOST_SECRET",
+        sizeBytes: 11,
+        tooLarge: false,
+        truncated: false,
+      }));
+      const sandbox = {
+        sandboxKind: "centrifugo",
+        getWorkingDirectory: () => "/home/user",
+        isWindows: () => false,
+        supportsNativeFileRelay: () => true,
+        files: { readText },
+      } as unknown as AnySandbox;
+
+      const inspection = await collectAgentAutoReviewTerminalInspection({
+        command,
+        sandbox,
+      });
+
+      expect(inspection).toMatchObject({ status: "unresolved" });
+      expect(inspection?.scripts).toBeUndefined();
+      expect(readText).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not follow a cloud script's symlinked parent into sensitive content", async () => {
+    const sandbox = makeSandbox({
+      "/home/user/scripts": {
+        type: "symlink",
+        symlinkTarget: "/home/user/.env",
+      },
+      "/home/user/scripts/link.sh": {
+        type: "file",
+        size: 11,
+        content: "CLOUD_SECRET",
+      },
+    });
+
+    const inspection = await collectAgentAutoReviewTerminalInspection({
+      command: "bash scripts/link.sh",
+      sandbox,
+    });
+
+    expect(inspection).toMatchObject({ status: "unresolved" });
+    expect(inspection?.scripts).toBeUndefined();
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  });
+
+  it("keeps package lifecycle scripts on the human path without reading package.json", async () => {
     const packageJson = JSON.stringify({
       name: "example",
       scripts: {
@@ -207,20 +265,17 @@ describe("Agent Auto review terminal evidence", () => {
         content: packageJson,
       },
     });
-    await expect(
-      collectAgentAutoReviewTerminalInspection({
-        command: "pnpm run test",
-        sandbox,
-      }),
-    ).resolves.toMatchObject({
-      kind: "package_task",
-      status: "resolved",
-      scripts: [
-        { name: "pretest", command: "echo preparing tests" },
-        { name: "test", command: "jest --runInBand" },
-        { name: "posttest", command: "echo tests complete" },
-      ],
+    const inspection = await collectAgentAutoReviewTerminalInspection({
+      command: "pnpm run test",
+      sandbox,
     });
+    expect(inspection).toMatchObject({
+      kind: "package_task",
+      status: "unresolved",
+      reason: "inspection_failed",
+    });
+    expect(inspection?.scripts).toBeUndefined();
+    expect(sandbox.files.read).not.toHaveBeenCalled();
   });
 
   it("keeps package tasks with unresolved local-script indirection on the human path", async () => {
@@ -242,28 +297,26 @@ describe("Agent Auto review terminal evidence", () => {
     ).resolves.toMatchObject({
       kind: "package_task",
       status: "unresolved",
-      reason: "nested_indirection",
+      reason: "inspection_failed",
     });
   });
 
   it("detects evidence changes before execution", async () => {
     const reviewed = await collectAgentAutoReviewTerminalInspection({
-      command: "bash scripts/test.sh",
+      command: "rm -rf build",
       sandbox: makeSandbox({
-        "/home/user/scripts/test.sh": {
+        "/home/user/build": {
           type: "file",
           size: 7,
-          content: "echo ok",
         },
       }),
     });
     const current = await collectAgentAutoReviewTerminalInspection({
-      command: "bash scripts/test.sh",
+      command: "rm -rf build",
       sandbox: makeSandbox({
-        "/home/user/scripts/test.sh": {
+        "/home/user/build": {
           type: "file",
           size: 8,
-          content: "echo bad",
         },
       }),
     });

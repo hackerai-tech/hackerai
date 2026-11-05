@@ -1,3 +1,5 @@
+import { after } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
@@ -5,6 +7,7 @@ import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { POST } from "../route";
 
+jest.mock("next/server", () => ({ after: jest.fn() }));
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: jest.fn(),
 }));
@@ -19,6 +22,10 @@ jest.mock("@/lib/db/subagents", () => ({
 }));
 jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
   closeAndCancelAgentResources: jest.fn(),
+}));
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { flush: jest.fn().mockResolvedValue(undefined) },
 }));
 
 const mockGetUserIDAndPro = getUserIDAndPro as jest.MockedFunction<
@@ -97,6 +104,30 @@ describe("POST /api/delete-sandboxes", () => {
     debugSpy.mockRestore();
     errorSpy.mockRestore();
   });
+
+  it.each([false, true])(
+    "flushes buffered diagnostics after the response when cleanup fails=%s",
+    async (fails) => {
+      if (fails)
+        mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+          new Error("cleanup failed"),
+        );
+      const response = await POST({} as any);
+      expect(response.status).toBe(fails ? 500 : 204);
+      expect(after).toHaveBeenCalledTimes(1);
+      expect(phLogger.flush).not.toHaveBeenCalled();
+      const task = jest.mocked(after).mock.calls[0][0] as () => Promise<void>;
+      let finishFlush!: () => void;
+      const flush = new Promise<void>((resolve) => {
+        finishFlush = resolve;
+      });
+      jest.mocked(phLogger.flush).mockReturnValueOnce(flush);
+      expect(task()).toBe(flush);
+      expect(phLogger.flush).toHaveBeenCalledTimes(1);
+      finishFlush();
+      await flush;
+    },
+  );
 
   it("returns no operational details after successful deletion", async () => {
     mockTerminateCloudSandboxesForUser.mockResolvedValue({

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { ChatSDKError } from "@/lib/errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
+import type { InitialChatPersistenceStep } from "@/lib/db/actions";
 
 const MAX_ERROR_FIELD_LENGTH = 1000;
 const MAX_STACK_FIELD_LENGTH = 2000;
@@ -13,6 +14,7 @@ type AgentRouteErrorContext = {
   runId?: string;
   approvalSessionId?: string;
   stage?: string;
+  initialPersistenceStep?: InitialChatPersistenceStep;
 };
 
 const truncate = (value: string, maxLength: number): string =>
@@ -99,6 +101,10 @@ export function handleAgentRouteError({
       trigger_run_id: context.runId,
       approval_session_id: context.approvalSessionId,
       stage: context.stage,
+      ...(context.stage === "persist_user_message" &&
+      context.initialPersistenceStep
+        ? { initial_persistence_step: context.initialPersistenceStep }
+        : {}),
       ...serializeRouteError(error),
     }),
   );

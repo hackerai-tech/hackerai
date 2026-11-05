@@ -80,7 +80,8 @@ export async function recoverSubscriptionPayment({
     invoice.billing_reason !== "subscription_cycle" ||
     invoice.amount_remaining <= 0 ||
     (paymentIntent &&
-      ["processing", "succeeded", "requires_capture"].includes(
+      // A portal-canceled payment can still belong to an open renewal invoice.
+      ["processing", "succeeded", "requires_capture", "canceled"].includes(
         paymentIntent.status,
       ))
   ) {

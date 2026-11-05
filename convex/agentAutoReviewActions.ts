@@ -6,7 +6,7 @@ import { v } from "convex/values";
 
 import type { AgentEntitlementClients } from "../lib/auth/agent-auto-review-entitlements";
 import { resolveCurrentAgentEntitlementContext } from "../lib/auth/agent-auto-review-entitlements";
-import { action } from "./_generated/server";
+import { action } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 
 const subscriptionTierValidator = v.union(
@@ -68,7 +68,14 @@ const entitlementClients: AgentEntitlementClients = {
             status: subscription.status,
             items: {
               data: subscription.items.data.map((item) => ({
-                price: { lookup_key: item.price.lookup_key },
+                price: {
+                  id: item.price.id,
+                  lookup_key: item.price.lookup_key,
+                  product:
+                    typeof item.price.product === "string"
+                      ? item.price.product
+                      : item.price.product?.id,
+                },
               })),
             },
           })),

@@ -77,6 +77,7 @@ import type { SidebarChatDragData } from "./sidebar-chat-drag";
 import { formatTaskTitle, formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { useSidebarProjectList } from "@/app/contexts/SidebarProjectList";
 import { useSidebarTaskUnreadCompletion } from "@/app/hooks/useSidebarTaskUnreadCompletion";
+import type { SidebarInputReason } from "./sidebar-chat-status";
 
 interface ChatItemProps {
   id: string;
@@ -89,6 +90,7 @@ interface ChatItemProps {
   isPinned?: boolean;
   isStreaming?: boolean;
   isAwaitingApproval?: boolean;
+  needsInputReason?: SidebarInputReason;
   lastRunFinishedAt?: number;
 }
 
@@ -123,6 +125,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isPinned = false,
   isStreaming = false,
   isAwaitingApproval = false,
+  needsInputReason,
   lastRunFinishedAt,
 }) => {
   const taskTitle = formatTaskTitle(title);
@@ -181,10 +184,16 @@ const ChatItem: React.FC<ChatItemProps> = ({
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
   const showStreamingIndicator =
-    isStreaming && (!isHovered || isMobile) && (!isDropdownOpen || isMobile);
+    isStreaming &&
+    !needsInputReason &&
+    !isAwaitingApproval &&
+    (!isHovered || isMobile) &&
+    (!isDropdownOpen || isMobile);
   const showUnreadCompletionIndicator =
     hasUnreadCompletion &&
     !isStreaming &&
+    !needsInputReason &&
+    !isAwaitingApproval &&
     (!isHovered || isMobile) &&
     (!isDropdownOpen || isMobile);
   const showRunStatusIndicator =
@@ -484,8 +493,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
       role="button"
       tabIndex={0}
       aria-label={`Open task: ${taskTitle}${
-        isAwaitingApproval ? " awaiting approval" : ""
-      }${hasUnreadCompletion ? " with unread result" : ""}`}
+        needsInputReason || isAwaitingApproval
+          ? `, needs input: ${
+              {
+                approval: "approval requested",
+                reply: "agent asked a question",
+                goal: "goal needs your reply",
+                browser: "browser needs your input",
+              }[needsInputReason ?? "approval"]
+            }`
+          : ""
+      }${hasUnreadCompletion && !needsInputReason && !isAwaitingApproval ? " with unread result" : ""}`}
       data-testid={`chat-item-${id}`}
     >
       <div
@@ -508,12 +526,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
             </TooltipProvider>
           )}
           <span className="min-w-0 truncate">{taskTitle}</span>
-          {isAwaitingApproval && (
+          {(needsInputReason || isAwaitingApproval) && (
             <span
-              className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400"
-              data-testid="chat-item-awaiting-approval"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium leading-none text-amber-700 dark:text-amber-300"
+              data-testid="chat-item-needs-input"
+              data-reason={needsInputReason ?? "approval"}
+              aria-hidden="true"
             >
-              Awaiting approval
+              <span
+                className="size-1.5 rounded-full bg-current"
+                aria-hidden="true"
+              />
+              Needs input
             </span>
           )}
         </span>

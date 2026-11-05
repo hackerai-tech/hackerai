@@ -1,9 +1,10 @@
 import type { UIMessage } from "ai";
 import {
   projectRetainedTailFromMessages,
+  projectMessagesToTokenBudget,
   selectRetainedTailForSummarization,
 } from "../retained-tail";
-import { safeCountTokens } from "@/lib/token-utils";
+import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
 
 const textMessage = (
   id: string,
@@ -16,6 +17,60 @@ const textMessage = (
 });
 
 describe("retained tail selection", () => {
+  it.each(["text", "ui-only"] as const)(
+    "preserves sequential tool steps when projecting a %s-heavy startup history",
+    async (prefix) => {
+      const source: UIMessage[] = [
+        {
+          id: "large-turn",
+          role: "assistant",
+          parts: [
+            prefix === "text"
+              ? { type: "text", text: "older evidence ".repeat(50_000) }
+              : {
+                  type: "data-status",
+                  data: { detail: "older evidence ".repeat(50_000) },
+                },
+            ...(Array.from({ length: 180 }, (_, index) => [
+              { type: "step-start" },
+              {
+                type: "tool-run_terminal_cmd",
+                toolCallId: `call-${index}`,
+                state: "output-available",
+                input: { command: "fixture" },
+                output: { stdout: "ok" },
+              },
+            ]).flat() as UIMessage["parts"]),
+          ],
+        },
+      ];
+      const original = JSON.stringify(source);
+      const projected = projectMessagesToTokenBudget(source, {
+        budgetTokens: 20_000,
+        preserveStepStarts: true,
+      });
+      const { convertToModelMessages } = jest.requireActual(
+        "ai",
+      ) as typeof import("ai");
+      const model = await convertToModelMessages(projected);
+      const { getProviderToolCallDiagnostics } =
+        await import("@/lib/chat/provider-tool-call-batches");
+      expect(getProviderToolCallDiagnostics(model)).toMatchObject({
+        max_tool_calls_per_assistant: 1,
+        unmatched_tool_call_count: 0,
+        unmatched_tool_result_count: 0,
+        duplicate_tool_call_count: 0,
+      });
+      expect(
+        model
+          .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+          .filter((p) => p.type === "tool-call"),
+      ).toHaveLength(180);
+      expect(JSON.stringify(source)).toBe(original);
+      expect(countMessagesTokens(projected)).toBeLessThanOrEqual(20_000);
+    },
+  );
+
   it("keeps recent whole messages under the token budget", () => {
     const messages = [
       textMessage("msg-1", "user", "old ".repeat(300)),

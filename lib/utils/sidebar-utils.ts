@@ -8,9 +8,16 @@ import {
 import {
   formatSendInput,
   getTerminalExecutionPhase,
+  getShellExitCode,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
+import {
+  createFindingFailureContent,
+  createReportToolFailureContent,
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 import { parseAgentAutoReviewLifecycle } from "@/types";
 
 interface MessagePart {
@@ -32,7 +39,11 @@ export interface Message {
 // (e.g. file write/append showing content as the LLM generates it). All other
 // tool types are held back until input-available — see the gate inside the
 // per-part forEach below.
-const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
+const STREAMS_DURING_INPUT = new Set<string>([
+  "tool-file",
+  "tool-file_edit",
+  "tool-file_write",
+]);
 
 const getWebSearchQuery = (input: unknown): string => {
   if (!input || typeof input !== "object") return "";
@@ -107,6 +118,28 @@ export function extractSidebarContentFromMessage(
       return;
     }
 
+    const validationToolType =
+      typeof part.type === "string" && part.type.startsWith("tool-")
+        ? part.type
+        : part.type === "dynamic-tool" && typeof part.toolName === "string"
+          ? `tool-${part.toolName}`
+          : null;
+
+    if (
+      validationToolType &&
+      part.state === "output-error" &&
+      isToolInputValidationError(part.errorText)
+    ) {
+      contentList.push(
+        createToolInputErrorContent({
+          toolType: validationToolType,
+          toolCallId: part.toolCallId || "",
+          errorText: part.errorText,
+        }),
+      );
+      return;
+    }
+
     if (
       (part.type === "tool-delegate_task" ||
         part.type === "tool-create_agent" ||
@@ -148,6 +181,7 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -228,6 +262,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
@@ -247,6 +282,7 @@ export function extractSidebarContentFromMessage(
       const command = part.input.command || part.input.brief || "";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -282,6 +318,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: false,
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
@@ -369,12 +406,16 @@ export function extractSidebarContentFromMessage(
     // File tool streaming - extract during input-streaming/input-available
     // so sidebar auto-follow works for file operations (like terminals)
     if (
-      part.type === "tool-file" &&
+      (part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write") &&
       (part.state === "input-streaming" || part.state === "input-available")
     ) {
       const fileInput = part.input;
       if (fileInput?.path) {
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         if (fileAction === "write" || fileAction === "append") {
           contentList.push({
             path: fileInput.path,
@@ -455,7 +496,9 @@ export function extractSidebarContentFromMessage(
         part.type === "tool-write_file" ||
         part.type === "tool-search_replace" ||
         part.type === "tool-multi_edit" ||
-        part.type === "tool-file") &&
+        part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write") &&
       part.state === "output-available"
     ) {
       const fileInput = part.input;
@@ -471,9 +514,15 @@ export function extractSidebarContentFromMessage(
       let originalContent: string | undefined;
       let modifiedContent: string | undefined;
 
-      if (part.type === "tool-file") {
+      if (
+        part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write"
+      ) {
         // New unified file tool
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         const actionMap: Record<string, SidebarFile["action"]> = {
           view: "viewing",
           read: "reading",
@@ -481,7 +530,7 @@ export function extractSidebarContentFromMessage(
           append: "appending",
           edit: "editing",
         };
-        action = actionMap[fileAction] || "reading";
+        action = (fileAction ? actionMap[fileAction] : undefined) || "reading";
 
         if (fileAction === "view") {
           const output = part.output;
@@ -828,6 +877,109 @@ export function extractSidebarContentFromMessage(
         modified,
       });
     }
+
+    if (
+      [
+        "tool-list_reports",
+        "tool-get_report",
+        "tool-update_vulnerability_report",
+      ].includes(part.type) &&
+      (part.state === "output-available" || part.state === "output-error")
+    ) {
+      const operation =
+        part.type === "tool-list_reports"
+          ? "list"
+          : part.type === "tool-get_report"
+            ? "get"
+            : "update";
+      const result = part.output?.result ?? part.output;
+      const report = operation === "get" ? result?.report : result;
+      if (part.state === "output-available" && result?.success === true) {
+        if (operation === "list") return;
+        if (
+          typeof report?.finding_id === "string" &&
+          report.finding_id &&
+          typeof report.title === "string" &&
+          report.title &&
+          typeof report.target === "string" &&
+          report.target &&
+          typeof report.severity === "string" &&
+          report.severity &&
+          typeof report.cvss_score === "number"
+        ) {
+          contentList.push({
+            findingId: report.finding_id,
+            title: report.title,
+            target: report.target,
+            endpoint: report.endpoint,
+            severity: report.severity,
+            cvssScore: report.cvss_score,
+            isExecuting: false,
+            toolCallId: part.toolCallId || "",
+          });
+          return;
+        }
+      }
+      contentList.push(
+        createReportToolFailureContent({
+          toolCallId: part.toolCallId || "",
+          operation,
+          reason:
+            result?.validation_kind === "evidence" ? "evidence" : result?.error,
+        }),
+      );
+      return;
+    }
+
+    if (
+      part.type === "tool-create_vulnerability_report" &&
+      (part.state === "output-available" || part.state === "output-error")
+    ) {
+      const result = part.output?.result ?? part.output;
+      if (
+        part.state === "output-available" &&
+        result?.success === true &&
+        typeof result.finding_id === "string" &&
+        result.finding_id &&
+        typeof result.title === "string" &&
+        result.title &&
+        typeof result.target === "string" &&
+        result.target &&
+        typeof result.severity === "string" &&
+        result.severity &&
+        typeof result.cvss_score === "number"
+      ) {
+        contentList.push({
+          findingId: result.finding_id,
+          title: result.title,
+          target: result.target,
+          endpoint: result.endpoint,
+          severity: result.severity,
+          cvssScore: result.cvss_score,
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        });
+      } else if (!(
+        result?.success === false &&
+        result.error === "duplicate" &&
+        part.state === "output-available"
+      )) {
+        contentList.push(
+          createFindingFailureContent({
+            toolCallId: part.toolCallId || "",
+            reason:
+              part.state === "output-error"
+                ? "general"
+                : result?.success === false
+                  ? result.error === "validation" ||
+                    result.error === "chat_not_found"
+                    ? result.error
+                    : "general"
+                  : "invalid_result",
+          }),
+        );
+      }
+    }
   });
 
   return contentList;
@@ -844,16 +996,23 @@ const getToolCallId = (content: SidebarContent): string | undefined =>
     ? content.toolCallId
     : undefined;
 
-const isSameSidebarContent = (
+export const isSameSidebarContent = (
   left: SidebarContent,
   right: SidebarContent,
 ): boolean => {
   const leftToolCallId = getToolCallId(left);
   const rightToolCallId = getToolCallId(right);
 
-  if (leftToolCallId || rightToolCallId) {
+  if (leftToolCallId && rightToolCallId) {
     return leftToolCallId === rightToolCallId;
   }
+
+  // Findings opened outside a tool receipt can lack a tool-call selection.
+  if ("findingId" in left && "findingId" in right) {
+    return left.findingId === right.findingId;
+  }
+
+  if (leftToolCallId || rightToolCallId) return false;
 
   return (
     "path" in left &&
@@ -874,7 +1033,10 @@ export function reconcileSidebarContentAfterRegeneration(
 ): SidebarContent | null {
   const remainingContent = extractAllSidebarContent(messages);
   const selectionStillExists = remainingContent.some((content) =>
-    isSameSidebarContent(content, sidebarContent),
+    isSameSidebarContent(
+      content,
+      sidebarContent.origin?.returnContent ?? sidebarContent,
+    ),
   );
 
   if (selectionStillExists) return sidebarContent;

@@ -1,10 +1,39 @@
+import {
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_MAX_IMAGES_PER_REQUEST,
+  isInferenceCyberModel,
+} from "@/lib/ai/inference";
+import { withInferenceFallback } from "@/lib/ai/inference-fallback";
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
+import { recoverBrowserHandoffCompletion } from "@/lib/ai/browser-handoff/completion-recovery";
+import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import {
+  restoreProviderRecoveryContext,
+  type ProviderRecoveryContext,
+} from "@/lib/chat/provider-recovery-context";
+import {
+  getAgentModelContextFlag,
+  type AgentModelContextVariant,
+} from "@/lib/experiments/agent-model-context";
+import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
+import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
 } from "@/lib/analytics/abliterated-model";
-import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
-import { isAbliterationModel } from "@/lib/ai/abliteration";
+import {
+  resolveAbliterationModelForGenerationStep,
+  type AbliterationGenerationStepLimit,
+} from "@/lib/experiments/abliterated-model-steps";
+import {
+  isAbliterationModel,
+  ABLITERATION_MODEL_KEY,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+} from "@/lib/ai/abliteration";
+import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import { getProviderRequestMediaCounts } from "@/lib/ai/provider-request-media";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
@@ -44,7 +73,6 @@ import { randomUUID } from "crypto";
 import {
   ModelHistoryReplay,
   MODEL_HISTORY_FLAG,
-  CACHE_ALIGNED_SUMMARY_FLAG,
   historyDigest,
   sourceMessageDigests,
   parseModelHistory,
@@ -70,10 +98,10 @@ import {
 } from "@/lib/analytics/cache-history";
 import { getAppendedNotesUpdate } from "./chat-stream-helpers";
 import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
+import { addPromptCacheBreakpoints } from "@/lib/ai/prompt-cache";
 import {
   buildProviderOptions,
   buildSystemPrompt,
-  addCacheBreakpointToLastUserMessage,
   applyPrepareStepReminders,
   runSummarizationStep,
   getFallbackSlugs,
@@ -124,17 +152,31 @@ import {
 } from "@/lib/ai/providers";
 import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import {
+  getMaxTokensForSubscription,
+  safeCountTokens,
+} from "@/lib/token-utils";
+import {
+  COMPACTION_ESTIMATE_RECOVERY_RATIO,
   getSummarizationThresholdTokens,
-  MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
+  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
-import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
+import {
+  boundModelMessagesForSummarization,
+  compactModelMessagesForSummarization,
+  getRecentCompleteModelTail,
+  estimateSummaryInputTokens,
+} from "@/lib/chat/summarization/helpers";
+import {
+  withProviderRequestSizeRecovery,
+  type ProviderRequestRetryParams,
+} from "@/lib/chat/provider-request-size-recovery";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractSubagentDeliveryClaims,
@@ -147,7 +189,10 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
+import {
+  PLATFORM_AUTHORIZATION_ANNOTATION,
+  preparePlatformAuthorizationForModel,
+} from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -164,6 +209,7 @@ import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-u
 import {
   classifyProviderOverflowError,
   isProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
@@ -195,13 +241,17 @@ import {
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
 
+class AgentContextBudgetError extends Error {
+  name = "AgentContextBudgetError";
+}
+
 const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
 const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
 const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
@@ -287,9 +337,14 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
+  // Promote only the Max text route; preserve explicit recovery models.
+  if (selectedModelOverride === "hackerai-max") {
+    return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
+  }
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.
   if (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL
   )
@@ -378,6 +433,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  compactionPolicy?: CompactionModelPolicy;
   cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
@@ -388,8 +444,15 @@ export type AgentStreamState = {
   /** Context-window usage data; updated after summarization and each step. */
   ctxUsage: { usedTokens: number; maxTokens: number };
   lastStepInputTokens: number;
+  /** One actual context-budget exposure across retries in this run. */
+  agentContextBudgetExposed?: boolean;
+  requestSizeRecovery?: { attempted: boolean };
+  browserHandoffRecovery?: { attempted?: boolean };
+  providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
+  /** Snapshot when onFinish starts, before cancellation during async settlement. */
+  providerTerminalFinishReasonBeforeAbort?: string;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
   /** Set only when provider/retry state can identify fallback serving. */
@@ -406,8 +469,19 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Provider-only continuation context; never a tool permission or persisted user claim. */
+  hasCompletedAbliterationStep: boolean;
   /** Observation history survives provider retries, but never retains tool content. */
   toolLoopObserver: ToolLoopObserver;
+  /** Aggregate-only recovery state survives provider replacements. */
+  pendingToolCycleRecovery?: {
+    toolNames: string[];
+    repeatCount: number;
+    cycleLength: number;
+    confirmedNonExecution?: true;
+    toolCallCount?: number;
+  };
+  toolCycleRecoveryCount: number;
   /** True only when the final provider attempt stopped at the step condition. */
   stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
@@ -442,7 +516,9 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    hasCompletedAbliterationStep: false,
     toolLoopObserver: new ToolLoopObserver(),
+    toolCycleRecoveryCount: 0,
     stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
@@ -661,6 +737,7 @@ const buildProviderRequestDiagnostics = (args: {
     message_count: args.messages.length,
     role_counts: roleCounts,
     content_part_counts: contentPartCounts,
+    media_counts: getProviderRequestMediaCounts(args.messages),
     last_message_role:
       typeof lastMessage?.role === "string" ? lastMessage.role : undefined,
     last_message_content_types: summarizeContentTypes(lastMessage?.content),
@@ -683,6 +760,17 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    platform_authorization_annotation_appended: args.messages.some(
+      (message) =>
+        message.role === "user" &&
+        (typeof message.content === "string"
+          ? message.content.includes(PLATFORM_AUTHORIZATION_ANNOTATION)
+          : message.content.some(
+              (part) =>
+                part.type === "text" &&
+                part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+            )),
+    ),
     ...getProviderToolCallDiagnostics(args.messages),
   };
 };
@@ -692,15 +780,24 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  runtimeCheckpoint?: import("@/lib/chat/agent-runtime-checkpoint").AgentRuntimeCheckpoint;
+  canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
+  waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
+  getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
+  cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
+    generationStepLimit?: AbliterationGenerationStepLimit;
+    inferenceCyberEnabled?: boolean;
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
+  /** Reloads bounded workspace network context for E2B runs only. */
+  cloudNetworkPrompt?: () => Promise<string>;
   tools: ToolSet;
   mode: ChatMode;
   endpoint: ChatApiEndpoint;
@@ -717,6 +814,8 @@ export type AgentStreamContext = {
   systemPromptTokens: number;
   ctxSystemTokens: number;
   ctxMaxTokens: number;
+  agentModelContextEnabled?: boolean;
+  agentModelContextVariant?: AgentModelContextVariant;
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
@@ -745,6 +844,7 @@ export type AgentStreamContext = {
   budgetMonitor: BudgetMonitor | null;
   sandboxManager: {
     getSandboxType(toolName: string): string | undefined;
+    getSandboxInfo?(): import("@/types").SandboxInfo | null;
     supportsInteractivePty?(): Promise<boolean>;
   };
   getTodoManager: () => { getAllTodos: () => import("@/types").Todo[] };
@@ -774,6 +874,8 @@ export type AgentStreamContext = {
   getSandboxCostDollars?: () => number | Promise<number>;
   /** Current cumulative Trigger.dev run cost, including compute and invocation. */
   getTriggerRunCostDollars?: () => number;
+  /** Revalidate shared capacity before starting each cost-incurring model step. */
+  checkBudgetBeforeStep?: () => Promise<void>;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
@@ -808,8 +910,10 @@ export async function createAgentStream(
       AgentGuardrailObservation,
       "step_count" | "configured_max_steps"
     >,
+    { deduplicate = true }: { deduplicate?: boolean } = {},
   ) => {
     if (
+      deduplicate &&
       !state.toolLoopObserver.shouldReport(
         observation.reason,
         observation.action,
@@ -957,37 +1061,165 @@ export async function createAgentStream(
     ctx.abortController.signal,
     assistantContentLoopAbortController.signal,
   ]);
-  const summarizationThreshold = getSummarizationThresholdTokens(
+  // Free Ask hides its usage meter with a zero display budget. Compaction still
+  // needs the existing subscription budget to retain source history.
+  let activeContextBudget =
+    ctx.ctxMaxTokens > 0
+      ? ctx.ctxMaxTokens
+      : getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode });
+  const contextFlag = getAgentModelContextFlag(ctx.selectedModelOverride);
+  const expandedContextEnabled =
+    ctx.mode === "agent" &&
+    ctx.agentModelContextEnabled &&
+    contextFlag !== undefined;
+  let activeModelInputTokens = 0;
+  let lastPreparedInputEstimate = 0;
+  let lastCompletedResponseMessages: ModelMessage[] = [];
+  let summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
   let compactionAttemptCount = 0;
+  let unproductiveCompactionCount = 0;
+  let pendingCompactionVerdict = false;
+  let pendingCompactionInputEstimate = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
-    compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+    unproductiveCompactionCount <
+    MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+  const recordCompactionAttempt = () => {
+    compactionAttemptCount++;
+    unproductiveCompactionCount++;
+    pendingCompactionVerdict = true;
+    pendingCompactionInputEstimate = 0;
+  };
+  const confirmCompactionProgress = (inputTokens?: number) => {
+    if (!pendingCompactionVerdict) return;
+    pendingCompactionVerdict = false;
+    const providerTokens =
+      typeof inputTokens === "number" &&
+      Number.isFinite(inputTokens) &&
+      inputTokens > 0
+        ? inputTokens
+        : undefined;
+    const recovered =
+      providerTokens !== undefined
+        ? providerTokens < summarizationThreshold
+        : pendingCompactionInputEstimate > 0 &&
+          pendingCompactionInputEstimate <
+            summarizationThreshold * COMPACTION_ESTIMATE_RECOVERY_RATIO;
+    if (recovered) unproductiveCompactionCount = 0;
+  };
+  let toolHistoryRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
-    const historyModel = ctx.chatLogger
-      ? withProviderModelHistory(languageModel, {
-          configured: activeStepModelName,
-          generationStep: stepIndex + 1,
-          onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
-        })
-      : languageModel;
-    const telemetryModel =
-      ctx.abliteratedTelemetry?.wrap(
-        historyModel,
-        stepIndex,
-        activeStepRouting,
-      ) ?? historyModel;
-    const recoveryModel = recoverAbliterationMedia(
-      ctx.providerStreamTimeout
-        ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
-        : telemetryModel,
-    );
-    const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
+    const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
+      const historyModel = ctx.chatLogger
+        ? withProviderModelHistory(attemptModel, {
+            configured: activeStepModelName,
+            generationStep: stepIndex + 1,
+            onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
+          })
+        : attemptModel;
+      const telemetryModel =
+        ctx.abliteratedTelemetry?.wrap(
+          historyModel,
+          stepIndex,
+          activeStepRouting,
+        ) ?? historyModel;
+      return recoverAbliterationMedia(
+        ctx.providerStreamTimeout
+          ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
+          : telemetryModel,
+      );
+    };
+    let recoveryModel = wrapAttempt(languageModel);
+    if (
+      typeof languageModel !== "string" &&
+      languageModel.specificationVersion === "v3" &&
+      isInferenceCyberModel(languageModel.modelId)
+    ) {
+      const fallback = wrapAttempt(
+        ctx.trackedProvider.languageModel(ABLITERATION_MODEL_KEY),
+      );
+      if (
+        typeof recoveryModel !== "string" &&
+        recoveryModel.specificationVersion === "v3" &&
+        typeof fallback !== "string" &&
+        fallback.specificationVersion === "v3"
+      ) {
+        recoveryModel = withInferenceFallback(recoveryModel, fallback, {
+          abortSignal,
+          prepareFallbackPrompt: (prompt) =>
+            preprocessAbliterationImages(prompt),
+          onDiscardedUsage: (usage) => {
+            const inputTokens = usage.inputTokens.total ?? 0;
+            const outputTokens = usage.outputTokens.total ?? 0;
+            ctx.usageTracker.accumulateStep(
+              {
+                inputTokens,
+                outputTokens,
+                totalTokens: inputTokens + outputTokens,
+                inputTokenDetails: {
+                  cacheReadTokens: usage.inputTokens.cacheRead,
+                  cacheWriteTokens: usage.inputTokens.cacheWrite,
+                },
+                raw: usage.raw,
+              },
+              INFERENCE_CYBER_MODEL_KEY,
+            );
+          },
+        });
+      }
+    }
+    const sizeRecoveryModel =
+      ctx.mode === "agent"
+        ? withProviderRequestSizeRecovery(recoveryModel, {
+            state: (state.requestSizeRecovery ??= { attempted: false }),
+            abortSignal,
+            compact: compactRejectedRequest,
+            commit: commitRejectedRequestSummary,
+          })
+        : recoveryModel;
+    const guardedModel = guardLanguageModelProviderResponse(sizeRecoveryModel, {
+      onPromptRepaired: (report) => {
+        if (toolHistoryRepairReported) return;
+        toolHistoryRepairReported = true;
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event:
+              report.repairedToolInputCount > 0
+                ? "provider_prompt_tool_history_repaired"
+                : "provider_prompt_tool_name_repaired",
+            reason:
+              report.repairedToolInputCount > 0
+                ? "invalid_tool_input"
+                : "empty_tool_name",
+            model: activeStepModelName,
+            step: stepIndex + 1,
+            mode: ctx.mode,
+            user_id: /^user_[0-9A-HJKMNP-TV-Z]{26}$/.test(ctx.userId)
+              ? ctx.userId
+              : undefined,
+            chat_id:
+              /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+                ctx.chatId,
+              )
+                ? ctx.chatId
+                : undefined,
+            trigger_run_id:
+              ctx.triggerRunId && /^run_[a-z0-9]{20,32}$/.test(ctx.triggerRunId)
+                ? ctx.triggerRunId
+                : undefined,
+            removed_tool_call_count: report.removedToolCallCount,
+            removed_tool_result_count: report.removedToolResultCount,
+            repaired_tool_input_count: report.repairedToolInputCount,
+          }),
+        );
+      },
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
           event: "provider_tool_call_guard_applied",
@@ -1003,7 +1235,14 @@ export async function createAgentStream(
       maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     });
     return namespaceLanguageModelToolCalls(
-      guardedModel,
+      ctx.mode === "agent" &&
+        ctx.canRecoverBrowserHandoff &&
+        stepIndex + 1 < configuredMaxSteps
+        ? recoverBrowserHandoffCompletion(guardedModel, {
+            state: (state.browserHandoffRecovery ??= {}),
+            canRecover: ctx.canRecoverBrowserHandoff,
+          })
+        : guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
   };
@@ -1031,6 +1270,7 @@ export async function createAgentStream(
       responseModel: state.responseModel,
       fallbackModels: getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       }),
     });
 
@@ -1052,16 +1292,46 @@ export async function createAgentStream(
     excludedTools?: ReadonlySet<string>;
   };
 
+  // Repeated results are a reason to inspect progress, not proof of failure.
+  // Bound interventions across provider replacements; never force extra steps.
+  const toolCycleNudge =
+    "[REPEATED TOOL RESULTS] A tool/result cycle has repeated without new output. " +
+    "Check whether this is intentional verification or stalled work. If stalled, inspect the error and prerequisites, revise the hypothesis, and choose a different verification step. " +
+    "If blocked, explain the specific missing prerequisite and what remains unverified. Do not rerun completed work or treat repeated output as proof of success.";
+  const confirmedFailureCycleNudge =
+    "[REPEATED TOOL RESULTS] The same tool call was rejected without executing an operation. " +
+    "Read the tool error and its required arguments. Do not submit the identical call again. " +
+    "Correct the input or choose a different useful step; if the prerequisite is unavailable, explain what is blocked and what remains unverified.";
+  const pendingToolCycleNudge = () =>
+    state.pendingToolCycleRecovery?.confirmedNonExecution &&
+    state.pendingToolCycleRecovery.cycleLength === 1 &&
+    state.pendingToolCycleRecovery.toolCallCount === 1
+      ? confirmedFailureCycleNudge
+      : toolCycleNudge;
+  let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
+  const markToolCycleRecoveryPrepared = (recovery: DoomLoopRecovery) => {
+    if (
+      recovery.nudge?.includes(toolCycleNudge) ||
+      recovery.nudge?.includes(confirmedFailureCycleNudge)
+    )
+      preparedToolCycleRecovery = state.pendingToolCycleRecovery;
+  };
+
   const getDoomLoopRecovery = (
     steps: unknown[],
     stepNumber: number,
   ): DoomLoopRecovery => {
     const loopCheck = detectDoomLoop(
       steps as Parameters<typeof detectDoomLoop>[0],
+      // Agent repetition nudges come from the same result-aware observer as
+      // the hard stop. Keep only malformed-input recovery in this path.
+      isAgentMode(ctx.mode) ? null : undefined,
     );
 
     if (loopCheck.severity === "none") {
-      return {};
+      return state.pendingToolCycleRecovery
+        ? { nudge: pendingToolCycleNudge() }
+        : {};
     }
 
     console.log(
@@ -1080,7 +1350,10 @@ export async function createAgentStream(
     });
 
     const recovery: DoomLoopRecovery = {
-      nudge: generateDoomLoopNudge(loopCheck),
+      nudge: [
+        generateDoomLoopNudge(loopCheck),
+        ...(state.pendingToolCycleRecovery ? [pendingToolCycleNudge()] : []),
+      ].join("\n\n"),
     };
     console.log("[doom-loop] Injecting nudge as last user message");
 
@@ -1128,11 +1401,12 @@ export async function createAgentStream(
       ? resolveAbliterationModelForGenerationStep({
           treatmentModel: routeModelName,
           baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          generationStepLimit: ctx.abliteratedStepRouting.generationStepLimit,
           stepIndex,
         })
       : routeModelName;
-  const getEffectiveModelName = (stepIndex = generationStepOffset) =>
-    resolveAgentModelForImageToolResults(
+  const getEffectiveModelName = (stepIndex = generationStepOffset) => {
+    const effectiveModel = resolveAgentModelForImageToolResults(
       getPreVisionModelName(stepIndex),
       ctx.mode,
       streamHasImageViewResults,
@@ -1141,6 +1415,17 @@ export async function createAgentStream(
       ctx.directGlmVisionEnabled,
       ctx.subscription,
     );
+    // Preserve the expanded-context alias and its existing recovery policy.
+    // Both Abliteration aliases now execute the multimodal Large Flash model.
+    return expandedContextEnabled &&
+      effectiveModel === ABLITERATION_MODEL_KEY &&
+      activeModelInputTokens >
+        getSummarizationThresholdTokens(
+          getMaxTokensForSubscription(ctx.subscription),
+        )
+      ? ABLITERATION_LARGE_V2_MODEL_KEY
+      : effectiveModel;
+  };
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
@@ -1152,11 +1437,30 @@ export async function createAgentStream(
       visionRoute: preVisionModelName !== effectiveModelName,
       fallbackModels: getFallbackSlugs(effectiveModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       }),
     };
     ctx.onModelStepSelected?.(effectiveModelName);
-    const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
+    const useInference =
+      ctx.abliteratedStepRouting?.inferenceCyberEnabled === true &&
+      isAbliterationModel(effectiveModelName);
+    const languageModel = ctx.trackedProvider.languageModel(
+      useInference ? INFERENCE_CYBER_MODEL_KEY : effectiveModelName,
+    );
     lastRequestedSlug = languageModel.modelId;
+    if (ctx.mode === "agent" && ctx.agentModelContextEnabled) {
+      activeContextBudget = getAgentContextBudget({
+        enabled: expandedContextEnabled,
+        mode: ctx.mode,
+        subscription: ctx.subscription,
+        modelId: languageModel.modelId,
+        fallbackModelIds: activeStepRouting.fallbackModels,
+      });
+      summarizationThreshold =
+        getSummarizationThresholdTokens(activeContextBudget);
+      state.ctxUsage = { ...state.ctxUsage, maxTokens: activeContextBudget };
+    }
+
     return {
       modelName: effectiveModelName,
       languageModel,
@@ -1167,7 +1471,10 @@ export async function createAgentStream(
     effectiveModelName = getEffectiveModelName(),
   ) => {
     const requestedModelSlug =
-      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+      ctx.abliteratedStepRouting?.inferenceCyberEnabled &&
+      isAbliterationModel(effectiveModelName)
+        ? ctx.trackedProvider.languageModel(INFERENCE_CYBER_MODEL_KEY).modelId
+        : ctx.trackedProvider.languageModel(effectiveModelName).modelId;
     const cacheSessionId = createOpenRouterCacheSessionId({
       chatId: ctx.chatId,
       mode: ctx.mode,
@@ -1180,6 +1487,7 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        selectedModelOverride: ctx.selectedModelOverride,
         cacheSessionId,
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
@@ -1195,8 +1503,12 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    getAttachmentMessages: () => state.finalMessages,
+    cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
     chatId: ctx.chatId,
+    requestId: ctx.chatLogger?.getRequestId?.(),
+    triggerRunId: ctx.triggerRunId,
     abortSignal,
     onCost: (cost) => {
       ctx.usageTracker.providerCost += cost;
@@ -1210,16 +1522,37 @@ export async function createAgentStream(
   );
   let latestToolCallBatchSplitCount = 0;
   let trustedHistoryPrefix: ModelMessage[] = [];
+  const hasPlatformAnnotationContext = () =>
+    ctx.platformAuthorized || state.hasCompletedAbliterationStep;
+  let toolSchemaInputEstimate: Promise<number> | undefined;
+  const getToolSchemaInputEstimate = () =>
+    (toolSchemaInputEstimate ??= Promise.all(
+      Object.entries(ctx.tools).map(async ([name, tool]) => ({
+        name,
+        description: tool.description,
+        schema: await asSchema(tool.inputSchema).jsonSchema,
+        providerOptions: tool.providerOptions,
+      })),
+    )
+      .then((tools) => safeCountTokens(JSON.stringify(tools)))
+      .catch(() => Number.POSITIVE_INFINITY));
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
+    enforceContextBudget = true,
   ): Promise<ModelMessage[]> => {
     const toolCallRepair = isAbliterationModel(effectiveModelName)
       ? splitProviderToolCallBatches(messages)
       : { messages, splitCount: 0 };
     latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      ? await preprocessAbliterationImages(toolCallRepair.messages, {
+          // The logical route keeps its historical Abliteration alias; use
+          // the actual selected provider's native budget before conversion.
+          maxNativeImages: ctx.abliteratedStepRouting?.inferenceCyberEnabled
+            ? INFERENCE_MAX_IMAGES_PER_REQUEST
+            : undefined,
+        })
       : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
@@ -1245,21 +1578,227 @@ export async function createAgentStream(
       ? prepareReplayAuthorization(
           repairedMessages,
           trustedHistoryPrefix,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         )
       : preparePlatformAuthorizationForModel(
           repairedMessages,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         );
 
-    const prepared = addOpenRouterFileAnnotationsToLastAssistantMessage(
-      messagesWithAuthorization,
-      openRouterFileAnnotations,
+    const prepared = addPromptCacheBreakpoints(
+      addOpenRouterFileAnnotationsToLastAssistantMessage(
+        messagesWithAuthorization,
+        openRouterFileAnnotations,
+      ),
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId,
     );
+    // A failed compaction must not send expanded history to a smaller model.
+    // Preserve the transcript for retry instead of silently deleting context.
+    if (
+      ctx.mode === "agent" &&
+      (ctx.agentModelContextEnabled || pendingCompactionVerdict)
+    ) {
+      lastPreparedInputEstimate =
+        estimateSummaryInputTokens(prepared) +
+        Math.max(
+          ctx.systemPromptTokens + runtimePromptTokens,
+          safeCountTokens(
+            JSON.stringify(requestSystemPrompt(effectiveModelName)),
+          ),
+        );
+      if (pendingCompactionVerdict) {
+        // Include fixed request overhead before falling back to this estimate
+        // when the provider omits usage. All tools are a conservative bound
+        // for steps that activate only a subset.
+        pendingCompactionInputEstimate =
+          lastPreparedInputEstimate +
+          (await getToolSchemaInputEstimate()) +
+          safeCountTokens(
+            JSON.stringify({
+              providerOptions: getStepProviderOptions(effectiveModelName),
+              toolChoice: "auto",
+            }),
+          );
+      }
+      lastCompletedResponseMessages = [];
+    }
+    if (
+      enforceContextBudget &&
+      ctx.mode === "agent" &&
+      ctx.agentModelContextEnabled &&
+      lastPreparedInputEstimate > activeContextBudget
+    ) {
+      console.warn(
+        JSON.stringify({
+          event: "agent_context_budget_exceeded",
+          chat_id: ctx.chatId,
+          model: effectiveModelName,
+          estimated_input_tokens: lastPreparedInputEstimate,
+          previous_provider_input_tokens: state.lastStepInputTokens,
+          max_tokens: activeContextBudget,
+          compaction_attempt_count: compactionAttemptCount,
+          unproductive_compaction_count: unproductiveCompactionCount,
+        }),
+      );
+      throw new AgentContextBudgetError(
+        "Conversation could not be compacted to fit the selected model. Please retry.",
+      );
+    }
     if (historyEnabled) trustedHistoryPrefix = structuredClone(prepared);
     return prepared;
+  };
+  let rejectedRequestSource:
+    | {
+        messages: ModelMessage[];
+        rawMessages: ModelMessage[];
+        stepIndex: number;
+      }
+    | undefined;
+  let rejectedRequestRecoveryMessages: ModelMessage[] | undefined;
+  const compactRejectedRequest = async (): Promise<string | undefined> => {
+    if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
+    await ctx.checkBudgetBeforeStep?.();
+    abortSignal.throwIfAborted();
+    recordCompactionAttempt();
+    const result = await compactModelMessagesInRun({
+      compactionPolicy,
+      // Use the existing bounded summary projection even for expanded Max.
+      // The transcript save still receives the complete original history.
+      modelMessages: boundModelMessagesForSummarization(
+        compactModelMessagesForSummarization(rejectedRequestSource.messages),
+      ),
+      transcriptModelMessages: rejectedRequestSource.rawMessages,
+      sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
+      subscription: ctx.subscription,
+      languageModel: ctx.trackedProvider.languageModel(activeStepModelName),
+      mode: ctx.mode,
+      writer: ctx.writer,
+      chatId: ctx.chatId,
+      todos: ctx.getTodoManager().getAllTodos(),
+      abortSignal,
+      ensureSandbox: ctx.ensureSandbox,
+      systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
+      chatSystemPrompt: ctx.currentSystemPrompt,
+      maxTokens: activeContextBudget,
+      providerPromptPressure: {
+        reason: "provider_request_rejected",
+        reasons: ["provider_request_rejected"],
+        toolResultCount: rejectedRequestSource.messages.reduce(
+          (count, message) =>
+            count +
+            (message.role === "tool"
+              ? message.content.filter((part) => part.type === "tool-result")
+                  .length
+              : 0),
+          0,
+        ),
+        messageCount: rejectedRequestSource.messages.length,
+        summarizationMaxTokensOverride: 128_000,
+      },
+      compactionIndex: ctx.summarizationTracker.summarizationCount + 1,
+      hasExistingSummary: ctx.summarizationTracker.hasSummarized,
+      registerBackgroundWork: ctx.registerBackgroundWork,
+    });
+    if (!result) return undefined;
+    // Bill the summary even if it is ineffective or the retry is rejected.
+    ctx.summarizationTracker.recordSummarizationUsage(
+      result.summarizationUsage,
+      ctx.usageTracker,
+    );
+    writeSummarizationCleared(
+      ctx.writer,
+      ctx.summarizationTracker.summarizationCount + 1,
+    );
+    const summaryText = result.summaryMessage.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    if (!summaryText.trim()) return undefined;
+    // This retry bypasses prepareStep and prepareProviderMessages. Re-read
+    // private handoff instructions after lossy summarization, then apply the
+    // same trusted annotation policy at the provider boundary.
+    const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+    rejectedRequestRecoveryMessages = projectHandoffNotes(
+      [
+        { role: "user", content: summaryText },
+        { role: "user", content: POST_SUMMARIZATION_CONTINUATION_PROMPT },
+      ],
+      handoffNotes,
+      1,
+    );
+    return preparePlatformAuthorizationForModel(
+      rejectedRequestRecoveryMessages,
+      hasPlatformAnnotationContext(),
+      activeStepModelName,
+    )
+      .map((message) => message.content)
+      .join("\n\n");
+  };
+  const commitRejectedRequestSummary = (
+    summary: string,
+    retryParams: ProviderRequestRetryParams,
+  ) => {
+    if (!rejectedRequestSource) return;
+    // The provider wrapper commits a smaller replacement request. Wait for
+    // the retried provider call before deciding whether it cleared pressure.
+    // Keep the canonical transcript untouched. Future SDK steps project from
+    // this checkpoint, so already completed tools are not submitted again.
+    historyEnabled = false;
+    historyReplay.reset();
+    rollingContextCheckpoint = {
+      // Keep notes as separate messages so subsequent projection recognizes
+      // them and does not inject the same private update twice.
+      baseMessages: rejectedRequestRecoveryMessages ?? [
+        { role: "user", content: summary },
+      ],
+      rawMessageCursor: rejectedRequestSource.rawMessages.length,
+    };
+    saveProviderRecoveryContext(
+      rollingContextCheckpoint.baseMessages,
+      rejectedRequestSource.rawMessages,
+    );
+    lastCompactionRawMessageCount = rejectedRequestSource.rawMessages.length;
+    // The retry bypasses normal preparation; include its system prompt and
+    // fixed request controls before using the missing-usage fallback.
+    lastPreparedInputEstimate =
+      Math.max(
+        safeCountTokens(JSON.stringify(retryParams.prompt)),
+        safeCountTokens(summary) + ctx.systemPromptTokens + runtimePromptTokens,
+      ) +
+      safeCountTokens(
+        JSON.stringify({
+          tools: retryParams.tools,
+          toolChoice: retryParams.toolChoice,
+          providerOptions: retryParams.providerOptions,
+        }),
+      );
+    pendingCompactionInputEstimate = lastPreparedInputEstimate;
+    lastCompletedResponseMessages = [];
+    state.ctxUsage = {
+      usedTokens: lastPreparedInputEstimate,
+      maxTokens: activeContextBudget,
+    };
+    ctx.summarizationTracker.recordSummarization(
+      rejectedRequestSource.stepIndex,
+      undefined,
+      ctx.usageTracker,
+    );
+    writeSummarizationCompleted(
+      ctx.writer,
+      ctx.summarizationTracker.summarizationCount,
+    );
+    state.postSummarizationContinuationActive = true;
+    state.postSummarizationToolCallCount = 0;
+    state.postSummarizationText = "";
+    phLogger.event("agent_request_size_recovery_attempted", {
+      userId: ctx.userId,
+      chat_id: ctx.chatId,
+      run_id: ctx.triggerRunId,
+      attempt: 1,
+      $process_person_profile: false,
+    });
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
@@ -1273,6 +1812,15 @@ export async function createAgentStream(
     providerOptions: unknown;
     activeTools: Array<keyof typeof ctx.tools> | undefined;
   }) => {
+    rejectedRequestSource = {
+      messages: args.messages,
+      rawMessages: args.rawMessages ?? args.messages,
+      // Summarization markers use the local, zero-based SDK step index.
+      stepIndex:
+        args.source === "initial"
+          ? 0
+          : Math.max(0, args.stepIndex - generationStepOffset - 1),
+    };
     latestProviderRequestDiagnostics = buildProviderRequestDiagnostics({
       modelName: args.modelName,
       requestedSlug: args.requestedSlug,
@@ -1283,7 +1831,7 @@ export async function createAgentStream(
       activeTools: args.activeTools,
       availableToolCount: Object.keys(ctx.tools).length,
       contextUsage: state.ctxUsage,
-      systemTokens: ctx.systemPromptTokens,
+      systemTokens: ctx.systemPromptTokens + runtimePromptTokens,
       maxOutputTokens,
       hasMultimodalToolResults: streamHasImageViewResults,
     });
@@ -1320,9 +1868,36 @@ export async function createAgentStream(
       Date.now() - initialSerializationStartedAt,
     );
   }
+  // Capture source identities before applying the provider-only checkpoint.
+  // Later retries serialize the canonical transcript, including completed tools.
+  let initialSourceDigests =
+    ctx.mode === "agent" ? sourceMessageDigests(initialSerializedMessages) : [];
+  const recoveredContext =
+    ctx.mode === "agent"
+      ? restoreProviderRecoveryContext(
+          state.providerRecoveryContext,
+          initialSerializedMessages,
+        )
+      : undefined;
+  if (recoveredContext) initialSerializedMessages = recoveredContext;
+  else state.providerRecoveryContext = undefined;
+  if (expandedContextEnabled) {
+    activeModelInputTokens =
+      estimateSummaryInputTokens(initialSerializedMessages) +
+      ctx.systemPromptTokens;
+  }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
+  const runtimePrompt = async () =>
+    ((await ctx.cloudNetworkPrompt?.()) ?? "") +
+    (ctx.mode === "agent"
+      ? getSandboxBrowserGuidance(ctx.sandboxManager.getSandboxInfo?.())
+      : "");
+  let runtimeSection = await runtimePrompt();
+  let runtimePromptTokens = safeCountTokens(runtimeSection);
   const historyEligible =
+    !recoveredContext &&
+    !runtimeSection &&
     historyRoute.startsWith("deepseek/deepseek-v4") &&
     isReplayableTextHistory(initialSerializedMessages);
   const historyDecision = historyEligible
@@ -1391,7 +1966,7 @@ export async function createAgentStream(
         model: historyRoute,
         mode: ctx.mode,
         subscription: ctx.subscription,
-        authorization: ctx.platformAuthorized,
+        authorization: hasPlatformAnnotationContext(),
         notesEnabled: ctx.noteInjectionOpts.shouldIncludeNotes,
         system: ctx.currentSystemPrompt.replace(
           /^The current date is .+$/m,
@@ -1457,14 +2032,24 @@ export async function createAgentStream(
     }
   }
   let lastHistoryRequest: ModelMessage[] | undefined;
-  const cacheAlignedSummaryEnabled =
-    historyEnabled &&
-    (await getPostHogFeatureFlagForUser(
-      CACHE_ALIGNED_SUMMARY_FLAG,
-      ctx.userId,
-    ));
+  const compactionPolicy = (state.compactionPolicy ??=
+    new CompactionModelPolicy({
+      userId: ctx.userId,
+      runId: telemetryRunId,
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      subscription: ctx.subscription,
+      baselineModel: modelName,
+      selectedModel: ctx.selectedModelOverride,
+      platformAuthorized: ctx.platformAuthorized,
+      expandedAgentContext: expandedContextEnabled,
+      onDiscardedUsage: (usage) =>
+        ctx.summarizationTracker.recordSummarizationUsage(
+          usage,
+          ctx.usageTracker,
+        ),
+    }));
   let lastHistoryResponseCursor = 0;
-  let lastHistoryTools: ToolSet = ctx.tools;
   let historyToSave: ModelHistorySnapshot | undefined;
   let historyExposed = false;
   const exposeHistory = () => {
@@ -1484,8 +2069,9 @@ export async function createAgentStream(
   };
   const requestSystemPrompt = (name: string) =>
     buildSystemPrompt(
-      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
-      name,
+      (historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt) +
+        runtimeSection,
+      ctx.trackedProvider.languageModel(name).modelId,
     );
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
@@ -1493,7 +2079,21 @@ export async function createAgentStream(
   const initialModelMessages = await prepareProviderMessages(
     initialSerializedMessages,
     initialModelInfo.modelName,
+    false, // prepareStep must get a chance to compact before enforcing the budget.
   );
+  const saveProviderRecoveryContext = (
+    messages: ModelMessage[],
+    raw: ModelMessage[],
+  ) => {
+    if (ctx.mode !== "agent") return;
+    state.providerRecoveryContext = {
+      source: [
+        ...initialSourceDigests,
+        ...sourceMessageDigests(raw.slice(initialModelMessages.length)),
+      ],
+      messages,
+    };
+  };
   recordProviderRequestDiagnostics({
     modelName: initialModelInfo.modelName,
     requestedSlug: initialModelInfo.requestedSlug,
@@ -1512,7 +2112,12 @@ export async function createAgentStream(
       refund: () => ctx.usageRefundTracker.refund(),
     });
 
+  const projectHandoffNotes = createBrowserHandoffNoteProjector();
+  let preparedRuntimeCheckpoint = false;
   return streamText({
+    // Step results outlive prompt compaction. Do not retain another serialized
+    // copy of every provider request; response messages still drive persistence.
+    experimental_include: { requestBody: false },
     model: getNamespacedLanguageModel(
       initialModelInfo.languageModel,
       generationStepOffset,
@@ -1525,6 +2130,55 @@ export async function createAgentStream(
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      if (preparedRuntimeCheckpoint && !abortSignal.aborted) {
+        ctx.runtimeCheckpoint?.recordExposure();
+        preparedRuntimeCheckpoint = false;
+      }
+      if (!abortSignal.aborted && preparedToolCycleRecovery) {
+        const recovery = preparedToolCycleRecovery;
+        preparedToolCycleRecovery = undefined;
+        state.pendingToolCycleRecovery = undefined;
+        state.toolCycleRecoveryCount++;
+        reportGuardrail(
+          {
+            reason: "repeated_tool_result_cycle",
+            action: "nudge",
+            tool_names: recovery.toolNames,
+            repeat_count: recovery.repeatCount,
+            cycle_length: recovery.cycleLength,
+          },
+          // These actual exposures are already bounded to two per run.
+          { deduplicate: false },
+        );
+      }
+      if (
+        !abortSignal.aborted &&
+        !state.agentContextBudgetExposed &&
+        contextFlag !== undefined &&
+        ctx.mode === "agent" &&
+        (ctx.agentModelContextVariant !== undefined ||
+          (ctx.agentModelContextEnabled &&
+            activeContextBudget >
+              getMaxTokensForSubscription(ctx.subscription)))
+      ) {
+        state.agentContextBudgetExposed = true;
+        phLogger.event("agent_model_context_exposed", {
+          userId: ctx.userId,
+          chat_id: ctx.chatId,
+          run_id: ctx.triggerRunId,
+          flag_key: contextFlag,
+          ...(ctx.agentModelContextVariant && {
+            experiment_variant: ctx.agentModelContextVariant,
+            [`$feature/${contextFlag}`]: ctx.agentModelContextVariant,
+          }),
+          model: model.modelId,
+          context_max_tokens: activeContextBudget,
+          compaction_threshold_tokens: summarizationThreshold,
+          subscription_tier: ctx.subscription,
+          selected_model: ctx.selectedModelOverride,
+          $process_person_profile: false,
+        });
+      }
       if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       ctx.onModelStreamStart?.();
@@ -1533,6 +2187,39 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      await ctx.waitForBrowserHandoff?.(abortSignal);
+      // Keep admission outside preparation recovery: an exhausted shared ledger
+      // must never fall back to an unchecked provider request.
+      await ctx.checkBudgetBeforeStep?.();
+      // Saved handoff notes can change the user's instructions. If the read
+      // fails, retry/fail this step rather than act with silently missing context.
+      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      const withHandoffNotes = (
+        messages: ModelMessage[],
+        compactedPrefixLength?: number,
+      ): ModelMessage[] =>
+        projectHandoffNotes(messages, handoffNotes, compactedPrefixLength);
+      if (handoffNotes.length && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      // prepareStep runs after settled tool results, never interrupting a tool.
+      // Its system override applies to this request only, so the one-shot notice
+      // is neither replayed on every step nor stored in compacted chat history.
+      const runtime = await runtimePrompt();
+      const checkpointNotice =
+        ctx.mode === "agent" && !abortSignal.aborted
+          ? ctx.runtimeCheckpoint?.takeNotice()
+          : undefined;
+      preparedRuntimeCheckpoint = !!checkpointNotice;
+      const nextRuntimeSection = runtime + (checkpointNotice ?? "");
+      if (nextRuntimeSection !== runtimeSection && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      runtimeSection = nextRuntimeSection;
+      runtimePromptTokens = safeCountTokens(runtimeSection);
+      preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
           ? stepNumber
@@ -1553,10 +2240,18 @@ export async function createAgentStream(
       let rollingModelMessages = historyEnabled
         ? historyReplay.project(rawModelMessages)
         : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      // Anchor private notes before image elision changes prior tool messages.
+      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       if (!historyEnabled)
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
+      if (expandedContextEnabled) {
+        activeModelInputTokens =
+          estimateSummaryInputTokens(rollingModelMessages) +
+          ctx.systemPromptTokens +
+          runtimePromptTokens;
+      }
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
@@ -1577,6 +2272,37 @@ export async function createAgentStream(
         if (pruneResult.prunedCount > 0) {
           state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
+          if (ctx.mode === "agent") {
+            const previousSourceDigests = initialSourceDigests;
+            initialSourceDigests = sourceMessageDigests(
+              await convertToModelMessages(state.finalMessages, {
+                tools: promptSerializationTools,
+              }),
+            );
+            const checkpoint = state.providerRecoveryContext;
+            // Pruning changes canonical output representation, not the work
+            // already summarized. Rebase only that verified source prefix;
+            // the checkpoint may also cover later SDK responses from this run.
+            const coveredPrefix = Math.min(
+              previousSourceDigests.length,
+              checkpoint?.source.length ?? 0,
+            );
+            if (
+              checkpoint &&
+              coveredPrefix > 0 &&
+              previousSourceDigests.length === initialSourceDigests.length &&
+              checkpoint.source
+                .slice(0, coveredPrefix)
+                .every(
+                  (digest, index) => digest === previousSourceDigests[index],
+                )
+            ) {
+              checkpoint.source = [
+                ...initialSourceDigests.slice(0, coveredPrefix),
+                ...checkpoint.source.slice(coveredPrefix),
+              ];
+            }
+          }
         }
 
         if (
@@ -1588,15 +2314,24 @@ export async function createAgentStream(
         const effectiveModelInfo = getEffectiveModelInfo(generationStepIndex);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
-        const providerPromptPressure =
-          getProviderPromptPressure(rollingModelMessages);
+        const providerPromptPressure = getProviderPromptPressure(
+          rollingModelMessages,
+          {
+            mode: ctx.mode,
+          },
+        );
         const shouldCheckDurableSummary =
           ctx.summarizationTracker.summarizationCount === 0 &&
           steps.length === 0;
         const shouldCompactInRun =
           !shouldCheckDurableSummary &&
           (providerPromptPressure !== null ||
-            state.lastStepInputTokens > summarizationThreshold);
+            state.lastStepInputTokens > summarizationThreshold ||
+            (ctx.mode === "agent" &&
+              estimateSummaryInputTokens(rollingModelMessages) +
+                ctx.systemPromptTokens +
+                runtimePromptTokens >
+                summarizationThreshold));
 
         if (
           canSummarizeAgain() &&
@@ -1604,6 +2339,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
+              compactionPolicy,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1616,10 +2352,16 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens,
-              ctxSystemTokens: ctx.ctxSystemTokens,
-              ctxMaxTokens: ctx.ctxMaxTokens,
+              systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
+              ctxSystemTokens:
+                ctx.ctxSystemTokens +
+                (ctx.contextUsageOn ? runtimePromptTokens : 0),
+              ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
+              preparedInputTokens:
+                ctx.mode === "agent" && ctx.agentModelContextEnabled
+                  ? lastPreparedInputEstimate
+                  : undefined,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(
@@ -1638,7 +2380,7 @@ export async function createAgentStream(
             });
 
             if (result.summarizationAttempted) {
-              compactionAttemptCount++;
+              recordCompactionAttempt();
               lastCompactionRawMessageCount = rawModelMessages.length;
             }
 
@@ -1652,6 +2394,12 @@ export async function createAgentStream(
                 state.ctxUsage = result.contextUsage;
               }
               state.finalMessages = result.summarizedMessages;
+              if (ctx.mode === "agent")
+                initialSourceDigests = sourceMessageDigests(
+                  await convertToModelMessages(state.finalMessages, {
+                    tools: promptSerializationTools,
+                  }),
+                );
               // Durable summary changed the source projection: restart replay from its checkpoint.
               historyReplay.reset();
               state.transcriptSourceMessages = undefined;
@@ -1704,6 +2452,9 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
+              // Durable summarization replaced the source UI itself. A run-local
+              // checkpoint from the old source must no longer be replayed.
+              state.providerRecoveryContext = undefined;
               if (historyEnabled) {
                 sourceModelMessages = await convertToModelMessages(
                   result.summarizedMessages,
@@ -1712,14 +2463,13 @@ export async function createAgentStream(
                 sourceResponseCursor =
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
-                lastHistoryTools = activeTools
-                  ? Object.fromEntries(
-                      Object.entries(ctx.tools).filter(([name]) =>
-                        activeTools.includes(name),
-                      ),
-                    )
-                  : ctx.tools;
               }
+              // Keep notes out of the durable checkpoint; fetch the current
+              // handoff context again on each step, including after compaction.
+              summarizedModelMessages = withHandoffNotes(
+                summarizedModelMessages,
+                1,
+              );
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
@@ -1739,6 +2489,7 @@ export async function createAgentStream(
                 providerOptions,
                 activeTools,
               });
+              markToolCycleRecoveryPrepared(loopRecovery);
               return {
                 model: getNamespacedLanguageModel(
                   continuationModelInfo.languageModel,
@@ -1759,9 +2510,10 @@ export async function createAgentStream(
             // Never repeatedly summarize the same raw source cursor. A later
             // provider step advances the cursor and can become eligible again.
           } else {
-            compactionAttemptCount++;
+            recordCompactionAttempt();
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
+              compactionPolicy,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
@@ -1773,14 +2525,14 @@ export async function createAgentStream(
               todos: ctx.getTodoManager().getAllTodos(),
               abortSignal: ctx.abortController.signal,
               ensureSandbox: ctx.ensureSandbox,
-              systemPromptTokens: ctx.systemPromptTokens,
+              systemPromptTokens: ctx.systemPromptTokens + runtimePromptTokens,
               providerInputTokens: state.lastStepInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(
                 effectiveModelInfo.modelName,
               ),
-              maxTokens: ctx.ctxMaxTokens,
+              maxTokens: activeContextBudget,
               providerPromptPressure,
               compactionIndex: ctx.summarizationTracker.summarizationCount + 1,
               hasExistingSummary:
@@ -1793,31 +2545,6 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
-              ...(historyEnabled &&
-                cacheAlignedSummaryEnabled &&
-                lastHistoryRequest && {
-                  cacheAlignedSummary: {
-                    languageModel: effectiveModelInfo.languageModel,
-                    tools: lastHistoryTools,
-                    system: frozenSystemPrompt,
-                    providerOptions: getStepProviderOptions(
-                      effectiveModelInfo.modelName,
-                    ),
-                    onUsed: () =>
-                      phLogger.event("cache_aligned_summary_exposed", {
-                        userId: ctx.userId,
-                        chat_id: ctx.chatId,
-                        mode: ctx.mode,
-                        model: historyRoute,
-                        variant: "v1",
-                      }),
-                    onDiscardedUsage: (usage) =>
-                      ctx.summarizationTracker.recordSummarizationUsage(
-                        usage,
-                        ctx.usageTracker,
-                      ),
-                  },
-                }),
             });
 
             if (!inRunResult) {
@@ -1907,11 +2634,15 @@ export async function createAgentStream(
                   baseMessages: nextBaseMessages,
                   rawMessageCursor: rawModelMessages.length,
                 };
+                saveProviderRecoveryContext(nextBaseMessages, rawModelMessages);
                 if (historyEnabled) {
                   lastHistoryResponseCursor =
                     rawModelMessages.length - initialModelMessages.length;
                 }
-                rollingModelMessages = nextBaseMessages;
+                rollingModelMessages = withHandoffNotes(
+                  nextBaseMessages,
+                  compactedModelMessages.length,
+                );
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
                   limitModelImageToolResults(
@@ -1934,16 +2665,11 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                if (historyEnabled)
-                  lastHistoryTools = activeTools
-                    ? Object.fromEntries(
-                        Object.entries(ctx.tools).filter(([name]) =>
-                          activeTools.includes(name),
-                        ),
-                      )
-                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
-                  nextBaseMessages,
+                  withHandoffNotes(
+                    nextBaseMessages,
+                    compactedModelMessages.length,
+                  ),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {
@@ -1964,6 +2690,7 @@ export async function createAgentStream(
                   providerOptions,
                   activeTools,
                 });
+                markToolCycleRecoveryPrepared(loopRecovery);
                 return {
                   model: getNamespacedLanguageModel(
                     continuationModelInfo.languageModel,
@@ -2048,10 +2775,7 @@ export async function createAgentStream(
           effectiveModelInfo.modelName,
         );
         const preparedMessages = (await prepareProviderMessages(
-          addCacheBreakpointToLastUserMessage(
-            updatedMessages,
-            effectiveModelInfo.modelName,
-          ) as ModelMessage[],
+          updatedMessages as ModelMessage[],
           effectiveModelInfo.modelName,
         )) as typeof messages;
         if (historyEnabled) {
@@ -2064,13 +2788,6 @@ export async function createAgentStream(
           ) as ModelMessage[];
           lastHistoryResponseCursor =
             rawModelMessages.length - initialModelMessages.length;
-          lastHistoryTools = activeTools
-            ? Object.fromEntries(
-                Object.entries(ctx.tools).filter(([name]) =>
-                  activeTools.includes(name),
-                ),
-              )
-            : ctx.tools;
         }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
@@ -2083,6 +2800,7 @@ export async function createAgentStream(
           providerOptions,
           activeTools,
         });
+        markToolCycleRecoveryPrepared(loopRecovery);
         return {
           model: getNamespacedLanguageModel(
             effectiveModelInfo.languageModel,
@@ -2101,7 +2819,11 @@ export async function createAgentStream(
         historyTelemetry.fallback = "prepare_error";
         historyEnabled = false;
         historyReplay.reset();
-        if (error instanceof AbliterationVisionError || abortSignal.aborted)
+        if (
+          error instanceof AgentContextBudgetError ||
+          error instanceof AbliterationVisionError ||
+          abortSignal.aborted
+        )
           throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
           // Expected on user stop
@@ -2138,8 +2860,8 @@ export async function createAgentStream(
             ? { toolChoice: parentGate.toolChoice }
             : {}),
           system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
-            fallbackModelInfo.modelName,
+            ctx.currentSystemPrompt + runtimeSection,
+            fallbackModelInfo.requestedSlug,
           ),
         };
       }
@@ -2190,11 +2912,23 @@ export async function createAgentStream(
         return true;
       },
       tokenExhaustedAfterSummarization({
-        threshold: summarizationThreshold,
-        getLastStepInputTokens: () => state.lastStepInputTokens,
+        get threshold() {
+          return summarizationThreshold;
+        },
+        getLastStepInputTokens: () =>
+          ctx.agentModelContextEnabled && !canSummarizeAgain()
+            ? Math.max(
+                state.lastStepInputTokens,
+                lastPreparedInputEstimate +
+                  estimateSummaryInputTokens(lastCompletedResponseMessages),
+              )
+            : state.lastStepInputTokens,
         getHasSummarized: () =>
           ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
-        getCanSummarizeAgain: canSummarizeAgain,
+        // Let the provider finish the latest compacted request before using
+        // its prompt size to decide whether another attempt is possible.
+        getCanSummarizeAgain: () =>
+          pendingCompactionVerdict || canSummarizeAgain(),
         onFired: () => {
           state.stoppedDueToTokenExhaustion = true;
         },
@@ -2208,7 +2942,32 @@ export async function createAgentStream(
           state.stoppedDueToElapsedTimeout = true;
         },
       }),
+      () => {
+        const cycle = state.toolLoopObserver.getCurrentCycle();
+        if (
+          !isAgentMode(ctx.mode) ||
+          !cycle?.confirmedNonExecution ||
+          cycle.cycleLength !== 1 ||
+          cycle.toolCallCount !== 1 ||
+          cycle.repeatCount < 4
+        )
+          return false;
+        // The three-repeat nudge was followed by the same rejected call.
+        // That call never reached the sandbox; stop before another model step.
+        state.stoppedDueToDoomLoop = true;
+        reportGuardrail({
+          reason: "repeated_confirmed_tool_failure",
+          action: "halt",
+          tool_names: cycle.toolNames,
+          repeat_count: cycle.repeatCount,
+          cycle_length: cycle.cycleLength,
+        });
+        return true;
+      },
       doomLoopDetected({
+        getToolResultCycle: isAgentMode(ctx.mode)
+          ? () => state.toolLoopObserver.getCurrentCycle()
+          : undefined,
         onFired: (result) => {
           state.stoppedDueToDoomLoop = true;
           reportGuardrail({
@@ -2216,6 +2975,9 @@ export async function createAgentStream(
             action: "halt",
             tool_names: result.toolNames,
             repeat_count: result.consecutiveCount,
+            ...(result.cycleLength !== undefined
+              ? { cycle_length: result.cycleLength }
+              : {}),
           });
         },
       }),
@@ -2247,7 +3009,6 @@ export async function createAgentStream(
             requestedModel: lastRequestedSlug,
             responseModel: state.responseModel,
             reason: loopDetection.reason,
-            repeatedText: loopDetection.repeatedText,
             repeatCount: loopDetection.repeatCount,
           });
           recordAssistantContentLoopAbortState();
@@ -2267,12 +3028,40 @@ export async function createAgentStream(
     },
 
     onStepFinish: async ({
+      content,
       usage,
       response,
       providerMetadata,
       toolCalls,
       toolResults,
+      text,
+      finishReason,
     }) => {
+      lastCompletedResponseMessages = response?.messages ?? [];
+      if (ctx.subscription === "free") {
+        ctx.abliteratedTelemetry?.recordToolStep(
+          toolCalls ?? [],
+          toolResults ?? [],
+          content.filter((part) => part.type === "tool-error"),
+        );
+      }
+      // An assignment, failed attempt, reasoning-only output or vision baseline
+      // cannot activate this context. State survives retries within this run only.
+      if (
+        ctx.abliteratedStepRouting &&
+        isAbliterationModel(activeStepModelName) &&
+        (isAbliterationModel(response.modelId) ||
+          isInferenceCyberModel(response.modelId)) &&
+        ["stop", "tool-calls", "length"].includes(finishReason) &&
+        (Boolean(text?.trim()) ||
+          toolCalls?.some(
+            (call) =>
+              Object.hasOwn(ctx.tools, call.toolName) &&
+              !("invalid" in call && call.invalid),
+          ))
+      ) {
+        state.hasCompletedAbliterationStep = true;
+      }
       // Never persist an earlier partial candidate after an unsupported final step.
       historyToSave = undefined;
       if (
@@ -2373,6 +3162,7 @@ export async function createAgentStream(
           };
         }
       }
+      confirmCompactionProgress(usage?.inputTokens);
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({
@@ -2405,7 +3195,16 @@ export async function createAgentStream(
             toolResults ?? [],
             new Set(Object.keys(ctx.tools)),
           );
-          if (observation)
+          if (!state.toolLoopObserver.getCurrentCycle()) {
+            state.pendingToolCycleRecovery = undefined;
+          }
+          if (observation) {
+            if (
+              state.toolCycleRecoveryCount < 2 &&
+              !state.pendingToolCycleRecovery
+            ) {
+              state.pendingToolCycleRecovery = observation;
+            }
             reportGuardrail({
               reason: "repeated_tool_result_cycle",
               action: "observe",
@@ -2414,8 +3213,11 @@ export async function createAgentStream(
               cycle_length: observation.cycleLength,
               run_cost_dollars: currentCostDollars,
             });
+          }
         } catch {
-          // Diagnostic inspection must not prevent settlement of completed work.
+          // Unknown progress must not reuse an earlier cycle or block settlement.
+          state.toolLoopObserver.reset();
+          state.pendingToolCycleRecovery = undefined;
         }
       }
       const budgetDecision =
@@ -2448,7 +3250,16 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      state.providerTerminalFinishReasonBeforeAbort =
+        !ctx.abortController.signal.aborted &&
+        (finishResult.finishReason === "error" ||
+          isProviderContentFilterFinishReason(finishResult.finishReason))
+          ? finishResult.finishReason
+          : undefined;
+      // A final response can arrive while the user is taking control. Hold normal
+      // completion so caller cleanup cannot close the browser underneath them.
       ctx.onModelStreamFinish?.();
+      if (!abortSignal.aborted) await ctx.waitForBrowserHandoff?.(abortSignal);
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
       if (
@@ -2544,6 +3355,7 @@ export async function createAgentStream(
 
       const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
+        selectedModelOverride: ctx.selectedModelOverride,
       });
       state.fallbackServed = resolveFallbackServedTelemetry({
         requestedModel: lastRequestedSlug,
@@ -2604,6 +3416,27 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
+      // Some transports report a disconnect while settling an aborted stream.
+      // Keep errors observed before Stop, but do not create a provider failure
+      // from a callback that begins after the caller has canceled the request.
+      if (ctx.abortController.signal.aborted) {
+        await refundProviderContentBlockedIfSettled({ error, settled: false });
+        if (
+          !isProviderContentBlockedFinishReasonError(error) &&
+          !ctx.usageTracker.hasUsage
+        ) {
+          await ctx.usageRefundTracker.refund();
+        }
+        await ptySessionManager
+          .closeAll(ctx.chatId)
+          .catch((err) =>
+            console.error(
+              "[agent-stream] PTY closeAll (canceled error) failed:",
+              err,
+            ),
+          );
+        return;
+      }
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
       state.providerErrorMetadata = errorOpenRouterMetadata;
@@ -2670,6 +3503,7 @@ export async function createAgentStream(
       if (!isXaiSafetyError(error)) {
         const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
           hasMultimodalToolResults: streamHasImageViewResults,
+          selectedModelOverride: ctx.selectedModelOverride,
         });
         ctx.chatLogger?.recordProviderError(error, {
           mode: ctx.mode,
@@ -2680,7 +3514,7 @@ export async function createAgentStream(
           userId: ctx.userId,
           subscription: ctx.subscription,
           providerRequest: latestProviderRequestDiagnostics,
-          openRouterMetadata: state.openRouterMetadata,
+          openRouterMetadata: state.providerErrorMetadata,
         });
       }
     },

@@ -1,4 +1,4 @@
-import { mutation } from "./_generated/server";
+import { mutation } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 

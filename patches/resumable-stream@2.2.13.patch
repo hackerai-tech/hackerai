@@ -1,0 +1,82 @@
+diff --git a/dist/redis.js b/dist/redis.js
+index 5d7fb67dd32162666f673dd355ae7bb4fa0de1df..a38cba3f90e5ddb1cffcf89ebcd69821c27f24c8 100644
+--- a/dist/redis.js
++++ b/dist/redis.js
+@@ -33,12 +33,30 @@ Object.defineProperty(exports, "resumeStream", { enumerable: true, get: function
+  * @param options.publisher - A pubsub publisher. Designed to be compatible with clients from the `redis` package. If not provided, a new client will be created based on REDIS_URL or KV_URL environment variables.
+  * @returns A resumable stream context.
+  */
+-exports.createResumableStreamContext = (0, runtime_1.createResumableStreamContextFactory)({
+-    publisher: () => (0, redis_1.createClient)({
+-        url: (0, get_redis_url_1.getRedisUrl)(),
+-    }),
+-    subscriber: () => (0, redis_1.createClient)({
++// Default clients are owned here. Observing connect() rejection does not handle
++// later EventEmitter errors, which would otherwise terminate the Node process.
++function createRedisClient(clientRole) {
++    const client = (0, redis_1.createClient)({
+         url: (0, get_redis_url_1.getRedisUrl)(),
+-    }),
++    });
++    let reportedError = false;
++    client.on("error", (error) => {
++        // One bounded diagnostic per owned client; never log URLs or raw errors.
++        if (reportedError) return;
++        reportedError = true;
++        const reason = error && ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EPIPE"].includes(error.code)
++            ? error.code
++            : "unknown";
++        console.warn(JSON.stringify({
++            event: "resumable_stream_redis_error",
++            client: clientRole,
++            reason,
++        }));
++    });
++    return client;
++}
++exports.createResumableStreamContext = (0, runtime_1.createResumableStreamContextFactory)({
++    publisher: () => createRedisClient("publisher"),
++    subscriber: () => createRedisClient("subscriber"),
+ });
+ //# sourceMappingURL=redis.js.map
+\ No newline at end of file
+diff --git a/dist/runtime.js b/dist/runtime.js
+index 4eaa74c7d7252b97f8bf626ce064280f10f95bd2..5e701294820cf3e9603de91fecf1fafd8e447906 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -14,6 +14,13 @@ function createResumableStreamContextFactory(defaults) {
+             doneWatchdogIntervalMs: options.doneWatchdogIntervalMs,
+         };
+         let initPromises = [];
++        const connect = (client) => {
++            const promise = Promise.resolve().then(() => client.connect());
++            // Contexts may be used after other async work, or never used at all.
++            // Observe failure immediately, but preserve rejection for stream callers.
++            promise.catch(() => {});
++            initPromises.push(promise);
++        };
+         // Check if user has passed a raw ioredis instance
+         if (options.subscriber && options.subscriber.defineCommand) {
+             ctx.subscriber = (0, ioredis_adapters_1.createSubscriberAdapter)(options.subscriber);
+@@ -24,11 +31,11 @@ function createResumableStreamContextFactory(defaults) {
+         // If user has passed undefined, initialize with defaults
+         if (!ctx.subscriber) {
+             ctx.subscriber = defaults.subscriber();
+-            initPromises.push(ctx.subscriber.connect());
++            connect(ctx.subscriber);
+         }
+         if (!ctx.publisher) {
+             ctx.publisher = defaults.publisher();
+-            initPromises.push(ctx.publisher.connect());
++            connect(ctx.publisher);
+         }
+         return {
+             resumeExistingStream: async (streamId, skipCharacters) => {
+@@ -41,6 +48,7 @@ function createResumableStreamContextFactory(defaults) {
+                 return createResumableStream(Promise.all(initPromises), ctx, streamId, makeStream, skipCharacters);
+             },
+             hasExistingStream: async (streamId) => {
++                await Promise.all(initPromises);
+                 const state = await ctx.publisher.get(`${ctx.keyPrefix}:sentinel:${streamId}`);
+                 if (state === null) {
+                     return null;

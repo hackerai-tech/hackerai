@@ -6,12 +6,18 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
 const mockSetActiveTriggerRun = jest.fn();
 const mockRunsRetrieve = jest.fn();
+const mockRecover = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
+
+jest.mock("@/lib/api/agent-crash-recovery", () => ({
+  recoverCrashedAgentRun: (...args: unknown[]) => mockRecover(...args),
+}));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -68,8 +74,301 @@ const requestFor = (chatId: string, runId: string) =>
 describe("agent status route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRecover.mockResolvedValue("recovered" as never);
+    mockSetActiveTriggerRun.mockResolvedValue("updated" as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
   });
+
+  it.each([{}, { chatId: "chat-1" }, { userId: "user-1" }])(
+    "keeps an owned approval run polling with incomplete ownership metadata: %j",
+    async (metadata) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      mockRunsRetrieve.mockResolvedValue({
+        status: "EXECUTING",
+        metadata,
+        tags: ["user_user-1", "chat_chat-1"],
+      } as never);
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual({
+        status: "INITIALIZING",
+        terminal: false,
+      });
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      metadata: { userId: "other", chatId: "chat-1" },
+      status: "EXECUTING",
+      tags: ["user_user-1", "chat_chat-1"],
+    },
+    ...[{ chatId: "other" }, { userId: "other" }].map((metadata) => ({
+      metadata,
+      status: "EXECUTING",
+      tags: ["user_user-1", "chat_chat-1"],
+    })),
+    { metadata: {}, status: "EXECUTING", tags: ["user_other", "chat_chat-1"] },
+    { metadata: {}, status: "COMPLETED", tags: ["user_other", "chat_chat-1"] },
+  ])(
+    "rejects mismatched ownership even when server tags or terminal status are present: %j",
+    async (run) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      mockRunsRetrieve.mockResolvedValue(run as never);
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      expect(response.status).toBe(403);
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["FAILED", "CRASHED", "COMPLETED"])(
+    "clears a tagged approval run that became %s before ownership initialization without replay",
+    async (status) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      mockGetChatById.mockResolvedValue({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-1",
+      } as never);
+      mockRunsRetrieve.mockResolvedValue({
+        status,
+        metadata: {},
+        tags: ["user_user-1", "chat_chat-1"],
+      } as never);
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status,
+        terminal: true,
+      });
+      expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
+        "approval-1",
+        "agent-run-terminal",
+      );
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+        expectedRunId: "run-1",
+        clearApprovalPending: true,
+      });
+      expect(mockRecover).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a replacement run when an uninitialized terminal poll becomes stale", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    const chat = {
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    };
+    mockGetChatById.mockResolvedValueOnce(chat as never).mockResolvedValueOnce({
+      ...chat,
+      active_trigger_run_id: "run-2",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: {},
+      tags: ["user_user-1", "chat_chat-1"],
+    } as never);
+
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      status: "DETACHED",
+      terminal: true,
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    expect(mockRecover).not.toHaveBeenCalled();
+  });
+
+  it("reports a crashed run as terminal when its replay cannot fit, without detaching saved recovery state", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    mockRecover.mockRejectedValueOnce(
+      new AgentCrashRecoveryReplayLimitError() as never,
+    );
+
+    const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "CRASHED",
+      terminal: true,
+      recovery: "blocked",
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+  });
+
+  it("does not confuse a missing retained stream with a missing run", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    const { ApiError } = await import("@trigger.dev/sdk");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    const error = Object.assign(
+      new ApiError(
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+      ),
+      { status: 404 },
+    );
+    mockRecover.mockRejectedValueOnce(error as never);
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("does not convert an untyped recovery failure with the same message into a terminal result", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    mockRecover.mockRejectedValueOnce(
+      new Error("Agent crash recovery replay budget exceeded") as never,
+    );
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("awaits crash recovery before detaching and leaves mapping intact on failure", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    let done!: (value: never) => void;
+    mockRecover.mockReturnValueOnce(
+      new Promise((resolve) => {
+        done = resolve;
+      }),
+    );
+    const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    for (let i = 0; i < 10 && mockRecover.mock.calls.length === 0; i++)
+      await Promise.resolve();
+    expect(mockRecover).toHaveBeenCalledTimes(1);
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    done("recovered" as never);
+    await pending;
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRunId: "run-1", recoveredCrash: true }),
+    );
+    mockSetActiveTriggerRun.mockClear();
+    mockRecover.mockRejectedValueOnce(
+      new Error("fixture recovery unavailable") as never,
+    );
+    await expect(
+      createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      ),
+    ).rejects.toThrow("unexpected route error");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["newer run", "cancellation fence"])(
+    "reports a stale crash detach as detached after a %s wins",
+    async (race) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      const chat = {
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+      };
+      mockGetChatById
+        .mockResolvedValueOnce(chat as never)
+        .mockResolvedValueOnce(
+          (race === "newer run"
+            ? { ...chat, active_trigger_run_id: "run-2" }
+            : chat) as never,
+        );
+      mockRunsRetrieve.mockResolvedValue({
+        status: "CRASHED",
+        metadata: { chatId: "chat-1", userId: "user-1" },
+      } as never);
+      if (race === "cancellation fence")
+        mockSetActiveTriggerRun.mockResolvedValueOnce("stale" as never);
+
+      const response = await createAgentStatusPost({ endpoint: "/api/agent" })(
+        requestFor("chat-1", "run-1"),
+      );
+
+      await expect(response.json()).resolves.toEqual({
+        status: "DETACHED",
+        terminal: true,
+      });
+      expect(mockRecover).toHaveBeenCalledTimes(1);
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(
+        race === "newer run" ? 0 : 1,
+      );
+    },
+  );
 
   it("reports a nonterminal run without touching persisted lifecycle state", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");
@@ -261,6 +560,8 @@ describe("agent status timeout diagnostics", () => {
         event: "agent_status_slow_request",
         stage,
         elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
+        timer_lateness_ms: 0,
       });
       if (
         stage === "retrieve_trigger_run" ||
@@ -286,6 +587,53 @@ describe("agent status timeout diagnostics", () => {
       );
     },
   );
+
+  it("identifies both thresholds when warning callbacks are delayed", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    const startedAt = Date.now();
+    let finish!: (value: any) => void;
+    mockGetChatById.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    const clock = jest.spyOn(Date, "now").mockReturnValue(startedAt + 20_245);
+    try {
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(console.warn).toHaveBeenCalledTimes(2);
+      const warnings = jest
+        .mocked(console.warn)
+        .mock.calls.map(([value]) => JSON.parse(String(value)));
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          stage: "get_chat",
+          elapsed_ms: 20_245,
+          warning_threshold_ms: 10_000,
+          timer_lateness_ms: 10_245,
+        }),
+        expect.objectContaining({
+          stage: "get_chat",
+          elapsed_ms: 20_245,
+          warning_threshold_ms: 20_000,
+          timer_lateness_ms: 245,
+        }),
+      ]);
+    } finally {
+      clock.mockRestore();
+      finish({
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-1",
+      });
+      expect((await pending).status).toBe(200);
+    }
+    expect(mockGetChatById).toHaveBeenCalledTimes(2);
+    expect(jest.getTimerCount()).toBe(0);
+  });
 
   it("cancels the second warning when a slow request completes", async () => {
     const { createAgentStatusPost } = await import("../agent-status-route");

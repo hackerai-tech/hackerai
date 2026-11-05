@@ -26,6 +26,7 @@ import {
 export const BUDGET_THRESHOLDS = [75, 90, 100] as const;
 
 export interface BudgetSnapshot {
+  budgetPeriod?: "daily" | "monthly";
   monthlyLimitPoints: number;
   monthlyRemainingAtStart: number;
   monthlyResetTime: Date;
@@ -329,6 +330,7 @@ export class BudgetMonitor {
     capReason?: LimitCapReason;
   }): void {
     const ctx: TokenBucketEmitContext = {
+      bucketType: this.snapshot.budgetPeriod ?? "monthly",
       usedPercent: args.usedPercent,
       projectedUsedPoints: args.projectedUsedPoints,
       monthlyLimitPoints: this.snapshot.monthlyLimitPoints,

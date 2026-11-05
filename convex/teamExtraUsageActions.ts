@@ -1,6 +1,8 @@
 "use node";
 
-import { action } from "./_generated/server";
+import { runWalletSettlement, linkWalletReload } from "./lib/settlementAction";
+
+import { action } from "./lib/serviceFunctions";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import Stripe from "stripe";
@@ -427,6 +429,7 @@ export const deductWithAutoReloadForTeam = action({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -445,485 +448,172 @@ export const deductWithAutoReloadForTeam = action({
       }),
     ),
   }),
-  handler: async (ctx, args) => {
-    if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
-      throw new Error("Invalid service key");
-    }
+  handler: async (ctx, args) =>
+    runWalletSettlement(ctx, args, async () => {
+      let debitSequence = 0;
+      if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+        throw new Error("Invalid service key");
+      }
 
-    const activeSuspension = await ctx.runQuery(
-      api.userSuspensions.getActiveByUser,
-      {
-        serviceKey: args.serviceKey,
-        userId: args.userId,
-      },
-    );
-    if (activeSuspension?.status === "active") {
-      return {
-        success: false,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: true,
-        autoReloadTriggered: false,
-        autoReloadResult: {
-          success: false,
-          reason: "account_suspended",
+      const activeSuspension = await ctx.runQuery(
+        api.userSuspensions.getActiveByUser,
+        {
+          serviceKey: args.serviceKey,
+          userId: args.userId,
         },
-      };
-    }
+      );
+      if (activeSuspension?.status === "active") {
+        return {
+          success: false,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+          memberCapExceeded: false,
+          memberDisabled: false,
+          poolDisabled: true,
+          autoReloadTriggered: false,
+          autoReloadResult: {
+            success: false,
+            reason: "account_suspended",
+          },
+        };
+      }
 
-    if (args.amountPoints <= 0) {
-      return {
-        success: true,
-        newBalanceDollars: 0,
-        insufficientFunds: false,
-        monthlyCapExceeded: false,
-        memberCapExceeded: false,
-        memberDisabled: false,
-        poolDisabled: false,
-        autoReloadTriggered: false,
-      };
-    }
+      if (args.amountPoints <= 0) {
+        return {
+          success: true,
+          newBalanceDollars: 0,
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
+          memberCapExceeded: false,
+          memberDisabled: false,
+          poolDisabled: false,
+          autoReloadTriggered: false,
+        };
+      }
 
-    const state: {
-      enabled: boolean;
-      balanceDollars: number;
-      balancePoints: number;
-      autoReloadEnabled: boolean;
-      autoReloadThresholdDollars?: number;
-      autoReloadThresholdPoints?: number;
-      autoReloadAmountDollars?: number;
-      autoReloadOperationPending: boolean;
-      memberDisabled: boolean;
-    } = await ctx.runQuery(
-      api.teamExtraUsage.getTeamExtraUsageStateForBackend,
-      {
+      const state: {
+        enabled: boolean;
+        balanceDollars: number;
+        balancePoints: number;
+        autoReloadEnabled: boolean;
+        autoReloadThresholdDollars?: number;
+        autoReloadThresholdPoints?: number;
+        autoReloadAmountDollars?: number;
+        autoReloadOperationPending: boolean;
+        memberDisabled: boolean;
+      } = await ctx.runQuery(
+        api.teamExtraUsage.getTeamExtraUsageStateForBackend,
+        {
+          serviceKey: args.serviceKey,
+          organizationId: args.organizationId,
+          userId: args.userId,
+        },
+      );
+
+      const deductWithoutReload: {
+        success: boolean;
+        newBalancePoints: number;
+        newBalanceDollars: number;
+        insufficientFunds: boolean;
+        monthlyCapExceeded: boolean;
+        memberCapExceeded: boolean;
+        memberDisabled: boolean;
+        poolDisabled: boolean;
+      } = await ctx.runMutation(api.teamExtraUsage.deductTeamPoints, {
         serviceKey: args.serviceKey,
         organizationId: args.organizationId,
         userId: args.userId,
-      },
-    );
+        amountPoints: args.amountPoints,
+        usageSettlementId: args.usageSettlementId,
+        ...(args.settlementOperationId && {
+          settlementOperationId: args.settlementOperationId,
+          settlementDebitSequence: debitSequence++,
+        }),
+      });
 
-    const deductWithoutReload: {
-      success: boolean;
-      newBalancePoints: number;
-      newBalanceDollars: number;
-      insufficientFunds: boolean;
-      monthlyCapExceeded: boolean;
-      memberCapExceeded: boolean;
-      memberDisabled: boolean;
-      poolDisabled: boolean;
-    } = await ctx.runMutation(api.teamExtraUsage.deductTeamPoints, {
-      serviceKey: args.serviceKey,
-      organizationId: args.organizationId,
-      userId: args.userId,
-      amountPoints: args.amountPoints,
-      usageSettlementId: args.usageSettlementId,
-    });
+      let deductResult = deductWithoutReload;
 
-    let deductResult = deductWithoutReload;
+      // If deduction was blocked for reasons unrelated to available balance,
+      // do not attempt to auto-reload.
+      const blockedForNonBalanceReason =
+        !deductResult.success &&
+        (!deductResult.insufficientFunds ||
+          deductResult.monthlyCapExceeded ||
+          deductResult.memberCapExceeded ||
+          deductResult.memberDisabled ||
+          deductResult.poolDisabled);
 
-    // If deduction was blocked for reasons unrelated to available balance,
-    // do not attempt to auto-reload.
-    const blockedForNonBalanceReason =
-      !deductResult.success &&
-      (!deductResult.insufficientFunds ||
-        deductResult.monthlyCapExceeded ||
-        deductResult.memberCapExceeded ||
-        deductResult.memberDisabled ||
-        deductResult.poolDisabled);
+      if (blockedForNonBalanceReason && !state.autoReloadOperationPending) {
+        return {
+          success: deductResult.success,
+          newBalanceDollars: deductResult.newBalanceDollars,
+          insufficientFunds: deductResult.insufficientFunds,
+          monthlyCapExceeded: deductResult.monthlyCapExceeded,
+          memberCapExceeded: deductResult.memberCapExceeded,
+          memberDisabled: deductResult.memberDisabled,
+          poolDisabled: deductResult.poolDisabled,
+          autoReloadTriggered: false,
+        };
+      }
 
-    if (blockedForNonBalanceReason && !state.autoReloadOperationPending) {
-      return {
-        success: deductResult.success,
-        newBalanceDollars: deductResult.newBalanceDollars,
-        insufficientFunds: deductResult.insufficientFunds,
-        monthlyCapExceeded: deductResult.monthlyCapExceeded,
-        memberCapExceeded: deductResult.memberCapExceeded,
-        memberDisabled: deductResult.memberDisabled,
-        poolDisabled: deductResult.poolDisabled,
-        autoReloadTriggered: false,
-      };
-    }
+      const requestNeedsReload =
+        !deductResult.success &&
+        deductResult.insufficientFunds &&
+        !deductResult.monthlyCapExceeded &&
+        !deductResult.memberCapExceeded &&
+        !deductResult.memberDisabled &&
+        !deductResult.poolDisabled;
+      const thresholdReached =
+        deductResult.success &&
+        deductResult.newBalancePoints <= (state.autoReloadThresholdPoints ?? 0);
+      let autoReloadTriggered = false;
+      let autoReloadResult:
+        | { success: boolean; chargedAmountDollars?: number; reason?: string }
+        | undefined;
 
-    const requestNeedsReload =
-      !deductResult.success &&
-      deductResult.insufficientFunds &&
-      !deductResult.monthlyCapExceeded &&
-      !deductResult.memberCapExceeded &&
-      !deductResult.memberDisabled &&
-      !deductResult.poolDisabled;
-    const thresholdReached =
-      deductResult.success &&
-      deductResult.newBalancePoints <= (state.autoReloadThresholdPoints ?? 0);
-    let autoReloadTriggered = false;
-    let autoReloadResult:
-      | { success: boolean; chargedAmountDollars?: number; reason?: string }
-      | undefined;
-
-    if (
-      state.autoReloadOperationPending ||
-      (state.enabled &&
-        !state.memberDisabled &&
-        state.autoReloadEnabled &&
-        (requestNeedsReload || thresholdReached))
-    ) {
-      for (let reloadAttempt = 0; reloadAttempt < 2; reloadAttempt++) {
-        let retryAutoReload = false;
-        const candidateOperationId = crypto.randomUUID();
-        const candidateExecutorId = crypto.randomUUID();
-        let claim = await ctx.runMutation(
-          internal.teamExtraUsage.claimTeamAutoReloadOperation,
-          {
-            organizationId: args.organizationId,
-            candidateOperationId,
-            candidateExecutorId,
-            requestedAmountPoints: requestNeedsReload ? args.amountPoints : 0,
-          },
-        );
-
-        if (
-          claim.status === "operation" &&
-          !claim.claimed &&
-          requestNeedsReload
-        ) {
-          for (const delayMs of [250, 500, 1_000, 2_000]) {
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            claim = await ctx.runMutation(
-              internal.teamExtraUsage.claimTeamAutoReloadOperation,
-              {
-                organizationId: args.organizationId,
-                candidateOperationId,
-                candidateExecutorId,
-                requestedAmountPoints: args.amountPoints,
-              },
-            );
-            if (claim.status !== "operation" || claim.claimed) break;
-          }
-        }
-
-        if (claim.status === "not_needed" && requestNeedsReload) {
-          deductResult = await ctx.runMutation(
-            api.teamExtraUsage.deductTeamPoints,
+      if (
+        state.autoReloadOperationPending ||
+        (state.enabled &&
+          !state.memberDisabled &&
+          state.autoReloadEnabled &&
+          (requestNeedsReload || thresholdReached))
+      ) {
+        for (let reloadAttempt = 0; reloadAttempt < 2; reloadAttempt++) {
+          let retryAutoReload = false;
+          const candidateOperationId = crypto.randomUUID();
+          const candidateExecutorId = crypto.randomUUID();
+          let claim = await ctx.runMutation(
+            internal.teamExtraUsage.claimTeamAutoReloadOperation,
             {
-              serviceKey: args.serviceKey,
               organizationId: args.organizationId,
-              userId: args.userId,
-              amountPoints: args.amountPoints,
-              usageSettlementId: args.usageSettlementId,
+              candidateOperationId,
+              candidateExecutorId,
+              requestedAmountPoints: requestNeedsReload ? args.amountPoints : 0,
             },
           );
-        } else if (claim.status === "cooldown") {
-          autoReloadTriggered = true;
-          autoReloadResult = {
-            success: false,
-            reason: claim.reason ?? "payment_failed",
-          };
-        } else if (claim.status === "blocked") {
+
           if (
-            claim.reason === "monthly_cap_exceeded" &&
-            !deductResult.success
+            claim.status === "operation" &&
+            !claim.claimed &&
+            requestNeedsReload
           ) {
-            deductResult = {
-              ...deductResult,
-              insufficientFunds: true,
-              monthlyCapExceeded: true,
-            };
-          }
-        } else if (claim.status === "operation" && !claim.claimed) {
-          if (requestNeedsReload) {
-            autoReloadTriggered = true;
-          }
-        } else if (
-          claim.status === "operation" &&
-          claim.claimed &&
-          claim.operationId &&
-          claim.executorId &&
-          claim.amountDollars !== undefined
-        ) {
-          autoReloadTriggered = true;
-          const operationId = claim.operationId;
-          const executorId = claim.executorId;
-          const amountDollars = claim.amountDollars;
-          const completeOperation = (
-            outcome:
-              | "success"
-              | "released"
-              | "executor_released"
-              | "definitive_failure",
-            failureReason?: string,
-          ) =>
-            ctx.runMutation(
-              internal.teamExtraUsage.completeTeamAutoReloadOperation,
-              {
-                organizationId: args.organizationId,
-                operationId,
-                executorId,
-                outcome,
-                failureReason,
-              },
-            );
-          const releasePreCharge = () =>
-            completeOperation(
-              operationId === candidateOperationId && !claim.stripeInvoiceId
-                ? "released"
-                : "executor_released",
-            );
-          const creditOperation = async ({
-            invoiceId,
-            paymentIntentId,
-            stripeCustomerId,
-          }: {
-            invoiceId: string;
-            paymentIntentId?: string;
-            stripeCustomerId?: string;
-          }) => {
-            const creditResult = await ctx.runMutation(
-              api.teamExtraUsage.addTeamCredits,
-              {
-                serviceKey: args.serviceKey,
-                organizationId: args.organizationId,
-                amountDollars,
-                idempotencyKey: `team_auto_reload:${operationId}`,
-                revenueSource: "team_extra_usage_auto_reload",
-                stripeCustomerId,
-                stripePaymentIntentId: paymentIntentId,
-                stripeInvoiceId: invoiceId,
-              },
-            );
-            const completed = await completeOperation("success");
-            autoReloadResult = {
-              success: true,
-              chargedAmountDollars: amountDollars,
-            };
-            if (deductResult.success && !creditResult.alreadyProcessed) {
-              deductResult = {
-                ...deductResult,
-                newBalancePoints: extraUsageDollarsToPoints(
-                  creditResult.newBalance,
-                ),
-                newBalanceDollars: creditResult.newBalance,
-              };
-            }
-            if (completed) {
-              try {
-                await ctx.runMutation(
-                  internal.teamExtraUsage.recordTeamAutoReloadOutcome,
-                  { organizationId: args.organizationId, success: true },
-                );
-              } catch {
-                // The charge, credit, and operation completion already succeeded.
-                // Health telemetry is best-effort and must not change that result.
-              }
-            }
-          };
-
-          let shouldPreparePayment = true;
-          if (claim.stripeInvoiceId) {
-            try {
-              const existingInvoice = await getStripe().invoices.retrieve(
-                claim.stripeInvoiceId,
+            for (const delayMs of [250, 500, 1_000, 2_000]) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              claim = await ctx.runMutation(
+                internal.teamExtraUsage.claimTeamAutoReloadOperation,
+                {
+                  organizationId: args.organizationId,
+                  candidateOperationId,
+                  candidateExecutorId,
+                  requestedAmountPoints: args.amountPoints,
+                },
               );
-              if (existingInvoice.status === "paid") {
-                const paymentIntent = (
-                  existingInvoice as unknown as {
-                    payment_intent?: string | { id: string };
-                  }
-                ).payment_intent;
-                await creditOperation({
-                  invoiceId: existingInvoice.id,
-                  paymentIntentId:
-                    typeof paymentIntent === "string"
-                      ? paymentIntent
-                      : paymentIntent?.id,
-                });
-                shouldPreparePayment = false;
-              } else if (
-                (!requestNeedsReload && !thresholdReached) ||
-                claim.paymentAllowed === false ||
-                existingInvoice.status === "void" ||
-                existingInvoice.status === "uncollectible"
-              ) {
-                const reason =
-                  claim.paymentBlockedReason ??
-                  (existingInvoice.status === "void" ||
-                  existingInvoice.status === "uncollectible"
-                    ? "invoice_not_payable"
-                    : "reload_not_needed");
-                autoReloadResult = {
-                  success: false,
-                  reason,
-                };
-                const retirement = await retireAutoReloadInvoice(
-                  existingInvoice,
-                  operationId,
-                );
-                if (retirement.status === "paid") {
-                  const paymentIntent = (
-                    retirement.invoice as unknown as {
-                      payment_intent?: string | { id: string };
-                    }
-                  ).payment_intent;
-                  await creditOperation({
-                    invoiceId: retirement.invoice.id,
-                    paymentIntentId:
-                      typeof paymentIntent === "string"
-                        ? paymentIntent
-                        : paymentIntent?.id,
-                  });
-                } else if (retirement.status === "released") {
-                  const released = await completeOperation("released");
-                  retryAutoReload =
-                    requestNeedsReload && released && reloadAttempt === 0;
-                } else {
-                  await completeOperation("executor_released");
-                }
-                shouldPreparePayment = false;
-              }
-            } catch (error) {
-              const invoiceMissing = isMissingStripeResource(error);
-              autoReloadResult = {
-                success: false,
-                reason: invoiceMissing
-                  ? "invoice_missing"
-                  : "payment_state_unknown",
-              };
-              if (invoiceMissing) {
-                const released = await completeOperation("released");
-                retryAutoReload =
-                  requestNeedsReload && released && reloadAttempt === 0;
-              } else {
-                await completeOperation("executor_released");
-              }
-              shouldPreparePayment = false;
-            }
-          } else if (
-            (!requestNeedsReload && !thresholdReached) ||
-            claim.paymentAllowed === false
-          ) {
-            autoReloadResult = {
-              success: false,
-              reason: claim.paymentBlockedReason ?? "reload_not_needed",
-            };
-            const released = await completeOperation("released");
-            retryAutoReload =
-              requestNeedsReload && released && reloadAttempt === 0;
-            shouldPreparePayment = false;
-          }
-
-          if (shouldPreparePayment) {
-            let paymentStarted = false;
-            try {
-              const stripeCustomerId = await getOrgStripeCustomerId(
-                args.organizationId,
-              );
-              if (!stripeCustomerId) {
-                autoReloadResult = {
-                  success: false,
-                  reason: "no_stripe_customer",
-                };
-                await releasePreCharge();
-              } else {
-                const customerObj =
-                  await getStripe().customers.retrieve(stripeCustomerId);
-                const isBlocked =
-                  !customerObj.deleted &&
-                  (customerObj as Stripe.Customer).metadata?.blocked === "true";
-                const paymentMethodId = isBlocked
-                  ? null
-                  : await getDefaultPaymentMethodId(stripeCustomerId);
-                if (isBlocked || !paymentMethodId) {
-                  autoReloadResult = {
-                    success: false,
-                    reason: isBlocked
-                      ? "customer_blocked"
-                      : "no_default_payment_method",
-                  };
-                  await releasePreCharge();
-                } else {
-                  paymentStarted = true;
-                  const paymentResult = await createAutoReloadInvoice(
-                    stripeCustomerId,
-                    paymentMethodId,
-                    Math.round(amountDollars * 100),
-                    args.organizationId,
-                    operationId,
-                    claim.stripeInvoiceId,
-                    async (stripeInvoiceId) => {
-                      const recorded = await ctx.runMutation(
-                        internal.teamExtraUsage.recordTeamAutoReloadInvoice,
-                        {
-                          organizationId: args.organizationId,
-                          operationId,
-                          executorId,
-                          stripeInvoiceId,
-                        },
-                      );
-                      if (!recorded) {
-                        throw new Error(
-                          "Auto-reload operation executor changed",
-                        );
-                      }
-                    },
-                  );
-                  if (paymentResult.success && paymentResult.invoiceId) {
-                    await creditOperation({
-                      invoiceId: paymentResult.invoiceId,
-                      paymentIntentId: paymentResult.paymentIntentId,
-                      stripeCustomerId,
-                    });
-                  } else {
-                    const reason =
-                      paymentResult.error ||
-                      (paymentResult.success
-                        ? "missing_invoice"
-                        : "payment_failed");
-                    autoReloadResult = { success: false, reason };
-                    if (paymentResult.failureKind === "definitive") {
-                      const completed = await completeOperation(
-                        "definitive_failure",
-                        reason,
-                      );
-                      if (completed) {
-                        try {
-                          await ctx.runMutation(
-                            internal.teamExtraUsage.recordTeamAutoReloadOutcome,
-                            {
-                              organizationId: args.organizationId,
-                              success: false,
-                              failureReason: reason,
-                            },
-                          );
-                        } catch {
-                          // Best-effort health telemetry after a completed op.
-                        }
-                      }
-                    } else if (paymentResult.failureKind === "released") {
-                      await releasePreCharge();
-                    } else {
-                      await completeOperation("executor_released");
-                    }
-                  }
-                }
-              }
-            } catch {
-              autoReloadResult = {
-                success: false,
-                reason: paymentStarted
-                  ? "payment_state_unknown"
-                  : "stripe_lookup_failed",
-              };
-              if (paymentStarted) {
-                await completeOperation("executor_released");
-              } else {
-                await releasePreCharge();
-              }
+              if (claim.status !== "operation" || claim.claimed) break;
             }
           }
 
-          if (requestNeedsReload && autoReloadResult?.success) {
+          if (claim.status === "not_needed" && requestNeedsReload) {
             deductResult = await ctx.runMutation(
               api.teamExtraUsage.deductTeamPoints,
               {
@@ -932,54 +622,391 @@ export const deductWithAutoReloadForTeam = action({
                 userId: args.userId,
                 amountPoints: args.amountPoints,
                 usageSettlementId: args.usageSettlementId,
+                ...(args.settlementOperationId && {
+                  settlementOperationId: args.settlementOperationId,
+                  settlementDebitSequence: debitSequence++,
+                }),
               },
             );
-            retryAutoReload =
-              reloadAttempt === 0 &&
-              !deductResult.success &&
-              deductResult.insufficientFunds &&
-              !deductResult.monthlyCapExceeded &&
-              !deductResult.memberCapExceeded &&
-              !deductResult.memberDisabled &&
-              !deductResult.poolDisabled;
+          } else if (claim.status === "cooldown") {
+            autoReloadTriggered = true;
+            autoReloadResult = {
+              success: false,
+              reason: claim.reason ?? "payment_failed",
+            };
+          } else if (claim.status === "blocked") {
+            if (
+              claim.reason === "monthly_cap_exceeded" &&
+              !deductResult.success
+            ) {
+              deductResult = {
+                ...deductResult,
+                insufficientFunds: true,
+                monthlyCapExceeded: true,
+              };
+            }
+          } else if (claim.status === "operation" && !claim.claimed) {
+            if (requestNeedsReload) {
+              autoReloadTriggered = true;
+            }
+          } else if (
+            claim.status === "operation" &&
+            claim.claimed &&
+            claim.operationId &&
+            claim.executorId &&
+            claim.amountDollars !== undefined
+          ) {
+            autoReloadTriggered = true;
+            const operationId = claim.operationId;
+            const executorId = claim.executorId;
+            const amountDollars = claim.amountDollars;
+            const completeOperation = (
+              outcome:
+                | "success"
+                | "released"
+                | "executor_released"
+                | "definitive_failure",
+              failureReason?: string,
+            ) =>
+              ctx.runMutation(
+                internal.teamExtraUsage.completeTeamAutoReloadOperation,
+                {
+                  organizationId: args.organizationId,
+                  operationId,
+                  executorId,
+                  outcome,
+                  failureReason,
+                },
+              );
+            try {
+              await linkWalletReload(ctx, args, operationId);
+            } catch (error) {
+              await completeOperation("executor_released");
+              throw error;
+            }
+
+            const releasePreCharge = () =>
+              completeOperation(
+                operationId === candidateOperationId && !claim.stripeInvoiceId
+                  ? "released"
+                  : "executor_released",
+              );
+            const creditOperation = async ({
+              invoiceId,
+              paymentIntentId,
+              stripeCustomerId,
+            }: {
+              invoiceId: string;
+              paymentIntentId?: string;
+              stripeCustomerId?: string;
+            }) => {
+              const creditResult = await ctx.runMutation(
+                api.teamExtraUsage.addTeamCredits,
+                {
+                  serviceKey: args.serviceKey,
+                  organizationId: args.organizationId,
+                  amountDollars,
+                  idempotencyKey: `team_auto_reload:${operationId}`,
+                  revenueSource: "team_extra_usage_auto_reload",
+                  stripeCustomerId,
+                  stripePaymentIntentId: paymentIntentId,
+                  stripeInvoiceId: invoiceId,
+                },
+              );
+              const completed = await completeOperation("success");
+              autoReloadResult = {
+                success: true,
+                chargedAmountDollars: amountDollars,
+              };
+              if (deductResult.success && !creditResult.alreadyProcessed) {
+                deductResult = {
+                  ...deductResult,
+                  newBalancePoints: extraUsageDollarsToPoints(
+                    creditResult.newBalance,
+                  ),
+                  newBalanceDollars: creditResult.newBalance,
+                };
+              }
+              if (completed) {
+                try {
+                  await ctx.runMutation(
+                    internal.teamExtraUsage.recordTeamAutoReloadOutcome,
+                    { organizationId: args.organizationId, success: true },
+                  );
+                } catch {
+                  // The charge, credit, and operation completion already succeeded.
+                  // Health telemetry is best-effort and must not change that result.
+                }
+              }
+            };
+
+            let shouldPreparePayment = true;
+            if (claim.stripeInvoiceId) {
+              try {
+                const existingInvoice = await getStripe().invoices.retrieve(
+                  claim.stripeInvoiceId,
+                );
+                if (existingInvoice.status === "paid") {
+                  const paymentIntent = (
+                    existingInvoice as unknown as {
+                      payment_intent?: string | { id: string };
+                    }
+                  ).payment_intent;
+                  await creditOperation({
+                    invoiceId: existingInvoice.id,
+                    paymentIntentId:
+                      typeof paymentIntent === "string"
+                        ? paymentIntent
+                        : paymentIntent?.id,
+                  });
+                  shouldPreparePayment = false;
+                } else if (
+                  (!requestNeedsReload && !thresholdReached) ||
+                  claim.paymentAllowed === false ||
+                  existingInvoice.status === "void" ||
+                  existingInvoice.status === "uncollectible"
+                ) {
+                  const reason =
+                    claim.paymentBlockedReason ??
+                    (existingInvoice.status === "void" ||
+                    existingInvoice.status === "uncollectible"
+                      ? "invoice_not_payable"
+                      : "reload_not_needed");
+                  autoReloadResult = {
+                    success: false,
+                    reason,
+                  };
+                  const retirement = await retireAutoReloadInvoice(
+                    existingInvoice,
+                    operationId,
+                  );
+                  if (retirement.status === "paid") {
+                    const paymentIntent = (
+                      retirement.invoice as unknown as {
+                        payment_intent?: string | { id: string };
+                      }
+                    ).payment_intent;
+                    await creditOperation({
+                      invoiceId: retirement.invoice.id,
+                      paymentIntentId:
+                        typeof paymentIntent === "string"
+                          ? paymentIntent
+                          : paymentIntent?.id,
+                    });
+                  } else if (retirement.status === "released") {
+                    const released = await completeOperation("released");
+                    retryAutoReload =
+                      requestNeedsReload && released && reloadAttempt === 0;
+                  } else {
+                    await completeOperation("executor_released");
+                  }
+                  shouldPreparePayment = false;
+                }
+              } catch (error) {
+                const invoiceMissing = isMissingStripeResource(error);
+                autoReloadResult = {
+                  success: false,
+                  reason: invoiceMissing
+                    ? "invoice_missing"
+                    : "payment_state_unknown",
+                };
+                if (invoiceMissing) {
+                  const released = await completeOperation("released");
+                  retryAutoReload =
+                    requestNeedsReload && released && reloadAttempt === 0;
+                } else {
+                  await completeOperation("executor_released");
+                }
+                shouldPreparePayment = false;
+              }
+            } else if (
+              (!requestNeedsReload && !thresholdReached) ||
+              claim.paymentAllowed === false
+            ) {
+              autoReloadResult = {
+                success: false,
+                reason: claim.paymentBlockedReason ?? "reload_not_needed",
+              };
+              const released = await completeOperation("released");
+              retryAutoReload =
+                requestNeedsReload && released && reloadAttempt === 0;
+              shouldPreparePayment = false;
+            }
+
+            if (shouldPreparePayment) {
+              let paymentStarted = false;
+              try {
+                const stripeCustomerId = await getOrgStripeCustomerId(
+                  args.organizationId,
+                );
+                if (!stripeCustomerId) {
+                  autoReloadResult = {
+                    success: false,
+                    reason: "no_stripe_customer",
+                  };
+                  await releasePreCharge();
+                } else {
+                  const customerObj =
+                    await getStripe().customers.retrieve(stripeCustomerId);
+                  const isBlocked =
+                    !customerObj.deleted &&
+                    (customerObj as Stripe.Customer).metadata?.blocked ===
+                      "true";
+                  const paymentMethodId = isBlocked
+                    ? null
+                    : await getDefaultPaymentMethodId(stripeCustomerId);
+                  if (isBlocked || !paymentMethodId) {
+                    autoReloadResult = {
+                      success: false,
+                      reason: isBlocked
+                        ? "customer_blocked"
+                        : "no_default_payment_method",
+                    };
+                    await releasePreCharge();
+                  } else {
+                    paymentStarted = true;
+                    const paymentResult = await createAutoReloadInvoice(
+                      stripeCustomerId,
+                      paymentMethodId,
+                      Math.round(amountDollars * 100),
+                      args.organizationId,
+                      operationId,
+                      claim.stripeInvoiceId,
+                      async (stripeInvoiceId) => {
+                        const recorded = await ctx.runMutation(
+                          internal.teamExtraUsage.recordTeamAutoReloadInvoice,
+                          {
+                            organizationId: args.organizationId,
+                            operationId,
+                            executorId,
+                            stripeInvoiceId,
+                          },
+                        );
+                        if (!recorded) {
+                          throw new Error(
+                            "Auto-reload operation executor changed",
+                          );
+                        }
+                      },
+                    );
+                    if (paymentResult.success && paymentResult.invoiceId) {
+                      await creditOperation({
+                        invoiceId: paymentResult.invoiceId,
+                        paymentIntentId: paymentResult.paymentIntentId,
+                        stripeCustomerId,
+                      });
+                    } else {
+                      const reason =
+                        paymentResult.error ||
+                        (paymentResult.success
+                          ? "missing_invoice"
+                          : "payment_failed");
+                      autoReloadResult = { success: false, reason };
+                      if (paymentResult.failureKind === "definitive") {
+                        const completed = await completeOperation(
+                          "definitive_failure",
+                          reason,
+                        );
+                        if (completed) {
+                          try {
+                            await ctx.runMutation(
+                              internal.teamExtraUsage
+                                .recordTeamAutoReloadOutcome,
+                              {
+                                organizationId: args.organizationId,
+                                success: false,
+                                failureReason: reason,
+                              },
+                            );
+                          } catch {
+                            // Best-effort health telemetry after a completed op.
+                          }
+                        }
+                      } else if (paymentResult.failureKind === "released") {
+                        await releasePreCharge();
+                      } else {
+                        await completeOperation("executor_released");
+                      }
+                    }
+                  }
+                }
+              } catch {
+                autoReloadResult = {
+                  success: false,
+                  reason: paymentStarted
+                    ? "payment_state_unknown"
+                    : "stripe_lookup_failed",
+                };
+                if (paymentStarted) {
+                  await completeOperation("executor_released");
+                } else {
+                  await releasePreCharge();
+                }
+              }
+            }
+
+            if (requestNeedsReload && autoReloadResult?.success) {
+              deductResult = await ctx.runMutation(
+                api.teamExtraUsage.deductTeamPoints,
+                {
+                  serviceKey: args.serviceKey,
+                  organizationId: args.organizationId,
+                  userId: args.userId,
+                  amountPoints: args.amountPoints,
+                  usageSettlementId: args.usageSettlementId,
+                  ...(args.settlementOperationId && {
+                    settlementOperationId: args.settlementOperationId,
+                    settlementDebitSequence: debitSequence++,
+                  }),
+                },
+              );
+              retryAutoReload =
+                reloadAttempt === 0 &&
+                !deductResult.success &&
+                deductResult.insufficientFunds &&
+                !deductResult.monthlyCapExceeded &&
+                !deductResult.memberCapExceeded &&
+                !deductResult.memberDisabled &&
+                !deductResult.poolDisabled;
+            }
           }
+          if (retryAutoReload) {
+            autoReloadResult = undefined;
+            continue;
+          }
+          break;
         }
-        if (retryAutoReload) {
-          autoReloadResult = undefined;
-          continue;
-        }
-        break;
       }
-    }
 
-    convexLogger.info("team_deduct_with_auto_reload", {
-      organization_id: args.organizationId,
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      success: deductResult.success,
-      new_balance_dollars: deductResult.newBalanceDollars,
-      insufficient_funds: deductResult.insufficientFunds,
-      monthly_cap_exceeded: deductResult.monthlyCapExceeded,
-      member_cap_exceeded: deductResult.memberCapExceeded,
-      member_disabled: deductResult.memberDisabled,
-      pool_disabled: deductResult.poolDisabled,
-      auto_reload_triggered: autoReloadTriggered,
-      auto_reload_success: autoReloadResult?.success,
-      auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
-      auto_reload_failure_reason: autoReloadResult?.reason,
-    });
+      convexLogger.info("team_deduct_with_auto_reload", {
+        organization_id: args.organizationId,
+        user_id: args.userId,
+        settlement_operation_id: args.settlementOperationId,
+        amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
+        success: deductResult.success,
+        new_balance_dollars: deductResult.newBalanceDollars,
+        insufficient_funds: deductResult.insufficientFunds,
+        monthly_cap_exceeded: deductResult.monthlyCapExceeded,
+        member_cap_exceeded: deductResult.memberCapExceeded,
+        member_disabled: deductResult.memberDisabled,
+        pool_disabled: deductResult.poolDisabled,
+        auto_reload_triggered: autoReloadTriggered,
+        auto_reload_success: autoReloadResult?.success,
+        auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
+        auto_reload_failure_reason: autoReloadResult?.reason,
+      });
 
-    return {
-      success: deductResult.success,
-      newBalanceDollars: deductResult.newBalanceDollars,
-      insufficientFunds: deductResult.insufficientFunds,
-      monthlyCapExceeded: deductResult.monthlyCapExceeded,
-      memberCapExceeded: deductResult.memberCapExceeded,
-      memberDisabled: deductResult.memberDisabled,
-      poolDisabled: deductResult.poolDisabled,
-      autoReloadTriggered,
-      autoReloadResult,
-    };
-  },
+      return {
+        success: deductResult.success,
+        newBalanceDollars: deductResult.newBalanceDollars,
+        insufficientFunds: deductResult.insufficientFunds,
+        monthlyCapExceeded: deductResult.monthlyCapExceeded,
+        memberCapExceeded: deductResult.memberCapExceeded,
+        memberDisabled: deductResult.memberDisabled,
+        poolDisabled: deductResult.poolDisabled,
+        autoReloadTriggered,
+        autoReloadResult,
+      };
+    }),
 });

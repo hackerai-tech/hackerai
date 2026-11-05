@@ -1,6 +1,6 @@
 "use node";
 
-import { internalAction } from "./_generated/server";
+import { internalAction } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { createClient } from "redis";
 

@@ -20,19 +20,21 @@ async function main() {
     await import("../lib/ai/tool-call-id-namespace");
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
-  const useLargeV2 = process.argv.includes("--large-v2");
-  const expectedProviderModel = useLargeV2
-    ? "abliterated-model-large-v2"
-    : "abliterated-model";
+  // Exercise either persisted registry alias; both now use Large Flash.
+  const useProBaseline =
+    process.argv.includes("--pro-baseline") ||
+    process.argv.includes("--large-v2");
+  const expectedProviderModel = "abliterated-model-large-flash";
   const assignment = await evaluateAbliteratedModel({
-    posthog: { getFeatureFlag: async () => "test" },
     userId: "local-provider-smoke",
-    selectedModel: useLargeV2
+    selectedModel: useProBaseline
       ? "model-deepseek-v4-pro-0813"
-      : "model-deepseek-v4-flash-0731",
+      : "model-deepseek-v4-flash-vision",
     subscription: "pro",
     mode: "agent",
-    selectedModelOverride: useLargeV2 ? "hackerai-pro" : "hackerai-standard",
+    selectedModelOverride: useProBaseline
+      ? "hackerai-pro"
+      : "hackerai-standard",
     moderationEligible: true,
     messages: [
       {
@@ -43,6 +45,8 @@ async function main() {
     ],
   });
   if (!assignment) throw new Error("AssignmentUnavailable");
+  if (process.argv.includes("--large-v2"))
+    assignment.modelKey = "model-abliterated-large-v2";
   const telemetry = new AbliteratedModelTelemetry(
     {
       capture: (event) => {
@@ -101,10 +105,11 @@ async function main() {
     outcomes.every((event) => event.properties?.outcome === "completed");
   console.log(
     JSON.stringify({
-      test: useLargeV2
-        ? "abliteration_large_v2_provider_and_telemetry"
+      test: useProBaseline
+        ? "abliteration_pro_selector_flash_provider_and_telemetry"
         : "abliteration_provider_and_telemetry",
       passed,
+      modelKey: assignment.modelKey,
       model: responseModel,
       toolExecutions,
       durationMs: Date.now() - startedAt,

@@ -1,6 +1,6 @@
 import { newObjectiveCheckpoint } from "../../lib/chat/legacy-objective-checkpoint";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalMutation: (config: unknown) => config,
   mutation: (config: unknown) => config,
   query: (config: unknown) => config,

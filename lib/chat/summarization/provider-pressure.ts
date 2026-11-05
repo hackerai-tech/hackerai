@@ -1,14 +1,11 @@
 import type { ModelMessage } from "ai";
+import type { ChatMode } from "@/types";
 
-export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 450_000;
-export const PROVIDER_PRESSURE_TOOL_RESULT_COUNT = 100;
-export const PROVIDER_PRESSURE_MESSAGE_COUNT = 120;
+export const PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES = 600_000;
 export const PROVIDER_PRESSURE_SUMMARIZATION_MAX_TOKENS = 128_000;
 
 export type ProviderPromptPressureReason =
-  | "serialized_message_bytes"
-  | "tool_result_count"
-  | "message_count";
+  "serialized_message_bytes" | "provider_request_rejected";
 
 export interface ProviderPromptPressure {
   reason: ProviderPromptPressureReason;
@@ -119,7 +116,11 @@ const countToolResultParts = (messages: ModelMessage[]): number => {
 
 export const getProviderPromptPressure = (
   messages: ModelMessage[],
+  { mode }: { mode?: ChatMode } = {},
 ): ProviderPromptPressure | null => {
+  // Agent compacts by tokens; actual provider rejections have bounded recovery.
+  if (mode === "agent") return null;
+  const serializedMessageByteLimit = PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES;
   const serializedMessageBytes = getSerializedBytes(messages);
   const toolResultCount = countToolResultParts(messages);
   const messageCount = messages.length;
@@ -127,17 +128,9 @@ export const getProviderPromptPressure = (
 
   if (
     serializedMessageBytes != null &&
-    serializedMessageBytes >= PROVIDER_PRESSURE_SERIALIZED_MESSAGE_BYTES
+    serializedMessageBytes >= serializedMessageByteLimit
   ) {
     reasons.push("serialized_message_bytes");
-  }
-
-  if (toolResultCount >= PROVIDER_PRESSURE_TOOL_RESULT_COUNT) {
-    reasons.push("tool_result_count");
-  }
-
-  if (messageCount >= PROVIDER_PRESSURE_MESSAGE_COUNT) {
-    reasons.push("message_count");
   }
 
   if (reasons.length === 0) return null;

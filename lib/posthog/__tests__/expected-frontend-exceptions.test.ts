@@ -3,6 +3,14 @@ import {
   sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "../expected-frontend-exceptions";
+import {
+  getComposerChangeDiagnostics,
+  recordComposerChange,
+} from "../composer-change-diagnostics";
+
+jest.mock("@/lib/analytics/client", () => ({
+  getIdentifiedAnalyticsUserId: () => "synthetic-user",
+}));
 
 describe("shouldDropExpectedFrontendException", () => {
   it("keeps non-exception events", () => {
@@ -630,6 +638,111 @@ describe("shouldDropExpectedFrontendException", () => {
       hackerai_exception_category: "react_max_update_depth",
       hackerai_exception_deployment_id: "dpl_G8NpYMgn7xvPfdr4XW6jYBmeC4yB",
       hackerai_route_kind: "chat",
+    });
+  });
+
+  it("attaches recent composer metadata only to retained React update-depth errors", () => {
+    const clock = jest.spyOn(performance, "now").mockReturnValue(10000);
+    try {
+      recordComposerChange({ inputType: "insertText", isTrusted: true });
+      const event = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: { $exception_values: ["Minified React error #185"] },
+      });
+      expect(event.properties).toMatchObject({
+        hackerai_composer_change_recent_count: 1,
+        hackerai_composer_change_last_input_type: "insertText",
+      });
+      expect(shouldDropExpectedFrontendException(event)).toBe(false);
+      for (const message of [
+        "Maximum call stack size exceeded",
+        "Unknown failure",
+      ]) {
+        const other = enrichFrontendExceptionEvent({
+          event: "$exception",
+          properties: { $exception_values: [message] },
+        });
+        expect(
+          Object.keys(other.properties).some((key) =>
+            key.startsWith("hackerai_composer_change_"),
+          ),
+        ).toBe(false);
+      }
+      const ordinary = { event: "chat_user_submission", properties: {} };
+      expect(enrichFrontendExceptionEvent(ordinary)).toBe(ordinary);
+      expect(ordinary.properties).toEqual({});
+    } finally {
+      clock.mockReturnValue(16000);
+      getComposerChangeDiagnostics();
+      clock.mockRestore();
+    }
+  });
+
+  describe("browser build identity", () => {
+    const originalBuildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+
+    afterEach(() => {
+      if (originalBuildCommit === undefined) {
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      } else {
+        process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuildCommit;
+      }
+    });
+
+    it("attributes an SDK-only stack to its own build without a deployment hint", () => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "a".repeat(40);
+      const event = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: {
+          $exception_values: ["JSON Parse error: Unterminated string"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    raw_frame: {
+                      filename: "convex/src/browser/sync/web_socket_manager.ts",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      });
+
+      expect(shouldDropExpectedFrontendException(event)).toBe(false);
+      expect(event.properties).toMatchObject({
+        hackerai_exception_build_commit: "a".repeat(40),
+      });
+      expect(event.properties).not.toHaveProperty(
+        "hackerai_exception_deployment_id",
+      );
+    });
+
+    it.each([undefined, "", "unrecognized-build"])(
+      "does not invent an identity for an unknown build (%s)",
+      (buildCommit) => {
+        if (buildCommit === undefined) {
+          delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        } else {
+          process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = buildCommit;
+        }
+        const event = enrichFrontendExceptionEvent({
+          event: "$exception",
+          properties: {},
+        });
+        expect(event.properties).not.toHaveProperty(
+          "hackerai_exception_build_commit",
+        );
+      },
+    );
+
+    it("does not add build metadata to other analytics events", () => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "a".repeat(40);
+      const event = { event: "custom_event", properties: { count: 1 } };
+      expect(enrichFrontendExceptionEvent(event)).toBe(event);
+      expect(event.properties).toEqual({ count: 1 });
     });
   });
 

@@ -1,6 +1,6 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
-import { mutation, type MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { mutation, type MutationCtx } from "./lib/serviceFunctions";
+import { getDocumentSize, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { validateServiceKey } from "./lib/utils";
@@ -18,9 +18,12 @@ export const USER_DELETION_TABLE_POLICY = {
     "messages",
     "files",
     "feedback",
+    "findings",
+    "finding_sources",
     "task_outcome_surveys",
     "notes",
     "user_customization",
+    "cloud_network_settings",
     "extra_usage",
     "team_member_usage",
     // Shared-organization rows are anonymized in place so the organization's
@@ -29,6 +32,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "current_cancellation_reasons",
     "research_run_members",
     "research_user_profiles",
     "subagent_messages",
@@ -38,6 +42,8 @@ export const USER_DELETION_TABLE_POLICY = {
   ],
   anonymize: [
     "usage_logs",
+    "usage_settlement_operations",
+    "usage_settlement_debits",
     "cancellation_reasons",
     "involuntary_churn_events",
     "referral_codes",
@@ -55,6 +61,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
+    // Unresolved Stripe writes must stay fenced even during account deletion.
+    "billing_operations",
     "processed_webhooks",
     "processed_checkout_sessions",
     // Reports contain only cohort-level patterns from runs with at least three
@@ -72,12 +80,27 @@ type OrphanSubagentTable = "subagent_events" | "subagent_work_items";
 // Share one document budget across the entire cleanup pass; the account
 // deletion route already repeats the mutation while `hasMore` is true.
 const MAX_CLEANUP_DOCS_PER_MUTATION = 100;
+// Leave headroom for delete/patch reads, file receipts, and aggregate updates.
+const MAX_CLEANUP_READ_BYTES = 4 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 1024 * 1024;
+// Orphan pages also read each parent and may delete each scanned document.
+const MAX_ORPHAN_DOCS_PER_MUTATION = 4;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
 const MAX_RESUME_CLAIMS_PER_DELETION_START = 20;
 
 type ReadBudget = {
   remaining: number;
+  remainingBytes: number;
 };
+
+function chargeRead(budget: ReadBudget, doc: AnyDoc | null) {
+  budget.remaining -= 1;
+  if (doc) budget.remainingBytes -= getDocumentSize(doc);
+}
+
+function canReadDocument(budget: ReadBudget) {
+  return budget.remaining > 0 && budget.remainingBytes >= MAX_DOCUMENT_BYTES;
+}
 
 type CleanupStats = {
   deleted: Record<string, number>;
@@ -186,21 +209,30 @@ async function collectByIndexBatch<T extends AnyDoc>(
   build: (q: any) => any,
   requestedLimit = MAX_CLEANUP_DOCS_PER_MUTATION,
 ): Promise<IndexedBatch<T>> {
-  // Reserve one read for the lookahead row used to determine `hasMore`.
+  // Keep one worst-case document available for dependent lookups. Chats need
+  // an indexed summary plus a possible legacy latest-summary lookup.
+  const reservedBytes =
+    table === "chats" ? 2 * MAX_DOCUMENT_BYTES : MAX_DOCUMENT_BYTES;
   const limit = Math.min(requestedLimit, budget.remaining - 1);
-  if (limit <= 0) {
+  if (
+    limit <= 0 ||
+    budget.remainingBytes < MAX_DOCUMENT_BYTES + reservedBytes
+  ) {
     return { docs: [], hasMore: true };
   }
 
-  const rows = await (ctx.db.query(table as any) as any)
-    .withIndex(indexName, build)
-    .take(limit + 1);
-  budget.remaining -= rows.length;
-
-  const hasMore = rows.length > limit;
-  const docs = hasMore ? rows.slice(0, limit) : rows;
-
-  return { docs, hasMore };
+  const docs: T[] = [];
+  const query = (ctx.db.query(table as any) as any).withIndex(indexName, build);
+  for await (const row of query) {
+    chargeRead(budget, row);
+    // Charge the lookahead as well, even though this pass does not delete it.
+    if (docs.length === limit) return { docs, hasMore: true };
+    docs.push(row);
+    if (budget.remainingBytes < MAX_DOCUMENT_BYTES + reservedBytes) {
+      return { docs, hasMore: true };
+    }
+  }
+  return { docs, hasMore: false };
 }
 
 async function firstByIndex<T extends AnyDoc>(
@@ -289,14 +321,14 @@ async function collectChatSummariesForChats(
       continue;
     }
 
-    if (budget.remaining <= 0) {
+    if (!canReadDocument(budget)) {
       stats.hasMore = true;
       incompleteChatIds.add(chat.id);
       continue;
     }
 
     const latestSummary = await ctx.db.get(chat.latest_summary_id);
-    budget.remaining -= 1;
+    chargeRead(budget, latestSummary);
     if (latestSummary) {
       summaries.push(latestSummary);
     }
@@ -349,6 +381,7 @@ async function cleanupUserDataForUser(
   const now = Date.now();
   const budget: ReadBudget = {
     remaining: MAX_CLEANUP_DOCS_PER_MUTATION,
+    remainingBytes: MAX_CLEANUP_READ_BYTES,
   };
 
   // A message may point to one feedback document that must be deleted first,
@@ -362,18 +395,20 @@ async function cleanupUserDataForUser(
     (q) => q.eq("user_id", userId),
     messageLimit,
   );
-  const messages = messagesBatch.docs;
-  const feedbackIds = uniqueDocs(messages)
-    .map((message) => message.feedback_id)
-    .filter((id): id is Id<"feedback"> => !!id);
+  const messages: Doc<"messages">[] = [];
   const feedback: Array<Doc<"feedback"> | null> = [];
-  for (const feedbackId of feedbackIds) {
-    if (budget.remaining <= 0) {
-      stats.hasMore = true;
-      break;
+  for (const message of messagesBatch.docs) {
+    if (message.feedback_id) {
+      if (!canReadDocument(budget)) {
+        // Keep the message's pointer until its feedback can be deleted too.
+        messagesBatch.hasMore = true;
+        continue;
+      }
+      const doc = await ctx.db.get(message.feedback_id);
+      chargeRead(budget, doc);
+      feedback.push(doc);
     }
-    feedback.push(await ctx.db.get(feedbackId));
-    budget.remaining -= 1;
+    messages.push(message);
   }
 
   // Chat cleanup can require both an indexed summary read and a legacy latest
@@ -417,6 +452,25 @@ async function cleanupUserDataForUser(
     "by_user_and_updated",
     (q) => q.eq("user_id", userId),
   );
+  const findingsBatch = await collectByIndexBatch<Doc<"findings">>(
+    ctx,
+    budget,
+    "findings",
+    "by_user_and_created",
+    (q) => q.eq("user_id", userId),
+  );
+  const findingSourcesBatch = await collectByIndexBatch<Doc<"finding_sources">>(
+    ctx,
+    budget,
+    "finding_sources",
+    "by_user_and_latest",
+    (q) => q.eq("user_id", userId),
+  );
+  const cloudNetworkBatch = await collectByIndexBatch<
+    Doc<"cloud_network_settings">
+  >(ctx, budget, "cloud_network_settings", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -447,6 +501,11 @@ async function cleanupUserDataForUser(
   const subscriptionPausesBatch = await collectByIndexBatch<
     Doc<"subscription_pauses">
   >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
+    q.eq("user_id", userId),
+  );
+  const currentCancellationReasonsBatch = await collectByIndexBatch<
+    Doc<"current_cancellation_reasons">
+  >(ctx, budget, "current_cancellation_reasons", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
@@ -496,8 +555,11 @@ async function cleanupUserDataForUser(
     projectsBatch,
     chatsBatch,
     filesBatch,
+    findingsBatch,
+    findingSourcesBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
+    cloudNetworkBatch,
     customizationBatch,
     messagesBatch,
     localSandboxTokensBatch,
@@ -517,6 +579,8 @@ async function cleanupUserDataForUser(
 
   const projects = projectsBatch.docs;
   const files = filesBatch.docs;
+  const findings = findingsBatch.docs;
+  const findingSources = findingSourcesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
@@ -585,7 +649,16 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
+  await deleteDocs(ctx, stats, "findings", findings, mode);
+  await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "cloud_network_settings",
+    cloudNetworkBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(
     ctx,
@@ -616,6 +689,14 @@ async function cleanupUserDataForUser(
     "subscription_pauses",
     subscriptionPausesToAnonymize,
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  stats.hasMore ||= currentCancellationReasonsBatch.hasMore;
+  await deleteDocs(
+    ctx,
+    stats,
+    "current_cancellation_reasons",
+    currentCancellationReasonsBatch.docs,
     mode,
   );
   await deleteDocs(
@@ -651,6 +732,16 @@ async function cleanupUserDataForUser(
     "usage_logs",
     "by_user",
     (q) => q.eq("user_id", userId),
+  );
+  const settlementOperationsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_operations">
+  >(ctx, budget, "usage_settlement_operations", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const settlementDebitsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_debits">
+  >(ctx, budget, "usage_settlement_debits", "by_user_id", (q) =>
+    q.eq("user_id", userId),
   );
   const involuntaryChurnEventsBatch = await collectByIndexBatch<
     Doc<"involuntary_churn_events">
@@ -737,6 +828,8 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    settlementOperationsBatch,
+    settlementDebitsBatch,
     involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
@@ -795,6 +888,22 @@ async function cleanupUserDataForUser(
       chat_id: undefined,
       assistant_message_id: undefined,
     }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_operations",
+    settlementOperationsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_debits",
+    settlementDebitsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
     mode,
   );
   await anonymizeDocs(
@@ -922,7 +1031,7 @@ async function cleanupOrphanChatSummaries(
   const stats = createStats();
   const page = await (ctx.db.query("chat_summaries") as any).paginate({
     cursor: opts.cursor ?? null,
-    numItems: opts.numItems,
+    numItems: Math.min(opts.numItems, MAX_ORPHAN_DOCS_PER_MUTATION),
   });
 
   stats.orphanChatSummariesScanned = page.page.length;
@@ -957,7 +1066,7 @@ async function cleanupOrphanSubagentRows(
   const stats = createStats();
   const page = await (ctx.db.query(table) as any).paginate({
     cursor: opts.cursor ?? null,
-    numItems: opts.numItems,
+    numItems: Math.min(opts.numItems, MAX_ORPHAN_DOCS_PER_MUTATION),
   });
 
   stats.orphanSubagentRowsTable = table;

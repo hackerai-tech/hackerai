@@ -1,5 +1,6 @@
 import {
   mkdir,
+  mkdtemp,
   readFile,
   rm,
   stat,
@@ -7,7 +8,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
+import { preparePrivateArtifactStorage } from "@/packages/local/src/private-artifact-hardening";
+import { classifyPersistenceFailure } from "../persistence-failure";
 import {
   readOwnerOnlyPosixFile,
   writeOwnerOnlyPosixFile,
@@ -71,6 +75,120 @@ describe("owner-only POSIX terminal artifacts", () => {
     } as any;
     return { root, directory, filePath, sandbox, commands };
   };
+
+  it("reports failed current-client storage preparation without suggesting an upgrade", async () => {
+    const base = await mkdtemp(
+      path.join(os.tmpdir(), "hackerai-storage-readiness-"),
+    );
+    roots.push(base);
+    const storageRoot = path.join(base, "records");
+    const outside = path.join(base, "outside");
+    await mkdir(outside, { mode: 0o755 });
+    const initialMode = await mode(outside);
+    await symlink(outside, storageRoot);
+    await symlink(outside, `${storageRoot}-uid-${process.getuid!()}`);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const storage = await preparePrivateArtifactStorage([storageRoot]);
+      expect(storage.ready).toBe(false);
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      sandbox.supportsCommandStdin = () => storage.ready;
+      sandbox.getConnectionInfo = () => ({
+        capabilities: { commandStdin: storage.ready },
+      });
+      const error = await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "private output",
+      ).then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+      expect(classifyPersistenceFailure(error)).toBe(
+        "private_storage_unavailable",
+      );
+      expect(error).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("startup storage diagnostics"),
+        }),
+      );
+      expect(commands.run).not.toHaveBeenCalled();
+      expect(await mode(outside)).toBe(initialMode);
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(["append", "commit"])(
+    "verifies a completed %s after a lost reply without replaying it",
+    async (stage) => {
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      const content = "lost-reply payload\n".repeat(4000);
+      let faulted = false;
+      commands.run.mockImplementation(async (command, opts) => {
+        const result = await runShell(command, opts?.stdin);
+        if (
+          !faulted &&
+          (stage === "append"
+            ? opts?.stdin !== undefined
+            : command.includes("mv -f"))
+        ) {
+          faulted = true;
+          throw new Error("Local command timed out after lost reply");
+        }
+        return result;
+      });
+      await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        content,
+      );
+      expect(faulted).toBe(true);
+      expect(await readFile(filePath, "utf8")).toBe(content);
+      expect(
+        commands.run.mock.calls.filter(
+          ([, options]) => options?.stdin !== undefined,
+        ),
+      ).toHaveLength(1);
+      expect(
+        commands.run.mock.calls.filter(([command]) =>
+          command.includes("mv -f"),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not accept a partial append as recovered", async () => {
+    const { root, directory, filePath, sandbox, commands } = fixture();
+    commands.run.mockImplementation(async (command, opts) => {
+      if (opts?.stdin !== undefined) {
+        await runShell(command, Buffer.from(opts.stdin).subarray(0, 4));
+        throw new Error("Local command timed out after partial write");
+      }
+      return runShell(command);
+    });
+    await expect(
+      writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "complete payload",
+      ),
+    ).rejects.toThrow("timed out");
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      commands.run.mock.calls.filter(
+        ([, options]) => options?.stdin !== undefined,
+      ),
+    ).toHaveLength(1);
+  });
 
   it("writes content through stdin with owner-only permissions", async () => {
     const { root, directory, filePath, sandbox, commands } = fixture();

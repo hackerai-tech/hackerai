@@ -201,11 +201,13 @@ export const attachSubagentTriggerRun = async (
 export const markSubagentFinalizing = async (
   subagentId: string,
   triggerRunId: string,
+  modelHandoffNoteIds?: string[],
 ) =>
   await getConvexClient().mutation(api.subagents.markFinalizingForBackend, {
     serviceKey,
     subagentId,
     triggerRunId,
+    ...(modelHandoffNoteIds !== undefined ? { modelHandoffNoteIds } : {}),
   });
 
 export const cancelSubagentForUser = async (args: {

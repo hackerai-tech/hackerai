@@ -22,6 +22,10 @@ describe("GET /api/referrals", () => {
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.co";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     delete process.env.REFERRAL_REFERRED_SIGNUP_BONUS_UNITS;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL;
+    delete process.env.VERCEL_BRANCH_URL;
+    delete process.env.VERCEL_URL;
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
@@ -74,6 +78,30 @@ describe("GET /api/referrals", () => {
     );
     expect(mockConvexMutation).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["preview", "build.vercel.app", "build.vercel.app"],
+    ["preview", "branch.vercel.app", "branch.vercel.app"],
+    ["preview", "untrusted.example", "branch.vercel.app"],
+    ["production", "build.vercel.app", "hackerai.co"],
+  ])(
+    "uses the trusted referral origin in %s for host %s",
+    async (environment, host, expectedHost) => {
+      process.env.VERCEL = "1";
+      process.env.VERCEL_ENV = environment;
+      process.env.VERCEL_BRANCH_URL = "branch.vercel.app";
+      process.env.VERCEL_URL = "build.vercel.app";
+      const { GET } = await import("../route");
+
+      const response = await GET({
+        nextUrl: new URL(`https://${host}`),
+      } as any);
+
+      expect((await response.json()).referralUrl).toBe(
+        `https://${expectedHost}/invite/UVVQDMV`,
+      );
+    },
+  );
 
   it("returns the referrer tier reported by Convex", async () => {
     mockGetUserIDAndPro.mockResolvedValueOnce({

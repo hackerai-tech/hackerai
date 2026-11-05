@@ -30,15 +30,112 @@ const makeMessage = (text: string): UIMessage => ({
 
 describe("processChatMessages authorization metadata", () => {
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+  const originalAbliterationKey = process.env.ABLITERATION_API_KEY;
 
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.ABLITERATION_API_KEY = "test-only-key";
     mockModerationsCreate.mockReset();
   });
 
   afterEach(() => {
     process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    if (originalAbliterationKey === undefined)
+      delete process.env.ABLITERATION_API_KEY;
+    else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
   });
+
+  it.each([
+    { mode: "ask", subscription: "free" },
+    { mode: "agent", subscription: "free" },
+    { mode: "agent", subscription: "pro" },
+  ] as const)(
+    "authorizes a score of 0.05 for $subscription users in $mode mode",
+    async ({ mode, subscription }) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          {
+            categories: { illicit: false },
+            category_scores: { illicit: 0.05 },
+          },
+        ],
+      });
+
+      const result = await processChatMessages({
+        messages: [makeMessage("Continue the authorized security assessment")],
+        mode,
+        userId: "user-1",
+        subscription,
+      });
+
+      expect(result.platformAuthorized).toBe(true);
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "always moderates %s despite a stale paid treatment flag",
+    async (mode) => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue({ enabled: true, variant: "test" });
+      const legacyInput = { abliterationPosthog: { getFeatureFlagResult } };
+      const subscriptions =
+        mode === "ask"
+          ? (["free"] as const)
+          : (["pro", "pro-plus", "ultra", "team"] as const);
+      for (const subscription of subscriptions) {
+        mockModerationsCreate.mockResolvedValue({
+          results: [{ categories: {}, category_scores: { illicit: 0 } }],
+        });
+        const result = await processChatMessages({
+          ...legacyInput,
+          messages: [
+            makeMessage("Explain how to sort three numbers in Python"),
+          ],
+          mode,
+          userId: "user-1",
+          subscription,
+        });
+        expect(result).toMatchObject({
+          moderationChecked: true,
+          platformAuthorized: false,
+        });
+      }
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(subscriptions.length);
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "moderates %s after dropping an unavailable PDF attachment",
+    async (mode) => {
+      const textOnly = makeMessage("Summarize the attached document");
+      mockModerationsCreate.mockResolvedValue({
+        results: [{ categories: {}, category_scores: { illicit: 0 } }],
+      });
+      const result = await processChatMessages({
+        messages: [
+          {
+            ...textOnly,
+            parts: [
+              ...textOnly.parts,
+              {
+                type: "file",
+                mediaType: "application/pdf",
+                url: "",
+              },
+            ],
+          },
+        ],
+        mode,
+        userId: "user-1",
+        subscription: mode === "ask" ? "free" : "pro",
+      });
+      expect(result.processedMessages).toEqual([textOnly]);
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
+      expect(result.moderationChecked).toBe(true);
+    },
+  );
 
   it("returns the authorization decision without changing provider-ready UI messages", async () => {
     mockModerationsCreate.mockResolvedValue({
@@ -58,7 +155,7 @@ describe("processChatMessages authorization metadata", () => {
       messages,
       mode: "ask",
       userId: "user-1",
-      subscription: "pro",
+      subscription: "free",
     });
 
     expect(result.platformAuthorized).toBe(true);

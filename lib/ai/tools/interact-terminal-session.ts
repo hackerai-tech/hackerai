@@ -1,3 +1,4 @@
+import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { tool } from "ai";
 import type { AnySandbox, ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
@@ -25,6 +26,7 @@ import {
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import { createTerminalRecordStore } from "./utils/terminal-execution-record";
+import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -65,7 +67,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
     log_budget: context.ptyParserLogBudget,
   });
 
-  return tool({
+  const terminalTool = tool({
     ...interactTerminalSessionTool,
     inputSchema: createInteractTerminalSessionToolSchema({
       modelName: context.getCurrentModelName?.() ?? context.modelName,
@@ -558,6 +560,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           if (record) {
             return {
               result: {
+                ...terminalExecutionProvenance(
+                  getAgentApprovalSandboxIdentity(sandbox),
+                  record.workingDirectory,
+                ),
                 session: sessionId,
                 recordPath: store.pathFor(sessionId),
                 recovered: true,
@@ -590,6 +596,13 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const result = await handler();
         if (session) {
           await ptySessionManager.checkpoint(session);
+          Object.assign(
+            result.result,
+            terminalExecutionProvenance(
+              session.sandboxIdentity,
+              session.workingDirectory,
+            ),
+          );
           result.result.session = sessionId;
           if (session.recordPath) result.result.recordPath = session.recordPath;
           if (session.recordPersistenceFailed)
@@ -600,9 +613,8 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
       return errorResult(`Unknown action: ${action}`);
     },
-    // Strip rawSnapshot from the model's view: the agent only needs the
-    // cleaned `output` plus structural fields. rawSnapshot stays in the
-    // persisted tool result so the sidebar's xterm renderer can replay it.
+    // The model only needs cleaned output and structural fields. Keep timing
+    // in diagnostics and rawSnapshot in the persisted result for xterm replay.
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
@@ -611,11 +623,27 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       if (typeof result !== "object" || result === null) {
         return { type: "text", value: JSON.stringify(output) };
       }
-      const { rawSnapshot: _rawSnapshot, ...rest } = result as Record<
-        string,
-        unknown
-      >;
+      const {
+        rawSnapshot: _rawSnapshot,
+        callTiming: _callTiming,
+        ...rest
+      } = result as Record<string, unknown>;
       return { type: "text", value: JSON.stringify({ result: rest }) };
     },
   });
+  return {
+    ...terminalTool,
+    execute: withTerminalCallTiming(
+      context,
+      "interact_terminal_session",
+      async (
+        input: Parameters<NonNullable<typeof terminalTool.execute>>[0],
+        options,
+      ) =>
+        // Terminal tools return one result, never an AsyncIterable.
+        (await terminalTool.execute!(input, options)) as {
+          result: Record<string, unknown>;
+        },
+    ),
+  };
 };

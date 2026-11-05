@@ -1,13 +1,8 @@
+import type { ToolResultCycle } from "./tool-loop-observer";
+
 /**
- * Doom Loop Detection
- *
- * Detects when the AI agent is stuck in a loop, repeatedly calling the same
- * tool(s) with identical arguments. Inspired by OpenCode's doom loop detection
- * (sst/opencode PR #3445).
- *
- * Two-tier response:
- * - Warning (3 consecutive identical steps): inject a nudge as a user message
- * - Halt (5 consecutive identical steps): stop generation entirely
+ * Malformed-input protection and mode-specific repetition decisions. Agent
+ * uses completed tool/result cycles; Ask retains identical-input detection.
  */
 
 export const DOOM_LOOP_WARNING_THRESHOLD = 3;
@@ -18,6 +13,7 @@ const EMPTY_RUN_TERMINAL_CMD_INPUT_WINDOW = 8;
 
 export type DoomLoopSeverity = "none" | "warning" | "halt";
 export type DoomLoopReason =
+  | "repeated_tool_result_cycle"
   | "repeated_tool_call"
   | "empty_todo_write_input"
   | "empty_run_terminal_cmd_input";
@@ -28,6 +24,7 @@ export interface DoomLoopResult {
   consecutiveCount: number;
   reason?: DoomLoopReason;
   activeToolExclusions?: string[];
+  cycleLength?: number;
 }
 
 interface MinimalToolCall {
@@ -126,9 +123,14 @@ export function createStepFingerprint(step: MinimalStep): string {
 }
 
 /**
- * Detects doom loops by counting trailing identical step fingerprints.
+ * Agent supplies its request-lifetime result cycle (null means no cycle).
+ * Omission retains Ask's input-only detection. Malformed-input guards apply
+ * in both modes, independently of whether a result could be fingerprinted.
  */
-export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
+export function detectDoomLoop(
+  steps: MinimalStep[],
+  resultCycle?: ToolResultCycle | null,
+): DoomLoopResult {
   const none: DoomLoopResult = {
     severity: "none",
     toolNames: [],
@@ -175,6 +177,21 @@ export function detectDoomLoop(steps: MinimalStep[]): DoomLoopResult {
       consecutiveCount: emptyRunTerminalCmdCount,
       reason: "empty_run_terminal_cmd_input",
       activeToolExclusions: ["run_terminal_cmd"],
+    };
+  }
+
+  if (resultCycle !== undefined) {
+    if (!resultCycle || resultCycle.repeatCount < DOOM_LOOP_WARNING_THRESHOLD)
+      return none;
+    return {
+      severity:
+        resultCycle.repeatCount >= DOOM_LOOP_HALT_THRESHOLD
+          ? "halt"
+          : "warning",
+      toolNames: resultCycle.toolNames,
+      consecutiveCount: resultCycle.repeatCount,
+      cycleLength: resultCycle.cycleLength,
+      reason: "repeated_tool_result_cycle",
     };
   }
 

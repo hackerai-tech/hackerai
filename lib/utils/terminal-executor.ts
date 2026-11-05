@@ -19,6 +19,10 @@ export type TerminalResult = {
 // to avoid holding huge strings in memory. Output that exceeds this is lost.
 const MAX_FULL_OUTPUT_CHARS = 5 * 1024 * 1024;
 
+// Tokenization allocates token arrays before it can enforce a token limit.
+// Bound its input independently of the larger buffer saved to the sandbox.
+const MAX_TOKENIZER_INPUT_CHARS = 128 * 1024;
+
 /**
  * Simple terminal output handler with token limits and timeout.
  * If onOutput returns a Promise, it is awaited so the run yields (e.g. for real-time stream delivery).
@@ -71,8 +75,9 @@ export const createTerminalHandler = (
     // Don't stream if truncated
     if (truncated) return;
 
-    const tokens = safeCountTokens(output);
-    if (totalTokens + tokens > maxTokens) {
+    const preview = output.slice(0, MAX_TOKENIZER_INPUT_CHARS);
+    const tokens = safeCountTokens(preview);
+    if (preview.length < output.length || totalTokens + tokens > maxTokens) {
       truncated = true;
 
       // Calculate how much content we can still fit
@@ -82,7 +87,7 @@ export const createTerminalHandler = (
       if (remainingTokens > truncationTokens) {
         // We can fit some content plus the truncation message
         const contentBudget = remainingTokens - truncationTokens;
-        const truncatedOutput = sliceByTokens(output, contentBudget);
+        const truncatedOutput = sliceByTokens(preview, contentBudget);
         if (truncatedOutput.trim()) {
           await onOutput(truncatedOutput);
           totalTokens += safeCountTokens(truncatedOutput);
@@ -138,8 +143,20 @@ export const createTerminalHandler = (
  * Truncates terminal output to fit within token limits
  */
 export function truncateTerminalOutput(output: string): TerminalResult {
-  if (safeCountTokens(output) <= TOOL_DEFAULT_MAX_TOKENS) {
-    return { output };
+  // Preserve the same 25% head / 75% tail policy before expensive BPE work.
+  // The marker makes this character bound explicit even for highly compressible output.
+  let preview = output;
+  if (output.length > MAX_TOKENIZER_INPUT_CHARS) {
+    const contentChars = MAX_TOKENIZER_INPUT_CHARS - TRUNCATION_MESSAGE.length;
+    const headChars = Math.floor(contentChars * 0.25);
+    const tailChars = contentChars - headChars;
+    preview =
+      output.slice(0, headChars) +
+      TRUNCATION_MESSAGE +
+      output.slice(-tailChars);
   }
-  return { output: truncateContent(output) };
+  if (safeCountTokens(preview) <= TOOL_DEFAULT_MAX_TOKENS) {
+    return { output: preview };
+  }
+  return { output: truncateContent(preview) };
 }

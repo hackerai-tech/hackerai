@@ -20,8 +20,11 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
  * Ask and Agent share the same daily pool.
  */
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
-const PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS =
+const PAID_DAILY_FREE_ALLOWANCE_ASK_RESERVATION_TTL_MS =
   (4 * 60 * 60 + 5 * 60) * 1000;
+// Agent can run for six hours; leave room for its two-minute cleanup grace.
+const PAID_DAILY_FREE_ALLOWANCE_AGENT_RESERVATION_TTL_MS =
+  (6 * 60 * 60 + 5 * 60) * 1000;
 
 /**
  * Reserve the shared per-user allowance for one active rescue request. The
@@ -32,6 +35,7 @@ const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
 local costKey = KEYS[2]
 local reservationKey = KEYS[3]
+local legacyReservationKey = KEYS[4]
 local costLimit = tonumber(ARGV[1])
 local counterTtlMs = tonumber(ARGV[2])
 local reservationTtlMs = tonumber(ARGV[3])
@@ -42,6 +46,11 @@ local currentCost = tonumber(redis.call("GET", costKey) or "0")
 
 if currentCost >= costLimit then
   return {0, "cost_limit_reached", currentRequests, currentCost}
+end
+
+-- An older worker may still own the date-scoped lease during rollout.
+if redis.call("GET", legacyReservationKey) then
+  return {0, "request_in_progress", currentRequests, currentCost}
 end
 
 local acquired = redis.call(
@@ -56,6 +65,9 @@ if not acquired then
   return {0, "request_in_progress", currentRequests, currentCost}
 end
 
+-- Keep older workers from admitting another request during a mixed rollout.
+redis.call("SET", legacyReservationKey, reservationToken, "PX", math.min(counterTtlMs, reservationTtlMs))
+
 local nextRequests = redis.call("INCRBY", requestKey, 1)
 if nextRequests == 1 then
   redis.call("PEXPIRE", requestKey, counterTtlMs)
@@ -67,6 +79,7 @@ return {1, "ok", nextRequests, currentCost}
 const SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT = `
 local costKey = KEYS[1]
 local reservationKey = KEYS[2]
+local legacyReservationKey = KEYS[3]
 local costPoints = tonumber(ARGV[1])
 local ttlMs = tonumber(ARGV[2])
 local reservationToken = ARGV[3]
@@ -82,6 +95,9 @@ if costPoints > 0 then
   redis.call("PEXPIRE", costKey, ttlMs)
 end
 redis.call("DEL", reservationKey)
+if redis.call("GET", legacyReservationKey) == reservationToken then
+  redis.call("DEL", legacyReservationKey)
+end
 return {1, nextCost}
 `;
 
@@ -246,7 +262,8 @@ export function getPaidDailyFreeAllowanceKeys(
   return {
     requestsKey: `${prefix}:requests`,
     costKey: `${prefix}:cost`,
-    reservationKey: `${prefix}:reservation`,
+    reservationKey: `paid_daily_free_allowance:${userId}:reservation`,
+    legacyReservationKey: `${prefix}:reservation`,
   };
 }
 
@@ -316,17 +333,20 @@ export async function getPaidDailyFreeAllowanceStatus(
     return baseStatus("redis_unavailable");
   }
 
-  const { requestsKey, costKey, reservationKey } =
+  const { requestsKey, costKey, reservationKey, legacyReservationKey } =
     getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
   let rawRequestsUsed: unknown;
   let rawCostUsed: unknown;
   let rawReservation: unknown;
+  let rawLegacyReservation: unknown;
   try {
-    [rawRequestsUsed, rawCostUsed, rawReservation] = await Promise.all([
-      redis.get(requestsKey),
-      redis.get(costKey),
-      redis.get(reservationKey),
-    ]);
+    [rawRequestsUsed, rawCostUsed, rawReservation, rawLegacyReservation] =
+      await Promise.all([
+        redis.get(requestsKey),
+        redis.get(costKey),
+        redis.get(reservationKey),
+        redis.get(legacyReservationKey),
+      ]);
   } catch {
     return baseStatus("redis_unavailable");
   }
@@ -334,11 +354,12 @@ export async function getPaidDailyFreeAllowanceStatus(
   const requestsUsed = Math.max(0, Number(rawRequestsUsed ?? 0));
   const costUsedPoints = Math.max(0, Number(rawCostUsed ?? 0));
   const costRemainingPoints = Math.max(0, costLimitPoints - costUsedPoints);
-  const unavailableReason = rawReservation
-    ? "request_in_progress"
-    : costRemainingPoints <= 0
-      ? "cost_limit_reached"
-      : undefined;
+  const unavailableReason =
+    rawReservation || rawLegacyReservation
+      ? "request_in_progress"
+      : costRemainingPoints <= 0
+        ? "cost_limit_reached"
+        : undefined;
 
   return {
     type: "paid_daily_free_allowance",
@@ -402,13 +423,13 @@ export async function reservePaidDailyFreeAllowanceRequest(
   }
 
   const { bucket, reset, ttlMs } = getCurrentUtcDayWindow();
-  const { requestsKey, costKey, reservationKey } =
+  const { requestsKey, costKey, reservationKey, legacyReservationKey } =
     getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
   const reservationToken = crypto.randomUUID();
-  const reservationTtlMs = Math.min(
-    ttlMs,
-    PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS,
-  );
+  const reservationTtlMs =
+    ctx.mode === "agent"
+      ? PAID_DAILY_FREE_ALLOWANCE_AGENT_RESERVATION_TTL_MS
+      : PAID_DAILY_FREE_ALLOWANCE_ASK_RESERVATION_TTL_MS;
   let result: [
     number,
     PaidDailyFreeAllowanceUnavailableReason | "ok",
@@ -418,7 +439,7 @@ export async function reservePaidDailyFreeAllowanceRequest(
   try {
     result = (await redis.eval(
       RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
-      [requestsKey, costKey, reservationKey],
+      [requestsKey, costKey, reservationKey, legacyReservationKey],
       [status.costLimitPoints, ttlMs, reservationTtlMs, reservationToken],
     )) as [
       number,
@@ -513,17 +534,25 @@ export async function recordPaidDailyFreeAllowanceCost(
 
   const { bucket: currentBucket, ttlMs } = getCurrentUtcDayWindow();
   const bucket = reservation?.redisReservation?.bucket ?? currentBucket;
-  const { costKey, reservationKey } = getPaidDailyFreeAllowanceKeys(
-    userId,
-    bucket,
-  );
+  const { costKey, reservationKey, legacyReservationKey } =
+    getPaidDailyFreeAllowanceKeys(userId, bucket);
   let nextCost: unknown;
   try {
     if (reservation?.redisReservation) {
       const [settledRaw, settledCostRaw] = (await redis.eval(
         SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT,
-        [costKey, reservationKey],
-        [costPoints, ttlMs, reservation.redisReservation.token],
+        [costKey, reservationKey, legacyReservationKey],
+        [
+          costPoints,
+          Math.max(
+            1,
+            Date.parse(`${bucket}T00:00:00.000Z`) +
+              24 * 60 * 60 * 1000 +
+              PAID_DAILY_FREE_ALLOWANCE_AGENT_RESERVATION_TTL_MS -
+              Date.now(),
+          ),
+          reservation.redisReservation.token,
+        ],
       )) as [number, number];
       if (settledRaw !== 1) {
         return {

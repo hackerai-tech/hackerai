@@ -1,6 +1,134 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
+
+// Product preferences are separate from customization returned to model prompts.
+export const getPredictionPreference = query({
+  args: {},
+  returns: v.union(v.null(), v.object({ enabled: v.boolean() })),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || (await isUserDeletionFenced(ctx.db, identity.subject)))
+      return null;
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    return { enabled: row?.predictions_enabled ?? true };
+  },
+});
+
+export const setPredictionPreference = mutation({
+  args: { enabled: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { enabled }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity)
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Sign in to update this preference.",
+      });
+    if (await isUserDeletionFenced(ctx.db, identity.subject))
+      throw new ConvexError({
+        code: "ACCOUNT_DELETING",
+        message: "This account is being deleted.",
+      });
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    const patch = { predictions_enabled: enabled, updated_at: Date.now() };
+    if (row) await ctx.db.patch(row._id, patch);
+    else
+      await ctx.db.insert("user_customization", {
+        user_id: identity.subject,
+        ...patch,
+      });
+    return null;
+  },
+});
+
+export const getPredictionPreferenceForBackend = query({
+  args: { serviceKey: v.string(), userId: v.string() },
+  returns: v.object({ enabled: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId))
+      return { enabled: false };
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+    return { enabled: row?.predictions_enabled ?? true };
+  },
+});
+
+// Keep this preference out of customization payloads used to build model prompts.
+// A default-on preference must never be treated as consent or export eligibility.
+export const getModelImprovementPreference = query({
+  args: {},
+  returns: v.union(
+    v.null(),
+    v.object({
+      enabled: v.boolean(),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || (await isUserDeletionFenced(ctx.db, identity.subject))) {
+      return null;
+    }
+    const customization = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    return {
+      enabled: customization?.model_improvement_enabled ?? true,
+      updatedAt: customization?.model_improvement_updated_at ?? null,
+    };
+  },
+});
+
+export const setModelImprovementPreference = mutation({
+  args: { enabled: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { enabled }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Sign in to update this preference.",
+      });
+    }
+    if (await isUserDeletionFenced(ctx.db, identity.subject)) {
+      throw new ConvexError({
+        code: "ACCOUNT_DELETING",
+        message: "This account is being deleted.",
+      });
+    }
+    const customization = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    const now = Date.now();
+    const preference = {
+      model_improvement_enabled: enabled,
+      model_improvement_updated_at: now,
+      updated_at: now,
+    };
+    if (customization) {
+      await ctx.db.patch(customization._id, preference);
+    } else {
+      await ctx.db.insert("user_customization", {
+        user_id: identity.subject,
+        ...preference,
+      });
+    }
+    return null;
+  },
+});
 
 const shouldIncludeNotes = (customization: {
   include_notes?: boolean;
@@ -15,7 +143,6 @@ export const saveUserCustomization = mutation({
   args: {
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
-    traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     include_notes: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
@@ -45,12 +172,6 @@ export const saveUserCustomization = mutation({
         message: `Occupation exceeds ${MAX_CHAR_LIMIT} character limit`,
       });
     }
-    if (args.traits && args.traits.length > MAX_CHAR_LIMIT) {
-      throw new ConvexError({
-        code: "VALIDATION_ERROR",
-        message: `Traits exceeds ${MAX_CHAR_LIMIT} character limit`,
-      });
-    }
     if (args.additional_info && args.additional_info.length > MAX_CHAR_LIMIT) {
       throw new ConvexError({
         code: "VALIDATION_ERROR",
@@ -71,8 +192,6 @@ export const saveUserCustomization = mutation({
           patch.nickname = args.nickname.trim() || undefined;
         if (args.occupation !== undefined)
           patch.occupation = args.occupation.trim() || undefined;
-        if (args.traits !== undefined)
-          patch.traits = args.traits.trim() || undefined;
         if (args.additional_info !== undefined)
           patch.additional_info = args.additional_info.trim() || undefined;
         if (args.include_notes !== undefined)
@@ -87,7 +206,6 @@ export const saveUserCustomization = mutation({
           user_id: identity.subject,
           nickname: args.nickname?.trim() || undefined,
           occupation: args.occupation?.trim() || undefined,
-          traits: args.traits?.trim() || undefined,
           additional_info: args.additional_info?.trim() || undefined,
           include_notes: args.include_notes ?? true,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
@@ -120,7 +238,6 @@ export const getUserCustomization = query({
     v.object({
       nickname: v.optional(v.string()),
       occupation: v.optional(v.string()),
-      traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
       extra_usage_enabled: v.boolean(),
@@ -146,7 +263,6 @@ export const getUserCustomization = query({
       return {
         nickname: customization.nickname,
         occupation: customization.occupation,
-        traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
@@ -172,7 +288,6 @@ export const getUserCustomizationForBackend = query({
     v.object({
       nickname: v.optional(v.string()),
       occupation: v.optional(v.string()),
-      traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_notes: v.boolean(),
       extra_usage_enabled: v.boolean(),
@@ -195,7 +310,6 @@ export const getUserCustomizationForBackend = query({
       return {
         nickname: customization.nickname,
         occupation: customization.occupation,
-        traits: customization.traits,
         additional_info: customization.additional_info,
         include_notes: shouldIncludeNotes(customization),
         extra_usage_enabled: customization.extra_usage_enabled ?? false,

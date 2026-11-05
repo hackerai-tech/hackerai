@@ -1,0 +1,633 @@
+import { randomUUID } from "node:crypto";
+import { createRedisClient } from "@/lib/rate-limit/redis";
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import type { Sandbox } from "@e2b/code-interpreter";
+
+export type RecoveredWorkspace = {
+  version: 1;
+  phase: "e2b";
+  token: string;
+  sourceId: string;
+  destinationId: string;
+  region: TriggerRunRegion;
+  recoveryPending?: unknown;
+  origin?: "adopted" | "created" | "selected";
+};
+export type ProvisioningWorkspace = {
+  version: 1;
+  phase: "provisioning";
+  step: "reserved" | "creating";
+  token: string;
+  region: TriggerRunRegion;
+};
+type CleanupState = {
+  version: 1;
+  phase: "cleanup" | "deleted";
+  token: string;
+  migration?: RecoveredWorkspace;
+};
+export type RecoveryState = {
+  version: 1;
+  phase: "recovery";
+  token: string;
+  operatorId: string;
+  sandboxId: string;
+  region: TriggerRunRegion;
+  startedAt: string;
+  previous: RecoveredWorkspace | null;
+  step?: string;
+  backupSnapshotId?: string;
+  entryCount?: number;
+  metadataHmacSha256?: string;
+};
+type WorkspaceState =
+  RecoveredWorkspace | CleanupState | RecoveryState | ProvisioningWorkspace;
+
+const cleanupClaimFailureReasons = [
+  "unknown",
+  "state_unavailable",
+  "cleanup_blocked",
+  "recovery_pending",
+  "store_unavailable",
+  "claim_conflict",
+  "store_error",
+] as const;
+type CleanupClaimFailureReason = (typeof cleanupClaimFailureReasons)[number];
+type DiagnosticErrorKind = "timeout" | "abort" | "other";
+
+export class CloudWorkspaceUnavailableError extends Error {
+  #cleanupClaimFailureReason: CleanupClaimFailureReason;
+  #diagnosticErrorKind: DiagnosticErrorKind = "other";
+
+  constructor(
+    reason: CleanupClaimFailureReason = "unknown",
+    diagnosticCause?: unknown,
+  ) {
+    super(
+      "Cloud workspace needs recovery. Please retry later. Your existing workspace has been preserved.",
+    );
+    this.name = "CloudWorkspaceUnavailableError";
+    // Closed metadata only; keep the error's existing enumerable shape.
+    this.#cleanupClaimFailureReason = cleanupClaimFailureReasons.includes(
+      reason,
+    )
+      ? reason
+      : "unknown";
+    // Retain only the closed category, never the original error or its contents.
+    this.#diagnosticErrorKind =
+      CloudWorkspaceUnavailableError.getDiagnosticErrorKind(diagnosticCause);
+  }
+
+  get cleanupClaimFailureReason(): CleanupClaimFailureReason {
+    return this.#cleanupClaimFailureReason;
+  }
+
+  static getCleanupClaimFailureReason(
+    error: unknown,
+  ): CleanupClaimFailureReason {
+    // Read only constructor-validated metadata, never an arbitrary error getter.
+    return typeof error === "object" &&
+      error !== null &&
+      #cleanupClaimFailureReason in error
+      ? error.#cleanupClaimFailureReason
+      : "unknown";
+  }
+
+  static getDiagnosticErrorKind(error: unknown): DiagnosticErrorKind {
+    try {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        #diagnosticErrorKind in error
+      )
+        return error.#diagnosticErrorKind;
+      if (
+        error instanceof Error ||
+        (typeof DOMException !== "undefined" && error instanceof DOMException)
+      ) {
+        if (
+          error.name === "TimeoutError" ||
+          error.name === "CloudAcquisitionTimeoutError"
+        )
+          return "timeout";
+        if (error.name === "AbortError") return "abort";
+      }
+    } catch {
+      // Untrusted error getters must not affect the workspace protection decision.
+    }
+    return "other";
+  }
+}
+
+// Keep the persisted key namespace: removing an integration must never grant
+// permission to resume a stale source or replace a fenced workspace.
+export const cloudWorkspaceStateKey = (userId: string) =>
+  `cloud_workspace_migration:v1:${userId}`;
+export const activityKeyFor = (userId: string) =>
+  `cloud_workspace_activity:v1:${userId}`;
+export const cloudRecoveryHistoryKey = (userId: string) =>
+  `cloud_recovery_history:v1:${userId}`;
+export const cloudRecoveryConsentKey = (userId: string) =>
+  `cloud_recovery_consent:v1:${userId}`;
+export const cloudWorkspaceRegionKey = (userId: string) =>
+  `cloud_workspace_region:v1:${userId}`;
+export const cloudWorkspaceSelectionHistoryKey = (userId: string) =>
+  `cloud_workspace_selection_history:v1:${userId}`;
+export const recoveryResultKeyFor = (userId: string) =>
+  `cloud_workspace_recovery_result:v1:${userId}`;
+const ACTIVITY_TTL_SECONDS = 15 * 60;
+const e2bUsers = new WeakMap<Sandbox, string>();
+
+function isRecoveredWorkspace(value: unknown): value is RecoveredWorkspace {
+  if (!value || typeof value !== "object") return false;
+  const state = value as RecoveredWorkspace;
+  return (
+    state.version === 1 &&
+    state.phase === "e2b" &&
+    typeof state.token === "string" &&
+    !!state.token &&
+    typeof state.sourceId === "string" &&
+    !!state.sourceId &&
+    typeof state.destinationId === "string" &&
+    !!state.destinationId &&
+    ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region) &&
+    (state.origin === undefined ||
+      ["adopted", "created", "selected"].includes(state.origin))
+  );
+}
+
+function isRecoveryState(value: unknown): value is RecoveryState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as RecoveryState;
+  return (
+    state.version === 1 &&
+    state.phase === "recovery" &&
+    typeof state.token === "string" &&
+    !!state.token &&
+    typeof state.operatorId === "string" &&
+    !!state.operatorId &&
+    typeof state.sandboxId === "string" &&
+    !!state.sandboxId &&
+    ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region) &&
+    typeof state.startedAt === "string" &&
+    !!state.startedAt &&
+    (state.step === undefined || typeof state.step === "string") &&
+    (state.backupSnapshotId === undefined ||
+      typeof state.backupSnapshotId === "string") &&
+    (state.entryCount === undefined || typeof state.entryCount === "number") &&
+    (state.metadataHmacSha256 === undefined ||
+      typeof state.metadataHmacSha256 === "string") &&
+    (state.previous === null || isRecoveredWorkspace(state.previous))
+  );
+}
+
+function logWorkspaceGuardFailure(
+  userId: string,
+  operation: "read_state" | "assert_available",
+  reason:
+    | "store_unavailable"
+    | "state_read_failed"
+    | "state_invalid"
+    | "availability_rejected"
+    | "availability_store_error",
+): void {
+  try {
+    // Keep this separate from stack/state serialization so the bounded cause
+    // survives runtime-log truncation without exposing recovery records.
+    console.warn("Cloud workspace guard unavailable", {
+      event: "cloud_workspace_guard_unavailable",
+      operation,
+      reason,
+      user_id: userId.slice(0, 128),
+    });
+  } catch {
+    // Optional diagnostics must never change the workspace fence.
+  }
+}
+
+export async function readCloudWorkspaceState(
+  userId: string,
+): Promise<WorkspaceState | null> {
+  const redis = createRedisClient();
+  if (!redis) {
+    if (process.env.NODE_ENV === "production") {
+      logWorkspaceGuardFailure(userId, "read_state", "store_unavailable");
+      throw new CloudWorkspaceUnavailableError("store_unavailable");
+    }
+    return null;
+  }
+  let readCompleted = false;
+  try {
+    const value = await redis.get<unknown>(cloudWorkspaceStateKey(userId));
+    readCompleted = true;
+    if (value === null) return null;
+    if (isRecoveredWorkspace(value)) return value;
+    if (isRecoveryState(value)) return value;
+    if (value && typeof value === "object") {
+      const state = value as ProvisioningWorkspace;
+      if (
+        state.version === 1 &&
+        state.phase === "provisioning" &&
+        ["reserved", "creating"].includes(state.step) &&
+        typeof state.token === "string" &&
+        !!state.token &&
+        ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region)
+      )
+        return state;
+    }
+    if (value && typeof value === "object") {
+      const state = value as CleanupState;
+      if (
+        state.version === 1 &&
+        ["cleanup", "deleted"].includes(state.phase) &&
+        typeof state.token === "string" &&
+        !!state.token &&
+        (state.migration === undefined || isRecoveredWorkspace(state.migration))
+      )
+        return state;
+    }
+    // Unknown legacy provider records and malformed records stay fenced.
+    throw new CloudWorkspaceUnavailableError();
+  } catch (error) {
+    logWorkspaceGuardFailure(
+      userId,
+      "read_state",
+      readCompleted ? "state_invalid" : "state_read_failed",
+    );
+    // A failed read and an invalid persisted record both remain fenced.
+    throw new CloudWorkspaceUnavailableError("state_unavailable", error);
+  }
+}
+
+/**
+ * A durable, non-expiring fence. An interrupted provider call can complete
+ * after the caller has timed out, so only an operator may resolve this state.
+ * The activity key must have expired before claiming, which drains ordinary
+ * lease heartbeats and recent acquisitions before the reboot starts.
+ */
+export async function claimE2BDiskRecovery(args: {
+  userId: string;
+  sandboxId: string;
+  region: TriggerRunRegion;
+  token: string;
+  operatorId: string;
+  customerConsent?: { key: string; token: string };
+}): Promise<{
+  state: RecoveryState;
+  update: (
+    progress: Pick<
+      RecoveryState,
+      "step" | "backupSnapshotId" | "entryCount" | "metadataHmacSha256"
+    >,
+  ) => Promise<void>;
+  finish: (result: string) => Promise<void>;
+  cancelBeforeReboot: () => Promise<boolean>;
+}> {
+  const redis = createRedisClient();
+  if (!redis) throw new CloudWorkspaceUnavailableError();
+  const previous = await readCloudWorkspaceState(args.userId);
+  if (
+    previous &&
+    (previous.phase !== "e2b" ||
+      previous.destinationId !== args.sandboxId ||
+      previous.region !== args.region ||
+      previous.recoveryPending !== undefined ||
+      (args.customerConsent &&
+        Object.keys(previous).some(
+          (key) =>
+            ![
+              "version",
+              "phase",
+              "token",
+              "sourceId",
+              "destinationId",
+              "region",
+              "origin",
+            ].includes(key),
+        )))
+  )
+    throw new CloudWorkspaceUnavailableError();
+  const state: RecoveryState = {
+    version: 1,
+    phase: "recovery",
+    token: args.token,
+    operatorId: args.operatorId,
+    sandboxId: args.sandboxId,
+    region: args.region,
+    startedAt: new Date().toISOString(),
+    previous,
+  };
+  let serialized = JSON.stringify(state);
+  // Compare the complete prior record and require no recent normal activity.
+  // A different owner, malformed record, or cleanup fence is never overwritten.
+  const claimed = await redis.eval(
+    `if redis.call('HEXISTS', KEYS[5], ARGV[3]) == 1 then return 0 end
+     local raw = redis.call('GET', KEYS[1]);
+     if ARGV[4] ~= '' then
+       local consentRaw = redis.call('GET', KEYS[4]);
+       local ok, consent = pcall(cjson.decode, consentRaw or '')
+       if not ok or consent.token ~= ARGV[4] or consent.status ~= 'confirmed' or consent.target.sandboxId ~= ARGV[5] or consent.target.region ~= ARGV[6] then return 0 end
+     end
+     if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+     local last = redis.call('GET', KEYS[3]);
+     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or (result.status ~= 'verified_paused' and result.status ~= 'verified_ready') or result.token == ARGV[3] then return 0 end end
+     if ARGV[1] == '' then if raw then return 0 end
+     else
+       local function equal(a, b)
+         if type(a) ~= type(b) then return false end
+         if type(a) ~= 'table' then return a == b end
+         for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+         for k in pairs(b) do if a[k] == nil then return false end end
+         return true
+       end
+       local ok, current = pcall(cjson.decode, raw or '')
+       local expectedOk, expected = pcall(cjson.decode, ARGV[1])
+       if not ok or not expectedOk or not equal(current, expected) then return 0 end
+     end
+     if ARGV[4] ~= '' then local consent = cjson.decode(redis.call('GET', KEYS[4])); consent.status = 'executing'; redis.call('SET', KEYS[4], cjson.encode(consent)) end
+     redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+    [
+      cloudWorkspaceStateKey(args.userId),
+      activityKeyFor(args.userId),
+      recoveryResultKeyFor(args.userId),
+      args.customerConsent?.key ?? cloudRecoveryConsentKey(args.userId),
+      cloudRecoveryHistoryKey(args.userId),
+    ],
+    [
+      previous ? JSON.stringify(previous) : "",
+      serialized,
+      args.token,
+      args.customerConsent?.token ?? "",
+      args.sandboxId,
+      args.region,
+    ],
+  );
+  if (claimed !== 1) throw new CloudWorkspaceUnavailableError();
+  return {
+    state,
+    update: async (progress) => {
+      const next = JSON.stringify({ ...state, ...progress });
+      const updated = await redis.eval(
+        `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+        [cloudWorkspaceStateKey(args.userId)],
+        [serialized, next],
+      );
+      if (updated !== 1) throw new CloudWorkspaceUnavailableError();
+      Object.assign(state, progress);
+      serialized = next;
+    },
+    finish: async (result: string) => {
+      const finished = await redis.eval(
+        `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+         redis.call('SET', KEYS[2], ARGV[3]);
+         if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end
+         return 1`,
+        [
+          cloudWorkspaceStateKey(args.userId),
+          recoveryResultKeyFor(args.userId),
+        ],
+        [
+          serialized,
+          previous
+            ? JSON.stringify(previous)
+            : args.customerConsent
+              ? JSON.stringify({
+                  version: 1,
+                  phase: "e2b",
+                  token: args.token,
+                  sourceId: args.sandboxId,
+                  destinationId: args.sandboxId,
+                  region: args.region,
+                })
+              : "",
+          result,
+        ],
+      );
+      if (finished !== 1) throw new CloudWorkspaceUnavailableError();
+    },
+    cancelBeforeReboot: async () => {
+      if (!args.customerConsent) return false;
+      const canceled = await redis.eval(
+        `local raw = redis.call('GET', KEYS[1])
+         if raw ~= ARGV[1] then return 0 end
+         local state = cjson.decode(raw)
+         if state.phase ~= 'recovery' or state.token ~= ARGV[2] or state.step ~= nil then return 0 end
+         local consentRaw = redis.call('GET', KEYS[2])
+         local ok, consent = pcall(cjson.decode, consentRaw or '')
+         if not ok or consent.token ~= ARGV[2] or consent.status ~= 'executing' then return 0 end
+         consent.status = 'failed'; consent.failurePhase = 'before_reboot'
+         redis.call('SET', KEYS[2], cjson.encode(consent))
+         if ARGV[3] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[3]) end
+         return 1`,
+        [cloudWorkspaceStateKey(args.userId), args.customerConsent.key],
+        [serialized, args.token, previous ? JSON.stringify(previous) : ""],
+      );
+      return canceled === 1;
+    },
+  };
+}
+
+export async function readE2BDiskRecoveryResult(
+  userId: string,
+  token?: string,
+): Promise<unknown> {
+  const redis = createRedisClient();
+  if (!redis) throw new CloudWorkspaceUnavailableError();
+  if (token) {
+    const archived = await redis.hget<{ result?: unknown }>(
+      cloudRecoveryHistoryKey(userId),
+      token,
+    );
+    if (archived !== null) {
+      if (!archived || typeof archived !== "object" || !archived.result)
+        throw new CloudWorkspaceUnavailableError();
+      return archived.result;
+    }
+  }
+  return redis.get(recoveryResultKeyFor(userId));
+}
+
+export function registerE2BWorkspaceLease(
+  sandbox: Sandbox,
+  userId: string,
+): void {
+  e2bUsers.set(sandbox, userId);
+}
+
+export async function refreshE2BWorkspaceLease(
+  sandbox: Sandbox,
+): Promise<void> {
+  const userId = e2bUsers.get(sandbox);
+  if (!userId) throw new CloudWorkspaceUnavailableError();
+  await assertCloudWorkspaceAvailable(userId, sandbox.sandboxId);
+}
+
+export async function assertCloudWorkspaceAvailable(
+  userId: string,
+  sandboxId?: string,
+  region?: TriggerRunRegion,
+): Promise<void> {
+  const redis = createRedisClient();
+  if (!redis) {
+    if (process.env.NODE_ENV === "production") {
+      logWorkspaceGuardFailure(userId, "assert_available", "store_unavailable");
+      throw new CloudWorkspaceUnavailableError();
+    }
+    return;
+  }
+  let rejected = false;
+  try {
+    const available = await redis.eval(
+      `local consentRaw = redis.call('GET', KEYS[3]);
+      if consentRaw then
+        local ok, consent = pcall(cjson.decode, consentRaw)
+        if not ok or type(consent) ~= 'table' then return 0 end
+        if consent.status == 'confirmed' then return 0 end
+        if consent.status == 'executing' then
+          local resultOk, result = pcall(cjson.decode, redis.call('GET', KEYS[4]) or '')
+          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or (consent.target.region ~= 'us-east-1' and consent.target.region ~= 'us-west-2' and consent.target.region ~= 'eu-central-1') or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
+        elseif consent.status ~= 'offered' and consent.status ~= 'declined' and consent.status ~= 'failed' then return 0 end
+      end
+      local raw = redis.call('GET', KEYS[1]); if raw then
+        local ok, state = pcall(cjson.decode, raw)
+        if not ok or type(state) ~= 'table' or state.version ~= 1 or type(state.token) ~= 'string' or state.token == '' or (state.region ~= 'us-east-1' and state.region ~= 'us-west-2' and state.region ~= 'eu-central-1') then return 0 end
+        if ARGV[3] ~= '' and state.region ~= ARGV[3] then return 0 end
+        if state.phase == 'provisioning' then
+          if state.step ~= 'reserved' or ARGV[2] ~= '' then return 0 end
+        elseif state.phase ~= 'e2b' or type(state.sourceId) ~= 'string' or state.sourceId == '' or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end
+      end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
+      [
+        cloudWorkspaceStateKey(userId),
+        activityKeyFor(userId),
+        cloudRecoveryConsentKey(userId),
+        recoveryResultKeyFor(userId),
+      ],
+      [String(ACTIVITY_TTL_SECONDS), sandboxId ?? "", region ?? ""],
+    );
+    if (available !== 1) {
+      rejected = true;
+      throw new CloudWorkspaceUnavailableError();
+    }
+  } catch {
+    logWorkspaceGuardFailure(
+      userId,
+      "assert_available",
+      rejected ? "availability_rejected" : "availability_store_error",
+    );
+    throw new CloudWorkspaceUnavailableError();
+  }
+}
+
+/** Fence cleanup before enumerating E2B so another acquisition cannot race it. */
+export async function claimCloudWorkspaceCleanup(
+  userId: string,
+  permanent: boolean,
+) {
+  const observed = await readCloudWorkspaceState(userId);
+  if (
+    observed &&
+    observed.phase !== "e2b" &&
+    !(observed.phase === "provisioning" && observed.step === "reserved") &&
+    !(permanent && observed.phase === "deleted")
+  )
+    throw new CloudWorkspaceUnavailableError("cleanup_blocked");
+  const migration =
+    observed?.phase === "e2b"
+      ? observed
+      : observed?.phase === "deleted"
+        ? observed.migration
+        : undefined;
+  // Unresolved recovery may involve files outside E2B. Do not claim complete
+  // account cleanup or remove its persistent record without operator recovery.
+  if (migration?.recoveryPending !== undefined)
+    throw new CloudWorkspaceUnavailableError("recovery_pending");
+  const redis = createRedisClient();
+  if (!redis) {
+    if (process.env.NODE_ENV === "production")
+      throw new CloudWorkspaceUnavailableError("store_unavailable");
+    return { migration: null, finish: async (_success: boolean) => {} };
+  }
+  const state: CleanupState = {
+    version: 1,
+    phase: "cleanup",
+    token: randomUUID(),
+    ...(migration && { migration }),
+  };
+  const serialized = JSON.stringify(state);
+  let claimed;
+  try {
+    // Compare the complete record by value: formatting is not ownership, and
+    // a concurrent recovery-field update must also invalidate this snapshot.
+    claimed = await redis.eval(
+      `local function equal(a, b)
+        if type(a) ~= type(b) then return false end
+        if type(a) ~= 'table' then return a == b end
+        for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+        for k in pairs(b) do if a[k] == nil then return false end end
+        return true
+      end
+      local consentRaw = redis.call('GET', KEYS[2])
+      if consentRaw then
+        local ok, consent = pcall(cjson.decode, consentRaw)
+        if not ok or type(consent) ~= 'table' or consent.status == 'confirmed' then return 0 end
+        if consent.status == 'executing' then
+          local resultOk, result = pcall(cjson.decode, redis.call('GET', KEYS[3]) or '')
+          if not resultOk or type(result) ~= 'table' or type(consent.token) ~= 'string' or consent.token == '' or type(consent.target) ~= 'table' or type(consent.target.sandboxId) ~= 'string' or consent.target.sandboxId == '' or (consent.target.region ~= 'us-east-1' and consent.target.region ~= 'us-west-2' and consent.target.region ~= 'eu-central-1') or result.token ~= consent.token or result.status ~= 'verified_ready' or result.sandboxId ~= consent.target.sandboxId or result.region ~= consent.target.region then return 0 end
+        elseif consent.status ~= 'offered' and consent.status ~= 'declined' and consent.status ~= 'failed' then return 0 end
+      end
+      local raw = redis.call('GET', KEYS[1])
+      if ARGV[1] == '' then
+        if raw then return 0 end
+      else
+        local currentOk, current = pcall(cjson.decode, raw or '')
+        local observedOk, observed = pcall(cjson.decode, ARGV[1])
+        if not currentOk or not observedOk or type(current) ~= 'table' or not equal(current, observed) then return 0 end
+      end
+      redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+      [
+        cloudWorkspaceStateKey(userId),
+        cloudRecoveryConsentKey(userId),
+        recoveryResultKeyFor(userId),
+      ],
+      [observed ? JSON.stringify(observed) : "", serialized],
+    );
+  } catch {
+    throw new CloudWorkspaceUnavailableError("store_error");
+  }
+  if (claimed !== 1) throw new CloudWorkspaceUnavailableError("claim_conflict");
+  return {
+    migration: migration ?? null,
+    finish: async (success: boolean) => {
+      const next = permanent
+        ? JSON.stringify({
+            version: 1,
+            phase: "deleted",
+            token: state.token,
+            ...(!success && migration && { migration }),
+          })
+        : success || !observed
+          ? ""
+          : JSON.stringify(observed);
+      try {
+        const finished = await redis.eval(
+          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end return 1`,
+          [
+            cloudWorkspaceStateKey(userId),
+            cloudWorkspaceRegionKey(userId),
+            cloudWorkspaceSelectionHistoryKey(userId),
+            cloudRecoveryHistoryKey(userId),
+          ],
+          [
+            serialized,
+            next,
+            success ? "1" : "0",
+            permanent && success ? "1" : "0",
+          ],
+        );
+        if (finished !== 1) throw new CloudWorkspaceUnavailableError();
+      } catch {
+        throw new CloudWorkspaceUnavailableError();
+      }
+    },
+  };
+}

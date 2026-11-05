@@ -5,7 +5,7 @@ import { SummarizationStatusDivider } from "../SummarizationStatusDivider";
 describe("SummarizationStatusDivider", () => {
   afterEach(() => jest.useRealTimers());
 
-  it("reveals details after five seconds and longer-wait guidance after thirty", () => {
+  it("reveals details after five seconds and a single reassuring line after thirty", () => {
     jest.useFakeTimers();
     render(
       <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
@@ -29,10 +29,19 @@ describe("SummarizationStatusDivider", () => {
     expect(screen.getByText(/Summarizing earlier messages/)).toBeVisible();
     act(() => jest.advanceTimersByTime(24_000));
     expect(
-      screen.queryByText(/taking longer than usual/),
+      screen.queryByText("Compacting context · This can take a few minutes"),
     ).not.toBeInTheDocument();
     act(() => jest.advanceTimersByTime(1000));
-    expect(screen.getByText(/taking longer than usual/)).toBeVisible();
+    expect(
+      screen.getByText("Compacting context · This can take a few minutes"),
+    ).toBeVisible();
+    expect(screen.queryByText(/stop the task/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Summarizing earlier messages/),
+    ).not.toBeInTheDocument();
   });
 
   it("never reveals delayed details when compaction finishes quickly", () => {
@@ -59,9 +68,8 @@ describe("SummarizationStatusDivider", () => {
     const { rerender } = render(
       <SummarizationStatusDivider status="started" startedAt={startedAt} />,
     );
-    act(() => jest.advanceTimersByTime(31_000));
-    expect(screen.getByText("31s")).toBeVisible();
-    expect(screen.getByText(/taking longer than usual/)).toBeVisible();
+    act(() => jest.advanceTimersByTime(29_000));
+    expect(screen.getByText("29s")).toBeVisible();
     rerender(
       <SummarizationStatusDivider
         status="started"
@@ -69,11 +77,15 @@ describe("SummarizationStatusDivider", () => {
         message="Retrying preparation…"
       />,
     );
-    act(() => jest.advanceTimersByTime(1000));
-    expect(screen.getByText("32s")).toBeVisible();
     expect(screen.getByText("Retrying preparation…")).toBeVisible();
+    act(() => jest.advanceTimersByTime(1000));
+    expect(
+      screen.getByText("Compacting context · This can take a few minutes"),
+    ).toBeVisible();
     rerender(<SummarizationStatusDivider status="completed" />);
-    expect(screen.queryByText("32s")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Compacting context · This can take a few minutes"),
+    ).not.toBeInTheDocument();
     expect(jest.getTimerCount()).toBe(0);
   });
 
@@ -85,7 +97,9 @@ describe("SummarizationStatusDivider", () => {
         startedAt={Date.now() - 45_000}
       />,
     );
-    expect(screen.getByText("45s")).toBeVisible();
+    expect(
+      screen.getByText("Compacting context · This can take a few minutes"),
+    ).toBeVisible();
     rerender(
       <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
     );

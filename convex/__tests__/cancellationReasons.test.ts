@@ -1,6 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalQuery: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
@@ -125,6 +125,7 @@ describe("cancellation reason feedback export", () => {
     const result = await (getCancellationFeedbackForAnalysis as any).handler(
       ctx,
       {
+        includeHistory: true,
         limit: 50,
         startAt: Date.UTC(2026, 5, 20),
       },
@@ -226,6 +227,7 @@ describe("cancellation reason feedback export", () => {
     const result = await (getCancellationFeedbackForAnalysis as any).handler(
       ctx,
       {
+        includeHistory: true,
         limit: 1,
         startAt: Date.UTC(2026, 5, 19),
         endAt: Date.UTC(2026, 5, 20, 23, 59, 59),

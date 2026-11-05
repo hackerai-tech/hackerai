@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { toast } from "sonner";
 import { BillingRecoveryReturnNotice } from "../BillingRecoveryReturnNotice";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 jest.mock("sonner", () => ({
   toast: {
@@ -15,10 +16,72 @@ jest.mock("sonner", () => ({
 jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: jest.fn(),
 }));
+jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
+  reloadWithEntitlementRefresh: jest.fn(),
+}));
 
 const statusMock = jest.mocked(getSubscriptionCancellationStatus);
 
 afterEach(() => window.history.replaceState(null, "", "/"));
+
+it("reports unavailable billing history without claiming an unresolved payment", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    checkoutRequiresReview: true,
+    billingReviewUnavailable: true,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.warning).toHaveBeenCalledWith(
+      "We couldn't verify your billing status",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Review billing" }),
+      }),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
+it("keeps canceled-renewal review separate from successful card management", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    billingAccountAvailable: true,
+    checkoutRequiresReview: true,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Your previous subscription payment still needs review",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Review billing" }),
+      }),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("does not claim payment restored access for a canceled subscription", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    billingAccountAvailable: true,
+    checkoutRequiresReview: false,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.info).toHaveBeenCalledWith(
+      "You can choose a plan to subscribe again",
+      expect.anything(),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+});
 
 it("reports an unpaid retry after portal return and supports checking again", async () => {
   window.history.replaceState(
@@ -46,21 +109,34 @@ it("reports an unpaid retry after portal return and supports checking again", as
       "Your renewal invoice is still unpaid",
       expect.objectContaining({
         description: expect.stringContaining("insufficient funds"),
+        action: expect.objectContaining({ label: "Resolve payment" }),
       }),
     ),
   );
   expect(window.location.search).toBe("?refresh=entitlements");
   expect(window.history.state).toEqual({ route: "chat" });
+  expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  // The initial entitlement refresh can finish before Stripe's payment webhook.
+  window.history.replaceState({ route: "chat" }, "", "/c/test");
   const options = jest.mocked(toast.error).mock.calls[0][1] as {
-    action: { onClick: () => void };
+    cancel: { onClick: () => void };
   };
-  options.action.onClick();
+  options.cancel.onClick();
   await waitFor(() =>
     expect(toast.success).toHaveBeenCalledWith(
-      "Your renewal invoice is paid. Your plan is active.",
-      { id: "billing-recovery-return" },
+      "Your renewal invoice is paid. Refresh to update your access.",
+      expect.objectContaining({
+        id: "billing-recovery-return",
+        action: { label: "Refresh", onClick: expect.any(Function) },
+      }),
     ),
   );
+  expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  const paidOptions = jest.mocked(toast.success).mock.calls[0][1] as {
+    action: { onClick: () => void };
+  };
+  paidOptions.action.onClick();
+  expect(reloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
 });
 
 it("does not claim invoice success from an active plan alone", async () => {

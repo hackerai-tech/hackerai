@@ -1,7 +1,36 @@
-import { Sandbox } from "@e2b/code-interpreter";
+import {
+  finishWorkspaceCreation,
+  listWorkspaceInventory,
+  startWorkspaceCreation,
+} from "./cloud-workspace-identity";
+import {
+  CloudWorkspaceUnavailableError,
+  readCloudWorkspaceState,
+  type ProvisioningWorkspace,
+  type RecoveredWorkspace,
+} from "./cloud-workspace-guard";
+import {
+  recordResumeFailure,
+  clearResumeFailures,
+} from "@/lib/cloud-recovery/store";
+import { readNetworkSettings } from "@/lib/cloud-network/service";
+import { DEFAULT_NETWORK_POLICY, e2bNetwork } from "@/lib/cloud-network/policy";
+import {
+  CloudAcquisitionTimeoutError,
+  CLOUD_RESUME_DEADLINE_MS,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
+import { Sandbox, Template } from "@e2b/code-interpreter";
+import { createHash } from "node:crypto";
+import {
+  CURRENT_E2B_SANDBOX_VERSION,
+  isRecoverableE2BSandboxVersion,
+  rememberE2BSandboxVersion,
+} from "./e2b-sandbox-version";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
-  NotFoundError,
+  SandboxError,
+  TimeoutError,
   classifyE2BError,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
@@ -9,6 +38,7 @@ import { retryWithBackoff } from "./retry-with-backoff";
 import {
   E2BRegionUnavailableError,
   getE2BClusterRouting,
+  type E2BCluster,
   type E2BClusterConfig,
 } from "./e2b-cluster";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
@@ -58,14 +88,11 @@ export class E2BAcquisitionError extends Error {
   }
 }
 
-// Retry config for E2B 429 rate limits
-const RATE_LIMIT_COOLDOWN_MS = 1_000;
-const MAX_CREATE_RETRIES = 3;
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
 
 // Used to prefer a compatible workspace; version changes never authorize deletion.
-const SANDBOX_VERSION = "v12";
+const SANDBOX_VERSION = CURRENT_E2B_SANDBOX_VERSION;
 
 /**
  * Ensures a sandbox connection is established and maintained
@@ -87,22 +114,36 @@ const SANDBOX_VERSION = "v12";
 export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
+    signal?: AbortSignal;
+    reportStage?: ReportCloudAcquisitionStage;
     initialSandbox?: Sandbox | null;
     triggerRegion?: TriggerRunRegion;
     acquisitionId?: string;
     triggerRunId?: string;
+    destinationId?: string;
+    reservation?: ProvisioningWorkspace;
+    workspaceOrigin?: RecoveredWorkspace["origin"];
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
-  const { initialSandbox, triggerRegion } = options;
+  const { initialSandbox, triggerRegion = "us-east-1", signal } = options;
+  signal?.throwIfAborted();
+  // The SDK aborts fetch with this shared deadline signal. Paused restores use
+  // a longer SDK timeout as well; the total acquisition deadline remains authoritative.
+  const requestOptions = { signal };
 
   // Return existing sandbox if already connected
-  if (initialSandbox) {
+  if (initialSandbox && !options.destinationId && !options.reservation) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
   let phase: E2BAcquisitionPhase = "routing";
-  let createPath: SandboxReadyPath = "create_fresh";
+  let connectState: "running" | "paused" | null = null;
+  let connectSelectionSource: "pinned" | "inventory" | null = null;
+  let connectRequestTimeoutMs: number | null = null;
+  let connectSandboxId: string | null = null;
+  let connectCluster: E2BCluster | null = null;
+  const createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
       path,
@@ -110,10 +151,97 @@ export const ensureSandboxConnection = async (
       create_attempts: attempts,
     });
   };
+  let failedTarget:
+    { sandboxId: string; template: string; sandboxVersion: string } | undefined;
+  let connectGatewayTimeout: SandboxError | undefined;
+  const connectSelectedSandbox = async (
+    sandboxId: string,
+    connectOptions: Parameters<typeof Sandbox.connect>[1],
+  ) => {
+    try {
+      return await Sandbox.connect(sandboxId, connectOptions);
+    } catch (error) {
+      if (error instanceof SandboxError && error.statusCode === 504)
+        connectGatewayTimeout = error;
+      throw error;
+    }
+  };
   try {
+    options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
+    if (options.destinationId) {
+      // The workspace is pinned to one verified sandbox. Never let
+      // discovery choose an older copy or create an empty replacement.
+      phase = "connect";
+      options.reportStage?.("workspace_identity");
+      const info = await Sandbox.getInfo(options.destinationId, {
+        ...createCluster.connectionOptions,
+        ...requestOptions,
+        requestTimeoutMs: 10_000,
+      });
+      if (
+        info.sandboxId !== options.destinationId ||
+        !["running", "paused"].includes(info.state) ||
+        info.metadata?.userID !== userID ||
+        info.metadata?.template !== createCluster.template ||
+        (!options.workspaceOrigin &&
+          !isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion)) ||
+        (info.metadata?.e2bCluster !== createCluster.cluster &&
+          !(
+            createCluster.cluster === "us" &&
+            info.metadata?.e2bCluster === undefined
+          ))
+      )
+        throw new Error("Pinned E2B workspace identity mismatch");
+      if (
+        info.state === "paused" &&
+        info.metadata?.template &&
+        info.metadata?.sandboxVersion
+      )
+        failedTarget = {
+          sandboxId: info.sandboxId,
+          template: info.metadata.template,
+          sandboxVersion: info.metadata.sandboxVersion,
+        };
+      const resumingPausedWorkspace = info.state === "paused";
+      connectSandboxId = options.destinationId;
+      connectCluster = createCluster.cluster;
+      connectState = resumingPausedWorkspace ? "paused" : "running";
+      connectSelectionSource = "pinned";
+      connectRequestTimeoutMs = resumingPausedWorkspace
+        ? CLOUD_RESUME_DEADLINE_MS
+        : null;
+      options.reportStage?.("connect", { resumingPausedWorkspace });
+      const sandbox = await retryWithBackoff(
+        () =>
+          connectSelectedSandbox(options.destinationId!, {
+            ...createCluster.connectionOptions,
+            ...requestOptions,
+            ...(resumingPausedWorkspace
+              ? { requestTimeoutMs: CLOUD_RESUME_DEADLINE_MS, retries: 0 }
+              : {}),
+            timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+          }),
+        {
+          signal,
+          // A failed restore can have an uncertain provider-side outcome.
+          // Do not issue another resume automatically within this acquisition.
+          maxRetries: resumingPausedWorkspace ? 1 : MAX_CONNECT_RETRIES,
+          baseDelayMs: 400,
+          jitterMs: 40,
+        },
+      );
+      signal?.throwIfAborted();
+      await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
+      signal?.throwIfAborted();
+      rememberE2BSandboxVersion(sandbox, info.metadata?.sandboxVersion);
+      setSandbox(sandbox);
+      reportBoot("reuse_existing", 0);
+      return { sandbox };
+    }
     phase = "discovery";
+    options.reportStage?.("discovery");
 
     // Step 1: Look only in the cluster selected for this request. Crossing
     // clusters here would defeat the regional execution policy.
@@ -127,6 +255,7 @@ export const ensureSandboxConnection = async (
     for (const cluster of discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
+        ...requestOptions,
         query: {
           metadata: {
             userID,
@@ -139,7 +268,12 @@ export const ensureSandboxConnection = async (
         if (++pages > 100) throw new Error("E2B inventory pagination limit");
         const listedSandboxes = await retryWithBackoff(
           () => paginator.nextItems(),
-          { maxRetries: MAX_DISCOVERY_RETRIES, baseDelayMs: 400, jitterMs: 40 },
+          {
+            signal,
+            maxRetries: MAX_DISCOVERY_RETRIES,
+            baseDelayMs: 400,
+            jitterMs: 40,
+          },
         );
         discoveredSandboxes.push(
           ...listedSandboxes.map((info) => ({ info, cluster })),
@@ -147,19 +281,19 @@ export const ensureSandboxConnection = async (
       } while (paginator.hasNext);
     }
 
-    // Rank across both clusters so a compatible running sandbox always wins.
-    // Discovery order keeps US as the tie-breaker for equally ranked entries.
+    // Prefer a running, supported workspace without forcing v12 users to
+    // switch workspaces just because a newer image is available.
     const existingSandbox =
       discoveredSandboxes.find(
         ({ info }) =>
           info.state === "running" &&
-          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+          isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion),
       ) ??
       discoveredSandboxes.find(({ info }) => info.state === "running") ??
       discoveredSandboxes.find(
         ({ info }) =>
           info.state === "paused" &&
-          info.metadata?.sandboxVersion === SANDBOX_VERSION,
+          isRecoverableE2BSandboxVersion(info.metadata?.sandboxVersion),
       ) ??
       discoveredSandboxes[0];
 
@@ -167,10 +301,13 @@ export const ensureSandboxConnection = async (
     const existingCluster = existingSandbox?.cluster;
     const hasVersionMismatch =
       existingSandboxInfo &&
-      existingSandboxInfo.metadata?.sandboxVersion !== SANDBOX_VERSION;
+      !isRecoverableE2BSandboxVersion(
+        existingSandboxInfo.metadata?.sandboxVersion,
+      );
     // An old version can still contain files. Reconnect without destructive
-    // replacement, including after a denied Miosa migration check.
+    // replacement.
     if (existingSandboxInfo?.sandboxId && existingCluster) {
+      if (options.reservation) throw new CloudWorkspaceUnavailableError();
       if (hasVersionMismatch) {
         console.warn(
           JSON.stringify({
@@ -191,87 +328,167 @@ export const ensureSandboxConnection = async (
         );
       }
 
+      if (
+        existingSandboxInfo.state === "paused" &&
+        existingSandboxInfo.metadata?.template === createCluster.template &&
+        isRecoverableE2BSandboxVersion(
+          existingSandboxInfo.metadata?.sandboxVersion,
+        ) &&
+        existingSandboxInfo.metadata?.e2bCluster === createCluster.cluster &&
+        existingCluster.cluster === createCluster.cluster
+      )
+        failedTarget = {
+          sandboxId: existingSandboxInfo.sandboxId,
+          template: existingSandboxInfo.metadata.template,
+          sandboxVersion: existingSandboxInfo.metadata.sandboxVersion,
+        };
       // Step 3: Try to reuse existing sandbox (works for both running and paused states)
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
-      try {
+      {
         phase = "connect";
+        const resumingPausedWorkspace = existingSandboxInfo.state === "paused";
+        connectSandboxId = existingSandboxInfo.sandboxId;
+        connectCluster = existingCluster.cluster;
+        connectState = resumingPausedWorkspace
+          ? "paused"
+          : existingSandboxInfo.state === "running"
+            ? "running"
+            : null;
+        connectSelectionSource = "inventory";
+        connectRequestTimeoutMs = resumingPausedWorkspace
+          ? CLOUD_RESUME_DEADLINE_MS
+          : null;
+        options.reportStage?.("connect", { resumingPausedWorkspace });
         const sandbox = await retryWithBackoff(
           () =>
-            Sandbox.connect(existingSandboxInfo.sandboxId, {
+            connectSelectedSandbox(existingSandboxInfo.sandboxId, {
               ...existingCluster.connectionOptions,
+              ...requestOptions,
+              ...(resumingPausedWorkspace
+                ? { requestTimeoutMs: CLOUD_RESUME_DEADLINE_MS, retries: 0 }
+                : {}),
               timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
             }),
           {
-            maxRetries: MAX_CONNECT_RETRIES,
+            signal,
+            maxRetries: resumingPausedWorkspace ? 1 : MAX_CONNECT_RETRIES,
             baseDelayMs: 400,
             jitterMs: 40,
           },
         );
+        signal?.throwIfAborted();
+        await clearResumeFailures(userID, sandbox.sandboxId).catch(() => {});
+        signal?.throwIfAborted();
+        rememberE2BSandboxVersion(
+          sandbox,
+          existingSandboxInfo.metadata?.sandboxVersion,
+        );
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
-      } catch (e) {
-        // Handle specific error cases
-        if (
-          e instanceof NotFoundError ||
-          (e instanceof Error && e.message?.includes("not found"))
-        ) {
-          console.error(
-            `[${userID}] Sandbox ${existingSandboxInfo.sandboxId} expired/deleted, creating new one`,
-          );
-          createPath = "create_after_expired";
-        } else {
-          // The listed state can become stale while connect is pending. Never
-          // destroy a shared user sandbox here: another run may have resumed
-          // it by the time this failure is observed. The attachment path owns
-          // bounded provider recovery after the E2B reconnect retries are
-          // exhausted.
-          throw e;
-        }
       }
     }
 
-    // Step 5: Create new sandbox with retry on E2B 429 rate limits
-    let lastError: unknown;
+    // Create only after a durable, exclusive first-workspace reservation.
     phase = "create";
-    for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
-      if (attempt > 0) {
-        console.warn(
-          `[${userID}] E2B rate limit — retrying sandbox creation (${attempt + 1}/${MAX_CREATE_RETRIES}) after ${RATE_LIMIT_COOLDOWN_MS}ms`,
-        );
-        await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN_MS));
-      }
-
-      try {
-        const sandbox = await Sandbox.create(createCluster.template, {
-          ...createCluster.connectionOptions,
-          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-          lifecycle: { onTimeout: "pause", autoResume: true },
-          secure: true,
-          metadata: {
-            userID,
-            template: createCluster.template,
-            secure: "true",
-            sandboxVersion: SANDBOX_VERSION,
-            e2bCluster: createCluster.cluster,
-          },
-        });
-
-        setSandbox(sandbox);
-        reportBoot(createPath, attempt + 1);
-        return { sandbox };
-      } catch (createError) {
-        lastError = createError;
-        const isRateLimit =
-          createError instanceof Error &&
-          (createError.message?.includes("429") ||
-            createError.message?.includes("Rate limit"));
-        if (!isRateLimit) throw createError;
-      }
-    }
-    throw lastError;
+    options.reportStage?.("create");
+    // Select an explicitly tagged image so deploying app code before the new
+    // image cannot label an old template v13. A missing tag keeps legacy v12
+    // creation working; lookup failures are not permission to guess a version.
+    const [templateName, templateTag = "default"] =
+      createCluster.template.split(":");
+    const tags = await Template.getTags(templateName, {
+      ...createCluster.connectionOptions,
+      ...requestOptions,
+      requestTimeoutMs: 10_000,
+    });
+    const selectedBuild = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(
+      templateTag,
+    )
+      ? templateTag
+      : tags.find(({ tag }) => tag === templateTag)?.buildId;
+    if (!selectedBuild)
+      throw new Error("E2B template tag has no verified build");
+    const versionBuild = tags.find(
+      ({ tag }) => tag === SANDBOX_VERSION,
+    )?.buildId;
+    const createVersion =
+      selectedBuild === versionBuild ? SANDBOX_VERSION : "v12";
+    // Pin the resolved build, not a mutable tag that could change before create.
+    const createTemplate = `${templateName}:${selectedBuild}`;
+    const networkSettings = await readNetworkSettings(userID);
+    const reservation =
+      options.reservation ?? (await readCloudWorkspaceState(userID));
+    if (
+      !reservation ||
+      reservation.phase !== "provisioning" ||
+      reservation.step !== "reserved" ||
+      reservation.region !== triggerRegion
+    )
+      throw new CloudWorkspaceUnavailableError();
+    // Recheck every configured cluster immediately before the exclusive create.
+    // This also catches workspaces left by an older worker since routing ran.
+    if ((await listWorkspaceInventory(userID, signal)).length)
+      throw new CloudWorkspaceUnavailableError();
+    signal?.throwIfAborted();
+    const creating = await startWorkspaceCreation(userID, reservation);
+    // No automatic HTTP/application retry: a failed response can hide a successful
+    // provider create. A future request reconciles this token from inventory.
+    const sandbox = await Sandbox.create(createTemplate, {
+      network: e2bNetwork(networkSettings?.policy ?? DEFAULT_NETWORK_POLICY),
+      ...createCluster.connectionOptions,
+      ...requestOptions,
+      retries: 0,
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+      lifecycle: { onTimeout: "pause", autoResume: true },
+      secure: true,
+      metadata: {
+        userID,
+        template: createCluster.template,
+        secure: "true",
+        sandboxVersion: createVersion,
+        e2bCluster: createCluster.cluster,
+        workspaceCreationToken: creating.token,
+      },
+    });
+    // Persist before observing abort: late success still owns these files.
+    await finishWorkspaceCreation(userID, creating, sandbox.sandboxId);
+    signal?.throwIfAborted();
+    rememberE2BSandboxVersion(sandbox, createVersion);
+    setSandbox(sandbox);
+    reportBoot(createPath, 1);
+    return { sandbox };
   } catch (error) {
+    if (failedTarget && options.acquisitionId && options.triggerRegion) {
+      const status =
+        error && typeof error === "object"
+          ? ((error as { statusCode?: number; status?: number }).statusCode ??
+            (error as { status?: number }).status)
+          : undefined;
+      await recordResumeFailure({
+        userId: userID,
+        ...failedTarget,
+        region: options.triggerRegion,
+        acquisitionId: options.acquisitionId,
+        uncertain:
+          signal?.aborted === true || !status || ![400, 422].includes(status),
+        // E2B reports its own gateway timeout as SandboxError, not TimeoutError.
+        // This is still uncertain: only the consent-gated customer path may
+        // reconcile exact paused identity after the complete idle window.
+        // Other provider failures and cancellation remain support-only.
+        timeoutOnly:
+          phase === "connect" &&
+          (signal?.aborted
+            ? signal.reason instanceof CloudAcquisitionTimeoutError &&
+              signal.reason.acquisitionStage === "connect"
+            : error instanceof TimeoutError
+              ? !error.message.includes("sandbox timeout")
+              : connectGatewayTimeout !== undefined &&
+                error === connectGatewayTimeout),
+      }).catch(() => {});
+    }
+    signal?.throwIfAborted();
     const candidate =
       error && typeof error === "object"
         ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })
@@ -291,6 +508,22 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
+    let connectTargetFingerprint: string | null = null;
+    if (
+      phase === "connect" &&
+      connectCluster &&
+      typeof connectSandboxId === "string" &&
+      /^[a-z0-9][a-z0-9-]{0,127}$/i.test(connectSandboxId)
+    ) {
+      try {
+        // Correlate provider-selected identities without logging their raw IDs.
+        connectTargetFingerprint = createHash("sha256")
+          .update(`e2b-connect:v1:${connectCluster}:${connectSandboxId}`)
+          .digest("hex");
+      } catch {
+        // Diagnostic enrichment must not replace the acquisition failure.
+      }
+    }
     console.error(
       JSON.stringify({
         timestamp: new Date().toISOString(),
@@ -304,6 +537,14 @@ export const ensureSandboxConnection = async (
         trigger_run_id: options.triggerRunId ?? null,
         user_id: userID,
         ...diagnostics,
+        e2b_connect_state: phase === "connect" ? connectState : null,
+        e2b_connect_selection_source:
+          phase === "connect" ? connectSelectionSource : null,
+        // Null means the SDK default was used, not a measured timeout of zero.
+        e2b_connect_request_timeout_ms:
+          phase === "connect" ? connectRequestTimeoutMs : null,
+        e2b_connect_target_fingerprint: connectTargetFingerprint,
+        e2b_connect_cluster: phase === "connect" ? connectCluster : null,
         duration_ms: Math.round(performance.now() - startedAt),
       }),
     );

@@ -22,6 +22,7 @@ type OnDataCb = (bytes: Uint8Array) => void | Promise<void>;
 interface CapturedCreateCall {
   cols: number;
   rows: number;
+  user?: string;
   cwd?: string;
   envs?: Record<string, string>;
   onData: OnDataCb;
@@ -107,6 +108,28 @@ const defaultOpts: CreatePtyOptions = {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("createE2BPtyHandle", () => {
+  it("uses the command owner and working directory so private browser state is accessible", async () => {
+    const { sandbox, mock } = buildMockSandbox();
+    await createE2BPtyHandle(sandbox, {
+      ...defaultOpts,
+      envs: {
+        AGENT_BROWSER_CONFIG: "/dev/shm/private-browser/config.json",
+        AGENT_BROWSER_SOCKET_DIR: "/dev/shm/private-browser/sockets",
+      },
+    });
+
+    // BrowserSessions prepares root-owned 0700 directories through commands.run.
+    // E2B's default PTY user cannot read their config or create a socket there.
+    expect(mock.capturedCreate).toMatchObject({
+      user: "root",
+      cwd: "/home/user",
+      envs: {
+        AGENT_BROWSER_CONFIG: "/dev/shm/private-browser/config.json",
+        AGENT_BROWSER_SOCKET_DIR: "/dev/shm/private-browser/sockets",
+      },
+    });
+  });
+
   it("calls sandbox.pty.create with cols/rows/cwd/envs and attaches an onData callback", async () => {
     const { sandbox, mock } = buildMockSandbox();
     const opts: CreatePtyOptions = {

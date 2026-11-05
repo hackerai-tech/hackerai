@@ -1,3 +1,4 @@
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { NextRequest } from "next/server";
 import type { PostHog } from "posthog-node";
 import PostHogClient from "@/app/posthog";
@@ -36,7 +37,7 @@ export async function evaluateRegionalSubscriptionFirst({
   userId: string;
   subscription: string;
   country?: string;
-  posthog?: Pick<PostHog, "getFeatureFlag"> | null;
+  posthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
 }): Promise<RegionalSubscriptionAssignment | undefined> {
   if (
     !userId ||
@@ -45,16 +46,12 @@ export async function evaluateRegionalSubscriptionFirst({
   )
     return;
   try {
-    const variant = await posthog?.getFeatureFlag(
+    if (!posthog) return;
+    const variant = await getPostHogFlagWithoutExposure(
+      posthog,
       REGIONAL_SUBSCRIPTION_FIRST_KEY,
       userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: {
-          subscription: "free",
-          regional_subscription_country: country,
-        },
-      },
+      { subscription: "free", regional_subscription_country: country },
     );
     if (variant === "control" || variant === "test")
       return { variant, country };
@@ -68,34 +65,38 @@ export async function enforceRegionalSubscriptionFirst(args: {
   subscription: string;
   country?: string;
   surface: "ask" | "agent" | "agent_worker";
+  /** Background checks enforce access without exposing the pricing experiment. */
+  captureExposure?: boolean;
 }) {
   const assignment = await evaluateRegionalSubscriptionFirst(args);
   if (!assignment) return;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const posthog = PostHogClient();
-    posthog?.capture({
-      distinctId: args.userId,
-      event: REGIONAL_SUBSCRIPTION_FIRST_EXPOSURE,
-      properties: {
-        ...regionalSubscriptionProperties(assignment),
-        exposure_surface: args.surface,
-        subscription_tier: "free",
-        $geoip_disable: true,
-        $process_person_profile: false,
-      },
-    });
-    // Blocked tasks have no later completion event to flush this exposure.
-    await Promise.race([
-      posthog?.flush(),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, 750);
-      }),
-    ]);
-  } catch {
-    // Telemetry failure must neither grant access nor reject a control account.
-  } finally {
-    if (timeout) clearTimeout(timeout);
+  if (args.captureExposure !== false) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const posthog = PostHogClient();
+      posthog?.capture({
+        distinctId: args.userId,
+        event: REGIONAL_SUBSCRIPTION_FIRST_EXPOSURE,
+        properties: {
+          ...regionalSubscriptionProperties(assignment),
+          exposure_surface: args.surface,
+          subscription_tier: "free",
+          $geoip_disable: true,
+          $process_person_profile: false,
+        },
+      });
+      // Blocked tasks have no later completion event to flush this exposure.
+      await Promise.race([
+        posthog?.flush(),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 750);
+        }),
+      ]);
+    } catch {
+      // Telemetry failure must neither grant access nor reject a control account.
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
   if (assignment.variant === "test") {
     throw new ChatSDKError(

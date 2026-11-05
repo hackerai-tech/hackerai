@@ -1,13 +1,23 @@
+import {
+  inference,
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_CYBER_MODEL_ID,
+} from "./inference";
+import {
+  DEEPSEEK_1017_MODEL_KEY,
+  DEEPSEEK_1017_SLUG,
+  DEEPSEEK_1017_CANONICAL_SLUG,
+} from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
+import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
   abliteration,
-  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_FLASH_MODEL_ID,
   ABLITERATION_LARGE_V2_MODEL_KEY,
-  ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
 } from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import type { ChatMode, SelectedModel } from "@/types/chat";
+import type { SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -659,15 +669,28 @@ const createToolMediaRequestRecoveryBody = (
   };
 };
 
+type SandboxPdfRecoveryUnavailableReason =
+  | "unsupported_request_shape"
+  | "no_staged_attachments"
+  | "no_unique_matching_file"
+  | "no_user_message";
+
 const createSandboxPdfRecoveryBody = (
   body: unknown,
   removeAllFileParts = false,
-): { body: unknown; changed: boolean } => {
+): { body: unknown } & (
+  | { changed: true }
+  | { changed: false; unavailableReason: SandboxPdfRecoveryUnavailableReason }
+) => {
   if (!isRecord(body) || !Array.isArray(body.messages)) {
-    return { body, changed: false };
+    return {
+      body,
+      changed: false,
+      unavailableReason: "unsupported_request_shape",
+    };
   }
   if (collectSandboxAttachmentFilenames(body.messages).size === 0) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_staged_attachments" };
   }
 
   let removedFilePart = false;
@@ -708,13 +731,20 @@ const createSandboxPdfRecoveryBody = (
       : { ...message, content };
   });
 
-  if (!removedFilePart || lastUserMessageIndex < 0) {
-    return { body, changed: false };
+  if (!removedFilePart) {
+    return {
+      body,
+      changed: false,
+      unavailableReason: "no_unique_matching_file",
+    };
+  }
+  if (lastUserMessageIndex < 0) {
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
 
   const lastUserMessage = messages[lastUserMessageIndex];
   if (!isRecord(lastUserMessage)) {
-    return { body, changed: false };
+    return { body, changed: false, unavailableReason: "no_user_message" };
   }
   const recoveryInstruction = removeAllFileParts
     ? GENERIC_SANDBOX_ATTACHMENT_RECOVERY_INSTRUCTION
@@ -760,12 +790,15 @@ const logPdfParserRecovery = (
   fromEngine: "mistral-ocr" | "cloudflare-ai" | "unknown",
   toEngine: "cloudflare-ai" | "sandbox",
   reason: PdfParserFailure,
+  unavailableReason?: SandboxPdfRecoveryUnavailableReason,
 ) => {
   console.warn(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "warn",
-      event: "openrouter_pdf_parser_recovery",
+      event: unavailableReason
+        ? "openrouter_pdf_parser_recovery_unavailable"
+        : "openrouter_pdf_parser_recovery",
       service: "openrouter",
       environment:
         process.env.TRIGGER_ENV ??
@@ -775,6 +808,7 @@ const logPdfParserRecovery = (
       from_engine: fromEngine,
       to_engine: toEngine,
       reason,
+      ...(unavailableReason && { unavailable_reason: unavailableReason }),
     }),
   );
 };
@@ -1006,25 +1040,44 @@ export const enrichOpenRouterStreamError = (
 /** Retain response IDs when the response body fails after headers arrived. */
 export const attachOpenRouterStreamErrorMetadata = (
   response: Response,
+  options: { expectChatCompletion?: boolean; signal?: AbortSignal | null } = {},
 ): Response => {
   if (!response.ok || !response.body) return response;
 
+  const observer =
+    options.expectChatCompletion &&
+    response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      .trim()
+      .toLowerCase() === "text/event-stream"
+      ? createOpenRouterCompletionObserver()
+      : undefined;
+  let cancelled = false;
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const chunk = await reader.read();
+        if (cancelled) return;
         if (chunk.done) {
+          options.signal?.throwIfAborted();
+          observer?.finish();
           controller.close();
           return;
         }
+        observer?.feed(chunk.value);
         controller.enqueue(chunk.value);
       } catch (error) {
-        controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+        observer?.reset();
+        if (!cancelled)
+          controller.error(enrichOpenRouterStreamError(error, responseHeaders));
       }
     },
     cancel(reason) {
+      cancelled = true;
+      observer?.reset();
       return reader.cancel(reason);
     },
   });
@@ -1097,16 +1150,41 @@ export const createOpenRouterPatchFetch =
       return fetchImplementation(url, guarded.init);
     };
 
+    const requestUrl = new URL(
+      typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+    );
+    const wrapResponse = (response: Response) =>
+      attachOpenRouterStreamErrorMetadata(response, {
+        expectChatCompletion:
+          requestUrl.pathname.endsWith("/chat/completions") &&
+          isRecord(parsedRequestBody) &&
+          parsedRequestBody.stream === true,
+        signal: nextInit.signal,
+      });
+
     const initialResponse = await fetchWithinRequestLimit(nextInit);
     const parserFailure = await classifyPdfParserFailure(initialResponse);
     if (!parserFailure) {
-      return attachOpenRouterStreamErrorMetadata(initialResponse);
+      return wrapResponse(initialResponse);
     }
 
-    if (parserFailure === "generic_parse") {
-      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody, true);
+    if (
+      parserFailure === "generic_parse" ||
+      (!requestUsesPdfParserEngine(parsedRequestBody, "mistral-ocr") &&
+        !requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai"))
+    ) {
+      const sandboxBody = createSandboxPdfRecoveryBody(
+        parsedRequestBody,
+        parserFailure === "generic_parse",
+      );
       if (!sandboxBody.changed) {
-        return attachOpenRouterStreamErrorMetadata(initialResponse);
+        logPdfParserRecovery(
+          "unknown",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
+        return wrapResponse(initialResponse);
       }
 
       logPdfParserRecovery("unknown", "sandbox", parserFailure);
@@ -1114,7 +1192,7 @@ export const createOpenRouterPatchFetch =
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           sandboxResponse,
           PDF_PARSER_RECOVERY_HEADER,
@@ -1126,7 +1204,13 @@ export const createOpenRouterPatchFetch =
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
       const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
       if (!sandboxBody.changed) {
-        return attachOpenRouterStreamErrorMetadata(initialResponse);
+        logPdfParserRecovery(
+          "cloudflare-ai",
+          "sandbox",
+          parserFailure,
+          sandboxBody.unavailableReason,
+        );
+        return wrapResponse(initialResponse);
       }
 
       logPdfParserRecovery("cloudflare-ai", "sandbox", parserFailure);
@@ -1134,7 +1218,7 @@ export const createOpenRouterPatchFetch =
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           sandboxResponse,
           PDF_PARSER_RECOVERY_HEADER,
@@ -1149,7 +1233,7 @@ export const createOpenRouterPatchFetch =
       "cloudflare-ai",
     );
     if (!cloudflareBody.changed) {
-      return attachOpenRouterStreamErrorMetadata(initialResponse);
+      return wrapResponse(initialResponse);
     }
 
     logPdfParserRecovery("mistral-ocr", "cloudflare-ai", parserFailure);
@@ -1160,7 +1244,7 @@ export const createOpenRouterPatchFetch =
     const cloudflareFailure =
       await classifyPdfParserFailure(cloudflareResponse);
     if (!cloudflareFailure) {
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           cloudflareResponse,
           PDF_PARSER_ENGINE_HEADER,
@@ -1171,7 +1255,13 @@ export const createOpenRouterPatchFetch =
 
     const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
     if (!sandboxBody.changed) {
-      return attachOpenRouterStreamErrorMetadata(cloudflareResponse);
+      logPdfParserRecovery(
+        "cloudflare-ai",
+        "sandbox",
+        cloudflareFailure,
+        sandboxBody.unavailableReason,
+      );
+      return wrapResponse(cloudflareResponse);
     }
 
     logPdfParserRecovery("cloudflare-ai", "sandbox", cloudflareFailure);
@@ -1179,7 +1269,7 @@ export const createOpenRouterPatchFetch =
       ...nextInit,
       body: JSON.stringify(sandboxBody.body),
     });
-    return attachOpenRouterStreamErrorMetadata(
+    return wrapResponse(
       withPrivateResponseHeader(
         sandboxResponse,
         PDF_PARSER_RECOVERY_HEADER,
@@ -1203,8 +1293,8 @@ export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-// Preserve the internal vision route keys while upgrading the provider model.
-export const DEEPSEEK_V4_FLASH_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
+// Preserve persisted route keys while pinning every Flash route to this snapshot.
+export const DEEPSEEK_V4_FLASH_VISION_SLUG = DEEPSEEK_1017_SLUG;
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // MiniMax is deliberately isolated to the final text-summary recovery. Normal
 // image turns route the original pixels through GLM Flash and then DeepSeek
@@ -1212,9 +1302,7 @@ export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const AUXILIARY_VISION_SLUG = MINIMAX_M3_SLUG;
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
-export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
-const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -1235,10 +1323,11 @@ const buildProviderMap = (
   or: OpenRouterInstance,
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
-  freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAskModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
 ) =>
   ({
+    [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
@@ -1251,7 +1340,8 @@ const buildProviderMap = (
     "model-grok-4.5": or(GROK_4_5_SLUG),
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_SLUG),
+    // Redirect persisted legacy selections; never send new requests to 0731.
+    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
     "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
     // Keep the persisted Max compatibility key while routing new requests to
@@ -1267,18 +1357,20 @@ const buildProviderMap = (
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
-    // Titles are a short structured-output task and should never use reasoning.
-    "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
+    // GLM supports the title schema and requires reasoning to stay enabled.
+    "title-generator-model": or(GLM_5_3_FLASH_SLUG),
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
-const baseProviders: ReturnType<typeof buildProviderMap> = {
+const baseProviders: ReturnType<typeof buildProviderMap> &
+  Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {
+  [INFERENCE_CYBER_MODEL_KEY]: inference(INFERENCE_CYBER_MODEL_ID),
   ...buildProviderMap(openrouter),
-  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_MODEL_ID),
+  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_LARGE_FLASH_MODEL_ID),
   [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
-    ABLITERATION_LARGE_V2_MODEL_ID,
+    ABLITERATION_LARGE_FLASH_MODEL_ID,
   ),
 };
 
@@ -1290,7 +1382,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
   "model-grok-4.6-pro": "August 2026",
-  "model-deepseek-v4-flash-0731": "July 2026",
+  "model-deepseek-v4-flash-0731": "August 2026",
   "model-deepseek-v4-pro": "May 2025",
   "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
@@ -1302,14 +1394,16 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-deepseek-v4-flash-vision-pro": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
-  "title-generator-model": "May 2025",
+  "title-generator-model": "August 2026",
   "auxiliary-vision-model": "July 2026",
 };
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
-  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model",
-  [ABLITERATION_LARGE_V2_MODEL_KEY]: "Abliteration abliterated-model-large-v2",
+  [INFERENCE_CYBER_MODEL_KEY]: "Inference DeepSeek V4.1 Flash 1017 Cyber",
+  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model-large-flash",
+  [ABLITERATION_LARGE_V2_MODEL_KEY]:
+    "Abliteration abliterated-model-large-flash",
   "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
@@ -1321,7 +1415,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-grok-4.6-pro": "xAI Grok 4.6",
-  "model-deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
+  "model-deepseek-v4-flash-0731": "DeepSeek V4.1 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
@@ -1332,10 +1426,11 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
   "model-deepseek-v4-flash-vision": "DeepSeek V4.1 Flash",
   "model-deepseek-v4-flash-vision-pro": "DeepSeek V4.1 Flash",
+  [DEEPSEEK_1017_MODEL_KEY]: "DeepSeek V4.1 Flash 1017",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "DeepSeek V4 Flash",
+  "title-generator-model": "GLM 5.3 Flash",
   "auxiliary-vision-model": "Auxiliary vision model",
 };
 
@@ -1357,6 +1452,7 @@ export function isAnthropicModel(modelName: string): boolean {
 /** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
+    modelName === DEEPSEEK_1017_MODEL_KEY ||
     modelName === "ask-model-free" ||
     modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
@@ -1400,8 +1496,13 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
+    normalized === DEEPSEEK_1017_MODEL_KEY ||
+    normalized === DEEPSEEK_1017_SLUG ||
+    normalized === DEEPSEEK_1017_CANONICAL_SLUG ||
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
+    normalized === "ask-model-free" ||
+    normalized === "model-deepseek-v4-flash-0731" ||
     normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||
@@ -1409,7 +1510,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-deepseek-v4-flash-vision-pro" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||
-    normalized === DEEPSEEK_V4_FLASH_VISION_SLUG ||
+    normalized === "deepseek/deepseek-v4.1-flash" ||
     normalized === "deepseek/deepseek-v4.1-flash-20260910" ||
     isKimiModel(normalized) ||
     isGrokModel(normalized) ||
@@ -1424,36 +1525,24 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   );
 }
 
-/**
- * Map a HackerAI tier id to the underlying provider key for a given mode.
- * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek V4 Flash 0731. Pro uses DeepSeek
- * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses GLM 5.3 in both
- * modes; media-aware routing happens in `selectModel`.
- */
-export function resolveTierToProviderKey(
+/** Resolve a paid Agent tier. Auto is selected by the caller. */
+export function resolveAgentTierToProviderKey(
   tier: Exclude<SelectedModel, "auto">,
-  mode: ChatMode,
 ): ModelName;
-export function resolveTierToProviderKey(tier: "auto", mode: ChatMode): null;
-export function resolveTierToProviderKey(
+export function resolveAgentTierToProviderKey(tier: "auto"): null;
+export function resolveAgentTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
 ): ModelName | null;
-export function resolveTierToProviderKey(
+export function resolveAgentTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
 ): ModelName | null {
-  if (tier === "auto") return null;
   switch (tier) {
+    case "auto":
+      return null;
     case "hackerai-standard":
-      return mode === "agent"
-        ? "model-glm-5.3-flash-agent"
-        : "model-glm-5.3-flash";
+      return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-pro":
-      return mode === "agent"
-        ? "model-deepseek-v4-flash-vision-pro"
-        : "model-deepseek-v4-pro-0813";
+      return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
       return "model-glm-5.3";
   }

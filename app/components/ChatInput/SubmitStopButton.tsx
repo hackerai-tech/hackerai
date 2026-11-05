@@ -53,16 +53,19 @@ function getSendButtonTooltip(
   hasFileErrors: boolean,
   isUploading: boolean,
   sendDisabledReason?: string,
+  pausesGoal = false,
 ): string {
   if (sendDisabledReason) return sendDisabledReason;
   if (!isOnline) return "Reconnect to send";
   if (hasFileErrors) return "Remove failed files to send";
   if (isUploading) return "File upload pending";
-  return "Send (⏎)";
+  return pausesGoal ? "Send message and pause goal (⏎)" : "Send (⏎)";
 }
 
 export interface SubmitStopButtonProps {
   isGenerating: boolean;
+  allowSendWhileGenerating?: boolean;
+  pausesGoal?: boolean;
   hideStop: boolean;
   onStop: () => void;
   onSubmit: (e: React.FormEvent) => void | Promise<void>;
@@ -80,6 +83,8 @@ export interface SubmitStopButtonProps {
 
 export function SubmitStopButton({
   isGenerating,
+  allowSendWhileGenerating = false,
+  pausesGoal = false,
   hideStop,
   onStop,
   onSubmit,
@@ -112,9 +117,15 @@ export function SubmitStopButton({
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
-  if (isGenerating && !hideStop) {
-    return (
-      <div className={containerClass}>
+  const showStop = isGenerating && !hideStop;
+  const showSend =
+    !showStop ||
+    (allowSendWhileGenerating &&
+      (input.trim().length > 0 || uploadedFiles.length > 0));
+
+  return (
+    <div className={containerClass}>
+      {showStop && (
         <TooltipPrimitive.Root>
           <TooltipTrigger asChild>
             <Button
@@ -131,54 +142,56 @@ export function SubmitStopButton({
             <p>Stop (⌃C)</p>
           </TooltipContent>
         </TooltipPrimitive.Root>
-      </div>
-    );
-  }
-
-  return (
-    <div className={containerClass}>
-      <form onSubmit={onSubmit}>
-        <TooltipPrimitive.Root>
-          <TooltipTrigger asChild>
-            <div className="inline-block">
-              <Button
-                type="submit"
-                disabled={
-                  !!sendDisabledReason ||
-                  !isOnline ||
-                  (status !== "ready" && !isReplyingToAgent) ||
-                  isUploadingFiles ||
-                  (isReplyingToAgent
-                    ? !input.trim() || uploadedFiles.length > 0
-                    : !input.trim() && uploadedFiles.length === 0)
-                }
-                variant="default"
-                className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
-                aria-label={
-                  isReplyingToAgent
-                    ? "Send reply and resume agent"
-                    : "Send message"
-                }
-                data-testid="send-button"
-              >
-                <ArrowUp size={15} strokeWidth={3} />
-              </Button>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>
-              {isReplyingToAgent && !sendDisabledReason
-                ? "Reply and resume (⏎)"
-                : getSendButtonTooltip(
-                    isOnline,
-                    uploadedFiles.some((f) => f.error),
-                    isUploadingFiles,
-                    sendDisabledReason,
-                  )}
-            </p>
-          </TooltipContent>
-        </TooltipPrimitive.Root>
-      </form>
+      )}
+      {showSend && (
+        <form onSubmit={onSubmit}>
+          <TooltipPrimitive.Root>
+            <TooltipTrigger asChild>
+              <div className="inline-block">
+                <Button
+                  type="submit"
+                  disabled={
+                    !!sendDisabledReason ||
+                    !isOnline ||
+                    (status !== "ready" &&
+                      !isReplyingToAgent &&
+                      !(allowSendWhileGenerating && status === "streaming")) ||
+                    isUploadingFiles ||
+                    (isReplyingToAgent
+                      ? !input.trim() || uploadedFiles.length > 0
+                      : !input.trim() && uploadedFiles.length === 0)
+                  }
+                  variant="default"
+                  className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
+                  aria-label={
+                    isReplyingToAgent
+                      ? "Send reply and resume agent"
+                      : pausesGoal
+                        ? "Send message and pause goal"
+                        : "Send message"
+                  }
+                  data-testid="send-button"
+                >
+                  <ArrowUp size={15} strokeWidth={3} />
+                </Button>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>
+                {isReplyingToAgent && !sendDisabledReason
+                  ? "Reply and resume (⏎)"
+                  : getSendButtonTooltip(
+                      isOnline,
+                      uploadedFiles.some((f) => f.error),
+                      isUploadingFiles,
+                      sendDisabledReason,
+                      pausesGoal,
+                    )}
+              </p>
+            </TooltipContent>
+          </TooltipPrimitive.Root>
+        </form>
+      )}
     </div>
   );
 }

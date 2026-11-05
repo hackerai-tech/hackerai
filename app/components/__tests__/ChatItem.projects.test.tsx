@@ -469,6 +469,34 @@ describe("ChatItem project actions", () => {
     ).toHaveClass("pr-9");
   });
 
+  it("shows a readable input badge without a completion dot", () => {
+    markSidebarTaskVisited("chat-1", 1_000);
+    render(
+      <ChatItem
+        id="chat-1"
+        title="Question about target"
+        needsInputReason="reply"
+        lastRunFinishedAt={2_000}
+      />,
+    );
+
+    expect(screen.getByTestId("chat-item-needs-input")).toHaveTextContent(
+      "Needs input",
+    );
+    expect(screen.getByTestId("chat-item-needs-input")).toHaveAttribute(
+      "data-reason",
+      "reply",
+    );
+    expect(
+      screen.getByRole("button", {
+        name: /needs input: agent asked a question/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-item-unread-completion-indicator"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows a completion dot when the server finish time is newer than the local visit", async () => {
     markSidebarTaskVisited("chat-1", 1_000);
     const view = render(

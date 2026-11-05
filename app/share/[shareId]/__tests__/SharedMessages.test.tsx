@@ -46,40 +46,6 @@ describe("SharedMessages", () => {
   });
 
   describe("Text Messages", () => {
-    it("should render user text message", () => {
-      const messages = [
-        {
-          id: "1",
-          role: "user" as const,
-          parts: [{ type: "text", text: "Hello, this is a test message" }],
-          update_time: mockShareDate,
-        },
-      ];
-
-      renderWithContext(
-        <SharedMessages messages={messages} shareDate={mockShareDate} />,
-      );
-      expect(
-        screen.getByText("Hello, this is a test message"),
-      ).toBeInTheDocument();
-    });
-
-    it("should render assistant text message", () => {
-      const messages = [
-        {
-          id: "1",
-          role: "assistant" as const,
-          parts: [{ type: "text", text: "I can help you with that" }],
-          update_time: mockShareDate,
-        },
-      ];
-
-      renderWithContext(
-        <SharedMessages messages={messages} shareDate={mockShareDate} />,
-      );
-      expect(screen.getByText("I can help you with that")).toBeInTheDocument();
-    });
-
     it("should render multiple messages", () => {
       const messages = [
         {

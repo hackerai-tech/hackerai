@@ -1,6 +1,12 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const mockRedirectToBillingPortal = jest.fn();
+const mockOpenRenewalInvoice = jest.fn();
+jest.mock("@/lib/actions/renewal-invoice", () => ({
+  __esModule: true,
+  default: mockOpenRenewalInvoice,
+}));
 const mockGetSubscriptionCancellationStatus = jest.fn();
 const mockKeepSubscription = jest.fn();
 const mockCancelSubscription = jest.fn();
@@ -51,6 +57,65 @@ function unreadableJsonRequest() {
 describe("billing API routes", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it("returns a retryable conflict instead of reporting success for an overlapping keep", async () => {
+    mockKeepSubscription.mockRejectedValue(
+      new Error(BILLING_ERRORS.subscriptionChangeInProgress) as never,
+    );
+    const { POST } = await import("../keep/route");
+    const response = await POST();
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: BILLING_ERRORS.subscriptionChangeInProgress,
+    });
+  });
+
+  it("returns the server-selected invoice payment page", async () => {
+    mockOpenRenewalInvoice.mockResolvedValue(
+      "https://invoice.stripe.com/i/current" as never,
+    );
+    const { POST } = await import("../renewal-invoice/route");
+    const response = await POST();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      url: "https://invoice.stripe.com/i/current",
+    });
+  });
+
+  it.each([
+    ["Only admins or owners can manage billing", 403],
+    ["User not authenticated", 401],
+    ["No payable renewal invoice found. Check your billing status.", 409],
+  ])(
+    "preserves invoice authorization and eligibility errors",
+    async (message, status) => {
+      mockOpenRenewalInvoice.mockRejectedValue(new Error(message) as never);
+      const { POST } = await import("../renewal-invoice/route");
+      expect((await POST()).status).toBe(status);
+    },
+  );
+
+  it("accepts pricing as an authorized portal recovery surface", async () => {
+    mockRedirectToBillingPortal.mockResolvedValue(
+      "https://billing.stripe.com/session" as never,
+    );
+    const { POST } = await import("../portal/route");
+    expect(
+      (
+        await POST(
+          request({
+            flow: "payment_method",
+            surface: "pricing_dialog",
+            returnPath: "/c/test",
+          }) as never,
+        )
+      ).status,
+    ).toBe(200);
+    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith("payment_method", {
+      surface: "pricing_dialog",
+      returnPath: "/c/test",
+    });
   });
 
   it("returns a billing portal URL", async () => {

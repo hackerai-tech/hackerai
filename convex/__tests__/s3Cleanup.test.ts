@@ -9,7 +9,7 @@ import {
 
 // Mock dependencies
 jest.mock("../s3Utils");
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalAction: jest.fn((config) => config),
 }));
 jest.mock("convex/values", () => ({
@@ -61,7 +61,7 @@ describe("s3Cleanup", () => {
     it("should log error but not throw when deletion fails", async () => {
       jest.resetModules();
       jest.mock("../s3Utils");
-      jest.mock("../_generated/server", () => ({
+      jest.mock("../lib/serviceFunctions", () => ({
         internalAction: jest.fn((config) => config),
       }));
       jest.mock("convex/values", () => ({

@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./lib/serviceFunctions";
 import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
@@ -39,6 +39,7 @@ export const logUsage = mutation({
   args: {
     serviceKey: v.string(),
     usage_settlement_id: v.optional(v.string()),
+    admission_operation_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     chat_id: v.optional(v.string()),
@@ -65,6 +66,7 @@ export const logUsage = mutation({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_outcome_unknown: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,
     ),
@@ -142,6 +144,7 @@ export const logUsage = mutation({
 
     await ctx.db.insert("usage_logs", {
       usage_settlement_id: args.usage_settlement_id,
+      admission_operation_id: args.admission_operation_id,
       user_id: args.user_id,
       organization_id: args.organization_id,
       chat_id: args.chat_id,
@@ -163,6 +166,7 @@ export const logUsage = mutation({
       extra_usage_points_deducted: args.extra_usage_points_deducted,
       uncovered_points: args.uncovered_points,
       usage_deduction_failure_reason: args.usage_deduction_failure_reason,
+      usage_deduction_outcome_unknown: args.usage_deduction_outcome_unknown,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
@@ -306,7 +310,8 @@ export const getUserUsageLogs = query({
         uncovered_points: log.uncovered_points,
         usage_deduction_failed:
           (log.uncovered_points ?? 0) > 0 ||
-          log.usage_deduction_failure_reason !== undefined,
+          log.usage_deduction_failure_reason !== undefined ||
+          log.usage_deduction_outcome_unknown === true,
         usage_deduction_failure_reason: log.usage_deduction_failure_reason,
         model_cost_dollars: log.model_cost_dollars,
         non_model_cost_dollars: log.non_model_cost_dollars,

@@ -9,7 +9,7 @@ import {
 } from "@jest/globals";
 import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config: any) => config),
 }));
 jest.mock("convex/values", () => ({
@@ -152,7 +152,11 @@ async function callCreateBillingPortalSession(ctx: any) {
 
 async function callDeductWithAutoReload(
   ctx: any,
-  args: { userId: string; amountPoints: number },
+  args: {
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { deductWithAutoReload } = await import("../extraUsageActions");
   return (deductWithAutoReload as any).handler(ctx, {
@@ -160,6 +164,26 @@ async function callDeductWithAutoReload(
     ...args,
   });
 }
+
+it("redacts credentials in balance lookup diagnostics without changing the failure", async () => {
+  const { convexLogger } = await import("../lib/logger");
+  const failure = new Error(
+    "HTTP 503 access_token=FAKE_ACCESS client_secret=FAKE_CLIENT refreshToken=FAKE_REFRESH convex_service_role_key=FAKE_SERVICE stripe_secret_key=FAKE_STRIPE posthog_api_key=FAKE_POSTHOG Authorization: Bearer FAKE_AUTH",
+  );
+  const ctx = makeCtx();
+  ctx.runQuery.mockResolvedValueOnce(null).mockRejectedValueOnce(failure);
+  await expect(
+    callDeductWithAutoReload(ctx, { userId: "user_member", amountPoints: 10 }),
+  ).rejects.toBe(failure);
+  const calls = jest.mocked(convexLogger.error).mock.calls;
+  const entry = calls.find(
+    ([event]) => event === "extra_usage_balance_backend_query_failed",
+  );
+  expect(entry).toBeDefined();
+  expect(JSON.stringify(entry)).not.toContain("FAKE_");
+  expect(JSON.stringify(entry)).toContain("HTTP 503");
+  expect(ctx.runMutation).not.toHaveBeenCalled();
+});
 
 const claimedAutoReload = (amountDollars: number) => ({
   status: "operation",
@@ -457,6 +481,59 @@ describe("deductWithAutoReload", () => {
       id: "in_auto",
       deleted: true,
     } as never);
+  });
+
+  it("releases the reload executor if receipt linkage fails before Stripe", async () => {
+    const failure = new Error("deletion fence started");
+    const ctx: any = {
+      runQuery: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+        balanceDollars: 0,
+        balancePoints: 0,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdPoints: 10000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      }),
+      runMutation: jest.fn(async (_ref: unknown, args: any) => {
+        if ("auto_reload_operation_id" in args) throw failure;
+        if ("operation_id" in args) return { claimed: true, result: null };
+        if ("candidateOperationId" in args)
+          return {
+            status: "operation",
+            operationId: "reload-op",
+            executorId: "executor",
+            amountDollars: 15,
+            claimed: true,
+            paymentAllowed: true,
+          };
+        if ("outcome" in args) return true;
+        return {
+          success: false,
+          newBalancePoints: 0,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+        };
+      }),
+    };
+    await expect(
+      callDeductWithAutoReload(ctx, {
+        userId: "user_member",
+        amountPoints: 10,
+        settlementOperationId: "settlement-link-failure",
+      }),
+    ).rejects.toBe(failure);
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operationId: "reload-op",
+        executorId: "executor",
+        outcome: "executor_released",
+      }),
+    );
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
   });
 
   it("does not charge auto-reload while the account is suspended", async () => {

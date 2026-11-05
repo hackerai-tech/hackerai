@@ -1,4 +1,17 @@
+import { isBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+
+/** A canceled signal alone does not establish that an unrelated error is cancellation. */
+export const isCancellationError = (
+  error: unknown,
+  signal: AbortSignal,
+): boolean =>
+  signal.aborted &&
+  (error === signal.reason ||
+    (typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "AbortError"));
 
 /**
  * Extracts a readable error message from any error type.
@@ -12,12 +25,17 @@ export const getErrorMessage = (err: unknown): string => {
   }
   if (err && typeof err === "object" && "message" in err) {
     const msg = (err as { message: unknown }).message;
-    return typeof msg === "string" ? msg : JSON.stringify(msg);
+    if (typeof msg === "string") return msg;
+    try {
+      return JSON.stringify(msg) ?? "Unknown error occurred";
+    } catch {
+      return "Unknown error occurred";
+    }
   }
   try {
-    return JSON.stringify(err);
+    return JSON.stringify(err) ?? "Unknown error occurred";
   } catch {
-    return String(err);
+    return "Unknown error occurred";
   }
 };
 
@@ -335,6 +353,15 @@ export const extractErrorDetails = (
   // Extract provider-specific error details (AI SDK format). Walk common
   // wrapper fields so stream/UI wrappers do not hide APICallError diagnostics.
   for (const source of records) {
+    if (isBrowserHandoffReadError(source)) {
+      details.errorOrigin = "browser_handoff_read";
+    }
+    if (source.origin === "auxiliary_vision") {
+      details.errorOrigin = "auxiliary_vision";
+      if (source.name === "AuxiliaryVisionTimeoutError") {
+        details.auxiliaryVisionTimedOut = true;
+      }
+    }
     if (details.statusCode === undefined && "statusCode" in source) {
       details.statusCode = source.statusCode;
     }
@@ -387,9 +414,9 @@ export type ProviderErrorCategory =
   | "unknown";
 
 const PROVIDER_STREAM_TERMINATION_PATTERN =
-  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 const PROVIDER_STREAM_DISCONNECT_PATTERN =
-  /terminated|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+  /terminated|network connection lost|connection (?:reset|closed|lost)|\bread ECONNRESET\b|socket hang up|unexpected eof/i;
 
 const parseHttpStatus = (value: unknown): number | undefined => {
   const code =
@@ -487,6 +514,8 @@ export const getProviderStatusCode = (
 export const getProviderErrorCategory = (
   details: Record<string, unknown>,
 ): ProviderErrorCategory => {
+  // SDK abort wrappers must not hide our locally attributed vision deadline.
+  if (details.auxiliaryVisionTimedOut === true) return "timeout";
   const statusCode =
     parseHttpStatus(details.statusCode) ??
     parseHttpStatus(details.providerErrorCode);
@@ -495,18 +524,23 @@ export const getProviderErrorCategory = (
   if (statusCode != null && statusCode >= 500) return "provider_5xx";
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
+  const fallbackStatusCode = parseHttpStatus(details.errorCode);
+  if (fallbackStatusCode === 429) return "rate_limited";
+  if (
+    fallbackStatusCode != null &&
+    fallbackStatusCode >= 400 &&
+    fallbackStatusCode < 500
+  )
+    return "provider_4xx";
+
   const message = getProviderMessageText(details);
   if (PROVIDER_STREAM_TERMINATION_PATTERN.test(message)) {
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
 
-  const fallbackStatusCode = parseHttpStatus(details.errorCode);
-  if (fallbackStatusCode === 429) return "rate_limited";
   if (fallbackStatusCode != null && fallbackStatusCode >= 500)
     return "provider_5xx";
-  if (fallbackStatusCode != null && fallbackStatusCode >= 400)
-    return "provider_4xx";
 
   return "unknown";
 };
@@ -654,6 +688,12 @@ export const extractRetryAttempts = (
  *   "<friendly explanation>\n\nDetails: <provider_name> returned <status>: <detail>"
  */
 export const getUserFriendlyProviderError = (error: unknown): string => {
+  const diagnostics = extractErrorDetails(error);
+  if (diagnostics.errorOrigin === "auxiliary_vision") {
+    return getProviderErrorCategory(diagnostics) === "timeout"
+      ? "Image analysis took too long. Please retry or send fewer images."
+      : "Image analysis could not be completed. Please retry or send fewer images.";
+  }
   const statusCode = extractStatusCode(error);
   const { providerName, detail } = extractProviderDetails(error);
   const overflowKind = classifyProviderOverflowError(error);

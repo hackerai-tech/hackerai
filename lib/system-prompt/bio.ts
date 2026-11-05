@@ -1,6 +1,5 @@
 import type { UserCustomization } from "@/types";
 
-// User bio generation with optimized logic
 export const generateUserBio = (
   userCustomization: UserCustomization | null,
 ): string => {
@@ -8,11 +7,11 @@ export const generateUserBio = (
     return "";
   }
 
-  const { nickname, occupation, additional_info, traits } = userCustomization;
+  const { nickname, occupation, additional_info } = userCustomization;
 
   // Early return if no meaningful content
   const hasProfileContent = nickname || occupation || additional_info;
-  if (!hasProfileContent && !traits) {
+  if (!hasProfileContent) {
     return "";
   }
 
@@ -27,20 +26,7 @@ export const generateUserBio = (
     .filter(([, value]) => value)
     .map(([label, value]) => `${label}: ${value}`);
 
-  const userInstructionsSection = traits
-    ? `\nUser's Instructions\nThe user provided the additional info about how they would like you to respond:\n\`${traits}\``
-    : "";
-
-  // Final check - return empty if still no content
-  if (userProfileLines.length === 0 && !traits) {
-    return "";
-  }
-
-  // Template for user bio section
-  const profileContent =
-    userProfileLines.length > 0
-      ? `${userProfileLines.join("\n")}${userInstructionsSection}`
-      : userInstructionsSection;
+  const profileContent = userProfileLines.join("\n");
 
   return `
 

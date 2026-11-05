@@ -282,7 +282,7 @@ export function getRegionalExecutionContextForVercelRequest(
 /**
  * Trigger.dev ignores per-run region selection in local development. Deployed
  * runs must confirm actual placement before using the requested region for
- * storage or sandbox policy, including MIOSA's verified-region requirement.
+ * storage or sandbox policy.
  */
 export function assertTriggerRunRegion(options: {
   requestedRegion: TriggerRunRegion;
@@ -293,13 +293,10 @@ export function assertTriggerRunRegion(options: {
     return;
   }
 
-  // Trigger's deployed run metadata can append placement details to the AWS
-  // region (for example, us-east-1:v2:ondemand:...). Keep the region boundary
-  // explicit so a different AWS region never passes this check.
-  const actualRegionMatches =
-    options.actualRegion === options.requestedRegion ||
-    options.actualRegion?.startsWith(`${options.requestedRegion}:v2:`);
-  if (!actualRegionMatches) {
+  // Trigger may report a qualified worker queue, such as
+  // us-east-1:v2:ondemand:fresh:container:stable. Its region is before the colon.
+  const actualRegion = options.actualRegion?.split(":", 1)[0];
+  if (actualRegion !== options.requestedRegion) {
     throw new TriggerRegionMismatchError(
       options.requestedRegion,
       options.actualRegion,

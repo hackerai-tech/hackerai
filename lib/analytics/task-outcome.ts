@@ -1,17 +1,32 @@
-import { PAID_TASK_OUTCOME_FLAG } from "../feedback/task-outcome";
+import {
+  EXPERIMENT_TASK_OUTCOME_FLAG,
+  PAID_TASK_OUTCOME_FLAG,
+} from "../feedback/task-outcome";
+import { AGENT_CONTEXT_FEEDBACK_FLAG } from "../feedback/agent-context";
 
 /** Shared allowlist: never pass the full database row or user content to PostHog. */
 export function taskOutcomeProperties(row: {
   request_id: string;
   message_id: string;
   chat_id: string;
-  survey_kind: "new_paid";
+  survey_kind:
+    "new_paid" | "model_experiment" | "current_experiment" | "agent_context";
+  experiment_key?: string;
+  experiment_variant?: string;
+  experiment_request_id?: string;
+  selected_model_override?: string;
+  assigned_model?: string;
+  baseline_model?: string;
+  feedback_phase?: string;
+  trigger_run_id?: string;
+  source_history_chars?: number;
+  source_has_prior_summary?: boolean;
   mode: string;
   subscription_tier: string;
   release: string;
-  paid_started_at: number;
-  stripe_subscription_id: string;
-  paid_start_invoice_id: string;
+  paid_started_at?: number;
+  stripe_subscription_id?: string;
+  paid_start_invoice_id?: string;
   baseline_renewal_at?: number;
   billing_interval?: string;
   selected_at?: number;
@@ -20,8 +35,37 @@ export function taskOutcomeProperties(row: {
   reason?: string;
 }) {
   return {
-    survey_key: PAID_TASK_OUTCOME_FLAG,
-    survey_version: 2,
+    survey_key:
+      row.survey_kind === "agent_context"
+        ? AGENT_CONTEXT_FEEDBACK_FLAG
+        : row.survey_kind === "current_experiment"
+          ? EXPERIMENT_TASK_OUTCOME_FLAG
+          : PAID_TASK_OUTCOME_FLAG,
+    survey_version:
+      row.survey_kind === "agent_context"
+        ? 4
+        : row.survey_kind === "current_experiment"
+          ? 3
+          : 2,
+    ...(row.survey_kind === "agent_context" && {
+      experiment_key: row.experiment_key,
+      experiment_variant: row.experiment_variant,
+      experiment_request_id: row.experiment_request_id,
+      selected_model_override: row.selected_model_override,
+      feedback_phase: row.feedback_phase,
+      trigger_run_id: row.trigger_run_id,
+      source_history_chars: row.source_history_chars,
+      source_has_prior_summary: row.source_has_prior_summary,
+    }),
+    ...(row.survey_kind === "current_experiment" && {
+      experiment_key: row.experiment_key,
+      experiment_variant: row.experiment_variant,
+      experiment_request_id: row.experiment_request_id,
+      selected_model_override: row.selected_model_override,
+      assigned_model: row.assigned_model,
+      baseline_model: row.baseline_model,
+      feedback_phase: row.feedback_phase,
+    }),
     survey_kind: row.survey_kind,
     survey_request_id: row.request_id,
     selected_at: row.selected_at,

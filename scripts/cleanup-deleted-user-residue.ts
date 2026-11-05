@@ -2,7 +2,7 @@
 
 import { config } from "dotenv";
 import { resolve } from "path";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import { api } from "../convex/_generated/api";
 
 config({ path: resolve(process.cwd(), ".env.e2e") });
@@ -159,7 +159,7 @@ async function main() {
     );
   }
 
-  const client = new ConvexHttpClient(convexUrl);
+  const client = createServiceConvexClient(convexUrl);
   const result = await client.mutation(
     api.userDeletion.cleanupDeletedUserResidue,
     {

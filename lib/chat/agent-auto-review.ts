@@ -2,10 +2,13 @@ import { generateText, Output, type UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import { myProvider } from "@/lib/ai/providers";
 import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
-import { isAgentAutoReviewFilesystemDeletionCommand } from "@/lib/chat/agent-auto-review-evidence";
+import {
+  getAgentAutoReviewInspectionKind,
+  isAgentAutoReviewFilesystemDeletionCommand,
+} from "@/lib/chat/agent-auto-review-evidence";
 import type {
   AgentPermissionMode,
   AgentAutoReviewActionContext,
@@ -28,10 +31,8 @@ const CONVERSATION_CONTEXT_SEPARATOR =
   "\n\n--- next retained conversation item ---\n\n";
 const USER_CONTEXT_TRUNCATION_TAG = "user_content_truncated";
 export const AGENT_AUTO_REVIEW_TIMEOUT_MS = 15_000;
-export const AGENT_AUTO_REVIEW_MODEL = resolveTierToProviderKey(
-  "hackerai-standard",
-  "agent",
-);
+// Approval decisions have their own model policy, independent of user tiers.
+export const AGENT_AUTO_REVIEW_MODEL = "model-glm-5.3-flash-agent";
 export const AGENT_AUTO_REVIEW_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
@@ -570,6 +571,37 @@ export async function reviewAgentToolAction({
       rationale: "The terminal state was truncated, so the user must decide.",
     });
   }
+  if (
+    request.autoReviewContext?.type === "terminal_interaction" &&
+    request.autoReviewContext.action === "send" &&
+    request.autoReviewContext.translatedInput &&
+    ["script", "package_task"].includes(
+      getAgentAutoReviewInspectionKind(
+        request.autoReviewContext.translatedInput.replace(/[\r\n]+$/u, ""),
+      ) ?? "",
+    )
+  ) {
+    return failureDecision({
+      failureClass: "missing_context",
+      latencyMs: Date.now() - startedAt,
+      rationale:
+        "The terminal input could run a script that was not safely inspected, so the user must decide.",
+    });
+  }
+  if (
+    request.autoReviewContext?.type === "terminal_command" &&
+    ["script", "package_task"].includes(
+      getAgentAutoReviewInspectionKind(request.autoReviewContext.command) ?? "",
+    ) &&
+    request.autoReviewContext.inspection?.status !== "resolved"
+  ) {
+    return failureDecision({
+      failureClass: "missing_context",
+      latencyMs: Date.now() - startedAt,
+      rationale:
+        "The indirect command could not be safely inspected, so the user must decide.",
+    });
+  }
   if (!actionHasCompleteContext(request.autoReviewContext)) {
     return failureDecision({
       failureClass: "missing_context",
@@ -582,6 +614,15 @@ export async function reviewAgentToolAction({
   const ruleDecision = reviewByRule(request);
   if (ruleDecision) {
     return { ...ruleDecision, latencyMs: Date.now() - startedAt };
+  }
+
+  if (!authorizationContext.complete) {
+    return failureDecision({
+      failureClass: "context_truncated",
+      latencyMs: Date.now() - startedAt,
+      rationale:
+        "A user instruction was omitted or truncated, so the user must decide.",
+    });
   }
 
   const controller = new AbortController();

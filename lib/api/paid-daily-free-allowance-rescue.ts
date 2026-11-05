@@ -13,7 +13,9 @@ import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 
 export function getPaidDailyFreeAllowanceModel(mode: ChatMode) {
-  return mode === "agent" ? "model-deepseek-v4-flash-0731" : "ask-model-free";
+  return mode === "agent"
+    ? "model-deepseek-v4-flash-vision-pro"
+    : "ask-model-free";
 }
 
 type PaidDailyFreeAllowanceEvent =

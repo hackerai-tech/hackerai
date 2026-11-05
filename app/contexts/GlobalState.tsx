@@ -21,6 +21,7 @@ import {
   type QueueBehavior,
   type SandboxPreference,
   isChatMode,
+  isSidebarTerminal,
   normalizeSelectedModelForSubscription,
 } from "@/types/chat";
 import type { Todo } from "@/types";
@@ -75,6 +76,7 @@ const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 interface GlobalStateType {
   // File upload state
   uploadedFiles: UploadedFileState[];
+  getUploadedFiles: () => UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
   removeUploadedFile: (target: number | UploadedFileState["file"]) => void;
@@ -130,11 +132,16 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
-  queueMessage: (text: string, files?: FileMessagePart[]) => void;
+  queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
   removeQueuedMessage: (id: string) => void;
+  setQueuedMessageDelivery: (
+    id: string,
+    status: NonNullable<QueuedMessage["deliveryStatus"]>,
+    firstAttemptAt: number,
+  ) => void;
   clearQueue: () => void;
 
   // Queue behavior preference
@@ -175,6 +182,7 @@ interface GlobalStateType {
   clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
+  consumeBrowserTakeoverRequest: (requestId: string) => void;
   closeSidebar: () => void;
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
@@ -257,7 +265,28 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const initialSavedChatModeRef = useRef<ChatMode | null>(null);
   const hasUserSelectedModeThisSessionRef = useRef(false);
   const agentFirstDefaultAppliedRef = useRef(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadedFileState[]>(
+    [],
+  );
+  const uploadedFilesRef = useRef<UploadedFileState[]>([]);
+  const getUploadedFiles = useCallback(() => uploadedFilesRef.current, []);
+  // Admission and composer cleanup must observe attachment changes immediately,
+  // before React publishes the corresponding render.
+  const setUploadedFiles = useCallback(
+    (
+      update:
+        | UploadedFileState[]
+        | ((files: UploadedFileState[]) => UploadedFileState[]),
+    ) => {
+      const next =
+        typeof update === "function"
+          ? update(uploadedFilesRef.current)
+          : update;
+      uploadedFilesRef.current = next;
+      setUploadedFilesState(next);
+    },
+    [],
+  );
   const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
@@ -463,7 +492,21 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   ] = useState(false);
 
   // Message queue state (for Agent mode queueing)
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+  const [messageQueue, setMessageQueueState] = useState<QueuedMessage[]>([]);
+  // Queue admission must be synchronous even when React batches submissions.
+  // Every queue mutation updates this snapshot before publishing UI state.
+  const messageQueueRef = useRef<QueuedMessage[]>([]);
+  const setMessageQueue = useCallback(
+    (
+      update: QueuedMessage[] | ((queue: QueuedMessage[]) => QueuedMessage[]),
+    ) => {
+      const next =
+        typeof update === "function" ? update(messageQueueRef.current) : update;
+      messageQueueRef.current = next;
+      setMessageQueueState(next);
+    },
+    [],
+  );
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
     string | null
   >(null);
@@ -560,8 +603,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Model selection — HackerAI tier ids (Lite/Pro/Max) are mode-agnostic;
-  // the active model is resolved server-side via resolveTierToProviderKey.
+  // Paid Agent tier ids are resolved to providers server-side.
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModel();
     return saved ?? "auto";
@@ -1103,9 +1145,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     (file) => file.uploading || file.error,
   );
 
-  const addUploadedFile = useCallback((file: UploadedFileState) => {
-    setUploadedFiles((prev) => [...prev, file]);
-  }, []);
+  const addUploadedFile = useCallback(
+    (file: UploadedFileState) => {
+      setUploadedFiles((prev) => [...prev, file]);
+    },
+    [setUploadedFiles],
+  );
 
   const removeUploadedFile = useCallback(
     (target: number | UploadedFileState["file"]) => {
@@ -1115,7 +1160,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   const updateUploadedFile = useCallback(
@@ -1131,53 +1176,76 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         ),
       );
     },
-    [],
+    [setUploadedFiles],
   );
 
   // Message queue handlers
   const queueMessage = useCallback(
     (text: string, files?: FileMessagePart[]) => {
-      setMessageQueue((prev) => {
-        // Limit queue size to 10 messages
-        if (prev.length >= 10) {
-          toast.error("Queue is full", {
-            description:
-              "Please wait for queued messages to send before adding more.",
-          });
-          return prev;
-        }
-
-        const newMessage: QueuedMessage = {
-          id: uuidv4(),
-          text,
-          files,
-          timestamp: Date.now(),
-        };
-        return [...prev, newMessage];
-      });
+      if (messageQueueRef.current.length >= 10) {
+        toast.error("Queue is full", {
+          description:
+            "Please wait for queued messages to send before adding more.",
+        });
+        return undefined;
+      }
+      const id = uuidv4();
+      const newMessage: QueuedMessage = {
+        id,
+        text,
+        files,
+        timestamp: Date.now(),
+      };
+      setMessageQueue((prev) => [...prev, newMessage]);
+      return id;
     },
-    [],
+    [setMessageQueue],
   );
 
-  const removeQueuedMessage = useCallback((id: string) => {
-    setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
-    setEditingQueuedMessageId((currentId) =>
-      currentId === id ? null : currentId,
-    );
-  }, []);
+  const removeQueuedMessage = useCallback(
+    (id: string) => {
+      setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+      setEditingQueuedMessageId((currentId) =>
+        currentId === id ? null : currentId,
+      );
+    },
+    [setMessageQueue],
+  );
 
-  const updateQueuedMessage = useCallback((id: string, text: string) => {
-    setMessageQueue((prev) =>
-      prev.map((message) =>
-        message.id === id ? { ...message, text } : message,
-      ),
-    );
-  }, []);
+  const setQueuedMessageDelivery = useCallback(
+    (
+      id: string,
+      deliveryStatus: NonNullable<QueuedMessage["deliveryStatus"]>,
+      firstAttemptAt: number,
+    ) => {
+      setMessageQueue((prev) =>
+        prev.map((message) =>
+          message.id === id
+            ? { ...message, deliveryStatus, firstAttemptAt }
+            : message,
+        ),
+      );
+    },
+    [setMessageQueue],
+  );
+
+  const updateQueuedMessage = useCallback(
+    (id: string, text: string) => {
+      setMessageQueue((prev) =>
+        prev.map((message) =>
+          message.id === id && !message.deliveryStatus
+            ? { ...message, text }
+            : message,
+        ),
+      );
+    },
+    [setMessageQueue],
+  );
 
   const clearQueue = useCallback(() => {
     setMessageQueue([]);
     setEditingQueuedMessageId(null);
-  }, []);
+  }, [setMessageQueue]);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     chatNavigationHandlerRef.current?.(chatId);
@@ -1226,6 +1294,18 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
+
+  const consumeBrowserTakeoverRequest = useCallback((requestId: string) => {
+    setSidebarContent((current) => {
+      if (
+        !current ||
+        !isSidebarTerminal(current) ||
+        current.browserTakeoverRequest?.requestId !== requestId
+      )
+        return current;
+      return { ...current, browserTakeoverRequest: undefined };
+    });
+  }, []);
 
   const closeSidebar = useCallback(() => {
     setSidebarOpen(false);
@@ -1289,6 +1369,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const value: GlobalStateType = {
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     addUploadedFile,
     removeUploadedFile,
@@ -1326,6 +1407,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     clearUploadedFiles,
     openSidebar,
     updateSidebarContent,
+    consumeBrowserTakeoverRequest,
     closeSidebar,
     toggleChatSidebar,
     initializeChat,
@@ -1353,6 +1435,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
+    setQueuedMessageDelivery,
     clearQueue,
 
     queueBehavior,

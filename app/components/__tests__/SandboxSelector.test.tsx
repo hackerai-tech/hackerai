@@ -1,6 +1,15 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+
+let mockIsMobile: boolean | undefined = false;
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 
 const mockGlobalState = {
   subscription: "free",
@@ -41,10 +50,47 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
+  it("keeps routine cloud selection free of workspace management", () => {
+    mockGlobalState.subscription = "pro";
+    const onChange = jest.fn();
+    render(<SandboxSelector value="e2b" onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Manage workspaces" }),
+    ).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/sandbox/workspaces?manage=1",
+      expect.any(Object),
+    );
+
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Cloud" }),
+    );
+    expect(onChange).toHaveBeenCalledWith("e2b");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it.each([true, false])(
+    "closes the menu when the mobile layout changes from %s",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const { rerender } = render(<SandboxSelector value="e2b" />);
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+      mockIsMobile = !mobile;
+      rerender(<SandboxSelector value="e2b" />);
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+    },
+  );
+
   it("keeps its trigger within constrained mobile toolbars", () => {
     render(<SandboxSelector value="desktop" />);
 
-    expect(screen.getByRole("button", { name: /local/i })).toHaveClass(
+    expect(screen.getByRole("button", { name: /This computer/i })).toHaveClass(
       "max-w-full",
       "min-w-0",
       "shrink",
@@ -52,6 +98,7 @@ describe("SandboxSelector", () => {
   });
 
   beforeEach(() => {
+    mockIsMobile = false;
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
@@ -63,11 +110,11 @@ describe("SandboxSelector", () => {
     })) as typeof fetch;
   });
 
-  it("shows Local reconnecting instead of Cloud while Desktop reconnects", () => {
+  it("shows This computer reconnecting instead of Cloud while Desktop reconnects", () => {
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /Local reconnecting/i }),
+      screen.getByRole("button", { name: /This computer reconnecting/i }),
     ).toBeInTheDocument();
   });
 
@@ -75,7 +122,7 @@ describe("SandboxSelector", () => {
     mockGlobalState.desktopEnvironmentId = "this-desktop";
     render(<SandboxSelector value="desktop-environment:this-desktop" />);
     expect(
-      screen.getByRole("button", { name: /Local reconnecting/i }),
+      screen.getByRole("button", { name: /This computer reconnecting/i }),
     ).toBeInTheDocument();
   });
 
@@ -107,19 +154,21 @@ describe("SandboxSelector", () => {
     expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
   });
 
-  it("keeps the selected local label neutral while connections hydrate", () => {
+  it("keeps the selected computer label neutral while connections hydrate", () => {
     mockGlobalState.desktopBridgeStatus = "idle";
     mockGlobalState.localConnections = undefined;
 
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /^Local$/i }),
+      screen.getByRole("button", { name: /^This computer$/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Local unavailable/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/This computer unavailable/i),
+    ).not.toBeInTheDocument();
   });
 
-  it("shows Local unavailable instead of Cloud after Desktop recovery fails", () => {
+  it("shows This computer unavailable instead of Cloud after Desktop recovery fails", () => {
     mockGlobalState.desktopBridgeStatus = "failed";
     mockGlobalState.localConnections = [
       { connectionId: "stale-desktop", isDesktop: true },
@@ -128,7 +177,7 @@ describe("SandboxSelector", () => {
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /Local unavailable/i }),
+      screen.getByRole("button", { name: /This computer unavailable/i }),
     ).toBeInTheDocument();
   });
 
@@ -148,6 +197,24 @@ describe("SandboxSelector", () => {
     expect(screen.getByRole("button", { name: /4p3x/i })).toBeInTheDocument();
   });
 
+  it.each([
+    ["failed", "This computer unavailable"],
+    ["connecting", "This computer reconnecting"],
+  ])(
+    "keeps the compact %s label short with an accessible status",
+    (status, label) => {
+      mockGlobalState.desktopBridgeStatus = status;
+      render(<SandboxSelector value="desktop" compact />);
+
+      expect(screen.getByText("This computer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: label })).toHaveAttribute(
+        "title",
+        label,
+      );
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    },
+  );
+
   it("caps long remote names in the chat toolbar without losing the full name", () => {
     const hostname = "admin1-HP-EliteDesk-800-G3-SFF-with-a-long-suffix";
     mockGlobalState.desktopBridgeStatus = "connected";
@@ -164,7 +231,7 @@ describe("SandboxSelector", () => {
 
     expect(screen.getByRole("button", { name: hostname })).toHaveClass(
       "max-w-full",
-      "sm:max-w-44",
+      "sm:max-w-[min(100%,16rem)]",
       "min-w-0",
     );
     expect(screen.getByTitle(hostname)).toBeInTheDocument();
@@ -218,7 +285,12 @@ describe("SandboxSelector", () => {
       rerender(<SandboxSelector value={value} onChange={onChange} />);
       expect(onChange).not.toHaveBeenCalled();
       fireEvent.click(
-        screen.getByRole("button", { name: /Local unavailable/i }),
+        screen.getByRole("button", {
+          name:
+            value === "desktop"
+              ? "This computer unavailable"
+              : "Selected computer unavailable",
+        }),
       );
       fireEvent.click(await screen.findByRole("button", { name: "Cloud" }));
       expect(onChange).toHaveBeenCalledTimes(1);

@@ -6,11 +6,12 @@ import {
   mutation,
   query,
   type MutationCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import type { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
+import { getSidebarChatAttention } from "./lib/sidebarChatAttention";
 
 const MAX_PROJECT_NAME_LENGTH = 80;
 const MAX_FOLDER_PATH_LENGTH = 4096;
@@ -361,11 +362,24 @@ export const getProjectThreads = query({
         .map((chat) => [chat.id, chat]),
     );
 
+    const attention = await getSidebarChatAttention(ctx, result.page);
     return {
       ...result,
       page: result.page.map(
-        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => ({
+        (
+          {
+            objective_checkpoint: _privateObjectiveCheckpoint,
+            next_actions: _privateNextActions,
+            active_agent_user_wait: privateUserWait,
+            ...chat
+          },
+          index,
+        ) => ({
           ...chat,
+          ...(privateUserWait
+            ? { active_agent_user_wait: { status: privateUserWait.status } }
+            : {}),
+          ...attention[index],
           ...(chat.branched_from_chat_id
             ? {
                 branched_from_title: resolveBranchedFromTitle(

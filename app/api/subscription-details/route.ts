@@ -1,4 +1,8 @@
 import { stripe } from "../stripe";
+import {
+  PRO_YEARLY_PRICE_LOOKUP_KEY,
+  isCurrentProYearlyPrice,
+} from "@/lib/pricing/pro-yearly";
 import { workos } from "../workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -180,6 +184,15 @@ export const POST = async (req: NextRequest) => {
     }
 
     const targetPrice = targetPrices.data[0];
+    if (
+      targetPlan === PRO_YEARLY_PRICE_LOOKUP_KEY &&
+      !isCurrentProYearlyPrice(targetPrice)
+    ) {
+      return NextResponse.json(
+        { error: "Pro yearly price is unavailable" },
+        { status: 503 },
+      );
+    }
     const targetAmount = targetPrice.unit_amount
       ? targetPrice.unit_amount / 100
       : 0;
@@ -313,31 +326,14 @@ export const POST = async (req: NextRequest) => {
         // Next invoice will be the full target amount times quantity (no proration on renewal)
         nextInvoiceAmountEstimate = targetAmount * quantity;
       } catch (invoiceError) {
-        console.error(
-          "Error fetching invoice preview, using fallback calculation:",
-          invoiceError,
+        console.error("Error fetching invoice preview:", invoiceError);
+        return NextResponse.json(
+          {
+            error:
+              "Unable to calculate the charge. Please try again before confirming.",
+          },
+          { status: 503 },
         );
-
-        // Fallback: Manual calculation based on remaining time
-        const fallbackPeriodEnd = (subscription as any)
-          .current_period_end as number;
-        const fallbackPeriodStart = (subscription as any)
-          .current_period_start as number;
-        const nowInSeconds = Math.floor(Date.now() / 1000);
-        const totalPeriodDuration = fallbackPeriodEnd - fallbackPeriodStart;
-        const remainingTime = fallbackPeriodEnd - nowInSeconds;
-        const proratedRatio = remainingTime / totalPeriodDuration;
-
-        // Credit is the unused portion of the current subscription
-        const estimatedCredit = Math.max(0, currentAmount * proratedRatio);
-        const targetTotal = targetAmount * quantity;
-        totalDue = Math.max(0, targetTotal - estimatedCredit);
-
-        // Calculate actual proration credit from what they pay (keeps display consistent)
-        proratedCredit = Math.max(0, targetTotal - totalDue);
-
-        additionalCredit = 0; // Fallback doesn't calculate excess credit
-        nextInvoiceAmountEstimate = targetAmount * quantity;
       }
 
       // If confirm flag is true, actually update the subscription

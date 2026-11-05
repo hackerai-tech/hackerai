@@ -12,11 +12,13 @@ import { useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
+import { LocalFilePreviewCard } from "./LocalFilePreviewCard";
 import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import { isTauriEnvironment, openDownloadsFolder } from "../hooks/useTauri";
+import { startBlobDownload } from "@/lib/utils/file-download";
 
 const FilePartRendererComponent = ({
   part,
@@ -140,17 +142,9 @@ const FilePartRendererComponent = ({
     try {
       setDownloadingFile(true);
       const response = await fetch(url);
+      if (!response.ok) throw new Error("File download request failed");
       const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      URL.revokeObjectURL(blobUrl);
+      startBlobDownload(blob, fileName);
 
       if (isTauriEnvironment()) {
         toast.success(`Downloaded ${fileName}`, {
@@ -174,13 +168,7 @@ const FilePartRendererComponent = ({
     async (fileName: string) => {
       const cache = fileUrlCacheRef.current;
 
-      // Check if we already have the URL cached or in state
-      if (fileUrl) {
-        await handleDownload(fileUrl, fileName);
-        return;
-      }
-
-      // Check cache first
+      // Recheck expiry on every click; component state can outlive a signed URL.
       if (cache && part.fileId) {
         const cachedUrl = cache.getCachedUrl(part.fileId);
         if (cachedUrl) {
@@ -208,7 +196,6 @@ const FilePartRendererComponent = ({
         }
 
         if (url) {
-          setFileUrl(url);
           await handleDownload(url, fileName);
         } else {
           setUrlError("Failed to get download URL");
@@ -224,11 +211,11 @@ const FilePartRendererComponent = ({
             : error instanceof Error
               ? error.message
               : "Failed to fetch download URL";
-        setUrlError(errorMessage);
+        // Keep the download control available so a temporary failure can be retried.
         toast.error(errorMessage);
       }
     },
-    [fileUrl, handleDownload, part.fileId, part.url, getFileUrlAction],
+    [handleDownload, part.fileId, part.url, getFileUrlAction],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -319,13 +306,8 @@ const FilePartRendererComponent = ({
 
       if (part.storage === "local-desktop") {
         return (
-          <FilePreviewCard
-            partId={partId}
-            icon={<File className="h-6 w-6 text-white" />}
+          <LocalFilePreviewCard
             fileName={part.name || part.filename || "Local file"}
-            subtitle="Local-only attachment"
-            url={undefined}
-            fileId={undefined}
           />
         );
       }

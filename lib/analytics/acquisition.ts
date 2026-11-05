@@ -14,6 +14,7 @@ const COMMUNITY_DOMAINS = new Set([
   "linkedin.com",
   "reddit.com",
   "tiktok.com",
+  "t.co",
   "twitter.com",
   "x.com",
   "youtube.com",

@@ -422,7 +422,7 @@ describe("processMessageFiles image size guards", () => {
       }),
       {
         type: "text",
-        text: `<inline_image_attachment filename="small.png" sandbox_path="${result.sandboxFiles[0].localPath}" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`,
+        text: `<inline_image_attachment filename="small.png" sandbox_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`,
       },
     ]);
   });
@@ -469,7 +469,7 @@ describe("processMessageFiles image size guards", () => {
       }),
       {
         type: "text",
-        text: `<attachment filename="report.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
+        text: `<attachment filename="report.pdf" local_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       },
     ]);
     expect(result.containsPdfFiles).toBe(true);
@@ -502,7 +502,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: `<attachment filename="large.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
+        text: `<attachment filename="large.pdf" local_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       },
     ]);
     expect(result.containsPdfFiles).toBe(false);
@@ -657,7 +657,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: `<attachment filename="broken.png" local_path="${result.sandboxFiles[0].localPath}" />`,
+        text: `<attachment filename="broken.png" local_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       },
     ]);
   });
@@ -752,7 +752,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: `<attachment filename="large.png" local_path="${result.sandboxFiles[0].localPath}" />`,
+        text: `<attachment filename="large.png" local_path="${result.sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       },
     ]);
   });
@@ -813,7 +813,7 @@ describe("processMessageFiles image size guards", () => {
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: `<attachment filename="legacy-large.png" local_path="${localPath}" />`,
+        text: `<attachment filename="legacy-large.png" local_path="${localPath}" staging="requested_this_run" />`,
       },
     ]);
   });

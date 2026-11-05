@@ -119,6 +119,39 @@ describe("POST /api/subscription-details", () => {
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
   });
 
+  it.each([28800, 25200])(
+    "validates Pro annual price %i before plan preview or changes",
+    async (amount) => {
+      mockListPrices.mockResolvedValue({
+        data: [
+          {
+            id: "price_pro_yearly",
+            lookup_key: "pro-yearly-plan",
+            active: true,
+            billing_scheme: "per_unit",
+            type: "recurring",
+            unit_amount: amount,
+            currency: "usd",
+            recurring: {
+              interval: "year",
+              interval_count: 1,
+              usage_type: "licensed",
+            },
+          },
+        ],
+      } as never);
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest({ plan: "pro-yearly-plan" }));
+      expect(response.status).toBe(amount === 28800 ? 200 : 503);
+      if (amount === 28800) {
+        expect(await response.json()).toMatchObject({ totalDue: 288 });
+      } else {
+        expect(mockCreatePreview).not.toHaveBeenCalled();
+        expect(mockUpdateSubscription).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each(["pro-plus-monthly-plan", "pro-plus-yearly-plan"])(
     "accepts %s as a target plan",
     async (plan) => {

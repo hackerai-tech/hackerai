@@ -4,6 +4,8 @@ import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
 import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
 import { phLogger } from "@/lib/posthog/server";
 import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
+import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
+import { createAgentRuntimeCheckpoint } from "@/lib/chat/agent-runtime-checkpoint";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -12,15 +14,31 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.structuredClone = originalClone;
 });
-import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
+import { MAX_TOKENS_PAID, MAX_TOKENS_FREE } from "@/lib/token-limits";
+import {
+  getSummarizationThresholdTokens,
+  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
+} from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
 const mockStreamText = jest.fn();
+const mockLimitModelImageToolResults = jest.fn();
+const mockSummaryGenerateText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
 const mockHistoryFlag = jest.fn(async () => false);
+const mockAbliterationConfigured = jest.fn(() => false);
+const mockAppendAssistantDelta = jest.fn();
+const mockPruneToolOutputs = jest.fn((messages: UIMessage[]) => ({
+  messages,
+  prunedCount: 0,
+}));
+jest.mock("@/lib/ai/abliteration", () => ({
+  ...jest.requireActual("@/lib/ai/abliteration"),
+  isAbliterationConfigured: () => mockAbliterationConfigured(),
+}));
 const mockLoadHistory = jest.fn();
 const mockSaveHistory = jest.fn();
 const mockNotesUpdate = jest.fn();
@@ -42,6 +60,7 @@ const mockDescribeImage = jest.fn(async () => ({
 }));
 
 jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  ...jest.requireActual("@/lib/chat/auxiliary-vision"),
   describeImageWithAuxiliaryVision: (...args: unknown[]) =>
     mockDescribeImage(...args),
 }));
@@ -60,11 +79,11 @@ jest.mock("ai", () => ({
   ),
   stepCountIs: jest.fn(() => () => false),
   streamText: mockStreamText,
+  generateText: (...args: unknown[]) => mockSummaryGenerateText(...args),
   wrapLanguageModel: jest.fn(({ model }) => model),
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   getAppendedNotesUpdate: (...args: unknown[]) => mockNotesUpdate(...args),
-  addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
   applyPrepareStepReminders: async (messages: ModelMessage[]) => messages,
   buildProviderOptions: mockBuildProviderOptions,
   buildSystemPrompt: (prompt: string) => prompt,
@@ -85,17 +104,9 @@ jest.mock("@/lib/chat/summarization", () => ({
 jest.mock("@/lib/chat/summarization/provider-pressure", () => ({
   getProviderPromptPressure: mockGetProviderPromptPressure,
 }));
-jest.mock("@/lib/chat/doom-loop-detection", () => ({
-  detectDoomLoop: () => ({
-    severity: "none",
-    toolNames: [],
-    consecutiveCount: 0,
-  }),
-  generateDoomLoopNudge: () => "",
-}));
 jest.mock("@/lib/chat/agent-long-provider-retry", () => ({
   createAssistantContentLoopMonitor: () => ({
-    appendDelta: () => ({ detected: false }),
+    appendDelta: (...args: unknown[]) => mockAppendAssistantDelta(...args),
   }),
 }));
 jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
@@ -104,24 +115,24 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
     action: "none",
     messages,
   }),
-  pruneToolOutputs: (messages: UIMessage[]) => ({
-    messages,
-    prunedCount: 0,
-  }),
+  pruneToolOutputs: mockPruneToolOutputs,
   pruneModelMessages: (messages: ModelMessage[]) => ({
     messages,
     prunedCount: 0,
   }),
-  limitModelImageToolResults: (messages: ModelMessage[]) => ({
-    messages,
-    totalImageCount: 0,
-    elidedImageCount: 0,
-  }),
+  limitModelImageToolResults: (...args: unknown[]) =>
+    mockLimitModelImageToolResults(...args),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
-  isProviderMultimodalToolResultRejectionError: () => false,
-  toolResultsContainImageViewResult: () => false,
-  uiMessagesContainImageViewResult: () => false,
+  isProviderMultimodalToolResultRejectionError: (error: unknown) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .isProviderMultimodalToolResultRejectionError(error),
+  toolResultsContainImageViewResult: (toolResults: unknown[]) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .toolResultsContainImageViewResult(toolResults),
+  uiMessagesContainImageViewResult: jest.fn(() => false),
 }));
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
@@ -151,9 +162,9 @@ jest.mock("@/lib/provider-usage-cost", () => ({
   getOpenRouterUpstreamInferenceCostFromUsageRaw: () => undefined,
 }));
 jest.mock("@/lib/utils/error-utils", () => ({
+  ...jest.requireActual("@/lib/utils/error-utils"),
   classifyProviderOverflowError: () => null,
   isProviderContentBlockedFinishReasonError: () => false,
-  isProviderContentFilterFinishReason: () => false,
 }));
 
 const {
@@ -488,7 +499,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-flash-vision-pro");
@@ -498,7 +509,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization(
         "model-deepseek-v4-flash-vision-pro",
@@ -650,8 +661,207 @@ describe("retry served-model telemetry", () => {
 });
 
 describe("createAgentStream repeated compaction", () => {
+  it.each(
+    [false, true].flatMap((hasRunTail) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        hasRunTail,
+        selection,
+      })),
+    ),
+  )(
+    "retains a checkpoint across provider recovery and canonical pruning for $selection with tail=$hasRunTail",
+    async ({ hasRunTail, selection }) => {
+      const convert = jest.mocked(require("ai").convertToModelMessages);
+      const previousConvert = convert.getMockImplementation();
+      convert.mockImplementation(
+        jest.requireActual("ai").convertToModelMessages,
+      );
+      try {
+        const source: UIMessage[] = [
+          uiMessage("user", "Inspect the fixture"),
+          {
+            id: "tool",
+            role: "assistant",
+            parts: [
+              { type: "step-start" },
+              {
+                type: "tool-run_terminal_cmd",
+                toolCallId: "completed",
+                state: "output-available",
+                input: { cmd: "inspect" },
+                output: { stdout: "old tool evidence ".repeat(10000) },
+              },
+            ],
+          },
+        ];
+        const state = initAgentStreamState(source, {
+          usedTokens: 100,
+          maxTokens: 200_000,
+        });
+        const context = createTestStreamContext({
+          selectedModelOverride: selection,
+          agentModelContextEnabled: true,
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+        });
+        mockGetProviderPromptPressure.mockReturnValue({
+          reason: "serialized_message_bytes",
+        });
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Verified checkpoint</context_summary>",
+          ),
+          summarizationUsage: {},
+        });
+        const first = (await createAgentStream(
+          "test-model",
+          context as any,
+          state,
+        )) as any;
+        const runTail: ModelMessage[] = hasRunTail
+          ? [
+              {
+                role: "assistant",
+                content: "Completed work covered by the checkpoint",
+              },
+            ]
+          : [];
+        const raw = [...first.messages, ...runTail];
+        await first.prepareStep({ steps: [], messages: raw });
+        expect(state.providerRecoveryContext).toBeDefined();
+        const checkpointMessages = state.providerRecoveryContext!.messages;
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const actualPrune = jest.requireActual(
+          "@/lib/chat/compaction/prune-tool-outputs",
+        ).pruneToolOutputs;
+        mockPruneToolOutputs.mockImplementationOnce((messages) =>
+          actualPrune(messages, 0, 0),
+        );
+        await first.prepareStep({
+          steps: [{ toolResults: [] }],
+          messages: raw,
+        });
+        expect(JSON.stringify(state.finalMessages)).not.toContain(
+          "old tool evidence",
+        );
+        state.finalMessages = [
+          ...state.finalMessages,
+          ...(hasRunTail
+            ? [
+                {
+                  id: "covered",
+                  role: "assistant" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "Completed work covered by the checkpoint",
+                    },
+                  ],
+                },
+              ]
+            : []),
+          uiMessage("resume", "Continue safely"),
+        ];
+        const replacement = (await createAgentStream(
+          "test-model",
+          context as any,
+          state,
+        )) as any;
+        expect(JSON.stringify(replacement.messages)).toContain(
+          "Verified checkpoint",
+        );
+        expect(JSON.stringify(replacement.messages)).toContain(
+          "Continue safely",
+        );
+        expect(
+          replacement.messages.slice(0, checkpointMessages.length),
+        ).toEqual(checkpointMessages);
+        expect(replacement.messages).toHaveLength(
+          checkpointMessages.length + 1,
+        );
+      } finally {
+        convert.mockImplementation(previousConvert);
+      }
+    },
+  );
+  it("retains a compacted prefix and only appends new evidence on provider replacement", async () => {
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: uiMessage(
+        "summary",
+        "<context_summary>Verified checkpoint</context_summary>",
+      ),
+      summarizationUsage: {},
+    });
+    const original = uiMessage("original", "old evidence ".repeat(10000));
+    const state = initAgentStreamState([original], {
+      usedTokens: 100,
+      maxTokens: 200_000,
+    });
+    const context = createTestStreamContext({
+      agentModelContextEnabled: true,
+      selectedModelOverride: "hackerai-max",
+      usageTracker: {},
+      summarizationTracker: {
+        hasSummarized: true,
+        summarizationCount: 1,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
+      },
+    });
+    const first = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    await first.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: first.messages,
+    });
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    state.finalMessages = [
+      original,
+      uiMessage("new", "completed verification after checkpoint"),
+      uiMessage("resume", "Continue safely"),
+    ];
+    const replacement = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(JSON.stringify(replacement.messages)).toContain(
+      "Verified checkpoint",
+    );
+    expect(JSON.stringify(replacement.messages)).toContain(
+      "completed verification after checkpoint",
+    );
+    expect(JSON.stringify(replacement.messages)).not.toContain("old evidence");
+    expect(state.finalMessages[0]).toBe(original);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLimitModelImageToolResults.mockImplementation(
+      (messages: ModelMessage[]) => ({
+        messages,
+        totalImageCount: 0,
+        elidedImageCount: 0,
+      }),
+    );
+    mockPruneToolOutputs
+      .mockReset()
+      .mockImplementation((messages) => ({ messages, prunedCount: 0 }));
+    mockAppendAssistantDelta.mockReset().mockReturnValue({ detected: false });
     mockHistoryFlag.mockResolvedValue(false);
     mockLoadHistory
       .mockReset()
@@ -672,7 +882,1461 @@ describe("createAgentStream repeated compaction", () => {
     mockRunSummarizationStep.mockReset();
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
+    mockSummaryGenerateText.mockReset();
   });
+
+  it("delivers one runtime checkpoint after a settled tool result across stream retries", async () => {
+    let elapsed = 899;
+    const onExposed = jest.fn();
+    const checkpoint = createAgentRuntimeCheckpoint({
+      enabled: true,
+      maxDurationMs: 1000,
+      getElapsedTimeMs: () => elapsed,
+      onExposed,
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      runtimeCheckpoint: checkpoint,
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    const step = { steps: [], stepNumber: 0, messages: stream.messages };
+    expect((await stream.prepareStep(step)).system).not.toContain(
+      "<agent_runtime_checkpoint>",
+    );
+    // A tool can cross the threshold while it runs. Only the following model
+    // preparation inspects the clock; the tool call/result pair remains intact.
+    elapsed = 910;
+    const settled = [
+      ...stream.messages,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            input: {},
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "terminal",
+            output: { type: "text", value: "verified" },
+          },
+        ],
+      },
+    ];
+    const prepared = await stream.prepareStep({ ...step, messages: settled });
+    expect(prepared.system).toContain("<agent_runtime_checkpoint>");
+    expect(prepared.messages.slice(-2)).toEqual(settled.slice(-2));
+    expect(state.finalMessages).toEqual([uiMessage("initial", "Inspect")]);
+    expect(onExposed).not.toHaveBeenCalled();
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onExposed).toHaveBeenCalledTimes(1);
+    expect(
+      (await stream.prepareStep({ ...step, messages: settled, stepNumber: 1 }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    const retried = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(
+      (await retried.prepareStep({ ...step, messages: retried.messages }))
+        .system,
+    ).not.toContain("<agent_runtime_checkpoint>");
+    expect(onExposed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ask", "aborted"])(
+    "does not prepare a runtime notice for %s",
+    async (scenario) => {
+      const takeNotice = jest.fn(() => "runtime notice");
+      const recordExposure = jest.fn();
+      const abortController = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const context = createTestStreamContext({
+        mode: scenario === "ask" ? "ask" : "agent",
+        abortController,
+        runtimeCheckpoint: { takeNotice, recordExposure },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        context as any,
+        state,
+      )) as any;
+      if (scenario === "aborted") abortController.abort();
+      await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+      expect(takeNotice).not.toHaveBeenCalled();
+      expect(recordExposure).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refreshes browser guidance after lazy attachment and when the workspace changes", async () => {
+    let version: string | undefined;
+    const manager = {
+      getSandboxType: () => "cloud",
+      getSandboxInfo: () => ({
+        type: "cloud",
+        provider: "e2b",
+        sandboxVersion: version,
+      }),
+      supportsInteractivePty: async () => true,
+    };
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const context = createTestStreamContext({
+      sandboxManager: manager,
+      cloudNetworkPrompt: async () => "\nNetwork policy stays present.\n",
+      usageTracker: {},
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    expect(stream.system).not.toContain("<agent_browser_runtime>");
+    const prepare = () =>
+      stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+    version = "v12";
+    const legacy = await prepare();
+    expect(legacy.system).toContain("workspace is v12");
+    expect(legacy.system).not.toContain("agent-browser 0.39.3");
+    version = "v13";
+    const upgraded = await prepare();
+    expect(upgraded.system).toContain("agent-browser 0.39.3");
+    expect(upgraded.system).toContain("socket and PID files disappear");
+    expect(upgraded.system).not.toContain("workspace is v12");
+    expect(upgraded.system).toContain("Network policy stays present");
+    version = undefined;
+    expect((await prepare()).system).not.toContain("<agent_browser_runtime>");
+  });
+
+  it.each([
+    ["ask", "cloud", "e2b", "v13"],
+    ["agent", "desktop", undefined, "v13"],
+    ["agent", "remote-connection", undefined, "v13"],
+    ["agent", "cloud", "daytona", "v13"],
+    ["agent", "cloud", "e2b", "v14"],
+  ])(
+    "does not assume E2B browser capabilities for %s / %s / %s / %s",
+    async (mode, type, provider, sandboxVersion) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          sandboxManager: {
+            getSandboxType: () => type,
+            getSandboxInfo: () => ({ type, provider, sandboxVersion }),
+            supportsInteractivePty: async () => true,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      expect(stream.system).not.toContain("<agent_browser_runtime>");
+      expect(
+        (
+          await stream.prepareStep({
+            steps: [],
+            stepNumber: 0,
+            messages: stream.messages,
+          })
+        ).system,
+      ).not.toContain("<agent_browser_runtime>");
+    },
+  );
+
+  it("compacts free Ask history with the context meter disabled", async () => {
+    const { generateSummaryText, buildSummaryMessage } = jest.requireActual(
+      "@/lib/chat/summarization/helpers",
+    );
+    const { getSummaryInputMaxTokens } = jest.requireActual(
+      "@/lib/chat/summarization/constants",
+    );
+    const sourceText =
+      "The verified lab marker is ABC. " +
+      "Earlier verified context. ".repeat(4000);
+    const original = uiMessage("owned-history", sourceText);
+    const state = initAgentStreamState([original], {
+      usedTokens: 0,
+      maxTokens: 0,
+    });
+    state.lastStepInputTokens =
+      getSummarizationThresholdTokens(MAX_TOKENS_FREE) + 1;
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockSummaryGenerateText.mockResolvedValue({
+      text: "Keep the verified lab marker ABC and continue.",
+      finishReason: "stop",
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    // Keep the real source-history budget guard and provider-request preparation.
+    // Only the external generation and summary orchestration are controlled here.
+    mockCompactModelMessagesInRun.mockImplementation(async (options) => {
+      const summary = await generateSummaryText(
+        [],
+        { modelId: "test-summary" },
+        options.mode,
+        options.chatSystemPrompt,
+        false,
+        undefined,
+        undefined,
+        options.abortSignal,
+        options.modelMessages,
+        getSummaryInputMaxTokens(options.maxTokens),
+      );
+      return {
+        summaryMessage: buildSummaryMessage(summary.text),
+        summaryText: summary.text,
+        summarizationUsage: summary.usage,
+      };
+    });
+    const context = createTestStreamContext({
+      mode: "ask",
+      subscription: "free",
+      contextUsageOn: false,
+      ctxSystemTokens: 0,
+      ctxMaxTokens: 0,
+      usageTracker: {},
+      summarizationTracker: {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
+      },
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      context as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      stepNumber: 1,
+      steps: [{ toolResults: [] }],
+      messages: [
+        { role: "user", content: sourceText },
+        { role: "user", content: "Continue verification." },
+      ],
+    });
+    expect(mockSummaryGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ content: sourceText }),
+        ]),
+      }),
+    );
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "Keep the verified lab marker ABC and continue.",
+    );
+    expect(state.finalMessages).toEqual([original]);
+    expect(context.contextUsageOn).toBe(false);
+    expect(state.ctxUsage.maxTokens).toBe(0);
+  });
+
+  it.each([
+    { mode: "agent", modelName: "test-model", authorized: true },
+    { mode: "agent", modelName: "test-model", authorized: false },
+    { mode: "agent", modelName: "model-abliterated", authorized: true },
+    { mode: "ask", modelName: "test-model", authorized: true },
+  ])(
+    "preserves history and authorization on recovery: $mode/$modelName/authorized=$authorized",
+    async ({ mode, modelName, authorized }) => {
+      const sdk = jest.requireActual("ai");
+      const wrap = jest.mocked(require("ai").wrapLanguageModel);
+      wrap.mockImplementation(sdk.wrapLanguageModel);
+      try {
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const original = uiMessage("original", "old evidence ".repeat(1000));
+        const saved = structuredClone(original);
+        const state = initAgentStreamState([original], {
+          usedTokens: 4000,
+          maxTokens: 128000,
+        });
+        state.sourceUiMessages = [original];
+        const recordSummaryStep = jest.fn();
+        const tracker = {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization(step: number) {
+            recordSummaryStep(step);
+            this.hasSummarized = true;
+            this.summarizationCount++;
+          },
+          recordSummarizationUsage: jest.fn(),
+        };
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: uiMessage(
+            "summary",
+            "<context_summary>Completed inspection found marker ABC. Continue verification.</context_summary>",
+          ),
+          summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+        });
+        const rejected = Object.assign(
+          new Error("Content-Length exceeds 5242880 byte limit"),
+          { statusCode: 413 },
+        );
+        const doStream = jest
+          .fn()
+          .mockRejectedValueOnce(rejected)
+          .mockImplementation(async () => ({
+            stream: new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+          }));
+        const model = {
+          specificationVersion: "v3",
+          provider: "test",
+          modelId: "test-model",
+          supportedUrls: {},
+          doGenerate: jest.fn(),
+          doStream,
+        };
+        let handoffReadCount = 0;
+        const stream = (await createAgentStream(
+          modelName,
+          createTestStreamContext({
+            mode,
+            platformAuthorized: authorized,
+            getBrowserHandoffNotes: async () => [
+              {
+                id: "handoff-recovery",
+                text: "HANDOFF: keep my selected account.",
+              },
+              ...(++handoffReadCount > 1
+                ? [
+                    {
+                      id: "handoff-late",
+                      text: "LATE HANDOFF: preserve this new update.",
+                    },
+                  ]
+                : []),
+            ],
+            trackedProvider: { languageModel: () => model },
+            usageTracker: {},
+            summarizationTracker: tracker,
+          }) as any,
+          state,
+        )) as any;
+        const raw: ModelMessage[] = [
+          { role: "user", content: "old evidence ".repeat(1000) },
+        ];
+        const prepared = await stream.prepareStep({ steps: [], messages: raw });
+        const request = (prepared.model ?? stream.model).doStream({
+          prompt: [
+            { role: "system", content: "system" },
+            { role: "user", content: [{ type: "text", text: raw[0].content }] },
+          ],
+        });
+        if (mode === "ask") {
+          await expect(request).rejects.toBe(rejected);
+          expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+        } else {
+          await request;
+          expect(doStream).toHaveBeenCalledTimes(2);
+          const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
+          expect(retryText).toContain("HANDOFF: keep my selected account.");
+          expect(
+            retryText.indexOf("Completed inspection found marker ABC"),
+          ).toBeLessThan(
+            retryText.indexOf("HANDOFF: keep my selected account."),
+          );
+          expect(retryText).toContain(
+            "LATE HANDOFF: preserve this new update.",
+          );
+          if (authorized && modelName !== "model-abliterated") {
+            expect(retryText).toContain(PLATFORM_AUTHORIZATION_ANNOTATION);
+          } else {
+            expect(retryText).not.toContain("<platform_authorization>");
+          }
+          expect(tracker.recordSummarizationUsage).toHaveBeenCalledTimes(1);
+          expect(tracker.summarizationCount).toBe(1);
+          expect(recordSummaryStep).toHaveBeenCalledWith(0);
+          expect(mockCompactModelMessagesInRun).toHaveBeenCalledWith(
+            expect.objectContaining({
+              transcriptModelMessages: raw,
+              sourceUiMessages: [saved],
+            }),
+          );
+          const next: ModelMessage = {
+            role: "assistant",
+            content: "new verification after recovery",
+          };
+          const following = await stream.prepareStep({
+            steps: [{ toolResults: [], response: { messages: [next] } }],
+            messages: [...raw, next],
+          });
+          const content = JSON.stringify(following.messages);
+          expect(content).toContain("Completed inspection found marker ABC");
+          expect(content).toContain("new verification after recovery");
+          expect(content).not.toContain("old evidence old evidence");
+          expect(
+            content.match(/HANDOFF: keep my selected account./g),
+          ).toHaveLength(1);
+          expect(
+            content.match(/LATE HANDOFF: preserve this new update./g),
+          ).toHaveLength(1);
+        }
+        expect(state.finalMessages).toEqual([saved]);
+        expect(state.sourceUiMessages).toEqual([saved]);
+      } finally {
+        wrap.mockImplementation(({ model }: any) => model);
+      }
+    },
+  );
+
+  it.each(
+    [
+      { enabled: false, tokens: 190_000 },
+      { enabled: true, tokens: 190_000 },
+      { enabled: true, tokens: 10_000 },
+    ].flatMap((settings) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        ...settings,
+        selection,
+      })),
+    ),
+  )(
+    "keeps the three-step $selection schedule with enabled=$enabled and tokens=$tokens",
+    async ({ enabled, tokens, selection }) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const text = " ordinary".repeat(tokens);
+      const state = initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: tokens + 100,
+        maxTokens: 200_000,
+      });
+      const baseline =
+        selection === "hackerai-pro"
+          ? "model-deepseek-v4.1-flash-1017-pro"
+          : "model-glm-5.3";
+      const ids: Record<string, string> = {
+        "model-deepseek-v4.1-flash-1017-pro":
+          "deepseek/deepseek-v4.1-flash-1017",
+        "model-abliterated": "abliterated-model-large-flash",
+        "model-abliterated-large-v2": "abliterated-model-large-flash",
+        "model-glm-5.3": "z-ai/glm-5.3",
+      };
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: enabled,
+          selectedModelOverride: selection,
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: ids[name] }),
+          },
+          abliteratedStepRouting: {
+            baselineModel: baseline,
+            generationStepLimit: 3,
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      for (let stepNumber = 0; stepNumber < 4; stepNumber++) {
+        const prepared = await stream.prepareStep({
+          steps: Array.from({ length: stepNumber }, () => ({})),
+          stepNumber,
+          messages: [{ role: "user", content: text }],
+        });
+        expect(prepared.model.modelId).toBe(
+          stepNumber < 3 ? "abliterated-model-large-flash" : ids[baseline],
+        );
+        if (enabled && stepNumber < 3)
+          expect(state.ctxUsage.maxTokens).toBe(508_288);
+      }
+    },
+  );
+
+  it("compacts an oversized restored prefix before the first provider step when UI usage is small", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockHistoryFlag.mockResolvedValue(true);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const source: ModelMessage[] = [
+      { role: "user", content: "Original request" },
+    ];
+    const retained = " a".repeat(MAX_TOKENS_PAID + 10_000);
+    const identity = historyDigest({
+      version: 1,
+      model,
+      mode: "agent",
+      subscription: "pro",
+      authorization: false,
+      notesEnabled: false,
+      system: "system",
+      tools: [],
+    });
+    mockLoadHistory.mockResolvedValue({
+      revision: 2,
+      payload: JSON.stringify({
+        version: 1,
+        identity,
+        source: sourceMessageDigests(source),
+        system: "system",
+        messages: [...source, { role: "user", content: retained }],
+      }),
+    });
+    mockRunSummarizationStep.mockImplementation(async (options) =>
+      options.preparedInputTokens >
+      getSummarizationThresholdTokens(MAX_TOKENS_PAID)
+        ? {
+            summarizationAttempted: true,
+            needsSummarization: true,
+            summarizedMessages: [
+              uiMessage(
+                "checkpoint",
+                "<context_summary>Verified checkpoint</context_summary>",
+              ),
+            ],
+            summarizationUsage: {},
+          }
+        : { summarizationAttempted: false, needsSummarization: false },
+    );
+    const state = initAgentStreamState(
+      [uiMessage("old", "Original request"), uiMessage("new", "Next question")],
+      { usedTokens: 100, maxTokens: MAX_TOKENS_PAID },
+    );
+    const stream = (await createAgentStream(
+      "model-deepseek-v4-flash-0731",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        trackedProvider: { languageModel: () => ({ modelId: model }) },
+        usageTracker: {},
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+        },
+      }) as any,
+      state,
+    )) as any;
+    expect(JSON.stringify(stream.messages).includes(retained)).toBe(true);
+
+    const prepared = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: stream.messages,
+    });
+
+    expect(mockRunSummarizationStep).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.stringify(
+        mockRunSummarizationStep.mock.calls[0][0].modelMessages,
+      ).includes(retained),
+    ).toBe(true);
+    expect(JSON.stringify(prepared.messages)).toContain("Verified checkpoint");
+    expect(JSON.stringify(prepared.messages).includes(retained)).toBe(false);
+    expect(prepared.system).toBe("system");
+    expect(state.ctxUsage.maxTokens).toBe(MAX_TOKENS_PAID);
+  });
+
+  it.each(["hackerai-max", "hackerai-pro"] as const)(
+    "compacts a new oversized tool result after small input for %s",
+    async (selection) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      mockCompactModelMessagesInRun.mockResolvedValue({
+        summaryMessage: uiMessage(
+          "checkpoint",
+          "<context_summary>Keep verified status</context_summary>",
+        ),
+        summarizationUsage: {},
+      });
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 100,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 100;
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          selectedModelOverride: selection,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "z-ai/glm-5.3" }),
+          },
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [{}],
+        stepNumber: 1,
+        messages: [
+          { role: "user", content: "Continue" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "big",
+                toolName: "file",
+                input: {},
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "big",
+                toolName: "file",
+                output: { type: "text", value: " a".repeat(520_000) },
+              },
+            ],
+          },
+        ],
+      });
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "Keep verified status",
+      );
+      expect(JSON.stringify(prepared.messages).length).toBeLessThan(100_000);
+    },
+  );
+
+  it("continues intact after failed proactive compaction when the prepared request still fits", async () => {
+    mockGetProviderPromptPressure.mockReturnValue(null);
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    const text = " ordinary".repeat(
+      getSummarizationThresholdTokens(MAX_TOKENS_PAID) + 5_000,
+    );
+    const original = [uiMessage("within-budget", text)];
+    const state = initAgentStreamState(original, {
+      usedTokens: 100,
+      maxTokens: MAX_TOKENS_PAID,
+    });
+    state.lastStepInputTokens = 100;
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        trackedProvider: {
+          languageModel: () => ({ modelId: "abliterated-model" }),
+        },
+        systemPromptTokens: 100,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      steps: [{}],
+      stepNumber: 3,
+      messages: [{ role: "user", content: text }],
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(prepared.messages)).toContain(text);
+    expect(state.finalMessages).toEqual(original);
+  });
+
+  it.each(["startup", "startup-error", "rolling", "rolling-error"])(
+    "stops oversized %s requests when compaction fails without dropping saved history",
+    async (phase) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const largeText = " ordinary".repeat(MAX_TOKENS_PAID - 10_000);
+      const original = [uiMessage("large", largeText)];
+      const state = initAgentStreamState(original, {
+        usedTokens: MAX_TOKENS_PAID + 10_000,
+        maxTokens: MAX_TOKENS_PAID,
+      });
+      state.lastStepInputTokens = MAX_TOKENS_PAID + 10_000;
+      const rolling = phase.startsWith("rolling");
+      if (phase === "startup-error") {
+        mockRunSummarizationStep.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockRunSummarizationStep.mockResolvedValue({
+          summarizationAttempted: true,
+          needsSummarization: false,
+        });
+      }
+      if (phase === "rolling-error") {
+        mockCompactModelMessagesInRun.mockRejectedValue(
+          new Error("Summary unavailable"),
+        );
+      } else {
+        mockCompactModelMessagesInRun.mockResolvedValue(null);
+      }
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          agentModelContextEnabled: true,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "abliterated-model" }),
+          },
+          systemPromptTokens: 20_000,
+          usageTracker: {},
+          summarizationTracker: {
+            hasSummarized: rolling,
+            summarizationCount: rolling ? 1 : 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      await expect(
+        stream.prepareStep({
+          steps: rolling ? [{}] : [],
+          stepNumber: rolling ? 1 : 0,
+          messages: [{ role: "user", content: largeText }],
+        }),
+      ).rejects.toThrow(
+        "Conversation could not be compacted to fit the selected model",
+      );
+      expect(state.finalMessages).toEqual(original);
+    },
+  );
+
+  it.each(
+    (["control", "test", undefined] as const).flatMap((variant) =>
+      (["hackerai-max", "hackerai-pro"] as const).map((selection) => ({
+        variant,
+        selection,
+      })),
+    ),
+  )(
+    "records actual $selection experiment exposure once across retries for $variant",
+    async ({ variant, selection }) => {
+      const flag =
+        selection === "hackerai-max"
+          ? "agent_model_context_v1"
+          : "agent_pro_context_v1";
+      const modelId = "z-ai/glm-5.3";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const ctx = createTestStreamContext({
+        agentModelContextEnabled: variant === "test",
+        agentModelContextVariant: variant,
+        selectedModelOverride: selection,
+        trackedProvider: { languageModel: () => ({ modelId }) },
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      });
+      const first = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      expect(
+        jest
+          .mocked(phLogger.event)
+          .mock.calls.filter(
+            ([name]) => name === "agent_model_context_exposed",
+          ),
+      ).toHaveLength(0);
+      first.experimental_onStepStart({ model: { modelId } });
+      const retry = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      retry.experimental_onStepStart({ model: { modelId } });
+      const exposures = jest
+        .mocked(phLogger.event)
+        .mock.calls.filter(([name]) => name === "agent_model_context_exposed");
+      expect(exposures).toHaveLength(variant ? 1 : 0);
+      if (variant) {
+        const other =
+          selection === "hackerai-max"
+            ? "agent_pro_context_v1"
+            : "agent_model_context_v1";
+        expect(exposures[0][1][`$feature/${other}`]).toBeUndefined();
+        expect(exposures[0][1]).toMatchObject({
+          experiment_variant: variant,
+          flag_key: flag,
+          [`$feature/${flag}`]: variant,
+        });
+      }
+    },
+  );
+
+  it.each([
+    ["x-ai/grok-4.6", 234_000],
+    ["abliterated-model", MAX_TOKENS_PAID],
+  ])(
+    "compacts long history before switching to %s with a %i budget",
+    async (smallerModel, smallerBudget) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      let modelId = "z-ai/glm-5.3-flash";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 300_000,
+        maxTokens: 200_000,
+      });
+      state.lastStepInputTokens = 300_000;
+      const tracker = { hasSummarized: false, summarizationCount: 0 };
+      const ctx = createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: { languageModel: () => ({ modelId }) },
+        usageTracker: {},
+        summarizationTracker: tracker,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      const messages = [{ role: "user", content: "Continue" }];
+      await stream.prepareStep({ steps: [], stepNumber: 0, messages });
+      expect(mockRunSummarizationStep).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ctxMaxTokens: 508_288 }),
+      );
+      expect(state.ctxUsage.maxTokens).toBe(508_288);
+      stream.experimental_onStepStart({ model: { modelId } });
+      tracker.summarizationCount = 1;
+      tracker.hasSummarized = true;
+      await stream.prepareStep({ steps: [{}], stepNumber: 1, messages });
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+      modelId = smallerModel;
+      await stream.prepareStep({
+        steps: [{}, {}],
+        stepNumber: 2,
+        messages: [...messages, { role: "user", content: "Next" }],
+      });
+      expect(mockCompactModelMessagesInRun).toHaveBeenLastCalledWith(
+        expect.objectContaining({ maxTokens: smallerBudget }),
+      );
+      expect(state.ctxUsage.maxTokens).toBe(smallerBudget);
+      const retry = (await createAgentStream(
+        "test-model",
+        ctx as any,
+        state,
+      )) as any;
+      retry.experimental_onStepStart({ model: { modelId } });
+      expect(
+        jest
+          .mocked(phLogger.event)
+          .mock.calls.filter(
+            ([event]) => event === "agent_model_context_exposed",
+          ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(["agent", "ask"] as const)(
+    "continues a small %s request beyond the former history-count limits",
+    async (mode) => {
+      mockGetProviderPromptPressure.mockImplementation(
+        jest.requireActual("@/lib/chat/summarization/provider-pressure")
+          .getProviderPromptPressure,
+      );
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: true, summarizationCount: 1 },
+        }) as any,
+        state,
+      )) as any;
+      const messages: ModelMessage[] = Array.from(
+        { length: 150 },
+        (_, index): ModelMessage[] => [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                input: { command: `printf 'Line ${index}'` },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: `call-${index}`,
+                toolName: "run_terminal_cmd",
+                output: { type: "text", value: `Line ${index}` },
+              },
+            ],
+          },
+        ],
+      ).flat();
+      const prepared = await stream.prepareStep({
+        steps: [],
+        stepNumber: 1,
+        messages,
+      });
+      const checkedHistory =
+        mockGetProviderPromptPressure.mock.calls.at(-1)?.[0];
+      expect(checkedHistory).toHaveLength(300);
+      expect(prepared.messages).toHaveLength(300);
+      expect(mockRunSummarizationStep).not.toHaveBeenCalled();
+      expect(mockCompactModelMessagesInRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["agent", "ask"] as const)(
+    "passes the %s pressure policy across model changes",
+    async (mode) => {
+      let modelId = "deepseek/deepseek-v4.1-flash-1017";
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          trackedProvider: { languageModel: () => ({ modelId }) },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const step = {
+        steps: [],
+        stepNumber: 0,
+        messages: [{ role: "user", content: "Continue" }],
+      };
+      await stream.prepareStep(step);
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { mode },
+      );
+      modelId = "z-ai/glm-5.3";
+      await stream.prepareStep({ ...step, stepNumber: 1 });
+      expect(mockGetProviderPromptPressure).toHaveBeenLastCalledWith(
+        expect.any(Array),
+        { mode },
+      );
+    },
+  );
+
+  it.each([
+    { mode: "ask", inputRepair: false },
+    { mode: "agent", inputRepair: false },
+    { mode: "ask", inputRepair: true },
+    { mode: "agent", inputRepair: true },
+  ] as const)(
+    "repairs prompts across $mode steps (input repair: $inputRepair) while logging one bounded event",
+    async ({ mode, inputRepair }) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const ctx = createTestStreamContext({
+        mode,
+        userId: "PRIVATE_ID_CANARY",
+        chatId: "PRIVATE_CHAT_CANARY",
+        triggerRunId: "PRIVATE_RUN_CANARY",
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        trackedProvider: {
+          languageModel: () => ({
+            specificationVersion: "v3",
+            modelId: "test-model",
+            provider: "test",
+            supportedUrls: {},
+          }),
+        },
+      });
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const stream = (await createAgentStream(
+          "test-model",
+          ctx as any,
+          state,
+        )) as any;
+        await stream.prepareStep({
+          steps: [],
+          stepNumber: 0,
+          messages: [{ role: "user", content: "Continue" }],
+        });
+        const wraps = jest.mocked(require("ai").wrapLanguageModel).mock.calls;
+        const repairs = wraps
+          .map((call: any) => call[0].middleware.transformParams)
+          .filter(Boolean);
+        expect(repairs.length).toBeGreaterThanOrEqual(2);
+        const params = {
+          prompt: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
+                  toolCallId: "PRIVATE_CALL_CANARY",
+                  input: inputRepair
+                    ? '{"command":"PRIVATE_ARGUMENT_CANARY'
+                    : { value: "PRIVATE_ARGUMENT_CANARY" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
+                  toolCallId: "PRIVATE_CALL_CANARY",
+                  output: { type: "error-text", value: "PRIVATE_ERROR_CANARY" },
+                },
+              ],
+            },
+            { role: "user", content: [{ type: "text", text: "Continue" }] },
+          ],
+        };
+        for (const transform of repairs)
+          expect((await transform({ params })).prompt).toEqual(
+            inputRepair
+              ? [
+                  {
+                    ...params.prompt[0],
+                    content: [{ ...params.prompt[0].content[0], input: {} }],
+                  },
+                  params.prompt[1],
+                  params.prompt[2],
+                ]
+              : [params.prompt[2]],
+          );
+        const events = warning.mock.calls
+          .map((call) => {
+            try {
+              return JSON.parse(String(call[0]));
+            } catch {
+              return undefined;
+            }
+          })
+          .filter(
+            (event) =>
+              event?.event ===
+              (inputRepair
+                ? "provider_prompt_tool_history_repaired"
+                : "provider_prompt_tool_name_repaired"),
+          );
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          mode,
+          reason: inputRepair ? "invalid_tool_input" : "empty_tool_name",
+          removed_tool_call_count: inputRepair ? 0 : 1,
+          removed_tool_result_count: inputRepair ? 0 : 1,
+          repaired_tool_input_count: inputRepair ? 1 : 0,
+        });
+        expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+        expect(params.prompt).toHaveLength(3);
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "passes the original moderation signal into %s compaction instead of continuation eligibility",
+    async (mode) => {
+      mockAbliterationConfigured.mockReturnValue(true);
+      mockHistoryFlag.mockResolvedValue(true);
+      try {
+        for (const platformAuthorized of [false, true]) {
+          const state = initAgentStreamState(
+            [uiMessage("initial", "Continue")],
+            {
+              usedTokens: 1000,
+              maxTokens: 128000,
+            },
+          );
+          state.hasCompletedAbliterationStep = true;
+          await createAgentStream(
+            "test-model",
+            createTestStreamContext({
+              mode,
+              platformAuthorized,
+              usageTracker: {},
+              summarizationTracker: {
+                hasSummarized: false,
+                summarizationCount: 0,
+              },
+            }) as any,
+            state,
+          );
+          expect(await state.compactionPolicy!.resolve()).toMatchObject({
+            model: platformAuthorized
+              ? "model-abliterated"
+              : "model-glm-5.3-flash",
+          });
+          expect(phLogger.event).not.toHaveBeenCalledWith(
+            "compaction_model_started",
+            expect.anything(),
+          );
+        }
+      } finally {
+        mockAbliterationConfigured.mockReturnValue(false);
+      }
+    },
+  );
+
+  it("holds the model boundary until takeover exits, then loads the new private note", async () => {
+    let resume!: (waited: boolean) => void;
+    const gate = new Promise<boolean>((resolve) => {
+      resume = resolve;
+    });
+    const getBrowserHandoffNotes = jest.fn(async () => [
+      { id: "new-note", text: "I signed in. Inspect the page." },
+    ]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        waitForBrowserHandoff: () => gate,
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    const pending = stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect" }],
+    });
+    await Promise.resolve();
+    expect(getBrowserHandoffNotes).not.toHaveBeenCalled();
+    resume(true);
+    expect(JSON.stringify((await pending).messages)).toContain(
+      "I signed in. Inspect the page.",
+    );
+  });
+
+  it("holds normal finalization during takeover and propagates cancellation", async () => {
+    let cancel!: (error: Error) => void;
+    const gate = new Promise<boolean>((_, reject) => {
+      cancel = reject;
+    });
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        waitForBrowserHandoff: () => gate,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const complete = jest.fn();
+    const pending = stream.onFinish({ finishReason: "stop" }).then(complete);
+    const rejected = expect(pending).rejects.toThrow("Stopped");
+    await Promise.resolve();
+    expect(complete).not.toHaveBeenCalled();
+    cancel(new Error("Stopped"));
+    await rejected;
+  });
+
+  it.each(["error", "content-filter"])(
+    "preserves provider %s when cancellation interrupts the handoff wait",
+    async (finishReason) => {
+      const controller = new AbortController();
+      let cancel!: (error: Error) => void;
+      const gate = new Promise<boolean>((_, reject) => {
+        cancel = reject;
+      });
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          waitForBrowserHandoff: () => gate,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const pending = stream.onFinish({ finishReason });
+      const rejected = expect(pending).rejects.toThrow("Stopped");
+      await Promise.resolve();
+      controller.abort();
+      cancel(new Error("Stopped"));
+      await rejected;
+      expect(state.providerTerminalFinishReasonBeforeAbort).toBe(finishReason);
+    },
+  );
+
+  it("delivers a saved handoff note to the next model request without replacing the task", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the form")],
+      { usedTokens: 1000, maxTokens: 128000 },
+    );
+    const getBrowserHandoffNotes = jest.fn().mockResolvedValue([
+      {
+        id: "handoff-1",
+        text: "I selected the XSS lab. Continue from here.",
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const result = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Inspect the form" }],
+    });
+    expect(result.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: "Inspect the form" }),
+        expect.objectContaining({
+          role: "user",
+          content: "I selected the XSS lab. Continue from here.",
+        }),
+      ]),
+    );
+    expect(getBrowserHandoffNotes).toHaveBeenCalledTimes(1);
+    // The SDK rebuilds each step from original inputs plus responses. It does
+    // not retain messages returned by prepareStep.
+    const completed = {
+      role: "assistant",
+      content: "Read the form and closed it.",
+    };
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [{ role: "user", content: "Inspect the form" }, completed],
+    });
+    expect(next.messages.at(-1)).toEqual(completed);
+    expect(next.messages).toContainEqual({
+      role: "user",
+      content: "I selected the XSS lab. Continue from here.",
+    });
+  });
+
+  it("keeps a handoff note after its screenshot when older images are elided", async () => {
+    mockLimitModelImageToolResults.mockImplementation(
+      jest.requireActual("@/lib/chat/compaction/prune-tool-outputs")
+        .limitModelImageToolResults,
+    );
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const note = { id: "handoff", text: "Use my selected form." };
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes: async () => [note],
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const screenshot = (id: number): ModelMessage => ({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: `image-${id}`,
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "image-data", data: "test", mediaType: "image/png" },
+            ],
+          },
+        },
+      ],
+    });
+    const initial: ModelMessage[] = [
+      { role: "user", content: "Inspect" },
+      screenshot(0),
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: [...initial, screenshot(1), screenshot(2), screenshot(3)],
+    });
+    expect(next.messages[0]).toEqual(initial[0]);
+    expect(next.messages[1].content[0].output.value[0].type).toBe("text");
+    expect(next.messages[2]).toEqual({ role: "user", content: note.text });
+    expect(next.messages[3]).toEqual(screenshot(1));
+  });
+
+  it("does not continue without handoff context when its lookup fails", async () => {
+    const unavailable = new Error("Handoff context temporarily unavailable");
+    const getBrowserHandoffNotes = jest
+      .fn()
+      .mockRejectedValueOnce(unavailable)
+      .mockResolvedValueOnce([
+        { id: "handoff", text: "Use my selected account." },
+      ]);
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        getBrowserHandoffNotes,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = {
+      steps: [],
+      messages: [{ role: "user", content: "Inspect" }],
+    };
+    await expect(stream.prepareStep(step)).rejects.toBe(unavailable);
+    const retried = await stream.prepareStep(step);
+    expect(JSON.stringify(retried.messages)).toContain(
+      "Use my selected account.",
+    );
+  });
+
+  it("refreshes cloud network settings after compacted history without retaining the previous access mode", async () => {
+    const cloudNetworkPrompt = jest
+      .fn()
+      .mockResolvedValue("\nSaved access: Internet access");
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1000,
+      maxTokens: 128000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        cloudNetworkPrompt,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.system).toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue("\nSaved access: No internet");
+    const next = await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: [
+        { role: "user", content: "Old summary: cloud internet is available" },
+      ],
+    });
+    expect(next.system).toContain("Saved access: No internet");
+    expect(next.system).not.toContain("Saved access: Internet access");
+    cloudNetworkPrompt.mockResolvedValue(
+      "\nSaved access: Allowed destinations only; example.test",
+    );
+    const later = await stream.prepareStep({
+      steps: [],
+      stepNumber: 1,
+      messages: next.messages,
+    });
+    expect(later.system).toContain("Allowed destinations only; example.test");
+    expect(later.system).not.toContain("Saved access: No internet");
+  });
+
+  it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
+    const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        checkBudgetBeforeStep,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = {
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    };
+    await stream.prepareStep(step);
+    const exhausted = new Error("Shared daily allowance exhausted");
+    checkBudgetBeforeStep.mockRejectedValueOnce(exhausted);
+    await expect(stream.prepareStep({ ...step, stepNumber: 1 })).rejects.toBe(
+      exhausted,
+    );
+    expect(checkBudgetBeforeStep).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["ask", "agent"])(
+    "omits retained provider request bodies in %s streams",
+    async (mode) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      );
+      expect(mockStreamText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          experimental_include: { requestBody: false },
+        }),
+      );
+    },
+  );
 
   it("retains upstream exclusions on both the initial recovery request and subsequent steps", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
@@ -709,24 +2373,251 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
-  it("does not attribute a bare disconnect to the previous step's upstream", async () => {
-    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-      usedTokens: 1_000,
-      maxTokens: 128_000,
-    });
-    state.openRouterMetadata = { provider_name: "Together" };
-    state.providerErrorMetadata = { provider_name: "Together" };
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        usageTracker: { hasUsage: true },
-        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-      }) as any,
-      state,
-    )) as any;
-    await stream.onError({ error: new TypeError("terminated") });
-    expect(state.providerErrorMetadata).toEqual({});
-  });
+  it.each([
+    ["ask", false],
+    ["agent", false],
+    ["ask", true],
+    ["agent", true],
+  ])(
+    "classifies cancellation in %s with prior failure %s",
+    async (mode, priorFailure) => {
+      const controller = new AbortController();
+      const recordProviderError = jest.fn();
+      const refund = jest.fn();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          abortController: controller,
+          usageTracker: { hasUsage: false },
+          usageRefundTracker: { refund },
+          chatLogger: {
+            recordProviderError,
+            recordProviderRequestDiagnostics: jest.fn(),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const originalFailure = new Error("Upstream unavailable");
+      if (priorFailure) await stream.onError({ error: originalFailure });
+      refund.mockClear();
+      controller.abort();
+      await stream.onError({ error: new TypeError("terminated") });
+      expect(state.providerError).toBe(
+        priorFailure ? originalFailure : undefined,
+      );
+      expect(recordProviderError).toHaveBeenCalledTimes(priorFailure ? 1 : 0);
+      expect(refund).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([true, false])(
+    "resolves a terminal finish around cancellation (finish first: %s)",
+    async (finishFirst) => {
+      const { getTerminalProviderStreamError } = jest.requireActual(
+        "@/lib/api/provider-terminal-error",
+      );
+      const controller = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      if (!finishFirst) controller.abort();
+      await stream.onFinish({
+        finishReason: "error",
+        usage: {},
+        response: { modelId: "test-model" },
+      });
+      if (finishFirst) controller.abort();
+      // Agent clears its displayed finish reason when Stop is requested.
+      state.streamFinishReason = undefined;
+      const error = getTerminalProviderStreamError(
+        state,
+        controller.signal.aborted,
+      );
+      if (finishFirst)
+        expect(error).toHaveProperty("name", "ProviderStreamError");
+      else expect(error).toBeUndefined();
+    },
+  );
+
+  it.each(["/api/chat", "/api/agent"])(
+    "does not attribute a bare disconnect on %s to the previous step's upstream",
+    async (endpoint) => {
+      const metadata = jest.requireMock("@/lib/api/openrouter-metadata");
+      const mergeSpy = jest
+        .spyOn(metadata, "mergeOpenRouterMetadata")
+        .mockImplementation(
+          jest.requireActual("@/lib/api/openrouter-metadata")
+            .mergeOpenRouterMetadata,
+        );
+      const recordProviderError = jest.fn();
+      const chatLogger = {
+        setModelResponse: jest.fn(),
+        recordProviderError,
+        recordProviderRequestDiagnostics: jest.fn(),
+      };
+      try {
+        const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        });
+        state.openRouterMetadata = { provider_name: "Together" };
+        state.providerErrorMetadata = { provider_name: "Together" };
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            endpoint,
+            mode: endpoint === "/api/chat" ? "ask" : "agent",
+            chatLogger,
+            usageTracker: { hasUsage: true },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        await stream.onError({ error: new TypeError("terminated") });
+        expect(state.providerErrorMetadata).toEqual({});
+        expect(state.openRouterMetadata.provider_name).toBe("Together");
+        expect(recordProviderError).toHaveBeenCalledWith(
+          expect.any(TypeError),
+          expect.objectContaining({ openRouterMetadata: {} }),
+        );
+      } finally {
+        mergeSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["ask", "/api/chat", true, false],
+    ["agent", "/api/agent-long", true, false],
+    ["ask", "/api/chat", false, false],
+    ["agent", "/api/agent-long", false, false],
+    ["agent", "/api/agent-long", true, true],
+  ])(
+    "handles HTTP415 in %s at %s (tool image: %s, cancelled: %s)",
+    async (mode, endpoint, hasToolImage, cancelled) => {
+      const mediaRecovery = jest.requireActual(
+        "@/lib/chat/multimodal-tool-result-recovery",
+      );
+      const containsImage = jest.mocked(
+        require("@/lib/chat/multimodal-tool-result-recovery")
+          .uiMessagesContainImageViewResult,
+      );
+      containsImage.mockImplementation(
+        mediaRecovery.uiMessagesContainImageViewResult,
+      );
+      const upload = {
+        id: "original-upload",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: "https://example.test/original.png",
+          },
+        ],
+      } as UIMessage;
+      const completedTool = {
+        type: "tool-terminal",
+        toolCallId: "completed-command",
+        state: "output-available",
+        output: { stdout: "Completed once", exitCode: 0 },
+      };
+      const messages = [
+        upload,
+        {
+          id: "assistant-tools",
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            completedTool,
+            ...(hasToolImage
+              ? [
+                  {
+                    type: "tool-file",
+                    toolCallId: "completed-image-view",
+                    state: "output-available",
+                    output: {
+                      action: "view",
+                      kind: "image",
+                      mediaType: "image/png",
+                      data: "synthetic-image",
+                    },
+                  },
+                ]
+              : []),
+          ],
+        },
+      ] as UIMessage[];
+      const state = initAgentStreamState(messages, {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const controller = new AbortController();
+      try {
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint,
+            abortController: controller,
+            usageTracker: { hasUsage: true },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        if (cancelled) controller.abort();
+        await stream.onError({
+          error: { code: 415, message: "URL did not return an image" },
+        });
+        expect(state.providerRejectedMultimodalToolResults).toBe(
+          hasToolImage && !cancelled,
+        );
+        if (!state.providerRejectedMultimodalToolResults) return;
+
+        const recovered =
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            state.finalMessages,
+          );
+        expect(recovered.omittedCount).toBe(1);
+        expect(recovered.messages[0]).toBe(upload);
+        expect(recovered.messages[1].parts[1]).toBe(completedTool);
+        expect(recovered.messages[1].parts[2]).toMatchObject({
+          toolCallId: "completed-image-view",
+          state: "output-available",
+          output: { imageOmittedAfterProviderRejection: true },
+        });
+        expect(
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            recovered.messages,
+          ).omittedCount,
+        ).toBe(0);
+      } finally {
+        containsImage.mockImplementation(() => false);
+      }
+    },
+  );
 
   it.each([true, false, null])(
     "samples one start across retries and keeps initial assignment %s",
@@ -735,7 +2626,7 @@ describe("createAgentStream repeated compaction", () => {
         sampleCacheHistoryStart,
       )!;
       mockHistoryFlag.mockResolvedValue(decision as any);
-      const modelId = "deepseek/deepseek-v4.1-flash";
+      const modelId = "deepseek/deepseek-v4.1-flash-1017";
       const state = initAgentStreamState(
         [uiMessage("initial", "private prompt")],
         { usedTokens: 1, maxTokens: 128_000 },
@@ -790,7 +2681,9 @@ describe("createAgentStream repeated compaction", () => {
       "model",
       createTestStreamContext({
         trackedProvider: {
-          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+          languageModel: () => ({
+            modelId: "deepseek/deepseek-v4.1-flash-1017",
+          }),
         },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
@@ -798,7 +2691,7 @@ describe("createAgentStream repeated compaction", () => {
       state,
     )) as any;
     stream.experimental_onStepStart({
-      model: { modelId: "deepseek/deepseek-v4.1-flash" },
+      model: { modelId: "deepseek/deepseek-v4.1-flash-1017" },
     });
     expect(state.cacheHistoryTelemetry).toMatchObject({
       assignment: "treatment",
@@ -828,7 +2721,9 @@ describe("createAgentStream repeated compaction", () => {
         createTestStreamContext({
           mode,
           trackedProvider: {
-            languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+            languageModel: () => ({
+              modelId: "deepseek/deepseek-v4.1-flash-1017",
+            }),
           },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
@@ -861,7 +2756,7 @@ describe("createAgentStream repeated compaction", () => {
 
   it("restores private model history and the frozen prompt on the next turn", async () => {
     mockHistoryFlag.mockResolvedValue(true);
-    const model = "deepseek/deepseek-v4.1-flash";
+    const model = "deepseek/deepseek-v4.1-flash-1017";
     const source: ModelMessage[] = [
       { role: "user", content: "Original request" },
     ];
@@ -920,7 +2815,9 @@ describe("createAgentStream repeated compaction", () => {
       "model-deepseek-v4-flash-0731",
       createTestStreamContext({
         trackedProvider: {
-          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+          languageModel: () => ({
+            modelId: "deepseek/deepseek-v4.1-flash-1017",
+          }),
         },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
@@ -949,7 +2846,7 @@ describe("createAgentStream repeated compaction", () => {
             finishSave = () => resolve("saved");
           }),
         );
-      const model = "deepseek/deepseek-v4.1-flash";
+      const model = "deepseek/deepseek-v4.1-flash-1017";
       const controller = new AbortController();
       const state = initAgentStreamState(
         [uiMessage("initial", "Original request")],
@@ -1141,11 +3038,60 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731"],
-    ["ask", "free", "ask-model-free-glm"],
+    ["ask", "ask-model-free-glm"],
+    ["agent", "model-deepseek-v4-flash-0731"],
   ] as const)(
-    "routes only the first generation step through Abliteration for %s %s",
-    async (mode, subscription, baselineModel) => {
+    "keeps Free %s on its baseline through later generation steps",
+    async (mode, baselineModel) => {
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Inspect the authorized lab")],
+        { usedTokens: 1_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        baselineModel,
+        createTestStreamContext({
+          mode,
+          subscription: "free",
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+      for (let step = 0; step < 5; step++) {
+        const prepared = await stream.prepareStep({
+          stepNumber: step,
+          steps: Array.from({ length: step }, () => ({ toolResults: [] })),
+          messages: [{ role: "user", content: "Continue" }],
+        });
+        expect(prepared.model.modelId).toBe(baselineModel);
+      }
+    },
+  );
+
+  it.each([
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1, false],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, false],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, false],
+    ["ask", "free", "ask-model-free-glm", 3, true],
+    ["agent", "free", "model-glm-5.3-flash-agent", 3, true],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3, true],
+  ] as const)(
+    "routes %s %s through direct treatment then %s after %i steps, inference=%s",
+    async (
+      mode,
+      subscription,
+      baselineModel,
+      generationStepLimit,
+      inferenceCyberEnabled,
+    ) => {
+      const expectedTreatment = inferenceCyberEnabled
+        ? "model-inference-cyber"
+        : "model-abliterated";
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -1164,6 +3110,8 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedTelemetry: { wrap },
           abliteratedStepRouting: {
             baselineModel,
+            generationStepLimit,
+            inferenceCyberEnabled,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -1185,9 +3133,9 @@ describe("createAgentStream repeated compaction", () => {
         });
 
       const firstStep = await prepare(0);
-      expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(firstStep.model.modelId).toBe(expectedTreatment);
       expect(wrap).toHaveBeenLastCalledWith(
-        expect.objectContaining({ modelId: "model-abliterated" }),
+        expect.objectContaining({ modelId: expectedTreatment }),
         0,
         expect.objectContaining({
           plannedBaselineContinuation: false,
@@ -1198,11 +3146,18 @@ describe("createAgentStream repeated compaction", () => {
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
 
-      const secondStep = await prepare(1);
+      for (let index = 1; index < generationStepLimit; index++) {
+        const treatmentStep = await prepare(index);
+        expect(treatmentStep.model.modelId).toBe(expectedTreatment);
+        expect(JSON.stringify(treatmentStep.messages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      }
+      const secondStep = await prepare(generationStepLimit);
       expect(secondStep.model.modelId).toBe(baselineModel);
       expect(wrap).toHaveBeenLastCalledWith(
         expect.objectContaining({ modelId: baselineModel }),
-        1,
+        generationStepLimit,
         expect.objectContaining({
           plannedBaselineContinuation: true,
           visionRoute: false,
@@ -1214,6 +3169,361 @@ describe("createAgentStream repeated compaction", () => {
       expect(onModelStepSelected).toHaveBeenLastCalledWith(baselineModel);
     },
   );
+
+  it.each(["ask", "agent"] as const)(
+    "annotates only downstream %s calls after an actual unmoderated Abliteration step",
+    async (mode) => {
+      const uiMessages = [
+        uiMessage("old", "Earlier scope"),
+        uiMessage("new", "Continue the lab"),
+      ];
+      const original = structuredClone(uiMessages);
+      const state = initAgentStreamState(uiMessages, {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const context = createTestStreamContext({
+        mode,
+        platformAuthorized: false,
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 1,
+        },
+        tools: { lookup: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      });
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        context as any,
+        state,
+      )) as any;
+      const messages = [
+        { role: "user", content: "Earlier scope" },
+        { role: "assistant", content: "Earlier answer" },
+        { role: "user", content: "Continue the lab" },
+      ];
+      const first = await stream.prepareStep({
+        stepNumber: 0,
+        steps: [],
+        messages,
+      });
+      expect(JSON.stringify(first.messages)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      await stream.onStepFinish({
+        response: { modelId: "abliterated-model", messages: [] },
+        text: "",
+        finishReason: "tool-calls",
+        toolCalls: [{ toolName: "lookup", toolCallId: "one", input: {} }],
+        toolResults: [],
+      });
+      const later = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages,
+      });
+      expect(later.model.modelId).toBe("model-deepseek-v4-flash-0731");
+      expect(later.messages[0].content).toBe("Earlier scope");
+      expect(later.messages[2].content).toBe(
+        `Continue the lab ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+      );
+      expect(
+        JSON.stringify(later.messages).match(/<platform_authorization>/g),
+      ).toHaveLength(1);
+      expect(state.finalMessages).toEqual(original);
+      expect(context.platformAuthorized).toBe(false);
+
+      // A replacement provider uses the same run state; a new run never inherits it.
+      const replacement = (await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        {
+          ...context,
+          abliteratedStepRouting: undefined,
+        } as any,
+        state,
+      )) as any;
+      expect(JSON.stringify(replacement.messages)).toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      expect(
+        initAgentStreamState(uiMessages, state.ctxUsage)
+          .hasCompletedAbliterationStep,
+      ).toBe(false);
+    },
+  );
+
+  it.each([1, 3] as const)(
+    "sends %i unannotated Abliteration steps then annotated baseline in a real SDK tool loop",
+    async (generationStepLimit) => {
+      const sdk = jest.requireActual("ai");
+      const { WritableStream } = await import("node:stream/web");
+      const originalWritable = globalThis.WritableStream;
+      Object.defineProperty(globalThis, "WritableStream", {
+        configurable: true,
+        value: WritableStream,
+      });
+      try {
+        mockStreamText.mockImplementationOnce(sdk.streamText);
+        const makeModel = (modelId: string, parts: unknown[]) => ({
+          specificationVersion: "v3",
+          provider: "test",
+          modelId,
+          supportedUrls: {},
+          doGenerate: jest.fn(),
+          doStream: jest.fn(async () => ({
+            stream: new ReadableStream({
+              start(controller) {
+                for (const part of parts) controller.enqueue(part);
+                controller.close();
+              },
+            }),
+          })),
+        });
+        const finish = (reason: string) => ({
+          type: "finish",
+          finishReason: { unified: reason, raw: reason },
+          usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        });
+        const first = makeModel("abliterated-model", [
+          {
+            type: "tool-call",
+            toolCallId: "one",
+            toolName: "lookup",
+            input: "{}",
+          },
+          finish("tool-calls"),
+        ]);
+        const baseline = makeModel("deepseek/baseline", [
+          { type: "text-start", id: "answer" },
+          { type: "text-delta", id: "answer", delta: "Finished" },
+          { type: "text-end", id: "answer" },
+          finish("stop"),
+        ]);
+        const inputSchema = (await import("zod")).z.object({});
+        const state = initAgentStreamState(
+          [uiMessage("initial", "Inspect my lab")],
+          { usedTokens: 1_000, maxTokens: 128_000 },
+        );
+        const diagnostics = jest.fn();
+        const stream = await createAgentStream(
+          "model-abliterated",
+          createTestStreamContext({
+            platformAuthorized: false,
+            trackedProvider: {
+              languageModel: (name: string) =>
+                name === "model-abliterated" ? first : baseline,
+            },
+            abliteratedStepRouting: {
+              baselineModel: "model-deepseek-v4-flash-0731",
+              generationStepLimit,
+            },
+            tools: {
+              lookup: sdk.tool({
+                inputSchema,
+                execute: async () => ({ ok: true }),
+              }),
+            },
+            onProviderRequestDiagnostics: diagnostics,
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+            usageTracker: {
+              accumulateStep: () => 0,
+              setAuthoritativeModelCostForStep: jest.fn(),
+              computeCostDollars: () => 0,
+            },
+          }) as any,
+          state,
+        );
+        await stream.consumeStream({
+          onError: (error: unknown) => {
+            throw error;
+          },
+        });
+        expect(await stream.text).toBe("Finished");
+        expect(first.doStream).toHaveBeenCalledTimes(generationStepLimit);
+        expect(baseline.doStream).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(first.doStream.mock.calls[0])).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(JSON.stringify(baseline.doStream.mock.calls[0])).toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(
+          diagnostics.mock.calls.map(
+            ([request]) => request.platform_authorization_annotation_appended,
+          ),
+        ).toEqual([
+          false,
+          ...Array.from({ length: generationStepLimit }, () => false),
+          true,
+        ]);
+        expect(JSON.stringify(state.finalMessages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      } finally {
+        Object.defineProperty(globalThis, "WritableStream", {
+          configurable: true,
+          value: originalWritable,
+        });
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "empty response",
+      responseModel: "abliterated-model",
+      text: " ",
+      finishReason: "stop",
+      toolCalls: [],
+    },
+    {
+      name: "filtered response",
+      responseModel: "abliterated-model",
+      text: "partial",
+      finishReason: "content-filter",
+      toolCalls: [],
+    },
+    {
+      name: "failed response",
+      responseModel: "abliterated-model",
+      text: "partial",
+      finishReason: "error",
+      toolCalls: [],
+    },
+    {
+      name: "different served model",
+      responseModel: "deepseek/deepseek-v4.1-flash-1017",
+      text: "answer",
+      finishReason: "stop",
+      toolCalls: [],
+    },
+    {
+      name: "invalid tool call",
+      responseModel: "abliterated-model",
+      text: "",
+      finishReason: "tool-calls",
+      toolCalls: [{ toolName: "lookup", invalid: true }],
+    },
+    {
+      name: "unknown tool call",
+      responseModel: "abliterated-model",
+      text: "",
+      finishReason: "tool-calls",
+      toolCalls: [{ toolName: "unknown" }],
+    },
+  ])(
+    "does not annotate continuation after $name",
+    async ({ responseModel, text, finishReason, toolCalls }) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          platformAuthorized: false,
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
+          tools: { lookup: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      await stream.onStepFinish({
+        response: { modelId: responseModel, messages: [] },
+        text,
+        finishReason,
+        toolCalls,
+        toolResults: [],
+      });
+      const later = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(state.hasCompletedAbliterationStep).toBe(false);
+      expect(JSON.stringify(later.messages)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+    },
+  );
+
+  it("does not activate continuation context for a baseline-only vision route", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the image")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        platformAuthorized: false,
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 1,
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      stepNumber: 1,
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "file",
+              output: {
+                action: "view",
+                kind: "image",
+                mediaType: "image/png",
+              },
+            },
+          ],
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image", image: "https://example.test/image.png" }],
+        },
+      ],
+    });
+    expect(prepared.model.modelId).toBe("model-deepseek-v4-flash-vision");
+    await stream.onStepFinish({
+      response: { modelId: prepared.model.modelId, messages: [] },
+      text: "Image inspected",
+      finishReason: "stop",
+      toolCalls: [],
+      toolResults: [],
+    });
+    expect(state.hasCompletedAbliterationStep).toBe(false);
+  });
 
   it.each([
     {
@@ -1255,7 +3565,10 @@ describe("createAgentStream repeated compaction", () => {
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
           },
-          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
         }) as any,
@@ -1272,6 +3585,45 @@ describe("createAgentStream repeated compaction", () => {
       expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
     },
   );
+
+  it("preserves native images when the expanded-context alias executes Flash", async () => {
+    const text = " ordinary".repeat(190_000);
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: [
+          { type: "text", text },
+          { type: "image", image: "https://example.test/image.png" },
+        ],
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        agentModelContextEnabled: true,
+        selectedModelOverride: "hackerai-max",
+        trackedProvider: {
+          languageModel: () => ({
+            modelId: "abliterated-model-large-flash",
+          }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-glm-5.3",
+          generationStepLimit: 3,
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", text)], {
+        usedTokens: 190_100,
+        maxTokens: 200_000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("abliterated-model-large-flash");
+    expect(JSON.stringify(stream.messages)).not.toContain("image_description");
+    expect(JSON.stringify(stream.messages)).toContain('"type":"image"');
+    expect(mockDescribeImage).not.toHaveBeenCalled();
+  });
 
   it("does not start the main provider when initial OCR fails", async () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
@@ -1291,7 +3643,10 @@ describe("createAgentStream repeated compaction", () => {
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
           },
-          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
         }) as any,
@@ -1311,7 +3666,10 @@ describe("createAgentStream repeated compaction", () => {
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
         },
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        abliteratedStepRouting: {
+          baselineModel: "model-grok-4.6",
+          generationStepLimit: 3,
+        },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
       }) as any,
@@ -1367,7 +3725,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockDescribeImage).not.toHaveBeenCalled();
   });
 
-  it("describes persisted tool images on the first step and uses baseline on the next", async () => {
+  it("describes persisted tool images and uses baseline after the third step", async () => {
     const stream = (await createAgentStream(
       "model-abliterated",
       createTestStreamContext({
@@ -1375,7 +3733,10 @@ describe("createAgentStream repeated compaction", () => {
           languageModel: (name: string) => ({ modelId: name }),
         },
         platformAuthorized: true,
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        abliteratedStepRouting: {
+          baselineModel: "model-grok-4.6",
+          generationStepLimit: 3,
+        },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
       }) as any,
@@ -1427,8 +3788,18 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(prepared.messages)).not.toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
+    for (const stepNumber of [1, 2]) {
+      expect(
+        (
+          await prepare(
+            [{ role: "user", content: "Compacted context" }],
+            stepNumber,
+          )
+        ).model.modelId,
+      ).toBe("model-abliterated");
+    }
     expect(
-      (await prepare([{ role: "user", content: "Compacted context" }], 1)).model
+      (await prepare([{ role: "user", content: "Compacted context" }], 3)).model
         .modelId,
     ).toBe("model-grok-4.6");
   });
@@ -1439,7 +3810,7 @@ describe("createAgentStream repeated compaction", () => {
       [uiMessage("initial", "Inspect the authorized lab")],
       { usedTokens: 1_000, maxTokens: 128_000 },
     );
-    state.agentStepCount = 1;
+    state.agentStepCount = 3;
 
     const stream = (await createAgentStream(
       "model-abliterated",
@@ -1450,6 +3821,7 @@ describe("createAgentStream repeated compaction", () => {
         platformAuthorized: true,
         abliteratedStepRouting: {
           baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 3,
         },
         summarizationTracker: {
           hasSummarized: false,
@@ -1477,7 +3849,7 @@ describe("createAgentStream repeated compaction", () => {
       expect.objectContaining({
         model: "model-deepseek-v4-flash-0731",
         source: "prepare_step",
-        step_index: 2,
+        step_index: 4,
       }),
       expect.anything(),
     );
@@ -1499,6 +3871,194 @@ describe("createAgentStream repeated compaction", () => {
     });
     expect(state.streamFinishReason).toBe("step-limit");
   });
+
+  it.each([
+    "changing-output",
+    "polling",
+    "missing-result",
+    "progress-between-retries",
+  ])("does not halt Agent for %s despite repeated inputs", async (scenario) => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const toolName =
+      scenario === "polling" ? "interact_terminal_session" : "file";
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { [toolName]: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 6; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName,
+            input: { action: "read", path: "/fixture" },
+          },
+        ],
+        toolResults:
+          scenario === "missing-result"
+            ? []
+            : [
+                {
+                  toolCallId: `call-${i}`,
+                  output:
+                    scenario === "changing-output" ||
+                    (scenario === "progress-between-retries" && i === 3)
+                      ? `new evidence ${i}`
+                      : "unchanged",
+                },
+              ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-1)({ steps })).toBe(false);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).not.toContain("[LOOP DETECTED]");
+    expect(state.stoppedDueToDoomLoop).toBe(false);
+  });
+
+  it.each([1, 2, 4])(
+    "halts an unchanged %i-step Agent cycle across provider replacement after settlement",
+    async (period) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const onAgentGuardrail = jest.fn();
+      const settleUsageAfterStep = jest.fn();
+      const context = createTestStreamContext({
+        tools: { file: {} },
+        onAgentGuardrail,
+        settleUsageAfterStep,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any;
+      let stream = (await createAgentStream(
+        "test-model",
+        context,
+        state,
+      )) as any;
+      let steps: any[] = [];
+      for (let i = 0; i < period * 5; i++) {
+        if (i === period * 3) {
+          stream = (await createAgentStream(
+            "test-model",
+            context,
+            state,
+          )) as any;
+          steps = [];
+          const prepared = await stream.prepareStep({
+            steps,
+            messages: [{ role: "user", content: "Continue" }],
+          });
+          expect(JSON.stringify(prepared.messages)).toContain(
+            "[REPEATED TOOL RESULTS]",
+          );
+          stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+        }
+        const step = {
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: `call-${i}`,
+              toolName: "file",
+              input: { path: `/fixture-${i % period}` },
+            },
+          ],
+          toolResults: [
+            { toolCallId: `call-${i}`, output: `unchanged ${i % period}` },
+          ],
+        };
+        steps.push(step);
+        await stream.onStepFinish(step);
+        expect(settleUsageAfterStep).toHaveBeenCalledTimes(i + 1);
+        expect(await stream.stopWhen.at(-1)({ steps })).toBe(
+          i === period * 5 - 1,
+        );
+      }
+      expect(state.stoppedDueToDoomLoop).toBe(true);
+      expect(onAgentGuardrail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "repeated_tool_result_cycle",
+          action: "halt",
+          repeat_count: 5,
+          cycle_length: period,
+        }),
+      );
+      await stream.onFinish({
+        finishReason: "tool-calls",
+        usage: {},
+        response: { modelId: "test-model" },
+      });
+      expect(state.streamFinishReason).toBe("doom-loop");
+    },
+  );
+
+  it.each(["ask", "empty-todo", "empty-command"])(
+    "preserves the %s hard stop",
+    async (scenario) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const toolName =
+        scenario === "empty-todo"
+          ? "todo_write"
+          : scenario === "empty-command"
+            ? "run_terminal_cmd"
+            : "file";
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode: scenario === "ask" ? "ask" : "agent",
+          tools: { [toolName]: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const steps = [];
+      for (let i = 0; i < 5; i++) {
+        const step = {
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: `call-${i}`,
+              toolName,
+              input: scenario === "ask" ? { path: "/fixture" } : {},
+            },
+          ],
+          toolResults: [],
+        };
+        steps.push(step);
+        await stream.onStepFinish(step);
+        expect(await stream.stopWhen.at(-1)({ steps })).toBe(i === 4);
+      }
+      expect(state.stoppedDueToDoomLoop).toBe(true);
+    },
+  );
 
   it("observes unchanged results across provider replacement without affecting settlement", async () => {
     const onAgentGuardrail = jest.fn();
@@ -1552,6 +4112,36 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
       "private",
     );
+    const prepared = await replacement.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "[REPEATED TOOL RESULTS]",
+    );
+    expect(
+      onAgentGuardrail.mock.calls.some(([event]) => event.action === "nudge"),
+    ).toBe(false);
+    replacement.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onAgentGuardrail).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        reason: "repeated_tool_result_cycle",
+        action: "nudge",
+        repeat_count: 3,
+      }),
+    );
+    expect(state.pendingToolCycleRecovery).toBeUndefined();
+    expect(state.toolCycleRecoveryCount).toBe(1);
+    expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
+      "private",
+    );
+    const next = await replacement.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(next.messages)).not.toContain(
+      "[REPEATED TOOL RESULTS]",
+    );
     onAgentGuardrail.mockImplementation(() => {
       throw new Error("Telemetry unavailable");
     });
@@ -1564,7 +4154,478 @@ describe("createAgentStream repeated compaction", () => {
     });
     await expect(replacement.onStepFinish(step)).resolves.toBeUndefined();
     expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
+    expect(await replacement.stopWhen.at(-1)({ steps: [step] })).toBe(false);
+    expect(state.pendingToolCycleRecovery).toBeUndefined();
   });
+
+  it("redirects confirmed non-executed file calls before the hard stop", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 3; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: "/private" },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+    }
+    const prepared = await stream.prepareStep({
+      steps,
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "The same tool call was rejected without executing an operation",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain("/private");
+    stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        {
+          toolCallId: "call-3",
+          toolName: "file",
+          input: { action: "write", path: "/private" },
+        },
+      ],
+      toolResults: [
+        {
+          toolCallId: "call-3",
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        },
+      ],
+    };
+    steps.push(step);
+    await stream.onStepFinish(step);
+    expect(await stream.stopWhen.at(-2)({ steps })).toBe(true);
+    expect(state.stoppedDueToDoomLoop).toBe(true);
+    expect(
+      state.toolLoopObserver.getCurrentCycle()?.confirmedNonExecution,
+    ).toBe(true);
+  });
+
+  it("keeps generic guidance for alternating rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    for (let i = 0; i < 6; i++) {
+      await stream.onStepFinish({
+        response: { modelId: "test-model" },
+        toolCalls: [
+          {
+            toolCallId: `call-${i}`,
+            toolName: "file",
+            input: { action: "write", path: `/private-${i % 2}` },
+          },
+        ],
+        toolResults: [
+          {
+            toolCallId: `call-${i}`,
+            output: {
+              error: "text is required for write action",
+              executionOutcome: "not_executed",
+            },
+          },
+        ],
+      });
+    }
+    const prepared = await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "A tool/result cycle has repeated without new output",
+    );
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      "The same tool call was rejected",
+    );
+  });
+
+  it("keeps the ordinary stop for repeated batches of rejected calls", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: { file: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const steps = [];
+    for (let i = 0; i < 5; i++) {
+      const step = {
+        response: { modelId: "test-model" },
+        toolCalls: ["/one", "/two"].map((path, index) => ({
+          toolCallId: `call-${i}-${index}`,
+          toolName: "file",
+          input: { action: "write", path },
+        })),
+        toolResults: [0, 1].map((index) => ({
+          toolCallId: `call-${i}-${index}`,
+          output: {
+            error: "text is required for write action",
+            executionOutcome: "not_executed",
+          },
+        })),
+      };
+      steps.push(step);
+      await stream.onStepFinish(step);
+      expect(await stream.stopWhen.at(-2)({ steps })).toBe(false);
+    }
+    expect(state.toolLoopObserver.getCurrentCycle()).toEqual({
+      toolNames: ["file"],
+      repeatCount: 5,
+      cycleLength: 1,
+      confirmedNonExecution: true,
+      toolCallCount: 2,
+    });
+    expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
+  });
+
+  it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the fixture")],
+      {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      },
+    );
+    const onAgentGuardrail = jest.fn();
+    const context = createTestStreamContext({
+      tools: { run_terminal_cmd: {} },
+      onAgentGuardrail,
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      usageTracker: {
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: () => 0,
+      },
+    }) as any;
+    let stream = (await createAgentStream("test-model", context, state)) as any;
+    for (let round = 0; round < 3; round++) {
+      for (let lap = 0; lap < 3; lap++) {
+        for (const path of ["a", "b"]) {
+          await stream.onStepFinish({
+            response: { modelId: "test-model" },
+            toolCalls: [
+              {
+                toolCallId: "read",
+                toolName: "run_terminal_cmd",
+                input: { command: `check-${round}-${path}` },
+              },
+            ],
+            toolResults: [
+              {
+                toolCallId: "read",
+                output: {
+                  result: {
+                    output: "unchanged error",
+                    exitCode: 2,
+                    status: "failed",
+                    session: `${round}-${lap}-${path}`,
+                    recordPath: `/records/${round}-${lap}-${path}.json`,
+                    executionEnvironment: "cloud",
+                    workingDirectory: "/home/user",
+                  },
+                },
+              },
+            ],
+          });
+        }
+      }
+      stream = (await createAgentStream("test-model", context, state)) as any;
+      const prepared = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(
+        JSON.stringify(prepared.messages).includes("[REPEATED TOOL RESULTS]"),
+      ).toBe(round < 2);
+      if (round === 0) {
+        context.abortController.abort();
+        stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+        expect(state.toolCycleRecoveryCount).toBe(0);
+        expect(state.pendingToolCycleRecovery).toBeDefined();
+        context.abortController = new AbortController();
+        stream = (await createAgentStream("test-model", context, state)) as any;
+        await stream.prepareStep({
+          steps: [],
+          messages: [{ role: "user", content: "Retry" }],
+        });
+      }
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    }
+    expect(state.toolCycleRecoveryCount).toBe(2);
+    expect(
+      onAgentGuardrail.mock.calls.filter(([event]) => event.action === "nudge"),
+    ).toHaveLength(2);
+    expect(context.abortController.signal.aborted).toBe(false);
+    expect(state.stoppedDueToDoomLoop).toBe(false);
+  });
+
+  it.each(["ask", "polling", "changing-output"])(
+    "does not nudge %s steps",
+    async (scenario) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const toolName =
+        scenario === "polling" ? "interact_terminal_session" : "file";
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode: scenario === "ask" ? "ask" : "agent",
+          tools: { [toolName]: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      for (let i = 0; i < 6; i++) {
+        await stream.onStepFinish({
+          response: { modelId: "test-model" },
+          toolCalls: [
+            { toolCallId: "call", toolName, input: { action: "wait" } },
+          ],
+          toolResults: [
+            {
+              toolCallId: "call",
+              output: scenario === "changing-output" ? String(i) : "unchanged",
+            },
+          ],
+        });
+      }
+      const prepared = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(JSON.stringify(prepared.messages)).not.toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
+      expect(state.pendingToolCycleRecovery).toBeUndefined();
+    },
+  );
+
+  it.each(["durable", "rolling", "rolling-empty-tail"])(
+    "keeps recovery and handoff context in %s compaction requests",
+    async (kind) => {
+      const summary = uiMessage("summary", "Continue the fixture.");
+      const tracker = {
+        hasSummarized: kind !== "durable",
+        summarizationCount: kind !== "durable" ? 1 : 0,
+        recordSummarization() {
+          this.hasSummarized = true;
+          this.summarizationCount++;
+        },
+      };
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [summary],
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue({
+        summaryMessage: summary,
+        summaryText: "Continue the fixture.",
+        runtimeContextTokens:
+          kind === "rolling-empty-tail"
+            ? require("@/lib/chat/summarization/constants")
+                .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS
+            : 0,
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      if (kind !== "durable")
+        mockGetProviderPromptPressure.mockReturnValue({
+          reason: "serialized_message_bytes",
+          reasons: [],
+        });
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 120_000,
+        maxTokens: 128_000,
+      });
+      const onAgentGuardrail = jest.fn();
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          tools: { file: {} },
+          summarizationTracker: tracker,
+          onAgentGuardrail,
+          getBrowserHandoffNotes: async () => [
+            { id: "handoff", text: "HANDOFF: use the account I selected." },
+          ],
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      for (let i = 0; i < 3; i++) {
+        await stream.onStepFinish({
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: "read",
+              toolName: "file",
+              input: { path: "fixture" },
+            },
+          ],
+          toolResults: [{ toolCallId: "read", output: "unchanged" }],
+        });
+      }
+      mockGetProviderPromptPressure.mockReturnValueOnce(null);
+      const savedTokens = state.lastStepInputTokens;
+      state.lastStepInputTokens = 0;
+      await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Original task" }],
+      });
+      state.lastStepInputTokens = savedTokens;
+      const prepared = await stream.prepareStep({
+        steps: kind !== "durable" ? [{ toolResults: [] }] : [],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "HANDOFF: use the account I selected.",
+      );
+      const ordered = JSON.stringify(prepared.messages);
+      expect(ordered.indexOf("Continue the fixture.")).toBeLessThan(
+        ordered.indexOf("HANDOFF: use the account I selected."),
+      );
+      if (kind !== "durable")
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalled();
+      else expect(mockRunSummarizationStep).toHaveBeenCalled();
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(state.toolCycleRecoveryCount).toBe(1);
+      expect(onAgentGuardrail).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: "nudge" }),
+      );
+      const next = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(JSON.stringify(next.messages).match(/HANDOFF:/g)).toHaveLength(1);
+    },
+  );
+
+  it.each(["ask", "agent"] as const)(
+    "halts a repeated response in %s without logging its text",
+    async (mode) => {
+      const repeatedText = "PRIVATE_RESPONSE_CONTENT_CANARY";
+      const detection = {
+        detected: true,
+        reason: "repeated_text",
+        repeatedText,
+        repeatCount: 4,
+      };
+      mockAppendAssistantDelta.mockReturnValue(detection);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        });
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint: mode,
+            usageTracker: {},
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+
+        await stream.onChunk({
+          chunk: { type: "text-delta", id: "text-1", text: repeatedText },
+        });
+        await stream.onChunk({
+          chunk: { type: "text-delta", id: "text-1", text: repeatedText },
+        });
+
+        expect(state.stoppedDueToAssistantContentLoop).toBe(true);
+        expect(state.assistantContentLoopDetection).toBe(detection);
+        expect(stream.abortSignal.aborted).toBe(true);
+        const diagnostics = warn.mock.calls.filter(
+          ([, fields]) => fields?.event === "assistant_content_loop_detected",
+        );
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0][1]).toMatchObject({
+          event: "assistant_content_loop_detected",
+          chatId: "chat",
+          mode,
+          endpoint: mode,
+          reason: "repeated_text",
+          repeatCount: 4,
+        });
+        expect(diagnostics[0][1]).not.toHaveProperty("repeatedText");
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(repeatedText);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
@@ -1622,50 +4683,68 @@ describe("createAgentStream repeated compaction", () => {
     expect(onProviderRequestStart).toHaveBeenCalledTimes(1);
   });
 
-  it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
-    const checkAfterStep = jest.fn(() => undefined);
-    const settleUsageAfterStep = jest.fn(async () => undefined);
-    const usageTracker = {
-      accumulateStep: jest.fn(() => 0),
-      setAuthoritativeModelCostForStep: jest.fn(),
-      computeCostDollars: jest.fn(() => 0.2),
-    };
-    const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
-      usedTokens: 1_000,
-      maxTokens: 128_000,
-    });
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        budgetMonitor: { checkAfterStep },
-        getSandboxCostDollars: () => 0.05,
-        getTriggerRunCostDollars: () => 0.03,
-        settleUsageAfterStep,
-        summarizationTracker: {
-          hasSummarized: false,
-          summarizationCount: 0,
-          recordSummarization: jest.fn(),
-        },
-        usageTracker,
-      }) as any,
-      state,
-    )) as any;
+  it.each([undefined, "abort", "abort-agent-run-spend-cap"] as const)(
+    "settles all runtime costs and attributes the shared budget stop (%s)",
+    async (decision) => {
+      const checkAfterStep = jest.fn(() =>
+        decision ? { type: decision, details: {} } : undefined,
+      );
+      const settleUsageAfterStep = jest.fn(async () => undefined);
+      const usageTracker = {
+        accumulateStep: jest.fn(() => 0),
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: jest.fn(() => 0.2),
+      };
+      const state = initAgentStreamState([uiMessage("initial", "Run a scan")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const onAbort = jest.fn();
+      const stop = createAgentStopSignal({
+        onAbort,
+        getStreamState: () => state,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          budgetMonitor: { checkAfterStep },
+          abortController: stop.controller,
+          getSandboxCostDollars: () => 0.05,
+          getTriggerRunCostDollars: () => 0.03,
+          settleUsageAfterStep,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker,
+        }) as any,
+        state,
+      )) as any;
 
-    await stream.onStepFinish({
-      usage: { inputTokens: 10, outputTokens: 5 },
-      response: { modelId: "test-model" },
-      providerMetadata: undefined,
-    });
+      await stream.onStepFinish({
+        usage: { inputTokens: 10, outputTokens: 5 },
+        response: { modelId: "test-model" },
+        providerMetadata: undefined,
+      });
 
-    expect(checkAfterStep).toHaveBeenCalledWith(0.28);
-    expect(settleUsageAfterStep).toHaveBeenCalledWith({
-      currentCostDollars: 0.28,
-      sandboxCostDollars: 0.05,
-      triggerRunCostDollars: 0.03,
-      force: false,
-      model: "test-model",
-    });
-  });
+      expect(checkAfterStep).toHaveBeenCalledWith(0.28);
+      expect(settleUsageAfterStep).toHaveBeenCalledWith({
+        currentCostDollars: 0.28,
+        sandboxCostDollars: 0.05,
+        triggerRunCostDollars: 0.03,
+        force: decision !== undefined,
+        model: "test-model",
+      });
+      expect(onAbort.mock.calls).toEqual(
+        decision
+          ? [[decision === "abort" ? "budget_monitor" : "agent_run_spend_cap"]]
+          : [],
+      );
+      expect(stop.controller.signal.aborted).toBe(decision !== undefined);
+      stop.dispose();
+    },
+  );
 
   it("forces durable waiting, injects the claimed result, and consumes it after synthesis", async () => {
     let completionState = {
@@ -1911,9 +4990,13 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    [
+      "model-deepseek-v4.1-flash-1017-pro",
+      "model-deepseek-v4.1-flash-1017-pro",
+    ],
     ["model-glm-5.3-flash-agent", "model-glm-5.3-flash-agent"],
-    ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
-    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
+    ["model-glm-5.3-flash", "model-deepseek-v4-flash-vision"],
+    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-vision"],
     [
       "model-deepseek-v4-flash-vision-pro",
       "model-deepseek-v4-flash-vision-pro",
@@ -2107,6 +5190,9 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it("emits sanitized provider and retained-message diagnostics", async () => {
+    jest
+      .mocked(require("ai").convertToModelMessages)
+      .mockImplementationOnce(jest.requireActual("ai").convertToModelMessages);
     const onProviderRequestDiagnostics = jest.fn();
     const tracker = {
       hasSummarized: true,
@@ -2122,6 +5208,11 @@ describe("createAgentStream repeated compaction", () => {
     state.transcriptSourceMessages = [
       uiMessage("transcript-1", "private transcript content"),
     ];
+    state.finalMessages[0].parts.push({
+      type: "file",
+      mediaType: "image/png",
+      url: "https://private.test/diagnostic-fixture",
+    });
 
     await createAgentStream(
       "test-model",
@@ -2138,6 +5229,12 @@ describe("createAgentStream repeated compaction", () => {
         source: "initial",
         message_count: 2,
         role_counts: { user: 2 },
+        media_counts: expect.objectContaining({
+          image_parts: 1,
+          user_image_parts: 1,
+          url_images: 1,
+          inline_images: 0,
+        }),
         serialized_message_bytes: expect.any(Number),
         invalid_tool_call_name_count: 0,
         invalid_tool_result_name_count: 0,
@@ -2157,6 +5254,74 @@ describe("createAgentStream repeated compaction", () => {
     expect(
       JSON.stringify(onProviderRequestDiagnostics.mock.calls),
     ).not.toContain("private transcript content");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("https://private.test/diagnostic-fixture");
+  });
+
+  it("retains the handoff note when preparing a compacted request falls back", async () => {
+    const summary = uiMessage("summary", "Continue the fixture.");
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summaryText: "Continue the fixture.",
+      runtimeContextTokens: require("@/lib/chat/summarization/constants")
+        .SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    const onProviderRequestDiagnostics = jest.fn((event) => {
+      if (event.source === "summarized_prepare_step")
+        throw new Error("diagnostics unavailable");
+    });
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 120_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          summarizationTracker: {
+            hasSummarized: true,
+            summarizationCount: 1,
+            recordSummarization: jest.fn(),
+          },
+          usageTracker: {},
+          onProviderRequestDiagnostics,
+          getBrowserHandoffNotes: async () => [
+            { id: "handoff", text: "HANDOFF: use my selected account." },
+          ],
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        "[agent-stream] prepareStep error:",
+        expect.objectContaining({ message: "diagnostics unavailable" }),
+      );
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "Continue the fixture.",
+      );
+      expect(
+        JSON.stringify(prepared.messages).match(
+          /HANDOFF: use my selected account\./g,
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(state.providerRecoveryContext)).not.toContain(
+        "HANDOFF:",
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("emits retained-message diagnostics on prepare-step fallback", async () => {
@@ -2258,6 +5423,9 @@ describe("createAgentStream repeated compaction", () => {
     };
     const usageTracker = {
       inputTokens: 0,
+      accumulateStep: jest.fn(() => 0),
+      setAuthoritativeModelCostForStep: jest.fn(),
+      computeCostDollars: () => 0,
       summarizationInputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
@@ -2294,6 +5462,9 @@ describe("createAgentStream repeated compaction", () => {
       messages: initialRaw,
     });
     expect(first.messages[0].content).toBe("summary 1");
+    await stream.onStepFinish({
+      response: { modelId: "test-model", messages: [] },
+    });
     state.lastStepInputTokens = 300_000;
     expect(stream.stopWhen[1]()).toBe(false);
 
@@ -2350,6 +5521,10 @@ describe("createAgentStream repeated compaction", () => {
       estimateSummaryInputTokens(third.messages.slice(1, -1)),
     ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024 - 768);
     expect(tracker.summarizationCount).toBe(2);
+    await stream.onStepFinish({
+      usage: { inputTokens: 1_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
 
     state.lastStepInputTokens = 0;
     const step3: ModelMessage = { role: "assistant", content: "tool step 3" };
@@ -2384,14 +5559,42 @@ describe("createAgentStream repeated compaction", () => {
       { toolResults: [], response: { messages: [step2] } },
       { toolResults: [], response: { messages: [step3] } },
     ];
-    for (
-      let index = 4;
-      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
-      index++
-    ) {
+    expect(tracker.summarizationCount).toBe(2);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(2);
+    state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(false);
+    expect(state.stoppedDueToTokenExhaustion).toBe(false);
+
+    const nextStep: ModelMessage = {
+      role: "assistant",
+      content: "new evidence after useful compactions ".repeat(1_000),
+    };
+    accumulatedRaw.push(nextStep);
+    accumulatedSteps.push({
+      toolResults: [],
+      response: { messages: [nextStep] },
+    });
+    await stream.prepareStep({
+      steps: accumulatedSteps,
+      messages: accumulatedRaw,
+    });
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(3);
+
+    // Provider-confirmed recovery should permit more than the former eight
+    // compactions in one stream as fresh Agent work fills the context again.
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    for (let index = 0; index < 9; index++) {
+      await stream.onStepFinish({
+        usage: { inputTokens: 1_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
+      state.lastStepInputTokens = 300_000;
       const nextStep: ModelMessage = {
         role: "assistant",
-        content: `large tool step ${index} `.repeat(1_000),
+        content: `fresh evidence ${index} `.repeat(1_000),
       };
       accumulatedRaw.push(nextStep);
       accumulatedSteps.push({
@@ -2403,16 +5606,7 @@ describe("createAgentStream repeated compaction", () => {
         messages: accumulatedRaw,
       });
     }
-
-    expect(tracker.summarizationCount).toBe(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
-    );
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
-    );
-    state.lastStepInputTokens = 300_000;
-    expect(stream.stopWhen[1]()).toBe(true);
-    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(12);
   });
 
   it("retains the latest completed tool pair across rolling compaction", async () => {
@@ -2555,64 +5749,425 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(1);
   });
 
-  it("stops cleanly when the attempt budget is exhausted with no accepted summary", async () => {
+  it.each([false, true])(
+    "stops cleanly when compaction attempts are exhausted with context flag=%s",
+    async (enabled) => {
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: false,
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const tracker = {
+        hasSummarized: false,
+        summarizationCount: 0,
+        recordSummarization: jest.fn(),
+        recordSummarizationUsage: jest.fn(),
+      };
+      const initialRaw: ModelMessage[] = [
+        { role: "user", content: "oversized initial history" },
+      ];
+      const state = initAgentStreamState(
+        [uiMessage("original-failure", "oversized initial history")],
+        { usedTokens: 200_000, maxTokens: 200_000 },
+      );
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          chatId: "chat-failure",
+          agentModelContextEnabled: enabled,
+          ctxMaxTokens: 200_000,
+          summarizationTracker: tracker,
+          usageTracker: {
+            accumulateStep: jest.fn(() => 0),
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+
+      await stream.prepareStep({ steps: [], messages: initialRaw });
+      await stream.onStepFinish({
+        usage: { inputTokens: 300_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
+      const rawMessages = [...initialRaw];
+      const steps: Array<Record<string, unknown>> = [];
+      for (
+        let index = 1;
+        index <= MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+        index++
+      ) {
+        const step: ModelMessage = {
+          role: "assistant",
+          content: `failed compaction step ${index}`,
+        };
+        rawMessages.push(step);
+        steps.push({ toolResults: [], response: { messages: [step] } });
+        await stream.prepareStep({ steps, messages: rawMessages });
+        await stream.onStepFinish({
+          usage: { inputTokens: 300_000, outputTokens: 10 },
+          response: { modelId: "test-model", messages: [] },
+        });
+      }
+
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
+      );
+      expect(tracker.summarizationCount).toBe(0);
+      expect(tracker.recordSummarization).not.toHaveBeenCalled();
+      state.lastStepInputTokens = enabled ? 100 : 300_000;
+      if (enabled)
+        await stream.onStepFinish({
+          response: {
+            messages: [
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "big",
+                    toolName: "file",
+                    output: {
+                      type: "text",
+                      value: " a".repeat(MAX_TOKENS_PAID + 10_000),
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+          toolCalls: [],
+          toolResults: [],
+          text: "",
+          finishReason: "tool-calls",
+        });
+      expect(stream.stopWhen[1]()).toBe(true);
+      expect(state.stoppedDueToTokenExhaustion).toBe(true);
+    },
+  );
+
+  it("does not reset the guard for a startup summary that fails to shrink context", async () => {
+    const oversizedSummary = uiMessage(
+      "ineffective-startup-summary",
+      "summary overhead ".repeat(4_000),
+    );
     mockRunSummarizationStep.mockResolvedValue({
       summarizationAttempted: true,
-      needsSummarization: false,
+      needsSummarization: true,
+      summarizedMessages: [oversizedSummary],
     });
     mockCompactModelMessagesInRun.mockResolvedValue(null);
     mockGetProviderPromptPressure.mockReturnValue({
       reason: "serialized_message_bytes",
       reasons: [],
     });
-    const tracker = {
-      hasSummarized: false,
-      summarizationCount: 0,
-      recordSummarization: jest.fn(),
-      recordSummarizationUsage: jest.fn(),
-    };
     const initialRaw: ModelMessage[] = [
-      { role: "user", content: "oversized initial history" },
+      { role: "user", content: "short initial history" },
     ];
     const state = initAgentStreamState(
-      [uiMessage("original-failure", "oversized initial history")],
+      [uiMessage("original-ineffective", "short initial history")],
       { usedTokens: 200_000, maxTokens: 200_000 },
     );
     const stream = (await createAgentStream(
       "test-model",
       createTestStreamContext({
-        chatId: "chat-failure",
         ctxMaxTokens: 200_000,
-        summarizationTracker: tracker,
-        usageTracker: {},
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          accumulateStep: jest.fn(() => 0),
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
       }) as any,
       state,
     )) as any;
 
     await stream.prepareStep({ steps: [], messages: initialRaw });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
     const rawMessages = [...initialRaw];
     const steps: Array<Record<string, unknown>> = [];
     for (
       let index = 1;
-      index <= MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+      index < MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
       index++
     ) {
       const step: ModelMessage = {
         role: "assistant",
-        content: `failed compaction step ${index}`,
+        content: `new cursor ${index}`,
       };
       rawMessages.push(step);
       steps.push({ toolResults: [], response: { messages: [step] } });
       await stream.prepareStep({ steps, messages: rawMessages });
+      await stream.onStepFinish({
+        usage: { inputTokens: 300_000, outputTokens: 10 },
+        response: { modelId: "test-model", messages: [] },
+      });
     }
 
-    expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
-      MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM - 1,
-    );
-    expect(tracker.summarizationCount).toBe(0);
-    expect(tracker.recordSummarization).not.toHaveBeenCalled();
     state.lastStepInputTokens = 300_000;
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
+  it("stops after summaries shrink messages but the provider prompt remains over the threshold", async () => {
+    const summary = uiMessage("small-summary", "Keep the current objective.");
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [summary],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue({
+      summaryMessage: summary,
+      summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+    });
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const state = initAgentStreamState(
+      [uiMessage("original", "old context ".repeat(2_000))],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          accumulateStep: jest.fn(() => 0),
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    const initial: ModelMessage[] = [
+      { role: "user", content: "old context ".repeat(2_000) },
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
+    const next: ModelMessage = {
+      role: "assistant",
+      content: "new findings ".repeat(12_000),
+    };
+    await stream.prepareStep({
+      steps: [{ toolResults: [], response: { messages: [next] } }],
+      messages: [...initial, next],
+    });
+    await stream.onStepFinish({
+      usage: { inputTokens: 300_000, outputTokens: 10 },
+      response: { modelId: "test-model", messages: [] },
+    });
+
+    expect(stream.stopWhen[1]()).toBe(true);
+    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
+  it("keeps large tool schemas in the missing-usage recovery estimate", async () => {
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: true,
+      summarizedMessages: [uiMessage("small-summary", "Keep the objective.")],
+    });
+    mockCompactModelMessagesInRun.mockResolvedValue(null);
+    mockGetProviderPromptPressure.mockReturnValue({
+      reason: "serialized_message_bytes",
+      reasons: [],
+    });
+    const state = initAgentStreamState(
+      [uiMessage("original", "old context ".repeat(2_000))],
+      { usedTokens: 120_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        tools: {
+          large_tool: {
+            description: "Inspect local state.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                input: {
+                  type: "string",
+                  description: "schema overhead ".repeat(50_000),
+                },
+              },
+            },
+          },
+        },
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+          recordSummarization: jest.fn(),
+          recordSummarizationUsage: jest.fn(),
+        },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+
+    const initial: ModelMessage[] = [
+      { role: "user", content: "old context ".repeat(2_000) },
+    ];
+    await stream.prepareStep({ steps: [], messages: initial });
+    await stream.onStepFinish({
+      response: { modelId: "test-model", messages: [] },
+    });
+    const next: ModelMessage = { role: "assistant", content: "new work" };
+    await stream.prepareStep({
+      steps: [{ toolResults: [], response: { messages: [next] } }],
+      messages: [...initial, next],
+    });
+    await stream.onStepFinish({
+      response: { modelId: "test-model", messages: [] },
+    });
+
+    state.lastStepInputTokens = 300_000;
+    expect(stream.stopWhen[1]()).toBe(true);
+    expect(state.stoppedDueToTokenExhaustion).toBe(true);
+  });
+
+  it("allows compaction after provider rejection recovery without usage", async () => {
+    const sdk = jest.requireActual("ai");
+    const wrap = jest.mocked(require("ai").wrapLanguageModel);
+    wrap.mockImplementation(sdk.wrapLanguageModel);
+    try {
+      mockCompactModelMessagesInRun.mockResolvedValue(null);
+      mockGetProviderPromptPressure.mockReturnValue({
+        reason: "serialized_message_bytes",
+        reasons: [],
+      });
+      const rejected = Object.assign(new Error("request too large"), {
+        statusCode: 413,
+      });
+      const doStream = jest
+        .fn()
+        .mockRejectedValueOnce(rejected)
+        .mockResolvedValue({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+        });
+      const model = {
+        specificationVersion: "v3",
+        provider: "test",
+        modelId: "test-model",
+        supportedUrls: {},
+        doGenerate: jest.fn(),
+        doStream,
+      };
+      const initialRaw: ModelMessage[] = [
+        { role: "user", content: "old context ".repeat(2_000) },
+      ];
+      const state = initAgentStreamState(
+        [uiMessage("old-context", "old context ".repeat(2_000))],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      state.lastStepInputTokens = 300_000;
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          trackedProvider: { languageModel: () => model },
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+            recordSummarization: jest.fn(),
+            recordSummarizationUsage: jest.fn(),
+          },
+          usageTracker: {
+            accumulateStep: jest.fn(() => 0),
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const rawMessages = [...initialRaw];
+      const steps: Array<Record<string, unknown>> = [];
+      for (
+        let index = 0;
+        index < MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
+        index++
+      ) {
+        if (index > 0) {
+          const step: ModelMessage = {
+            role: "assistant",
+            content: `new evidence ${index}`,
+          };
+          rawMessages.push(step);
+          steps.push({ toolResults: [], response: { messages: [step] } });
+        }
+        await stream.prepareStep({ steps, messages: rawMessages });
+      }
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM - 1,
+      );
+
+      mockCompactModelMessagesInRun.mockResolvedValueOnce({
+        summaryMessage: uiMessage("provider-summary", "Keep verified facts."),
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      const prompt = [
+        { role: "system", content: "system" },
+        {
+          role: "user",
+          content: [{ type: "text", text: "old context ".repeat(2_000) }],
+        },
+      ];
+      await (stream.model as typeof model).doStream({ prompt });
+      expect(doStream).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(doStream.mock.calls[1][0].prompt)).toContain(
+        "Keep verified facts.",
+      );
+      await stream.onStepFinish({
+        response: { modelId: "test-model", messages: [] },
+      });
+
+      mockCompactModelMessagesInRun.mockResolvedValueOnce({
+        summaryMessage: uiMessage(
+          "later-summary",
+          "Continue with new evidence.",
+        ),
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      const next: ModelMessage = {
+        role: "assistant",
+        content: "new evidence after provider recovery",
+      };
+      rawMessages.push(next);
+      steps.push({ toolResults: [], response: { messages: [next] } });
+      await stream.prepareStep({ steps, messages: rawMessages });
+      expect(mockCompactModelMessagesInRun).toHaveBeenCalledTimes(
+        MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM + 1,
+      );
+    } finally {
+      wrap.mockImplementation(({ model }: any) => model);
+    }
   });
 });

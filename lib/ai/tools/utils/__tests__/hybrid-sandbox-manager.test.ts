@@ -1,6 +1,17 @@
+jest.mock("@/lib/cloud-recovery/store", () => ({
+  readFailures: jest.fn(async () => null),
+  clearResumeFailures: jest.fn(async () => {}),
+}));
+jest.mock("../cloud-workspace-guard", () => ({
+  ...jest.requireActual("../cloud-workspace-guard"),
+  readCloudWorkspaceState: jest.fn(async () => null),
+}));
+import { readCloudWorkspaceState } from "../cloud-workspace-guard";
+import { CentrifugoSandbox } from "../centrifugo-sandbox";
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {
     static list = jest.fn();
+    static getInfo = jest.fn();
     static connect = jest.fn();
   },
 }));
@@ -9,6 +20,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 
 const sandboxApi = Sandbox as unknown as {
   list: jest.Mock;
+  getInfo: jest.Mock;
   connect: jest.Mock;
 };
 const mockConvexQuery = jest.fn();
@@ -113,27 +125,281 @@ describe("filterConnectionsByPresence", () => {
 });
 
 describe("stable environment acquisition", () => {
-  it.each(["free", "pro"] as const)(
-    "blocks wrong-host and cloud fallback for %s",
-    async (subscription) => {
+  it.each([false, undefined])(
+    "blocks Desktop execution when files=%s cannot recover, then reacquires the repaired bridge",
+    async (files) => {
+      const oldWs = process.env.CENTRIFUGO_WS_URL;
+      const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+      // Keep real acquisition/capability negotiation; only replace relay I/O.
+      const dispatch = jest
+        .spyOn(CentrifugoSandbox.prototype as any, "dispatchFileRequest")
+        .mockRejectedValue(new Error("File bridge unavailable"));
+      const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "desktop",
+        "service-key",
+        null,
+        "pro",
+      );
+      jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          isDesktop: true,
+          capabilities: { commands: true, files, operationChannels: true },
+        }),
+      ]);
+      try {
+        await expect(
+          manager.getSandboxContextForPrompt(),
+        ).rejects.toMatchObject({
+          type: "bad_request",
+          surface: "sandbox",
+          message: expect.stringContaining(
+            "Desktop file access could not be verified",
+          ),
+        });
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(sandboxApi.connect).not.toHaveBeenCalled();
+
+        dispatch.mockResolvedValue({
+          type: "file_stat_result",
+          kind: "not_file",
+          path: ".",
+        });
+        const { sandbox } = await manager.getSandbox();
+        expect((sandbox as CentrifugoSandbox).supportsNativeFileRelay()).toBe(
+          true,
+        );
+        expect((sandbox as CentrifugoSandbox).supportsCommandStdin()).toBe(
+          false,
+        );
+        expect(setSandbox).toHaveBeenCalledWith(sandbox);
+        expect(dispatch).toHaveBeenCalledTimes(2);
+      } finally {
+        dispatch.mockRestore();
+        close.mockRestore();
+        if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+        else process.env.CENTRIFUGO_WS_URL = oldWs;
+        if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+        else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "shares local acquisition when concurrent connection lists differ=%s",
+    async (different) => {
+      const oldWs = process.env.CENTRIFUGO_WS_URL;
+      const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+      let finish!: () => void;
+      const probe = jest
+        .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+        .mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+      const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "desktop",
+        "service-key",
+        null,
+        "pro",
+      );
+      const connection = makeConnection({
+        isDesktop: true,
+        capabilities: { commands: true, files: true, operationChannels: true },
+      });
+      const lists = jest
+        .spyOn(manager, "listConnections")
+        .mockResolvedValue([connection]);
+      if (different)
+        lists
+          .mockResolvedValueOnce([connection])
+          .mockResolvedValueOnce([
+            { ...connection, connectionId: "conn-other" },
+          ]);
+      try {
+        const first = manager.getSandbox();
+        const second = manager.getSandbox();
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(probe).toHaveBeenCalledTimes(1);
+        probe.mockResolvedValue(undefined);
+        finish();
+        const [a, b] = await Promise.all([first, second]);
+        expect(a.sandbox).toBe(b.sandbox);
+        expect(lists).toHaveBeenCalledTimes(1);
+        lists.mockReset().mockResolvedValue([connection]);
+        expect((await manager.getSandbox()).sandbox).toBe(a.sandbox);
+        expect(probe).toHaveBeenCalledTimes(1);
+        expect(close).not.toHaveBeenCalled();
+        expect(setSandbox).toHaveBeenCalledTimes(1);
+      } finally {
+        probe.mockRestore();
+        close.mockRestore();
+        if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+        else process.env.CENTRIFUGO_WS_URL = oldWs;
+        if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+        else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+      }
+    },
+  );
+
+  it.each(["preference", "reset", "reset-then-replace"])(
+    "rejects a local probe invalidated by %s",
+    async (change) => {
+      const oldWs = process.env.CENTRIFUGO_WS_URL;
+      const oldSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test";
+      let finish!: () => void;
+      const probe = jest
+        .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+        .mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+      const close = jest.spyOn(CentrifugoSandbox.prototype, "close");
+      const setSandbox = jest.fn();
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "conn-online",
+        "service-key",
+        null,
+        "pro",
+      );
+      jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          isDesktop: true,
+          capabilities: {
+            commands: true,
+            files: false,
+            operationChannels: true,
+          },
+        }),
+      ]);
+      try {
+        const pending = manager.getSandbox().catch((error) => error);
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        let resetting: Promise<void> | undefined;
+        const cloud = { sandboxId: "cloud-replacement" } as any;
+        if (change === "preference") {
+          await manager.setSandboxPreference("e2b");
+          manager.setSandbox(cloud);
+        } else {
+          resetting = manager.resetSandbox();
+          if (change === "reset-then-replace") manager.setSandbox(cloud);
+        }
+        finish();
+        expect(await pending).toBeInstanceOf(Error);
+        await resetting;
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(
+          setSandbox.mock.calls.some(
+            ([sandbox]) => sandbox instanceof CentrifugoSandbox,
+          ),
+        ).toBe(false);
+        if (change !== "reset") expect((manager as any).sandbox).toBe(cloud);
+        else expect((manager as any).sandbox).toBeNull();
+      } finally {
+        probe.mockRestore();
+        close.mockRestore();
+        if (oldWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+        else process.env.CENTRIFUGO_WS_URL = oldWs;
+        if (oldSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+        else process.env.CENTRIFUGO_TOKEN_SECRET = oldSecret;
+      }
+    },
+  );
+
+  it("reports a failed connection lookup without falsely asking for reconnection", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "environment:machine-a",
+      "service-key",
+      null,
+      "pro",
+    );
+    const warn = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockConvexQuery.mockRejectedValue(new Error("Temporary lookup failure"));
+    try {
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "sandbox",
+        metadata: { localConnectionLookupFailed: true },
+      });
+      await expect(
+        prepareSandboxContextForPrompt({
+          sandboxManager: manager,
+          writer: { write: jest.fn() } as any,
+          eventId: "lookup-failed",
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "Could not check the selected computer's connection. Try again shortly.",
+      });
+      expect(manager.peekFallbackInfo()).toBeNull();
+    } finally {
+      mockConvexQuery.mockReset();
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    "environment:machine-a",
+    "desktop",
+    "00000000-0000-4000-8000-000000000001",
+  ])(
+    "keeps offline selection %s on its reconnect flow without opening another sandbox",
+    async (preference) => {
       const manager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
-        "environment:machine-a",
+        preference,
         "service-key",
         null,
-        subscription,
+        "pro",
       );
       jest
         .spyOn(manager, "listConnections")
         .mockResolvedValue([makeConnection({ environmentId: "machine-b" })]);
-      await expect(manager.getSandbox()).rejects.toThrow(
-        "selected computer is disconnected",
-      );
       await expect(manager.getSandboxContextForPrompt()).rejects.toThrow(
         "selected computer is disconnected",
       );
-      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "selected computer is disconnected",
+      );
+      const writer = { write: jest.fn() };
+      await expect(
+        prepareSandboxContextForPrompt({
+          sandboxManager: manager,
+          writer: writer as any,
+          eventId: "disconnected-host",
+        }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+        message: expect.stringContaining("selected computer is disconnected"),
+      });
+      expect(writer.write).not.toHaveBeenCalled();
+      expect(manager.getEffectivePreference()).toBe(preference);
+      expect(manager.peekFallbackInfo()).toBeNull();
     },
   );
 
@@ -209,6 +475,32 @@ describe("isSameLocalMachine", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("reconnects a legacy Git Bash report to its normalized Windows identity only on the same host", () => {
+    const previous = makeConnection({
+      ...kaliConnection,
+      isDesktop: true,
+      osInfo: { ...kaliConnection.osInfo!, platform: "mingw64_nt-10.0-22631" },
+    });
+    const replacement = {
+      ...previous,
+      connectionId: "replacement",
+      osInfo: { ...previous.osInfo!, platform: "win32" },
+    };
+    expect(isSameLocalMachine(previous, replacement)).toBe(true);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        osInfo: { ...replacement.osInfo, hostname: "other-host" },
+      }),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(previous, {
+        ...replacement,
+        environmentId: "other-machine",
+      }),
+    ).toBe(false);
   });
 
   it("rejects another host and connections without host identity", () => {
@@ -291,34 +583,71 @@ describe("HybridSandboxManager browser automation prompt", () => {
     warnSpy.mockRestore();
   });
 
-  it("uses a cmd-compatible browser probe for Windows local contexts", async () => {
-    mockConvexQuery.mockResolvedValue([
-      makeConnection({
-        connectionId: "desktop-conn",
-        name: "Desktop",
-        isDesktop: true,
-        osInfo: {
-          platform: "win32",
-          arch: "x86_64",
-          release: "11",
-          hostname: "windows-box",
-        },
-      }),
-    ]);
+  it.each(["win32", "mingw64_nt-10.0-22631"])(
+    "uses Windows paths and browser probe for %s local contexts",
+    async (platform) => {
+      mockConvexQuery.mockResolvedValue([
+        makeConnection({
+          connectionId: "desktop-conn",
+          name: "Desktop",
+          isDesktop: true,
+          capabilities: { commands: true, files: true },
+          osInfo: {
+            platform,
+            arch: "x86_64",
+            release: "11",
+            hostname: "windows-box",
+          },
+        }),
+      ]);
 
-    const manager = new HybridSandboxManager(
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "desktop",
+        "service-key",
+        null,
+        "pro",
+      );
+
+      const context = await manager.getSandboxContextForPrompt();
+
+      expect(context).toContain(
+        "where agent-browser && agent-browser --version",
+      );
+      expect(context).toContain("`npm install -g agent-browser`");
+      expect(context).not.toContain("command -v agent-browser");
+      expect(context).toContain("- OS: Windows");
+      expect(context).toContain("C:\\temp\\hackerai-upload");
+    },
+  );
+
+  it("keeps unknown-OS connections distinct from the E2B default prompt", async () => {
+    mockConvexQuery.mockResolvedValue([makeConnection({})]);
+    const local = new HybridSandboxManager(
       "user-1",
       jest.fn(),
-      "desktop",
+      "conn-online",
+      "service-key",
+      null,
+      "pro",
+    );
+    const cloud = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
       "service-key",
       null,
       "pro",
     );
 
-    const context = await manager.getSandboxContextForPrompt();
+    const context = await local.getSandboxContextForPrompt();
 
-    expect(context).toContain("where agent-browser && agent-browser --version");
+    expect(context).toContain("DANGEROUS MODE");
+    expect(context).toContain("`npm install -g agent-browser`");
     expect(context).not.toContain("command -v agent-browser");
+    expect(context).not.toContain("where agent-browser");
+    await expect(cloud.getSandboxContextForPrompt()).resolves.toBeNull();
   });
 });
 
@@ -335,84 +664,33 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     warnSpy.mockRestore();
   });
 
-  it("records a desktop-to-cloud fallback before the first tool call", async () => {
-    mockConvexQuery.mockResolvedValue([]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-    );
-
-    const context = await manager.getSandboxContextForPrompt();
-    const fallbackInfo = manager.consumeFallbackInfo();
-
-    expect(context).toBeNull();
-    expect(fallbackInfo).toMatchObject({
-      occurred: true,
-      reason: "no_local_connections",
-      requestedPreference: "desktop",
-      actualSandbox: "e2b",
-      actualSandboxName: "Cloud",
-    });
-    expect(manager.consumeFallbackInfo()).toBeNull();
-  });
-
-  it("does not record a cloud fallback for free users without a local connection", async () => {
-    mockConvexQuery.mockResolvedValue([]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "free",
-    );
-
-    await manager.getSandboxContextForPrompt();
-
-    expect(manager.consumeFallbackInfo()).toBeNull();
-  });
-
-  it("records a fallback when the selected local connection is unavailable", async () => {
-    mockConvexQuery.mockResolvedValue([
-      makeConnection({
-        connectionId: "remote-conn",
-        name: "Lab VM",
-        isDesktop: false,
-        osInfo: {
-          platform: "linux",
-          arch: "x64",
-          release: "6.8",
-          hostname: "lab-vm",
-        },
-      }),
-    ]);
-
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-    );
-
-    const context = await manager.getSandboxContextForPrompt();
-
-    expect(context).toContain("Hostname: lab-vm");
-    expect(manager.consumeFallbackInfo()).toMatchObject({
-      occurred: true,
-      reason: "connection_unavailable",
-      requestedPreference: "desktop",
-      actualSandbox: "remote-conn",
-      actualSandboxName: "Lab VM",
-    });
-  });
+  it.each(["free", "pro"] as const)(
+    "reports a disconnected legacy computer before allocating Cloud for %s",
+    async (subscription) => {
+      // Resolving the old owned session cannot upgrade clients without a
+      // persistent identity. The following connection listing is empty.
+      const preference = "00000000-0000-4000-8000-000000000001";
+      mockConvexQuery.mockResolvedValueOnce(preference).mockResolvedValue([]);
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        preference,
+        "service-key",
+        null,
+        subscription,
+      );
+      await expect(manager.getSandboxContextForPrompt()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+      mockConvexQuery.mockResolvedValueOnce(preference).mockResolvedValue([]);
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+      expect(manager.peekFallbackInfo()).toBeNull();
+    },
+  );
 
   it("builds a cloud reminder that blocks host-drive assumptions", () => {
     const reminder = getSandboxFallbackPromptReminder({
@@ -541,38 +819,6 @@ describe("HybridSandboxManager prompt-time fallback", () => {
         expectedSandboxIdentity: approvedIdentity,
       }),
     ).toThrow("selected sandbox changed after approval");
-  });
-
-  it("keeps MIOSA approvals isolated from E2B", () => {
-    const miosa = { sandboxKind: "miosa" as const } as never;
-    const e2b = { commands: {} } as never;
-
-    expect(getAgentApprovalSandboxIdentity(miosa)).toBe("miosa");
-    expect(getAgentApprovalSandboxIdentity(e2b)).toBe("e2b");
-    expect(() =>
-      assertAgentApprovalSandboxIdentity({
-        sandbox: miosa,
-        expectedSandboxIdentity: "e2b",
-      }),
-    ).toThrow("selected sandbox changed after approval");
-  });
-
-  it("advertises interactive PTY after a local preference falls back to MIOSA", async () => {
-    const manager = new HybridSandboxManager(
-      "user-1",
-      jest.fn(),
-      "desktop",
-      "service-key",
-      null,
-      "pro",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { provider: "miosa" },
-    );
-
-    await expect(manager.supportsInteractivePty()).resolves.toBe(true);
   });
 
   it("blocks Desktop-local attachment preparation when Desktop falls back", () => {
@@ -904,6 +1150,58 @@ describe("HybridSandboxManager reset cleanup", () => {
     }
   });
 
+  it("rejects recovery when selection changes during the connection lookup", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const previous = makeConnection({
+      connectionId: "old",
+      environmentId: "machine",
+      isDesktop: true,
+    });
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+    manager.setSandbox({
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "old",
+      getConnectionName: () => "QA",
+      getConnectionInfo: () => previous,
+    } as any);
+    mockConvexMutation.mockResolvedValue({ success: true });
+    let finish!: (value: ConnectionInfo[]) => void;
+    let entered!: () => void;
+    const lookup = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    jest.spyOn(manager, "listConnections").mockImplementation(() => {
+      entered();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const acquire = jest
+      .spyOn(manager as any, "useCentrifugoConnection")
+      .mockResolvedValue(undefined);
+    try {
+      const pending = manager
+        .recoverLocalConnection("old", "command_relay_unsubscribed")
+        .catch((error) => error);
+      await lookup;
+      await manager.setSandboxPreference("e2b");
+      finish([{ ...previous, connectionId: "replacement" }]);
+      expect(await pending).toBeInstanceOf(Error);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(manager.getEffectivePreference()).toBe("e2b");
+    } finally {
+      warn.mockRestore();
+      acquire.mockRestore();
+    }
+  });
+
   it("recovers an unsubscribed relay only onto the same machine", async () => {
     const originalWsUrl = process.env.CENTRIFUGO_WS_URL;
     const originalTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
@@ -1145,6 +1443,10 @@ describe("HybridSandboxManager reset cleanup", () => {
     };
     const replacement = Object.assign(new Sandbox(), {
       sandboxId: "sandbox-2",
+      getInfo: jest.fn(async () => ({
+        metadata: { userID: "user-1" },
+        network: { allowOut: [], denyOut: [] },
+      })),
     });
     sandboxApi.list.mockReturnValue({
       nextItems: jest.fn(async () => [
@@ -1154,6 +1456,25 @@ describe("HybridSandboxManager reset cleanup", () => {
           metadata: { sandboxVersion: "v12" },
         },
       ]),
+    });
+    jest.mocked(readCloudWorkspaceState).mockResolvedValue({
+      version: 1,
+      phase: "e2b",
+      token: "fixture",
+      sourceId: "sandbox-2",
+      destinationId: "sandbox-2",
+      region: "us-east-1",
+      origin: "adopted",
+    });
+    sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "sandbox-2",
+      state: "running",
+      metadata: {
+        userID: "user-1",
+        template: "terminal-agent-sandbox",
+        sandboxVersion: "v12",
+        e2bCluster: "us",
+      },
     });
     sandboxApi.connect.mockResolvedValue(replacement);
 

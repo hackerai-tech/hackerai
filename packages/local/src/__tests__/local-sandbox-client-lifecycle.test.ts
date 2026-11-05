@@ -1,5 +1,16 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
+const mockSpawn = jest.fn();
+const mockCommandIdentity = jest.fn();
+
+jest.mock("../command-identity", () => ({
+  commandIdentityFromEnvironment: () => mockCommandIdentity(),
+}));
+
+jest.mock("child_process", () => ({
+  ...jest.requireActual("child_process"),
+  spawn: (...args: unknown[]) => mockSpawn(...args),
+}));
 
 jest.mock("../environment-identity", () => ({
   getEnvironmentId: jest.fn().mockResolvedValue("test-environment"),
@@ -20,10 +31,12 @@ jest.mock("../command-cancellation", () => ({
 }));
 
 jest.mock("../private-artifact-hardening", () => ({
-  hardenExistingTerminalArtifacts: jest.fn().mockResolvedValue(true),
+  preparePrivateArtifactStorage: jest.fn().mockResolvedValue({ ready: true }),
 }));
 
+import { preparePrivateArtifactStorage } from "../private-artifact-hardening";
 import { LocalSandboxClient } from "../index";
+import { EventEmitter } from "events";
 
 const config = {
   convexUrl: "http://127.0.0.1:3210",
@@ -34,7 +47,54 @@ const config = {
 describe("LocalSandboxClient cleanup", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCommandIdentity.mockReset();
     mockConfirmProcessTermination.mockResolvedValue(true);
+  });
+
+  it("runs streamed and background Agent commands as the isolated user", async () => {
+    mockCommandIdentity.mockReturnValue({
+      uid: 65534,
+      gid: 65534,
+      home: "/home/hackerai-agent",
+    });
+    const streamed = Object.assign(new EventEmitter(), {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    mockSpawn.mockReturnValueOnce(streamed).mockReturnValueOnce({
+      pid: 1234,
+      unref: jest.fn(),
+    });
+    const client = new LocalSandboxClient(config);
+    const privateClient = client as unknown as {
+      streamCommand: (
+        id: string,
+        command: string,
+        timeout: number,
+        show: boolean,
+        label: string,
+      ) => Promise<void>;
+      spawnBackground: (command: string) => Promise<number>;
+      publishToChannel: jest.Mock;
+    };
+    privateClient.publishToChannel = jest.fn().mockResolvedValue(undefined);
+    const running = privateClient.streamCommand(
+      "isolated",
+      "id",
+      0,
+      false,
+      "id",
+    );
+    streamed.emit("close", 0, null);
+    await running;
+    await privateClient.spawnBackground("id");
+    for (const call of mockSpawn.mock.calls.slice(0, 2)) {
+      expect(call[2]).toMatchObject({
+        uid: 65534,
+        gid: 65534,
+        env: { HOME: "/home/hackerai-agent" },
+      });
+    }
   });
 
   it("stops process resources exactly once across repeated cleanup", async () => {
@@ -136,6 +196,95 @@ describe("LocalSandboxClient cleanup", () => {
     );
   });
 
+  it.each([
+    { displayName: undefined, shown: true, label: "echo test" },
+    { displayName: "Custom label", shown: true, label: "Custom label" },
+    { displayName: "", shown: false, label: "echo test" },
+  ])(
+    "preserves execution and display overrides: $displayName",
+    async ({ displayName, shown, label }) => {
+      const client = new LocalSandboxClient(config);
+      const streamCommand = jest.fn().mockResolvedValue(undefined);
+      const privateClient = client as unknown as {
+        handleCommand: (message: Record<string, unknown>) => Promise<void>;
+        streamCommand: typeof streamCommand;
+      };
+      privateClient.streamCommand = streamCommand;
+      const command =
+        'export PATH="$HOME/go/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:/usr/local/go/bin:$PATH" && echo test';
+      await privateClient.handleCommand({
+        type: "command",
+        commandId: "display-test",
+        command,
+        displayName,
+        targetConnectionId: "connection-1",
+      });
+      expect(streamCommand).toHaveBeenCalledWith(
+        "display-test",
+        command,
+        undefined,
+        shown,
+        label,
+        undefined,
+      );
+    },
+  );
+
+  it.each([
+    ["SIGTERM", true],
+    ["SIGINT", true],
+    ["SIGKILL", true],
+    ["SIGSEGV", false],
+    ["SIGABRT", false],
+  ])(
+    "distinguishes stop from crash for %s without changing the exit response",
+    async (signal, stopped) => {
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      mockSpawn.mockReturnValueOnce(proc);
+      const client = new LocalSandboxClient(config);
+      const publish = jest.fn().mockResolvedValue(undefined);
+      const privateClient = client as unknown as {
+        streamCommand: (
+          id: string,
+          command: string,
+          timeout: number,
+          show: boolean,
+          label: string,
+        ) => Promise<void>;
+        publishToChannel: typeof publish;
+      };
+      privateClient.publishToChannel = publish;
+      const log = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const running = privateClient.streamCommand(
+          "signal-test",
+          "test-command",
+          0,
+          true,
+          "Test command",
+        );
+        proc.emit("close", null, signal);
+        await running;
+        const output = log.mock.calls.flat().join("\n");
+        expect(output).toContain(signal);
+        expect(output).toContain(
+          stopped ? "Stopped: Test command" : "✗ Test command",
+        );
+        if (!stopped) expect(output).not.toContain("Stopped:");
+        expect(publish).toHaveBeenCalledWith({
+          type: "exit",
+          commandId: "signal-test",
+          exitCode: 1,
+        });
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest
@@ -195,6 +344,9 @@ describe("LocalSandboxClient cleanup", () => {
       }
     ).startIdleCheck = jest.fn();
 
+    jest
+      .mocked(preparePrivateArtifactStorage)
+      .mockResolvedValueOnce({ ready: true, namespace: "uid-1000" });
     const start = client.start();
     await setupStarted;
     expect(mutation).toHaveBeenCalledTimes(1);
@@ -202,7 +354,11 @@ describe("LocalSandboxClient cleanup", () => {
       "localSandbox:connect",
       expect.objectContaining({
         environmentId: "test-environment",
-        capabilities: expect.objectContaining({ commandStdin: true }),
+        clientVersion: require("../../package.json").version,
+        capabilities: expect.objectContaining({
+          commandStdin: true,
+          privateArtifactNamespace: "uid-1000",
+        }),
       }),
     );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(

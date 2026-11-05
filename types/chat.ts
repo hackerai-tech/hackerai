@@ -277,12 +277,21 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  /** One explicit user click; discarded when the sidebar selection closes. */
+  browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Structured process exit code, available after command completion. */
+  exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
-    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
+    | "reviewing"
+    | "awaiting_approval"
+    | "executing"
+    | "completed"
+    | "failed"
+    | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;
@@ -380,6 +389,33 @@ export interface SidebarSharedFiles {
   toolCallId: string;
 }
 
+export interface SidebarFinding {
+  findingId: string;
+  title: string;
+  target: string;
+  endpoint?: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  cvssScore: number;
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
+export interface SidebarToolError {
+  kind: "tool-error";
+  errorKind: "validation" | "execution" | "not_found";
+  toolName: string;
+  action: string;
+  title: string;
+  summary: string;
+  nextStep: string;
+  issues?: Array<{
+    field: string;
+    problem: string;
+  }>;
+  isExecuting: false;
+  toolCallId: string;
+}
+
 export interface SidebarSubagents {
   kind: "subagents";
   parentMessageId: string;
@@ -395,12 +431,21 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
   | SidebarWebSearch
   | SidebarNotes
+  | SidebarFinding
+  | SidebarToolError
   | SidebarSharedFiles
   | SidebarSubagents;
 
@@ -441,6 +486,18 @@ export const isSidebarNotes = (
   content: SidebarContent,
 ): content is SidebarNotes => {
   return "notes" in content && "action" in content;
+};
+
+export const isSidebarFinding = (
+  content: SidebarContent,
+): content is SidebarFinding => {
+  return "findingId" in content;
+};
+
+export const isSidebarToolError = (
+  content: SidebarContent,
+): content is SidebarToolError => {
+  return "kind" in content && content.kind === "tool-error";
 };
 
 export const isSidebarSharedFiles = (
@@ -485,12 +542,14 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export type MessageMetadata = {
+  goal?: { sent?: boolean; achievedElapsedMs?: number };
   feedbackType?: "positive" | "negative";
   isAutoContinue?: boolean;
   mode?: "agent" | "ask";
   createdAt?: number;
   generationStartedAt?: number;
   generationTimeMs?: number;
+  recoverySourceMessageId?: string;
 };
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
@@ -509,6 +568,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  /** Durable operation identity of the initial wallet debit, if any. */
+  extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };
@@ -532,6 +593,8 @@ export interface ExtraUsageConfig {
 }
 
 export interface QueuedMessage {
+  deliveryStatus?: "sending" | "failed" | "active";
+  firstAttemptAt?: number;
   id: string;
   text: string;
   files?: import("@/types/file").FileMessagePart[];

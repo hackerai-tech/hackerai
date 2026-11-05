@@ -1,6 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
@@ -50,6 +50,11 @@ jest.mock("convex/server", () => ({
 jest.mock("../lib/suspensionGuards", () => ({
   CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
   assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
+}));
+jest.mock("../lib/sidebarChatAttention", () => ({
+  getSidebarChatAttention: jest.fn(async (_ctx: unknown, chats: unknown[]) =>
+    chats.map(() => ({})),
+  ),
 }));
 
 const { ConvexError } =

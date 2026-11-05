@@ -22,11 +22,11 @@ export const STATUS_PAGE_URL = "https://status.hackerai.co/";
 export const PUBLIC_PAGE_LAST_MODIFIED = {
   home: "2026-09-02",
   product: "2026-09-02",
-  pricing: "2026-09-02",
+  pricing: "2026-10-06",
   download: "2026-09-02",
-  trust: "2026-09-02",
-  privacy: "2026-08-31",
-  terms: "2026-09-02",
+  trust: "2026-10-31",
+  privacy: "2026-10-14",
+  terms: "2026-10-14",
 } as const;
 
 export function formatPublicPageDate(date: string): string {

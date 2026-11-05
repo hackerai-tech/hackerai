@@ -1,3 +1,6 @@
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
+import { verifySubagentResultAfterHandoff } from "@/lib/ai/subagents/result-handoff";
+import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
@@ -28,8 +31,14 @@ import {
 } from "ai";
 
 import { agentUiStream } from "./streams";
+import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
+import {
+  buildPromptCacheOptions,
+  addPromptCacheBreakpoints,
+} from "@/lib/ai/prompt-cache";
 import {
   createLoadSkillTool,
   createSearchSkillsTool,
@@ -41,6 +50,11 @@ import {
 } from "@/lib/ai/provider-response-guard";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import {
+  AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+  AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+  withProviderStreamTimeout,
+} from "@/lib/ai/provider-stream-timeout";
 import { createSubagentProviderHistory } from "@/lib/ai/subagents/provider-history";
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
@@ -93,6 +107,7 @@ import {
   updateSubagentWorkLedger,
 } from "@/lib/db/subagents";
 import { setConvexUrl } from "@/lib/db/convex-client";
+import { createSubagentFinalizationDiagnostics } from "@/lib/ai/subagents/finalization-diagnostics";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import {
   compactMessageForStorage,
@@ -188,6 +203,7 @@ type CancellationCleanup = {
   parentTriggerRunId: string;
   profile: "general" | "security_task" | "security_validation";
   flushProviderHistory: () => void;
+  cleanupBrowserSessions: () => Promise<void>;
 };
 
 const cancellationCleanup = new Map<string, CancellationCleanup>();
@@ -391,6 +407,7 @@ export const subagentTask = task({
       cancelReason: "parent_or_user_canceled",
     }).catch(() => null);
     await ptySessionManager.closeAll(cleanup.subagentId).catch(() => undefined);
+    await cleanup.cleanupBrowserSessions();
     if (finishOutcome === "updated") {
       captureSubagentTerminalOutcome({
         userId: cleanup.userId,
@@ -453,11 +470,13 @@ export const subagentTask = task({
       (event) => triggerLogger.info("[subagent] provider call history", event),
     );
 
+    let cleanupBrowserSessions = async () => {};
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
       profile: row.profile,
+      cleanupBrowserSessions: () => cleanupBrowserSessions(),
       flushProviderHistory: () =>
         providerHistory.flush(true, "cancellation_hook"),
     });
@@ -546,6 +565,7 @@ export const subagentTask = task({
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
+    if (triggerSignal.aborted) abortFromParent();
     const activeRuntimeBudget: ActiveRuntimeBudget = createActiveRuntimeBudget({
       maxDurationMs: SUBAGENT_MAX_ACTIVE_SECONDS * 1_000,
       onExceeded: () => {
@@ -556,6 +576,16 @@ export const subagentTask = task({
 
     const usageTracker = new UsageTracker();
     let resultValue: CheckedSubagentResult | undefined;
+    const observeFinalization = createSubagentFinalizationDiagnostics(
+      {
+        subagent_id: row.subagent_id,
+        parent_trigger_run_id: row.parent_trigger_run_id,
+        trigger_run_id: ctx.run.id,
+        environment: ctx.environment.type,
+      },
+      (fields) =>
+        triggerLogger.error("[subagent] finalization write failed", fields),
+    );
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -721,6 +751,7 @@ export const subagentTask = task({
         },
         execute: async ({ writer }) => {
           try {
+            let modelHandoffNoteIds: string[] = [];
             const acceptResult = async (input: unknown) => {
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
@@ -741,18 +772,31 @@ export const subagentTask = task({
                 };
               }
               runtimeStage = "evidence_verification";
-              const evidence = await verifyResultEvidence({
-                result: parsed,
-                sandbox,
-                expectedSandboxIdentity: row.sandbox_identity,
+              const evidence = await verifySubagentResultAfterHandoff({
+                verify: () =>
+                  verifyResultEvidence({
+                    result: parsed,
+                    sandbox,
+                    expectedSandboxIdentity: row.sandbox_identity,
+                    signal: activeAbort.signal,
+                    authorize: assertRuntimeAuthorized,
+                  }),
+                getNotes: getBrowserHandoffNotes,
+                waitForControl: waitForBrowserHandoff,
                 signal: activeAbort.signal,
-                authorize: assertRuntimeAuthorized,
+                modelNoteIds: modelHandoffNoteIds,
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
-              const finalizing = await markSubagentFinalizing(
-                row.subagent_id,
-                ctx.run.id,
+              const finalizing = await observeFinalization(
+                "result_submission",
+                Boolean(resultValue),
+                () =>
+                  markSubagentFinalizing(
+                    row.subagent_id,
+                    ctx.run.id,
+                    modelHandoffNoteIds,
+                  ),
               );
               if (finalizing === "pending_messages") {
                 deferredForParentUpdate = true;
@@ -760,6 +804,13 @@ export const subagentTask = task({
                   accepted: false,
                   error:
                     "A parent update arrived before completion. Read it, account for it, and then submit the final result again.",
+                };
+              }
+              if (finalizing === "pending_browser_handoff") {
+                return {
+                  accepted: false,
+                  error:
+                    "Browser takeover began before completion. Wait for the user to continue, then read the handoff context and take a fresh snapshot before submitting the result again.",
                 };
               }
               if (finalizing !== "updated") {
@@ -1017,7 +1068,12 @@ export const subagentTask = task({
                 permissionMode,
               );
             const {
+              cloudNetworkPrompt,
+              sandboxManager,
               tools: unguardedTools,
+              cleanupBrowserSessions: cleanupToolBrowsers,
+              getBrowserHandoffNotes,
+              waitForBrowserHandoff,
               ensureSandbox,
               setCurrentModelName,
             } = createTools(
@@ -1052,6 +1108,8 @@ export const subagentTask = task({
                   ...allowedToolNames,
                   profile.finalResultTool.name,
                 ],
+                browserAgentId: row.subagent_id,
+                signal: activeAbort.signal,
                 additionalTools: () => ({
                   search_skills: createSearchSkillsTool(),
                   load_skill: createLoadSkillTool(),
@@ -1065,6 +1123,7 @@ export const subagentTask = task({
                 environment: ctx.environment.type,
               },
             );
+            cleanupBrowserSessions = cleanupToolBrowsers;
             approvalEnsureSandbox = ensureSandbox;
             const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
@@ -1078,6 +1137,18 @@ export const subagentTask = task({
             const tools = authorizedTools;
 
             const provider = createTrackedProvider();
+            const getCacheOptions = (modelName: string) => {
+              const requestedModelSlug =
+                provider.languageModel(modelName).modelId;
+              return buildPromptCacheOptions(
+                requestedModelSlug,
+                createOpenRouterCacheSessionId({
+                  chatId: row.subagent_id,
+                  mode: "subagent",
+                  requestedModelSlug,
+                }),
+              );
+            };
             const getGuardedLanguageModel = (
               modelName: string,
               generationAttempt: number,
@@ -1092,8 +1163,26 @@ export const subagentTask = task({
                     providerHistory.record(entry, generationAttempt),
                 },
               );
+              const boundedModel = withProviderStreamTimeout(languageModel, {
+                timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+                onTimeout: ({ phase, timeoutMs, modelId }) => {
+                  triggerLogger.warn("[subagent] provider timed out", {
+                    event: "subagent_provider_timeout",
+                    service: "hackerai-subagent",
+                    subagent_id: row.subagent_id,
+                    parent_trigger_run_id: row.parent_trigger_run_id,
+                    trigger_run_id: ctx.run.id,
+                    generation_attempt: generationAttempt,
+                    step: stepIndex + 1,
+                    phase,
+                    timeout_ms: timeoutMs,
+                    model: modelId,
+                  });
+                },
+              });
               return namespaceLanguageModelToolCalls(
-                guardLanguageModelProviderResponse(languageModel, {
+                guardLanguageModelProviderResponse(boundedModel, {
                   maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
                   perToolCallLimits: {
                     [profile.finalResultTool.name]: 1,
@@ -1160,6 +1249,7 @@ export const subagentTask = task({
               { role: "user", content: prompt },
             ];
             const parentUpdates = new Map<string, ModelMessage>();
+            const projectHandoffNotes = createBrowserHandoffNoteProjector();
             const beginStructuredResultRecovery = async (
               reason: "missing_result" | "reserved_step_budget",
             ): Promise<boolean> => {
@@ -1270,12 +1360,18 @@ export const subagentTask = task({
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const generation = streamText({
+                // Keep tool-loop step results without retaining every serialized prompt.
+                experimental_include: { requestBody: false },
                 model: getGuardedLanguageModel(
                   activeModelName,
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt,
+                system:
+                  systemPrompt +
+                  (await cloudNetworkPrompt()) +
+                  getSandboxBrowserGuidance(sandboxManager.getSandboxInfo()),
+                providerOptions: getCacheOptions(activeModelName),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1291,6 +1387,7 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
                   runtimeStage = "generation";
@@ -1403,8 +1500,13 @@ export const subagentTask = task({
                     );
                   }
                   const serializedMessages = JSON.stringify(messages);
+                  const handoffNotes = await getBrowserHandoffNotes();
+                  modelHandoffNoteIds = handoffNotes.map(({ id }) => id);
                   const messagesWithUpdates = [
-                    ...(messages as ModelMessage[]),
+                    ...projectHandoffNotes(
+                      messages as ModelMessage[],
+                      handoffNotes,
+                    ),
                     ...(deadlineMessage ? [deadlineMessage] : []),
                     ...Array.from(parentUpdates.entries()).flatMap(
                       ([messageId, updateMessage]) =>
@@ -1424,11 +1526,26 @@ export const subagentTask = task({
                       generationAttempt,
                       steps.length,
                     ),
-                    messages: compacted.messages as ModelMessage[],
+                    system:
+                      systemPrompt +
+                      (await cloudNetworkPrompt()) +
+                      getSandboxBrowserGuidance(
+                        sandboxManager.getSandboxInfo(),
+                      ),
+                    messages: addPromptCacheBreakpoints(
+                      compacted.messages as ModelMessage[],
+                      provider.languageModel(activeModelName).modelId,
+                    ),
+                    providerOptions: getCacheOptions(activeModelName),
                   };
                 },
                 onError: ({ error }) => {
                   attemptError = error;
+                },
+                onFinish: async () => {
+                  // Accepted results already waited before ending ownership.
+                  if (!resultValue && !activeAbort.signal.aborted)
+                    await waitForBrowserHandoff(activeAbort.signal);
                 },
                 onStepFinish: async ({ usage, response, providerMetadata }) => {
                   stepCount += 1;
@@ -1516,6 +1633,7 @@ export const subagentTask = task({
                 conversationMessages.push(...partialMessages);
               }
 
+              if (isHandledUserRateLimitError(attemptError)) throw attemptError;
               if (resultValue) break;
               if (attemptError) {
                 if (structuredResultRecovery) {
@@ -1687,12 +1805,11 @@ export const subagentTask = task({
         },
       });
 
-      const { waitUntilComplete } = agentUiStream.pipe(
-        sanitizeStream(uiStream),
-      );
-      await waitUntilComplete();
+      await waitForAgentUiStream(agentUiStream.pipe(sanitizeStream(uiStream)));
       runtimeStage = "result_finalization";
-      await markSubagentFinalizing(row.subagent_id, ctx.run.id);
+      await observeFinalization("stream_completion", Boolean(resultValue), () =>
+        markSubagentFinalizing(row.subagent_id, ctx.run.id),
+      );
 
       runtimeStage = "usage_settlement";
       const { costDollars, billingFailure } = await settleUsage();
@@ -2088,6 +2205,7 @@ export const subagentTask = task({
       triggerSignal.removeEventListener("abort", abortFromParent);
       cancellationCleanup.delete(ctx.run.id);
       await ptySessionManager.closeAll(row.subagent_id).catch(() => undefined);
+      await cleanupBrowserSessions();
       await phLogger.flush().catch(() => undefined);
     }
   },

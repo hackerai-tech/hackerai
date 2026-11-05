@@ -3,8 +3,11 @@ import { registerPostHogLogProvider } from "@/lib/posthog/logs";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 import type { Instrumentation } from "next";
 
-export function register() {
+export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerServiceTransportObserver } =
+      await import("./lib/db/service-transport-observation.node");
+    registerServiceTransportObserver();
     registerPostHogLogProvider();
   }
 }
@@ -74,11 +77,14 @@ export const onRequestError: Instrumentation.onRequestError = (
   request,
   context,
 ) => {
+  // Next includes the query in request.path; OAuth callbacks can carry credentials.
+  const path = request.path.split(/[?#]/, 1)[0];
+
   if (isEndedSessionRefreshError(error)) {
     phLogger.warn("auth_session_refresh_ended", {
       event: "auth.session_refresh_ended",
       error,
-      path: request.path,
+      path,
       method: request.method,
       routePath: context.routePath,
       routeType: context.routeType,
@@ -89,7 +95,7 @@ export const onRequestError: Instrumentation.onRequestError = (
 
   phLogger.error("Next.js request error", {
     error,
-    path: request.path,
+    path,
     method: request.method,
     routePath: context.routePath,
     routeType: context.routeType,

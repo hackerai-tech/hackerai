@@ -38,10 +38,7 @@ const commandResult = (states: string[]) => ({
   stderr: "",
   exitCode: 0,
 });
-function setup(
-  result = finding(),
-  kind: "e2b" | "miosa" | "local" | "desktop" = "e2b",
-) {
+function setup(result = finding(), kind: "e2b" | "local" | "desktop" = "e2b") {
   const run = jest
     .fn<(...args: unknown[]) => Promise<ReturnType<typeof commandResult>>>()
     .mockResolvedValue(commandResult(["exists", "exists"]));
@@ -71,7 +68,73 @@ function setup(
 afterEach(() => jest.useRealTimers());
 
 describe("saved evidence verification", () => {
-  it.each(["e2b", "miosa", "local", "desktop"] as const)(
+  it.each(["e2b", "local"] as const)(
+    "checks real files through the %s command environment contract",
+    async (kind) => {
+      const dir = mkdtempSync(join(tmpdir(), "evidence-transport-"));
+      const saved = join(dir, "saved 'quoted' $(false).txt");
+      const missing = join(dir, "missing.txt");
+      writeFileSync(saved, "private synthetic evidence");
+      const { args, run } = setup(finding([saved]), kind);
+      // E2B's CommandStartOpts consumes envs; the local adapters consume
+      // envVars. Execute the generated command, rather than mocking its states.
+      run.mockImplementation(async (...call) => {
+        const command = call[0] as string;
+        const options = call[1] as {
+          envs?: Record<string, string>;
+          envVars?: Record<string, string>;
+        };
+        return {
+          stdout: execFileSync("/bin/bash", ["-c", command], {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              ...(kind === "e2b" ? options.envs : options.envVars),
+            },
+            timeout: 5000,
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      });
+      try {
+        expect(await verifyResultEvidence(args)).toMatchObject({
+          accepted: true,
+          result: {
+            evidence_refs: [saved],
+            evidence_verification: {
+              checked_refs: [saved],
+              unavailable_refs: [],
+            },
+          },
+        });
+        expect(
+          await verifyResultEvidence({ ...args, result: finding([missing]) }),
+        ).toMatchObject({
+          accepted: false,
+          error: expect.stringContaining(missing),
+        });
+        expect(await verifyResultEvidence(args)).toMatchObject({
+          accepted: true,
+          result: { evidence_refs: [saved] },
+        });
+        expect(
+          await verifyResultEvidence({
+            ...args,
+            result: finding([`file:${saved}:1`]),
+          }),
+        ).toMatchObject({
+          accepted: true,
+          result: {
+            evidence_verification: { checked_refs: [`file:${saved}:1`] },
+          },
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.each(["e2b", "local", "desktop"] as const)(
     "accepts valid captures in the owned %s sandbox without changing verdict",
     async (kind) => {
       const { args, run, stat } = setup(finding(), kind);
@@ -253,7 +316,7 @@ describe("saved evidence verification", () => {
       "terminal:1",
     ]);
     expect(run.mock.calls[0][1]).toMatchObject({
-      envVars: {
+      envs: {
         HACKERAI_EVIDENCE_PATHS: JSON.stringify([
           "/tmp/control.http",
           "/tmp/exploit.http",

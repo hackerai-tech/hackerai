@@ -80,6 +80,7 @@ type TranscriptMessage = UIMessage & {
   messageSource?: "parent_update";
   messageType?: "query" | "instruction" | "information";
   priority?: "low" | "normal" | "high" | "urgent";
+  isEvidenceWarning?: boolean;
 };
 
 const isActive = (status: SubagentStatus) =>
@@ -90,6 +91,25 @@ const formatElapsed = (start: number, end: number): string => {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`;
+};
+
+// Keep clock ticks in the label so they do not rerender the sidebar, rows,
+// or the selected child's transcript and subscriptions.
+const ElapsedTime = ({ child }: { child: ChildSummary }) => {
+  const [now, setNow] = useState(() => Date.now());
+  const active = isActive(child.status);
+  const completedAt = child.completed_at;
+
+  useEffect(() => {
+    if (!active || completedAt !== undefined) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [active, completedAt]);
+
+  return formatElapsed(
+    child.started_at ?? child.created_at,
+    completedAt ?? now,
+  );
 };
 
 const statusLabel = (child: ChildSummary): string =>
@@ -170,11 +190,9 @@ const StatusIcon = ({ child }: { child: ChildSummary }) => {
 
 const ChildRow = ({
   child,
-  now,
   onOpen,
 }: {
   child: ChildSummary;
-  now: number;
   onOpen: () => void;
 }) => (
   <button
@@ -203,10 +221,7 @@ const ChildRow = ({
     <div className="ml-2 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
       <div>{childRowStatusLabel(child)}</div>
       <div className="mt-1">
-        {formatElapsed(
-          child.started_at ?? child.created_at,
-          child.completed_at ?? now,
-        )}
+        <ElapsedTime child={child} />
       </div>
     </div>
   </button>
@@ -298,12 +313,14 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
   createdAt,
   existingFeedback,
   isHovered,
+  isLastAssistantMessage,
 }: {
   messageId: Id<"subagent_messages">;
   messageText: string;
   createdAt?: number;
   existingFeedback?: "positive" | "negative";
   isHovered: boolean;
+  isLastAssistantMessage: boolean;
 }) {
   const saveFeedback = useMutation(api.subagents.setMessageFeedback);
   const [feedback, setFeedback] = useState<"positive" | "negative" | null>(
@@ -374,7 +391,7 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
       <MessageActions
         messageText={messageText}
         isUser={false}
-        isLastAssistantMessage
+        isLastAssistantMessage={isLastAssistantMessage}
         canRegenerate={false}
         onRegenerate={() => undefined}
         onEdit={() => undefined}
@@ -509,6 +526,16 @@ const Transcript = memo(function Transcript({
       messageSource: message.message_source,
       messageType: message.message_type,
       priority: message.priority,
+      // The runtime reserves the final sequence of each continuation for its
+      // evidence notice. Keep these persisted notices out of response feedback.
+      isEvidenceWarning:
+        message.role === "assistant" &&
+        message.sequence % 10_000 === 9_999 &&
+        message.parts.some(
+          (part) =>
+            part.type === "text" &&
+            part.text.startsWith("Evidence verification warning:"),
+        ),
     }));
     return liveMessage && !hasPersistedAssistant
       ? [...saved, liveMessage as TranscriptMessage]
@@ -532,6 +559,14 @@ const Transcript = memo(function Transcript({
         : undefined,
     [active, visibleMessages],
   );
+  const latestResponseId = visibleMessages
+    .filter(
+      (message) =>
+        message.role === "assistant" &&
+        !message.isEvidenceWarning &&
+        extractMessageText(message.parts).trim().length > 0,
+    )
+    .at(-1)?.id;
   const toolSidebarOrigin = useMemo<SidebarSubagentOrigin>(
     () => ({
       kind: "subagent",
@@ -728,6 +763,32 @@ const Transcript = memo(function Transcript({
             </section>
           )}
           {visibleMessages.map((message) => {
+            if (message.isEvidenceWarning) {
+              return (
+                <section
+                  key={message.id}
+                  role="note"
+                  aria-label="Evidence verification warning"
+                  className="min-w-0 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm"
+                >
+                  <div className="mb-1 flex items-center gap-2 font-medium">
+                    <CircleAlert
+                      className="h-4 w-4 shrink-0 text-amber-500"
+                      aria-hidden
+                    />
+                    Evidence could not be verified
+                  </div>
+                  <div className="break-words text-muted-foreground">
+                    <MemoizedMarkdown
+                      content={extractMessageText(message.parts).replace(
+                        /^Evidence verification warning:\s*/,
+                        "",
+                      )}
+                    />
+                  </div>
+                </section>
+              );
+            }
             const isParentUpdate = message.messageSource === "parent_update";
             const visibleParts = isParentUpdate
               ? message.parts
@@ -771,6 +832,7 @@ const Transcript = memo(function Transcript({
                       createdAt={message.createdAt}
                       existingFeedback={message.feedbackType}
                       isHovered={hoveredMessageId === message.id}
+                      isLastAssistantMessage={message.id === latestResponseId}
                     />
                   )}
               </section>
@@ -806,7 +868,6 @@ export const SubagentsSidebar = ({
   const runs = useQuery(api.subagents.listForParentMessage, {
     parentMessageId: effectiveParentMessageId,
   }) as ChildSummary[] | undefined;
-  const [now, setNow] = useState(() => Date.now());
   const [canceling, setCanceling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const openedChildren = useRef(new Set<string>());
@@ -895,12 +956,6 @@ export const SubagentsSidebar = ({
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [closeSidebar, selected, selectedId]);
-
-  useEffect(() => {
-    if (!runs?.some((child) => isActive(child.status))) return;
-    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(interval);
-  }, [runs]);
 
   const cancelSelected = async () => {
     if (!selected || !isActive(selected.status)) return;
@@ -1003,7 +1058,6 @@ export const SubagentsSidebar = ({
                             <ChildRow
                               key={child.subagent_id}
                               child={child}
-                              now={now}
                               onOpen={() => setSelectedId(child.subagent_id)}
                             />
                           ))
@@ -1029,7 +1083,6 @@ export const SubagentsSidebar = ({
                             <ChildRow
                               key={child.subagent_id}
                               child={child}
-                              now={now}
                               onOpen={() => setSelectedId(child.subagent_id)}
                             />
                           ))
@@ -1054,10 +1107,10 @@ export const SubagentsSidebar = ({
                       </span>
                       <span className="text-muted-foreground">·</span>
                       <span className="tabular-nums text-muted-foreground">
-                        {formatElapsed(
-                          selected.started_at ?? selected.created_at,
-                          selected.completed_at ?? now,
-                        )}
+                        <ElapsedTime
+                          key={selected.subagent_id}
+                          child={selected}
+                        />
                       </span>
                       {outcomeLabel(selected) && (
                         <>

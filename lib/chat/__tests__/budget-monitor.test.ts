@@ -348,3 +348,40 @@ describe("captureBudgetSnapshot", () => {
     });
   });
 });
+
+it("cuts off total serving cost at the remaining daily Free Agent budget", () => {
+  const writer = makeWriter();
+  const monitor = new BudgetMonitor(
+    {
+      monthlyLimitPoints: 1000,
+      monthlyRemainingAtStart: 250,
+      monthlyResetTime: new Date("2026-10-02T00:00:00Z"),
+      budgetPeriod: "daily",
+      capReasonOnExhaustion: "free_daily_cost_exhausted",
+      extraUsageEnabledAtStart: false,
+      extraUsageHasBalanceAtStart: false,
+      extraUsageBalanceAtStart: 0,
+      extraUsageAutoReload: false,
+    },
+    writer,
+    "free",
+  );
+  expect(monitor.checkAfterStep(0.02).type).toBe("continue");
+  expect(monitor.checkAfterStep(0.025)).toMatchObject({
+    type: "abort",
+    details: {
+      capReason: "free_daily_cost_exhausted",
+      monthlyLimitDollars: 0.1,
+    },
+  });
+  expect(writer.write).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({
+        bucketType: "daily",
+        remainingPercent: 0,
+        cutOff: true,
+        resetTime: "2026-10-02T00:00:00.000Z",
+      }),
+    }),
+  );
+});

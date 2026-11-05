@@ -1,9 +1,11 @@
 import { describe, it, expect } from "@jest/globals";
 import {
+  isCancellationError,
   classifyProviderOverflowError,
   createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   extractRetryAttempts,
+  getErrorMessage,
   getUserFriendlyProviderError,
   getProviderErrorCategory,
   getProviderStatusCode,
@@ -27,6 +29,25 @@ const retryError = (errors: unknown[]) =>
     name: "AI_RetryError",
     errors,
   });
+
+describe("missing error messages", () => {
+  it.each([undefined, { message: undefined }, { toJSON: () => undefined }])(
+    "keeps structured error extraction safe without serialized text",
+    (value) => {
+      expect(getErrorMessage(value)).toBe("Unknown error occurred");
+      expect(extractErrorDetails(value)).toMatchObject({
+        errorName: "UnknownError",
+        errorMessage: "Unknown error occurred",
+      });
+    },
+  );
+
+  it("does not throw when a provider message contains a circular value", () => {
+    const value: { message?: unknown } = {};
+    value.message = value;
+    expect(getErrorMessage(value)).toBe("Unknown error occurred");
+  });
+});
 
 describe("extractRetryAttempts -> request_id", () => {
   it("extracts OpenRouter provider metadata from data.error.metadata", () => {
@@ -460,6 +481,41 @@ describe("provider error classification", () => {
     expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
   });
 
+  it("recognizes the Node read-reset cause without retrying generic fetch failures", () => {
+    const error = new TypeError("fetch failed", {
+      cause: new Error("read ECONNRESET"),
+    });
+
+    expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+      "stream_terminated",
+    );
+    expect(isRetriableProviderStreamDisconnectError(error)).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(new TypeError("fetch failed")),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 400, cause: error }),
+      ),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        new DOMException("The operation was aborted", "AbortError"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([400, 401, 403, 429])(
+    "keeps numeric %s codes ahead of disconnect wording",
+    (code) => {
+      const error = { code, message: "read ECONNRESET" };
+      expect(getProviderErrorCategory(extractErrorDetails(error))).toBe(
+        code === 429 ? "rate_limited" : "provider_4xx",
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(false);
+    },
+  );
+
   it("allows transient 5xx failures without requiring provider-specific wording", () => {
     expect(
       isRetriableProviderStreamDisconnectError(
@@ -728,5 +784,23 @@ describe("SSE upstream abort recovery", () => {
     expect(
       extractErrorDetails(error("messages[1].private_payload")),
     ).not.toHaveProperty("providerErrorParam");
+  });
+});
+
+describe("isCancellationError", () => {
+  it("preserves unrelated failures after cancellation", () => {
+    const controller = new AbortController();
+    const reason = new Error("Stopped");
+    const abort = Object.assign(new Error("Aborted"), { name: "AbortError" });
+    expect(isCancellationError(abort, controller.signal)).toBe(false);
+    controller.abort(reason);
+    expect(isCancellationError(reason, controller.signal)).toBe(true);
+    expect(isCancellationError(abort, controller.signal)).toBe(true);
+    expect(
+      isCancellationError(new Error("Database failed"), controller.signal),
+    ).toBe(false);
+    expect(
+      isCancellationError(new TypeError("terminated"), controller.signal),
+    ).toBe(false);
   });
 });

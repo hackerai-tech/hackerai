@@ -1,4 +1,6 @@
 import "server-only";
+import { getAgentHistoryBudget } from "@/lib/ai/agent-context-budget";
+import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
 import {
   countIndependentAbliterationResponses,
   type AbliterationHistoryEntry,
@@ -7,7 +9,9 @@ import {
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
-import { getConvexClient, setConvexUrl } from "./convex-client";
+import { abortableDelay } from "@/lib/utils/abortable-delay";
+import { createServiceConvexClient } from "./service-client";
+import { getConvexClient, getConvexUrl, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import {
@@ -17,7 +21,6 @@ import {
 } from "@/lib/utils/file-token-utils";
 import {
   countMessagesTokens,
-  getMaxTokensForSubscription,
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
@@ -27,10 +30,17 @@ import type {
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
+import type {
+  UpdateVulnerabilityReportInput,
+  CreateVulnerabilityReportInput,
+} from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
+import { buildUserMessageContext } from "@/lib/chat/summarization/user-message-context";
+import { buildRuntimeContext } from "@/lib/chat/summarization/runtime-context";
+import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import {
   projectMessagesToTokenBudget,
   projectRetainedTailFromMessages,
@@ -63,6 +73,8 @@ const UPDATE_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const GET_CHAT_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const GET_PROJECT_RETRY_DELAYS_MS =
+  process.env.NODE_ENV === "test" ? [0] : [250];
 const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
@@ -239,6 +251,7 @@ const getUpstreamHttpError = (
 
   const statusMatch =
     message.match(/<title>[^<|]+\|\s*(5\d{2}):/i) ??
+    message.match(/<title>\s*(502)\s+Bad Gateway\s*<\/title>/i) ??
     message.match(/Error code\s+(5\d{2})/i);
   if (!statusMatch) return undefined;
 
@@ -359,6 +372,21 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
+// Response-body termination is safe to retry only for this read. Do not
+// broaden mutation retries: the write may already have committed.
+const getRetryableHistoryPageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  if (
+    error instanceof TypeError &&
+    error.message === "terminated" &&
+    getErrorData(error) === undefined
+  ) {
+    return "network_response_terminated";
+  }
+  return getRetryableDatabaseErrorReason(error);
+};
+
 const getRetryableSaveMessageErrorReason = (
   error: unknown,
 ): string | undefined => {
@@ -414,6 +442,9 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
+  if (operation === "messages.getMessagesPageForBackend") {
+    return getRetryableHistoryPageErrorReason(error);
+  }
   if (operation === "messages.saveMessage") {
     return getRetryableSaveMessageErrorReason(error);
   }
@@ -571,6 +602,17 @@ const databaseError = (
           : retryReason
             ? `Database temporarily unavailable: ${operation}: ${dbErrorMessage}`
             : `Database operation failed: ${operation}: ${dbErrorMessage}`;
+  const fileValidationReason = getObjectString(
+    dbErrorData,
+    "fileValidationReason",
+  );
+  const boundedFileValidationReason =
+    fileValidationReason &&
+    ["file_missing", "file_lookup_failed", "file_not_owned"].includes(
+      fileValidationReason,
+    )
+      ? fileValidationReason
+      : undefined;
   const diagnosticMetadata: Record<string, unknown> = {
     db_operation: operation,
     db_error_name: dbErrorName,
@@ -579,6 +621,7 @@ const databaseError = (
     db_error_code: getDatabaseErrorCode(dbErrorData),
     db_cause_error_code: getDatabaseCauseErrorCode(dbErrorData),
     db_failure_stage: getDatabaseFailureStage(dbErrorData),
+    db_file_validation_reason: boundedFileValidationReason,
     db_retry_reason: retryReason,
     db_error_kind: upstreamHttpError ? "convex_upstream_http_error" : undefined,
     db_upstream_status_code: upstreamHttpError?.statusCode,
@@ -628,6 +671,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode,
   regenerate,
   newMessagesCount,
+  retryBudget,
 }: {
   chatId: string;
   userId: string;
@@ -635,6 +679,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode?: ChatMode;
   regenerate: boolean;
   newMessagesCount: number;
+  retryBudget: { used: number };
 }): Promise<MessagesPageForBackendResult> => {
   const queryArgs = {
     serviceKey,
@@ -650,12 +695,13 @@ const getMessagesPageForBackendWithRetry = async ({
         queryArgs,
       );
     } catch (error) {
-      const retryReason = getRetryableDatabaseErrorReason(error);
-      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[attemptIndex];
+      const retryReason = getRetryableHistoryPageErrorReason(error);
+      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[retryBudget.used];
       if (!retryReason || retryDelayMs === undefined) {
         throw error;
       }
 
+      retryBudget.used++;
       console.warn(
         JSON.stringify({
           level: "warn",
@@ -667,6 +713,8 @@ const getMessagesPageForBackendWithRetry = async ({
           attempt: attemptIndex + 1,
           next_attempt: attemptIndex + 2,
           retry_delay_ms: retryDelayMs,
+          history_retry_count: retryBudget.used,
+          history_retry_limit: GET_MESSAGES_PAGE_RETRY_DELAYS_MS.length,
           chat_id: chatId,
           user_id: userId,
           mode,
@@ -682,6 +730,36 @@ const getMessagesPageForBackendWithRetry = async ({
 };
 
 export async function getChatById({ id }: { id: string }) {
+  let lastRetryReason: string | undefined;
+  const reportRetryResult = (
+    outcome: "read_succeeded" | "retry_exhausted" | "non_retryable_error",
+    attempts: number,
+  ) => {
+    if (!lastRetryReason) return;
+    try {
+      // A returned read is not proof of a successful caller journey. Record no
+      // query result or error content, and keep diagnostics outside the contract.
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "chat_fetch_retry_result",
+          service: "chat-handler",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.getChatById",
+          outcome,
+          attempts,
+          retry_reason: lastRetryReason,
+          chat_id:
+            typeof id === "string" &&
+            /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)
+              ? id
+              : undefined,
+        }),
+      );
+    } catch {
+      // Optional logging must not replace the returned read or original error.
+    }
+  };
   try {
     const queryArgs = {
       serviceKey,
@@ -690,14 +768,24 @@ export async function getChatById({ id }: { id: string }) {
 
     for (let attemptIndex = 0; ; attemptIndex++) {
       try {
-        return await getConvexClient().query(api.chats.getChatById, queryArgs);
+        const chat = await getConvexClient().query(
+          api.chats.getChatById,
+          queryArgs,
+        );
+        reportRetryResult("read_succeeded", attemptIndex + 1);
+        return chat;
       } catch (error) {
         const retryReason = getRetryableGetChatErrorReason(error);
         const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
+          reportRetryResult(
+            retryReason ? "retry_exhausted" : "non_retryable_error",
+            attemptIndex + 1,
+          );
           throw error;
         }
 
+        lastRetryReason = retryReason;
         console.warn(
           JSON.stringify({
             level: "warn",
@@ -752,12 +840,51 @@ export async function getProjectById({
   id: string;
   userId: string;
 }) {
+  const queryArgs = { serviceKey, id, userId };
   try {
-    return await getConvexClient().query(api.projects.getProjectForBackend, {
-      serviceKey,
-      id,
-      userId,
-    });
+    for (let attemptIndex = 0; ; attemptIndex++) {
+      try {
+        return await getConvexClient().query(
+          api.projects.getProjectForBackend,
+          queryArgs,
+        );
+      } catch (error) {
+        // Retry only the transport failure observed on this read. Structured
+        // guards and server errors remain authoritative on the first attempt.
+        const retryReason =
+          error instanceof TypeError && getErrorData(error) === undefined
+            ? getRetryableDatabaseErrorReason(error)
+            : undefined;
+        const retryDelayMs = GET_PROJECT_RETRY_DELAYS_MS[attemptIndex];
+        if (
+          retryReason !== "network_fetch_failed" ||
+          retryDelayMs === undefined
+        ) {
+          throw error;
+        }
+
+        try {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              event: "project_fetch_retry_scheduled",
+              service: "chat-handler",
+              timestamp: new Date().toISOString(),
+              db_operation: "projects.getProjectForBackend",
+              retry_reason: retryReason,
+              attempt: attemptIndex + 1,
+              next_attempt: attemptIndex + 2,
+              retry_delay_ms: retryDelayMs,
+              project_id: id,
+              user_id: userId,
+            }),
+          );
+        } catch {
+          // Diagnostics must not prevent the bounded read recovery.
+        }
+        await waitForRetryDelay(retryDelayMs);
+      }
+    }
   } catch (error) {
     throw databaseError("projects.getProjectForBackend", error, {
       project_id: id,
@@ -913,11 +1040,13 @@ export async function saveChat({
   userId,
   title,
   projectId,
+  sandboxType,
 }: {
   id: string;
   userId: string;
   title: string;
   projectId?: string;
+  sandboxType?: string;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -925,6 +1054,7 @@ export async function saveChat({
     userId,
     title,
     ...(projectId ? { projectId } : {}),
+    ...(sandboxType ? { sandboxType } : {}),
   };
 
   try {
@@ -979,11 +1109,15 @@ export async function saveMessage({
   generationTimeMs,
   finishReason,
   triggerRunId,
+  expectedActiveTriggerRunId,
+  clientSnapshot,
+  signal,
   usage,
   updateOnly,
   isHidden,
   wasAborted,
   wasPreemptiveTimeout,
+  userInitiatedAbort,
   abliterationRouting,
 }: {
   chatId: string;
@@ -1000,11 +1134,15 @@ export async function saveMessage({
   generationTimeMs?: number;
   finishReason?: string;
   triggerRunId?: string;
+  expectedActiveTriggerRunId?: string;
+  clientSnapshot?: boolean;
+  signal?: AbortSignal;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
   wasAborted?: boolean;
   wasPreemptiveTimeout?: boolean;
+  userInitiatedAbort?: boolean;
   abliterationRouting?: AbliterationRoutingMarker;
 }) {
   let fixedParts = message.parts;
@@ -1016,6 +1154,7 @@ export async function saveMessage({
     fixedParts =
       message.role === "assistant"
         ? fixIncompleteMessageParts(message.parts, {
+            userInitiatedAbort,
             logContext: {
               service: "chat-handler",
               source: "save_message",
@@ -1036,6 +1175,7 @@ export async function saveMessage({
       any,
       any
     >[];
+    const previewFileIds = extractPreviewFileIdsFromParts(convexSafeParts);
     const storageSafeMessage =
       message.role === "assistant"
         ? compactMessageForStorage({ ...message, parts: convexSafeParts })
@@ -1099,24 +1239,65 @@ export async function saveMessage({
       role: message.role,
       parts: partsForSave,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
+      previewFileIds: previewFileIds.length > 0 ? previewFileIds : undefined,
       model,
       mode,
       generationStartedAt,
       generationTimeMs,
       finishReason,
       triggerRunId,
+      expectedActiveTriggerRunId,
+      ...(clientSnapshot ? { clientSnapshot: true } : {}),
       usage: usageForSave,
       updateOnly,
       isHidden,
     };
 
+    // Browser snapshots are independent HTTP requests. Keep their writes out of
+    // the singleton's SDK queue so an unrelated pending mutation cannot hold a
+    // partial save past its request deadline. Signal-specific clients also keep
+    // their fetch options separate. Retries still share this invocation's client.
+    const client =
+      signal || clientSnapshot
+        ? createServiceConvexClient(getConvexUrl(), { signal })
+        : getConvexClient();
     for (let attemptIndex = 0; ; attemptIndex++) {
+      signal?.throwIfAborted();
       try {
-        return await getConvexClient().mutation(
+        const result = await client.mutation(
           api.messages.saveMessage,
           mutationArgs,
         );
+        if (attemptIndex > 0) {
+          try {
+            // An RPC acknowledgement can also be a fenced/no-op result; it is
+            // not proof that this invocation changed durable message contents.
+            console.info(
+              JSON.stringify({
+                level: "info",
+                event: "message_save_retry_acknowledged",
+                service: "chat-handler",
+                timestamp: new Date().toISOString(),
+                db_operation: "messages.saveMessage",
+                attempts: attemptIndex + 1,
+                acknowledgement:
+                  result === null
+                    ? "acknowledged"
+                    : result === "stale_run"
+                      ? "stale_run"
+                      : "unrecognized_ack",
+                chat_id: chatId,
+                user_id: userId,
+                message_id: message.id,
+              }),
+            );
+          } catch {
+            // Diagnostics must never retry or fail an acknowledged mutation.
+          }
+        }
+        return result;
       } catch (error) {
+        signal?.throwIfAborted();
         const retryReason = getRetryableSaveMessageErrorReason(error);
         const retryDelayMs = SAVE_MESSAGE_RETRY_DELAYS_MS[attemptIndex];
         if (!retryReason || retryDelayMs === undefined) {
@@ -1146,7 +1327,8 @@ export async function saveMessage({
             ...persistenceDiagnostics,
           }),
         );
-        await waitForRetryDelay(retryDelayMs);
+        if (signal) await abortableDelay(retryDelayMs, signal);
+        else await waitForRetryDelay(retryDelayMs);
       }
     }
   } catch (error) {
@@ -1169,6 +1351,9 @@ export async function saveMessage({
   }
 }
 
+export type InitialChatPersistenceStep =
+  "save_chat" | "reset_stream" | "save_user_message";
+
 export async function handleInitialChatAndUserMessage({
   chatId,
   userId,
@@ -1177,6 +1362,8 @@ export async function handleInitialChatAndUserMessage({
   chat,
   isHidden,
   projectId,
+  sandboxType,
+  onPersistenceStep,
 }: {
   chatId: string;
   userId: string;
@@ -1185,7 +1372,16 @@ export async function handleInitialChatAndUserMessage({
   chat: any; // Chat data from getMessagesByChatId
   isHidden?: boolean;
   projectId?: string;
+  sandboxType?: string;
+  onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
+  const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
+    try {
+      onPersistenceStep?.(step);
+    } catch {
+      // Diagnostics must not interrupt or retry persistence.
+    }
+  };
   if (!chat) {
     // Save new chat and get the document _id
     let title = "New Chat";
@@ -1204,14 +1400,18 @@ export async function handleInitialChatAndUserMessage({
       }
     }
 
-    // Ensure title is a string and truncate safely
-    title = (title ?? "New Chat").substring(0, 100);
+    // Keep the title cap without splitting a surrogate pair Convex cannot store.
+    title = (title ?? "New Chat")
+      .substring(0, 100)
+      .replace(/[\uD800-\uDBFF]$/, "");
 
+    reportPersistenceStep("save_chat");
     await saveChat({
       id: chatId,
       userId,
       title,
       projectId,
+      sandboxType,
     });
   } else {
     // Check if user owns the chat
@@ -1223,8 +1423,16 @@ export async function handleInitialChatAndUserMessage({
     }
   }
 
+  // Regeneration skips the user-message write that clears cancellation. Reset
+  // it after ownership validation, before tools or cancellation polling start.
+  if (regenerate && chat) {
+    reportPersistenceStep("reset_stream");
+    await prepareForNewStream({ chatId });
+  }
+
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
+    reportPersistenceStep("save_user_message");
     await saveMessage({
       chatId,
       userId,
@@ -1246,6 +1454,7 @@ export async function updateChat({
   defaultModelSlug,
   sandboxType,
   selectedModel,
+  expectedActiveTriggerRunId,
 }: {
   chatId: string;
   title?: string;
@@ -1259,6 +1468,7 @@ export async function updateChat({
   defaultModelSlug?: "ask" | "agent";
   sandboxType?: string;
   selectedModel?: string;
+  expectedActiveTriggerRunId?: string;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -1269,6 +1479,9 @@ export async function updateChat({
     defaultModelSlug,
     sandboxType,
     selectedModel,
+    ...(expectedActiveTriggerRunId !== undefined
+      ? { expectedActiveTriggerRunId }
+      : {}),
   };
 
   for (let attemptIndex = 0; ; attemptIndex++) {
@@ -1358,6 +1571,11 @@ export async function updateChatTitle({
   }
 }
 
+/**
+ * Rehydrate persisted history within the request's context budget. Paginated
+ * regeneration excludes new client messages. Empty paginated
+ * projections can retain a bounded Agent tail without changing stored records.
+ */
 export async function getMessagesByChatId({
   chatId,
   userId,
@@ -1366,6 +1584,7 @@ export async function getMessagesByChatId({
   subscription,
   mode,
   useClientMessagesForRegenerate,
+  agentModelContextEnabled = false,
 }: {
   chatId: string;
   userId: string;
@@ -1374,11 +1593,29 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
+  agentModelContextEnabled?: boolean;
 }) {
   let chat = undefined;
   let isNewChat = true;
   let existingMessages: UIMessage[] = [];
   const abliterationHistory: AbliterationHistoryEntry[] = [];
+
+  // Retry payloads can include client history for local attachment restaging.
+  // Keep stored records authoritative and append only the unseen client tail;
+  // older client rows must not be reintroduced after paginated/truncated history.
+  const appendNewClientMessages = (history: UIMessage[]): UIMessage[] => {
+    const seen = new Set(history.map((message) => message.id));
+    let lastStoredIndex = -1;
+    newMessages.forEach((message, index) => {
+      if (seen.has(message.id)) lastStoredIndex = index;
+    });
+    const newTail = newMessages.slice(lastStoredIndex + 1).filter((message) => {
+      if (seen.has(message.id)) return false;
+      seen.add(message.id);
+      return true;
+    });
+    return [...history, ...newTail];
+  };
 
   {
     // Check if chat exists first to avoid unnecessary Convex query
@@ -1412,11 +1649,15 @@ export async function getMessagesByChatId({
         const PAGE_SIZE = 24;
         const MAX_PAGES = 4;
 
+        // One budget for the complete history read, not a fresh budget per page.
+        const retryBudget = { used: 0 };
         let cursor: string | null = null;
         let pagesFetched = 0;
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
+        let emptyProjectionDiagnostics:
+          Record<string, number | string> | undefined;
         const skipFileTokens = mode === "agent";
 
         while (pagesFetched < MAX_PAGES) {
@@ -1436,6 +1677,7 @@ export async function getMessagesByChatId({
             mode,
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
+            retryBudget,
           });
           const {
             page,
@@ -1458,9 +1700,15 @@ export async function getMessagesByChatId({
           }
 
           const existingChrono = [...fetchedDesc].reverse();
+          // The answer being replaced must not consume the regeneration budget
+          // or hide the saved user turn when its deletion has not propagated.
+          if (regenerate) {
+            while (existingChrono.at(-1)?.role === "assistant")
+              existingChrono.pop();
+          }
           const candidate = regenerate
             ? existingChrono
-            : [...existingChrono, ...newMessages];
+            : appendNewClientMessages(existingChrono);
 
           // Incrementally fetch file tokens only for new file IDs not yet cached
           if (!skipFileTokens) {
@@ -1474,16 +1722,115 @@ export async function getMessagesByChatId({
             }
           }
 
-          const maxTokens = getMaxTokensForSubscription(subscription, {
+          const maxTokens = getAgentHistoryBudget(
+            subscription,
             mode,
-          });
-          const truncatedMessages = truncateMessagesToTokenLimit(
+            agentModelContextEnabled,
+          );
+          let truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
             maxTokens,
+            ({ budgetTokens, newestMessageTokens }) => {
+              const newest = candidate[candidate.length - 1];
+              const counts = { text: 0, tool: 0, file: 0, other: 0 };
+              // Stored parts are untyped; only fixed categories reach logs.
+              for (const part of newest.parts) {
+                if (part.type === "text") counts.text++;
+                else if (part.type === "file") counts.file++;
+                else if (
+                  part.type === "dynamic-tool" ||
+                  (typeof part.type === "string" &&
+                    part.type.startsWith("tool-"))
+                )
+                  counts.tool++;
+                else counts.other++;
+              }
+              const role = newest.role;
+              emptyProjectionDiagnostics = {
+                projection_budget_tokens: budgetTokens,
+                projection_blocked_message_tokens: newestMessageTokens,
+                projection_blocked_message_role:
+                  role === "user" || role === "assistant" || role === "system"
+                    ? role
+                    : "other",
+                projection_blocked_message_part_count: newest.parts.length,
+                projection_blocked_text_part_count: counts.text,
+                projection_blocked_tool_part_count: counts.tool,
+                projection_blocked_file_part_count: counts.file,
+                projection_blocked_other_part_count: counts.other,
+              };
+            },
           );
 
-          const hitBudget = truncatedMessages.length < candidate.length;
+          let hitBudget = truncatedMessages.length < candidate.length;
+          if (
+            truncatedMessages.length === 0 &&
+            mode === "agent" &&
+            !regenerate &&
+            !latestSummary &&
+            candidate.at(-1)?.role === "assistant"
+          ) {
+            const userContext = buildUserMessageContext(candidate);
+            if (userContext) {
+              const notice: UIMessage = {
+                id: uuidv4(),
+                role: "user",
+                parts: [
+                  {
+                    type: "text",
+                    text:
+                      "<context_summary>\nOnly a bounded tail of saved history is included. Earlier instructions and operation outcomes may be missing. Retrieve the original conversation or saved transcript before resolving missing scope or permissions, or repeating an operation whose outcome is not retained.\n</context_summary>" +
+                      userContext +
+                      buildRuntimeContext(candidate) +
+                      buildTodoContext(chat?.todos ?? []),
+                  },
+                ],
+              };
+              const noticeTokens = countMessagesTokens([notice]);
+              // Repair before counting: interrupted-tool error parts can be
+              // larger than their stored incomplete representation.
+              const projectable = candidate.map((message) =>
+                message.role === "assistant"
+                  ? {
+                      ...message,
+                      parts: fixIncompleteMessageParts(message.parts),
+                    }
+                  : message,
+              );
+              const tail = projectMessagesToTokenBudget(projectable, {
+                budgetTokens: maxTokens - noticeTokens,
+                fileTokens: fileTokensFromLoop,
+                preserveStepStarts: true,
+              });
+              if (hasVisibleAssistantContent(tail)) {
+                truncatedMessages = [notice, ...tail];
+                try {
+                  console.info(
+                    JSON.stringify({
+                      level: "info",
+                      event: "chat_history_projection_bounded_tail",
+                      service: "chat-handler",
+                      timestamp: new Date().toISOString(),
+                      chat_id: chatId,
+                      user_id: userId,
+                      mode,
+                      pages_fetched: pagesFetched,
+                      projected_messages_count: truncatedMessages.length,
+                      projection_notice_tokens: noticeTokens,
+                      ...emptyProjectionDiagnostics,
+                    }),
+                  );
+                } catch {
+                  // Optional diagnostics cannot discard usable context.
+                }
+              }
+            } else {
+              // An assistant-only page cannot establish user scope. Keep
+              // backfilling within the existing page cap before giving up.
+              hitBudget = false;
+            }
+          }
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
 
           if (hitBudget || reachedLimit) {
@@ -1499,6 +1846,8 @@ export async function getMessagesByChatId({
           }
         }
 
+        const projectedMessageCountBeforeRegenerate =
+          truncatedFromLoop?.length ?? 0;
         // In regenerate mode the conversation must end with a user message.
         // The client should have deleted the last assistant message before
         // calling regenerate, but if that hasn't propagated yet we must
@@ -1543,9 +1892,11 @@ export async function getMessagesByChatId({
             };
 
             // Re-truncate real messages to leave room for the summary message
-            const maxTokens = getMaxTokensForSubscription(subscription, {
+            const maxTokens = getAgentHistoryBudget(
+              subscription,
               mode,
-            });
+              agentModelContextEnabled,
+            );
             const summaryTokens = countMessagesTokens(
               [summaryMessage],
               fileTokensFromLoop,
@@ -1612,6 +1963,45 @@ export async function getMessagesByChatId({
             };
           }
 
+          if (truncatedFromLoop.length === 0) {
+            try {
+              // This early return bypasses the fallback empty-prompt diagnostics.
+              // Counts distinguish an empty source from projection/regen loss
+              // without exporting message contents or changing the return.
+              logChatMessagePreparationFailure(
+                "chat_history_projection_empty",
+                "warn",
+                {
+                  chat_id: chatId,
+                  user_id: userId,
+                  mode,
+                  regenerate: !!regenerate,
+                  fetched_messages_count: fetchedDesc.length,
+                  new_messages_count: newMessages.length,
+                  projected_messages_before_regenerate_count:
+                    projectedMessageCountBeforeRegenerate,
+                  projected_messages_count: 0,
+                  pages_fetched: pagesFetched,
+                  ...emptyProjectionDiagnostics,
+                  projection_reason:
+                    projectedMessageCountBeforeRegenerate > 0 ||
+                    (regenerate &&
+                      fetchedDesc.length > 0 &&
+                      fetchedDesc.every(
+                        (message) => message.role === "assistant",
+                      ))
+                      ? "regenerate_removed_all"
+                      : fetchedDesc.length === 0 &&
+                          (regenerate || newMessages.length === 0)
+                        ? "no_candidate_messages"
+                        : "token_projection_empty",
+                },
+              );
+            } catch {
+              // Optional diagnostics must not change history/fallback behavior.
+            }
+          }
+
           // No summary injection (ask mode or no summary), return as normal
           return {
             truncatedMessages: truncatedFromLoop,
@@ -1631,7 +2021,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
-          db_retry_reason: getRetryableDatabaseErrorReason(error),
+          db_retry_reason: getRetryableHistoryPageErrorReason(error),
           db_error_data: getErrorData(error),
         });
 
@@ -1666,7 +2056,7 @@ export async function getMessagesByChatId({
     }
   } else {
     // For normal chat, merge existing messages with the new user message
-    allMessages = [...existingMessages, ...newMessages];
+    allMessages = appendNewClientMessages(existingMessages);
   }
 
   const truncateResult = await truncateMessagesWithFileTokens(
@@ -1675,6 +2065,7 @@ export async function getMessagesByChatId({
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
     mode,
     userId,
+    agentModelContextEnabled,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -1684,9 +2075,11 @@ export async function getMessagesByChatId({
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any, userId);
-      const maxTokens = getMaxTokensForSubscription(subscription, {
+      const maxTokens = getAgentHistoryBudget(
+        subscription,
         mode,
-      });
+        agentModelContextEnabled,
+      );
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
       const largestFileToken = Object.values(fileTokens).length
         ? Math.max(...Object.values(fileTokens))
@@ -1763,6 +2156,27 @@ export async function getUserCustomization({ userId }: { userId: string }) {
   }
 }
 
+export async function replaceActiveTriggerRun(args: {
+  expectedRunId: string | null;
+  expectedApprovalSessionId?: string | null;
+  chatId: string;
+  triggerRunId: string;
+  approvalSessionId: string | null;
+}) {
+  try {
+    return await getConvexClient().mutation(api.chats.replaceActiveTriggerRun, {
+      serviceKey,
+      ...args,
+    });
+  } catch (error) {
+    throw databaseError("chats.replaceActiveTriggerRun", error, {
+      chat_id: args.chatId,
+      trigger_run_id: args.triggerRunId,
+      expected_run_id: args.expectedRunId ?? undefined,
+    });
+  }
+}
+
 export async function setActiveTriggerRun({
   chatId,
   triggerRunId,
@@ -1770,6 +2184,7 @@ export async function setActiveTriggerRun({
   expectedRunId,
   expectedApprovalSessionId,
   clearApprovalPending,
+  recoveredCrash,
 }: {
   chatId: string;
   triggerRunId: string | null;
@@ -1777,6 +2192,7 @@ export async function setActiveTriggerRun({
   expectedRunId?: string;
   expectedApprovalSessionId?: string;
   clearApprovalPending?: boolean;
+  recoveredCrash?: boolean;
 }) {
   try {
     return await getConvexClient().mutation(api.chats.setActiveTriggerRun, {
@@ -1789,6 +2205,7 @@ export async function setActiveTriggerRun({
         ? { expectedApprovalSessionId }
         : {}),
       ...(clearApprovalPending !== undefined ? { clearApprovalPending } : {}),
+      ...(recoveredCrash !== undefined ? { recoveredCrash } : {}),
     });
   } catch (error) {
     throw databaseError("chats.setActiveTriggerRun", error, {
@@ -1884,11 +2301,20 @@ export async function startStream({
   }
 }
 
-export async function prepareForNewStream({ chatId }: { chatId: string }) {
+export async function prepareForNewStream({
+  chatId,
+  expectedActiveTriggerRunId,
+}: {
+  chatId: string;
+  expectedActiveTriggerRunId?: string;
+}) {
   try {
     await getConvexClient().mutation(api.chatStreams.prepareForNewStream, {
       serviceKey,
       chatId,
+      ...(expectedActiveTriggerRunId !== undefined
+        ? { expectedActiveTriggerRunId }
+        : {}),
     });
     return;
   } catch (error) {
@@ -2003,6 +2429,136 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
   }
+}
+
+// ============================================================================
+// Findings Actions
+// ============================================================================
+
+export async function getFindingDedupeContext(args: {
+  userId: string;
+  chatId: string;
+  dedupeKey: string;
+}) {
+  return getConvexClient().query(
+    api.findings.getFindingDedupeContextForBackend,
+    {
+      serviceKey,
+      ...args,
+    },
+  );
+}
+
+export async function createFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  report,
+  evidenceVerification,
+  comparisonSnapshot,
+  semanticDuplicateId,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  report: CreateVulnerabilityReportInput;
+  comparisonSnapshot?: import("@/lib/findings/dedupe-context").FindingDedupeVersion[];
+  semanticDuplicateId?: string;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  try {
+    return await getConvexClient().mutation(
+      api.findings.createFindingForBackend,
+      {
+        serviceKey,
+        userId,
+        chatId,
+        messageId,
+        toolCallId,
+        report,
+        ...(comparisonSnapshot ? { comparisonSnapshot } : {}),
+        ...(semanticDuplicateId ? { semanticDuplicateId } : {}),
+        ...(evidenceVerification ? { evidenceVerification } : {}),
+      },
+    );
+  } catch (error) {
+    throw databaseError("findings.createFindingForBackend", error, {
+      user_id: userId,
+      chat_id: chatId,
+      message_id: messageId,
+      tool_call_id: toolCallId,
+    });
+  }
+}
+
+export async function listReports({
+  userId,
+  chatId,
+  limit,
+  cursor,
+  search,
+  status,
+}: {
+  userId: string;
+  chatId: string;
+  limit: number;
+  cursor: string | null;
+  search?: string;
+  status?: "active" | "closed";
+}) {
+  return getConvexClient().query(api.findings.listReportsForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    paginationOpts: { numItems: limit, cursor },
+    ...(search !== undefined ? { search } : {}),
+    ...(status ? { status } : {}),
+  });
+}
+
+export async function getReport({
+  userId,
+  chatId,
+  findingId,
+}: {
+  userId: string;
+  chatId: string;
+  findingId: string;
+}) {
+  return getConvexClient().query(api.findings.getReportForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    findingId,
+  });
+}
+
+export async function updateFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  update,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  update: UpdateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  return getConvexClient().mutation(api.findings.updateFindingForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    messageId,
+    toolCallId,
+    update,
+    ...(evidenceVerification ? { evidenceVerification } : {}),
+  });
 }
 
 // ============================================================================
@@ -2159,6 +2715,7 @@ export async function getNotes({
 
 export async function logUsageRecord({
   usageSettlementId,
+  admissionOperationId,
   userId,
   organizationId,
   chatId,
@@ -2175,6 +2732,7 @@ export async function logUsageRecord({
   extraUsagePointsDeducted,
   uncoveredPoints,
   usageDeductionFailureReason,
+  usageDeductionOutcomeUnknown,
   inputTokens,
   outputTokens,
   cacheReadTokens,
@@ -2185,6 +2743,7 @@ export async function logUsageRecord({
   costSource,
 }: {
   usageSettlementId?: string;
+  admissionOperationId?: string;
   userId: string;
   organizationId?: string;
   chatId?: string;
@@ -2201,6 +2760,7 @@ export async function logUsageRecord({
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
+  usageDeductionOutcomeUnknown?: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
@@ -2214,6 +2774,7 @@ export async function logUsageRecord({
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
       usage_settlement_id: usageSettlementId,
+      admission_operation_id: admissionOperationId,
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
@@ -2230,6 +2791,7 @@ export async function logUsageRecord({
       extra_usage_points_deducted: extraUsagePointsDeducted,
       uncovered_points: uncoveredPoints,
       usage_deduction_failure_reason: usageDeductionFailureReason,
+      usage_deduction_outcome_unknown: usageDeductionOutcomeUnknown,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,

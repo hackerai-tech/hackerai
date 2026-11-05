@@ -219,7 +219,11 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
 }
 
 export function isNetworkStreamError(error: unknown): boolean {
-  if (error instanceof ChatSDKError) return error.type === "offline";
+  if (error instanceof ChatSDKError) {
+    // Reconnect resumes a response stream; an offline computer needs its own
+    // connection restored before the user starts a new attempt.
+    return error.type === "offline" && error.surface !== "sandbox";
+  }
   if (!(error instanceof Error)) return false;
   // User-initiated stops surface as AbortError — don't treat as network drop.
   if (error.name === "AbortError") return false;

@@ -15,6 +15,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import TextareaAutosize from "react-textarea-autosize";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useMediaQuery } from "@/hooks/use-media-query";
 
 interface QueuedMessagesPanelProps {
   messages: QueuedMessage[];
@@ -72,7 +78,11 @@ const QueuedMessageMenu = ({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
-        <DropdownMenuItem className="cursor-pointer" onSelect={onEdit}>
+        <DropdownMenuItem
+          disabled={!!message.deliveryStatus}
+          className="cursor-pointer"
+          onSelect={onEdit}
+        >
           <Pencil />
           Edit message
         </DropdownMenuItem>
@@ -101,6 +111,7 @@ const QueuedMessageRow = ({
   onQueueBehaviorChange,
 }: QueuedMessageRowProps) => {
   const [editText, setEditText] = useState(message.text);
+  const canHover = useMediaQuery("(hover: hover) and (pointer: fine)");
 
   const startEditing = () => {
     setEditText(message.text);
@@ -121,6 +132,8 @@ const QueuedMessageRow = ({
   };
 
   const handleEditKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
+      return;
     if (event.key === "Escape") {
       cancelEditing();
     } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -167,9 +180,43 @@ const QueuedMessageRow = ({
           </div>
         ) : (
           <>
-            <div className="text-sm truncate text-foreground">
-              {message.text}
-            </div>
+            {canHover && message.text ? (
+              <Tooltip delayDuration={500}>
+                <TooltipTrigger asChild>
+                  <div
+                    tabIndex={0}
+                    className="text-sm truncate text-foreground rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {message.text}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  align="start"
+                  sideOffset={8}
+                  collisionPadding={16}
+                  className="max-w-[min(36rem,calc(100vw-2rem))] max-h-[min(50vh,var(--radix-tooltip-content-available-height))] overflow-y-auto overscroll-contain whitespace-pre-wrap wrap-anywhere text-sm text-left text-pretty leading-relaxed p-4"
+                >
+                  {message.text}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <div className="text-sm truncate text-foreground">
+                {message.text}
+              </div>
+            )}
+            {message.deliveryStatus && (
+              <div
+                className="text-xs text-muted-foreground mt-0.5"
+                role="status"
+              >
+                {message.deliveryStatus === "sending"
+                  ? "Checking delivery…"
+                  : message.deliveryStatus === "active"
+                    ? "Active run found. Check delivery after it finishes."
+                    : "Delivery not confirmed. Retry checks for an active run first."}
+              </div>
+            )}
             {message.files && message.files.length > 0 && (
               <div className="text-xs text-muted-foreground mt-0.5">
                 {message.files.length} file
@@ -186,16 +233,23 @@ const QueuedMessageRow = ({
             type="button"
             size="sm"
             variant="ghost"
+            disabled={message.deliveryStatus === "sending"}
             onClick={() => onSendNow(message.id)}
             className="h-7 px-2 text-xs"
             title={
-              isStreaming
-                ? "Stop the current response and steer with this message"
-                : "Send this queued message now"
+              message.deliveryStatus && message.deliveryStatus !== "sending"
+                ? "Check for an active run before retrying this message"
+                : isStreaming
+                  ? "Stop the current response and steer with this message"
+                  : "Send this queued message now"
             }
           >
             <CornerDownRight className="w-3 h-3 mr-1" />
-            Steer
+            {message.deliveryStatus === "active"
+              ? "Check delivery"
+              : message.deliveryStatus === "failed"
+                ? "Retry"
+                : "Steer"}
           </Button>
           <Button
             type="button"
@@ -268,7 +322,7 @@ export const QueuedMessagesPanel = ({
   );
 
   return (
-    <div className="mx-4 rounded-[22px_22px_0px_0px] border border-black/8 dark:border-border border-b-0 bg-input-chat">
+    <div className="mx-0 rounded-[22px_22px_0px_0px] border border-black/8 dark:border-border border-b-0 bg-input-chat md:mx-4">
       <div className="px-4 pt-3 pb-1 space-y-1 max-h-[240px] overflow-y-auto">
         {messages.map(renderMessage)}
       </div>

@@ -4,7 +4,7 @@ describe("createOpenRouterCacheSessionId", () => {
   const input = {
     chatId: "chat-secret-123",
     mode: "agent",
-    requestedModelSlug: "deepseek/deepseek-v4.1-flash",
+    requestedModelSlug: "deepseek/deepseek-v4.1-flash-1017",
   };
 
   it("is stable, opaque, and within OpenRouter's length limit", () => {

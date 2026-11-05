@@ -48,8 +48,8 @@ export type AgentLongRunStarted = {
 };
 
 type AgentStartResult = { response: Response; handle?: RunHandle };
-// Allow the route's 30-second budget plus response delivery time.
-const AGENT_START_TIMEOUT_MS = 45_000;
+// Allow the route's 60-second budget plus response delivery time.
+const AGENT_START_TIMEOUT_MS = 75_000;
 const pendingAgentStarts = new Map<string, Promise<AgentStartResult>>();
 
 /** Capture the in-flight start before Stop detaches the local stream. */

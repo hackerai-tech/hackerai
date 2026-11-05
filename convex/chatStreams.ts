@@ -1,4 +1,4 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
@@ -50,6 +50,7 @@ export const prepareForNewStream = mutation({
   args: {
     serviceKey: v.string(),
     chatId: v.string(),
+    expectedActiveTriggerRunId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -67,6 +68,12 @@ export const prepareForNewStream = mutation({
       });
       return null;
     }
+
+    if (
+      args.expectedActiveTriggerRunId !== undefined &&
+      chat.active_trigger_run_id !== args.expectedActiveTriggerRunId
+    )
+      return null;
 
     // Only patch if either field needs to be cleared. If a stream was active,
     // this is its terminal cleanup, so record the finish time in the same write.

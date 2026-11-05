@@ -7,7 +7,6 @@ import Header from "../components/Header";
 import Footer from "../components/Footer";
 import { Chat } from "../components/chat";
 import PricingDialog from "../components/PricingDialog";
-import TeamPricingDialog from "../components/TeamPricingDialog";
 import { TeamWelcomeDialog } from "../components/TeamDialogs";
 import MigratePentestgptDialog from "../components/MigratePentestgptDialog";
 import { ExtraUsagePurchaseToast } from "../components/extra-usage";
@@ -75,15 +74,15 @@ const UnauthenticatedContent = () => {
         <Header />
       </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
         {/* Centered content area */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-[15vh] pb-[18vh] min-h-0">
+        <div className="flex-1 flex flex-col items-center justify-center-safe px-4 py-6 sm:px-6 sm:py-10 [@media(max-height:500px)]:py-2">
           {/* Title */}
           <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
-            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
+            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl [@media(max-height:500px)]:text-3xl">
               What will you hack today?
             </h1>
-            <p className="text-muted-foreground text-lg leading-tight md:text-xl">
+            <p className="text-muted-foreground text-lg leading-tight md:text-xl [@media(max-height:500px)]:text-base">
               Find and fix vulnerabilities by working with AI.
             </p>
           </div>
@@ -124,8 +123,6 @@ const AuthenticatedContent = () => {
 export default function HomePageClient() {
   const {
     subscription,
-    teamPricingDialogOpen,
-    setTeamPricingDialogOpen,
     teamWelcomeDialogOpen,
     setTeamWelcomeDialogOpen,
     migrateFromPentestgptDialogOpen,
@@ -137,30 +134,6 @@ export default function HomePageClient() {
   const hasAuthHint = useHasAuthenticatedBefore();
 
   const { isMigrating, migrate } = usePentestgptMigration();
-  const searchParams =
-    typeof window !== "undefined" ? window.location.search : "";
-  const { initialSeats, initialPlan } = React.useMemo(() => {
-    if (typeof window === "undefined") {
-      return { initialSeats: 5, initialPlan: "monthly" as const };
-    }
-    const urlParams = new URLSearchParams(searchParams);
-    const urlSeats = urlParams.get("numSeats");
-    const urlPlan = urlParams.get("selectedPlan");
-
-    let seats = 5;
-    if (urlSeats) {
-      const parsed = parseInt(urlSeats, 10);
-      if (!isNaN(parsed) && parsed >= 1) {
-        seats = parsed;
-      }
-    }
-
-    const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
-      "monthly" | "yearly";
-
-    return { initialSeats: seats, initialPlan: plan };
-  }, [searchParams]);
-
   if (isAuthenticated || (isLoading && hasAuthHint)) {
     return (
       <>
@@ -170,12 +143,6 @@ export default function HomePageClient() {
           isOpen={showPricing}
           onClose={handleClosePricing}
           context={pricingContext}
-        />
-        <TeamPricingDialog
-          isOpen={teamPricingDialogOpen}
-          onClose={() => setTeamPricingDialogOpen(false)}
-          initialSeats={initialSeats}
-          initialPlan={initialPlan}
         />
         <TeamWelcomeDialog
           open={teamWelcomeDialogOpen}

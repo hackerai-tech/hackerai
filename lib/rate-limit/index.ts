@@ -7,7 +7,7 @@ import type { FreeLimitPolicy } from "./free-config";
  * 1. Token Bucket (Paid users - Pro, Pro+, Ultra, Team):
  *    - Used for both Agent and Ask modes (shared budget)
  *    - Points consumed based on token usage costs
- *    - Single monthly bucket: credits = subscription price, refills every 30 days
+ *    - Monthly paid cycles refresh once per paid invoice; annual plans use 30-day windows
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
  * 2. Fixed Window (Free users):

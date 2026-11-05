@@ -1,6 +1,6 @@
 import type { UIToolInvocation } from "ai";
 import { ChatMessage } from "@/types/chat";
-import { ABORTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
+import { getIncompleteToolErrorText } from "@/lib/chat/tool-abort-utils";
 
 /**
  * Checks if a part is a completed reasoning block with redacted text.
@@ -97,6 +97,7 @@ interface DataPart {
  */
 export const normalizeMessages = (
   messages: ChatMessage[],
+  options?: { userInitiatedAbort?: boolean },
 ): {
   messages: ChatMessage[];
   lastMessage: ChatMessage[];
@@ -160,6 +161,27 @@ export const normalizeMessages = (
         return;
       }
 
+      // Stop saves directly to Convex. Leaving an approval state here makes
+      // its historical tool card register a live prompt again after reload,
+      // even though the run and its approval session have been canceled.
+      if (
+        options?.userInitiatedAbort &&
+        toolPart.type?.startsWith("tool-") &&
+        (toolPart.state === "approval-requested" ||
+          toolPart.state === "approval-responded")
+      ) {
+        // The SDK serializes approval metadata even on output-error parts.
+        // A canceled request must not ask for approval again on the next turn.
+        const { approval: _approval, ...stoppedPart } = part;
+        processedParts.push({
+          ...stoppedPart,
+          state: "output-error",
+          errorText: getIncompleteToolErrorText(undefined, true),
+        });
+        messageChanged = true;
+        return;
+      }
+
       // Check if this is a terminal tool that needs transformation
       // Terminal tools need frontend handling to collect streaming output from data-terminal parts
       // Other incomplete tools are handled by backend (chat-processor.ts)
@@ -169,15 +191,33 @@ export const normalizeMessages = (
         toolPart.type === "tool-shell";
       const isIncomplete =
         toolPart.state === "input-available" ||
-        toolPart.state === "input-streaming";
+        toolPart.state === "input-streaming" ||
+        (options?.userInitiatedAbort === true &&
+          (toolPart.state === "approval-requested" ||
+            toolPart.state === "approval-responded"));
 
       if (isTerminalTool && isIncomplete) {
         // Transform terminal tools to collect streaming output
         const transformedPart = transformTerminalToolPart(
           part as TerminalToolPart,
           terminalDataMap,
+          options?.userInitiatedAbort,
         );
         processedParts.push(transformedPart);
+        messageChanged = true;
+      } else if (
+        options?.userInitiatedAbort &&
+        toolPart.type.startsWith("tool-") &&
+        (toolPart.state === "approval-requested" ||
+          toolPart.state === "approval-responded")
+      ) {
+        // A saved approval must not remain actionable after its run is stopped.
+        const { approval: _approval, ...stoppedPart } = part;
+        processedParts.push({
+          ...stoppedPart,
+          state: "output-error",
+          errorText: getIncompleteToolErrorText(undefined, true),
+        });
         messageChanged = true;
       } else {
         // Keep parts unchanged - backend handles incomplete non-terminal tools
@@ -215,17 +255,23 @@ export const normalizeMessages = (
 const transformTerminalToolPart = (
   terminalPart: TerminalToolPart,
   terminalDataMap: Map<string, string>,
+  userInitiatedAbort = false,
 ): BaseToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
+  const { approval: _approval, ...stoppedPart } =
+    terminalPart as TerminalToolPart & {
+      approval?: unknown;
+    };
 
   // Shell tool returns { output: string } directly, not nested in result
   if (terminalPart.type === "tool-shell") {
     return {
+      ...stoppedPart,
       type: "tool-shell",
       toolCallId: terminalPart.toolCallId,
       state: "output-error",
       input: terminalPart.input,
-      errorText: ABORTED_TOOL_ERROR_TEXT,
+      errorText: getIncompleteToolErrorText(undefined, userInitiatedAbort),
       output: {
         output: stdout,
       },
@@ -233,14 +279,15 @@ const transformTerminalToolPart = (
   }
 
   return {
+    ...stoppedPart,
     type: terminalPart.type,
     toolCallId: terminalPart.toolCallId,
     state: "output-error",
     input: terminalPart.input,
-    errorText: ABORTED_TOOL_ERROR_TEXT,
+    errorText: getIncompleteToolErrorText(undefined, userInitiatedAbort),
     output: {
       result: {
-        exitCode: 130, // Standard exit code for SIGINT (interrupted)
+        ...(userInitiatedAbort ? { exitCode: 130 } : {}),
         stdout: stdout,
         stderr: "",
       },

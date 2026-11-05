@@ -1,7 +1,14 @@
 "use client";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
+import { goalResumeMessage } from "@/lib/goals/commands";
+import { CloudWorkspaceRecovery } from "./CloudWorkspaceRecovery";
+import {
+  CloudRecoveryAdmissionContext,
+  useCloudRecoveryAdmission,
+} from "@/app/hooks/useCloudRecoveryAdmission";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, type FileUIPart } from "ai";
 import dynamic from "next/dynamic";
 import {
   useRef,
@@ -18,16 +25,21 @@ import {
   usePaginatedQuery,
   useMutation,
   useConvexAuth,
+  useConvex,
 } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
+import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
+import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -49,6 +61,7 @@ import {
   type MessageRecord,
 } from "@/lib/utils";
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
+import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -56,7 +69,9 @@ import {
 } from "@/lib/chat/agent-long-transport";
 import {
   areMessagesEquivalentForConvexSync,
+  mergePersistedGoalMessages,
   arePersistedMessagesAtLeastAsComplete,
+  normalizeStreamedRecoveryMessages,
 } from "@/lib/chat/message-reconciliation";
 import {
   LEGACY_DESKTOP_AGENT_UPDATE_MESSAGE,
@@ -70,12 +85,10 @@ import {
   LEGACY_AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
-import {
-  stripAgentLongHeartbeatParts,
-  stripAgentLongHeartbeatPartsFromMessages,
-} from "@/lib/chat/agent-long-heartbeat";
+import { stripAgentLongHeartbeatPartsFromMessages } from "@/lib/chat/agent-long-heartbeat";
+import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
-import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
+import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/agent-partial-save-snapshot";
 import { toast } from "sonner";
 import {
   addAuthenticatedExceptionStep,
@@ -114,9 +127,11 @@ import {
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
+import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
+import { useChatPerformance } from "@/app/hooks/useChatPerformance";
+import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
 
 import { HackingSuggestions } from "./HackingSuggestions";
-import { AcquisitionSurvey } from "./AcquisitionSurvey";
 
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
@@ -271,48 +286,6 @@ export function useServerMessages(
     [paginatedMessageResults],
   );
 }
-
-type AgentLongPartialSaveMessage = {
-  id: string;
-  role: "assistant";
-  parts: ChatMessage["parts"];
-  generationStartedAt?: number;
-  generationTimeMs?: number;
-};
-
-const getLatestAgentLongAssistantMessageForPartialSave = (
-  messages: ChatMessage[],
-): AgentLongPartialSaveMessage | undefined => {
-  const message = messages.at(-1);
-  if (message?.role !== "assistant") return undefined;
-
-  const stripped = stripAgentLongHeartbeatParts(message);
-  if (!stripped.parts || stripped.parts.length === 0) return undefined;
-  if (!hasVisibleAssistantContent([stripped])) return undefined;
-
-  const metadata = (
-    stripped as ChatMessage & {
-      metadata?: {
-        generationStartedAt?: unknown;
-        generationTimeMs?: unknown;
-      };
-    }
-  ).metadata;
-
-  return {
-    id: stripped.id,
-    role: "assistant",
-    parts: stripped.parts,
-    generationStartedAt:
-      typeof metadata?.generationStartedAt === "number"
-        ? metadata.generationStartedAt
-        : undefined,
-    generationTimeMs:
-      typeof metadata?.generationTimeMs === "number"
-        ? metadata.generationTimeMs
-        : undefined,
-  };
-};
 
 const ComputerSidebar = dynamic(
   () => import("./ComputerSidebar").then((m) => m.ComputerSidebar),
@@ -550,6 +523,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const convex = useConvex();
   const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
   const params = useParams();
@@ -559,6 +533,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const computerDialogRef = useRef<HTMLDivElement>(null);
   const computerDialogPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const computerDialogShowedGoalRef = useRef(false);
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
   const { appendDataPart, clearDataStream } =
     useBatchedDataStreamAppend(setDataStream);
@@ -577,6 +552,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatMode,
     setChatMode,
     sidebarOpen,
+    sidebarContent,
+    openSidebar,
     closeSidebar,
     chatSidebarOpen,
     initializeChat,
@@ -588,6 +565,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     messageQueue,
     editingQueuedMessageId,
     removeQueuedMessage,
+    setQueuedMessageDelivery,
     clearQueue,
     todos,
     sandboxPreference,
@@ -627,12 +605,41 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             "input:not([disabled])",
             "select:not([disabled])",
             "textarea:not([disabled])",
+            "summary",
             '[tabindex]:not([tabindex="-1"])',
           ].join(", "),
         ),
+      ).filter((element) => {
+        if (element.getClientRects().length === 0) return false;
+        // Closed details can still give descendants layout boxes in Chromium.
+        // Only their direct summary remains keyboard-accessible.
+        for (
+          let parent = element.parentElement;
+          parent && parent !== dialog;
+          parent = parent.parentElement
+        ) {
+          if (
+            parent instanceof HTMLDetailsElement &&
+            !parent.open &&
+            !(element.tagName === "SUMMARY" && element.parentElement === parent)
+          )
+            return false;
+        }
+        return true;
+      });
+
+    const hasNestedDialogFocus = () => {
+      const focused = document.activeElement;
+      return (
+        focused instanceof HTMLElement &&
+        !dialog.contains(focused) &&
+        !!focused.closest('[role="dialog"]')
       );
+    };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Takeover and its exit prompt render in portals above this dialog.
+      if (hasNestedDialogFocus()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         closeSidebar();
@@ -660,7 +667,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const focusTimeout = window.setTimeout(() => {
-      (getFocusableElements()[0] ?? dialog).focus();
+      if (!hasNestedDialogFocus())
+        (
+          dialog.querySelector<HTMLElement>('[aria-label="Goal objective"]') ??
+          getFocusableElements()[0] ??
+          dialog
+        ).focus();
     }, 0);
     document.addEventListener("keydown", handleKeyDown);
 
@@ -668,9 +680,37 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       window.clearTimeout(focusTimeout);
       document.removeEventListener("keydown", handleKeyDown);
       const previousFocus = computerDialogPreviousFocusRef.current;
-      if (previousFocus?.isConnected) previousFocus.focus();
+      const showedGoalEditor = computerDialogShowedGoalRef.current;
+      computerDialogShowedGoalRef.current = false;
+      if (!hasNestedDialogFocus()) {
+        if (
+          previousFocus?.isConnected &&
+          previousFocus !== document.body &&
+          !dialog.contains(previousFocus)
+        )
+          previousFocus.focus();
+        else if (showedGoalEditor)
+          document
+            .querySelector<HTMLButtonElement>(
+              '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+            )
+            ?.focus();
+      }
     };
   }, [closeSidebar, computerSidebarOverlay, sidebarOpen]);
+
+  // Record content while open: closing clears it, and the lazy sidebar may not
+  // have mounted the editor when the focus trap first runs.
+  useEffect(() => {
+    if (
+      computerSidebarOverlay &&
+      sidebarOpen &&
+      sidebarContent &&
+      "kind" in sidebarContent &&
+      sidebarContent.kind === "goal"
+    )
+      computerDialogShowedGoalRef.current = true;
+  }, [computerSidebarOverlay, sidebarContent, sidebarOpen]);
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -725,14 +765,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  const [initializedPredictionModeChatId, setInitializedPredictionModeChatId] =
+    useState<string | null>(null);
   // Keep automatic sends blocked until the task's saved environment is applied.
   const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
     string | null
   >(null);
+  const usesCloudRecovery =
+    sandboxPreference === "e2b" && subscription !== "free";
+  const [cloudConnectionFailure, setCloudConnectionFailure] = useState<{
+    chatId: string;
+    sequence: number;
+  } | null>(null);
+  // A remounted Cloud panel must verify fresh state before any send effect runs.
+  const cloudRecoveryScope = useMemo(
+    () => ({
+      chatId,
+      usesCloudRecovery,
+      sequence: cloudConnectionFailure?.sequence,
+    }),
+    [chatId, usesCloudRecovery, cloudConnectionFailure?.sequence],
+  );
+  const cloudRecoveryAdmission = useCloudRecoveryAdmission(cloudRecoveryScope);
   const computerSendDisabledReason =
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
-      : connectionSendDisabledReason;
+      : (usesCloudRecovery && cloudRecoveryAdmission.sendDisabledReason) ||
+        connectionSendDisabledReason;
   const computerSendDisabledReasonRef = useCommittedRef(
     computerSendDisabledReason,
   );
@@ -805,6 +864,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     ?.active_trigger_run_id as string | undefined;
   const storedPendingUserWait = (chatDataForCurrentChat as any)
     ?.active_agent_user_wait as ActiveAgentUserWait | undefined;
+  const persistedGoal = useQuery(
+    api.agentGoals.get,
+    chatDataForCurrentChat ? { chatId } : "skip",
+  );
+
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -840,12 +904,44 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  const recoveryDuringComputerLoad = useRef({ chatId, observed: false });
+  useLayoutEffect(() => {
+    if (recoveryDuringComputerLoad.current.chatId !== chatId)
+      recoveryDuringComputerLoad.current = { chatId, observed: false };
+    if (isExistingChat && initializedSandboxChatId !== chatId) {
+      if (cloudRecoveryAdmission.recoveryStarted)
+        recoveryDuringComputerLoad.current.observed = true;
+      return;
+    }
+    const observedWhileLoading = recoveryDuringComputerLoad.current.observed;
+    recoveryDuringComputerLoad.current.observed = false;
+    if (
+      !usesCloudRecovery ||
+      (!cloudRecoveryAdmission.recoveryStarted && !observedWhileLoading)
+    )
+      return;
+    // Recovery never resumes an old intent. Retain drafts/queued messages for
+    // a fresh explicit send instead of releasing auto-continue after the fence.
+    hasManuallyStoppedRef.current = true;
+    try {
+      if (sessionStorage.getItem("autoSendChatId") === chatId)
+        sessionStorage.removeItem("autoSendChatId");
+    } catch {
+      // Storage may be disabled; the shared send guard still owns admission.
+    }
+  }, [
+    usesCloudRecovery,
+    cloudRecoveryAdmission.recoveryStarted,
+    isExistingChat,
+    initializedSandboxChatId,
+    chatId,
+  ]);
   const messagesRef = useRef<ChatMessage[]>([]);
   const isChatMountedRef = useRef(false);
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   const streamChatIdRef = useRef(chatId);
-  const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
+  const agentLongPartialSavesRef = useRef(createAgentPartialSaveQueue());
   const agentLongRunCorrelationRef = useRef<{
     runId: string;
     token: string;
@@ -902,11 +998,39 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const browserHandoffAdmissionRef = useRef<{
+    chatId: string;
+    id: string;
+    resolve: () => void;
+  } | null>(null);
+  type GoalAdmission = {
+    chatId: string;
+    id: string;
+    resolve: () => void;
+    error?: Error;
+    aborted?: boolean;
+    accepted: boolean;
+  };
+  const goalAdmissionRef = useRef<GoalAdmission | null>(null);
+  const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
+    () => {},
+  );
+  const [performanceTracker] = useState(() => new ChatPerformanceTracker());
+  useBrowserResponsiveness();
   const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
+        if (init?.method === "POST") {
+          performanceTracker.start(
+            activeChatIdRef.current,
+            mode,
+            messagesRef.current
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.id),
+          );
+        }
         const isTauri = isTauriEnvironment();
         if (isLegacyDesktopAgentClient({ mode, isTauri })) {
           throw new ChatSDKError(
@@ -944,15 +1068,43 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               messagesRef.current,
             ),
           };
+          const request =
+            typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+          const queuedMessageId = request?.messages?.at(-1)?.id;
           return fetchAgentLongStream(
             init,
             (run) => {
+              const pendingGoal = goalAdmissionRef.current;
+              if (
+                pendingGoal &&
+                pendingGoal.chatId === request?.chatId &&
+                pendingGoal?.id === queuedMessageId
+              )
+                pendingGoal.resolve();
               if (
                 requestGeneration !== agentLongRequestGenerationRef.current ||
                 (run.chatId !== undefined &&
                   run.chatId !== activeChatIdRef.current)
               ) {
                 return;
+              }
+              if (
+                typeof request?.chatId === "string" &&
+                typeof queuedMessageId === "string"
+              ) {
+                queuedAdmissionRef.current(request.chatId, queuedMessageId);
+              }
+              // Only expose the saved-task route after attachment staging and
+              // user-message persistence have succeeded.
+              if (
+                finalizeNewChatRoute({
+                  chatId: activeChatIdRef.current,
+                  isAbort: false,
+                  isExistingChat: isExistingChatRef.current,
+                })
+              ) {
+                removeDraft("new");
+                setIsExistingChat(true);
               }
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
@@ -990,7 +1142,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             handleAgentLongRunClosed,
           );
         }
-        return fetchWithErrorHandlers(input, init);
+        const requestChatId = activeChatIdRef.current;
+        const requestGeneration = agentLongRequestGenerationRef.current;
+        const response = await fetchWithErrorHandlers(input, init);
+        // Ask persists its chat before returning a successful response. Expose
+        // that route now so stopping the stream still leaves a reloadable task.
+        if (
+          init?.method === "POST" &&
+          response.ok &&
+          !init.signal?.aborted &&
+          isChatMountedRef.current &&
+          activeChatIdRef.current === requestChatId &&
+          agentLongRequestGenerationRef.current === requestGeneration &&
+          finalizeNewChatRoute({
+            chatId: requestChatId,
+            isAbort: false,
+            isExistingChat: isExistingChatRef.current,
+          })
+        ) {
+          removeDraft("new");
+          setIsExistingChat(true);
+        }
+        return response;
       },
       prepareReconnectToStreamRequest: ({ id, api }) => {
         // Use the Trigger-backed Agent resume endpoint when there is a stored
@@ -1054,8 +1227,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }),
   );
 
+  const [completedPredictionTurn, setCompletedPredictionTurn] =
+    useState<CompletedPredictionTurn | null>(null);
+  const [interruptedPredictionTurn, setInterruptedPredictionTurn] = useState<{
+    chatId: string;
+  } | null>(null);
+
   const {
-    messages,
+    messages: streamedMessages,
     sendMessage: sendMessageUnchecked,
     setMessages,
     status,
@@ -1063,6 +1242,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     error,
     regenerate: regenerateUnchecked,
     resumeStream,
+    clearError,
   } = useChat({
     id: chatId,
     messages: serverMessages,
@@ -1098,6 +1278,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       agentLongHasVisibleProgressRef.current = true;
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
+        case "data-cloud-connection-error": {
+          setCloudConnectionFailure((prior) => ({
+            chatId,
+            sequence: (prior?.sequence ?? 0) + 1,
+          }));
+          const data = dataPart.data as { code?: unknown };
+          if (data?.code === "timeout") {
+            toast.error(
+              "Cloud connection timed out. Your workspace is preserved. Try sending your message again shortly.",
+              { duration: 10_000 },
+            );
+          }
+          break;
+        }
         case "data-agent-approval-session": {
           const approvalData = dataPart.data as {
             chatId?: unknown;
@@ -1212,9 +1406,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       }
     },
-    onFinish: ({ isAbort }) => {
+    onFinish: ({ isAbort, isError, message, messages: finishedMessages }) => {
+      if (isAbort && goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.aborted = true;
+      performanceTracker.setOutcome(
+        isError ? "error" : isAbort ? "aborted" : "completed",
+      );
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
+      }
+      // useChat forwards old Chat instances to the latest callback after
+      // navigation. Its event history still belongs to the originating task.
+      // Check membership rather than the newest user ID: throttled visible
+      // messages may lag a legitimate abort before its assistant is appended.
+      const visibleUser = messagesRef.current.findLast(
+        (item) => item.role === "user",
+      );
+      if (
+        !visibleUser ||
+        finishedMessages?.some((item) => item.id === visibleUser.id)
+      ) {
+        setCompletedPredictionTurn(
+          !isAbort && !isError ? { chatId, messageId: message.id } : null,
+        );
+        setInterruptedPredictionTurn(isAbort || isError ? { chatId } : null);
       }
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
@@ -1227,6 +1442,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         finalizeNewChatRoute({
           chatId,
           isAbort,
+          isError,
           isExistingChat: isExistingChatRef.current,
         })
       ) {
@@ -1235,6 +1451,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      performanceTracker.setOutcome("error");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1246,6 +1463,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       const structuredStreamError = deserializeChatSDKErrorFromStream(error);
       const displayError = structuredStreamError ?? error;
+      if (
+        goalAdmissionRef.current?.chatId === chatId &&
+        !goalAdmissionRef.current.accepted
+      ) {
+        goalAdmissionRef.current.error =
+          displayError instanceof ChatSDKError
+            ? new Error(
+                formatTaskUiCopy(
+                  typeof displayError.cause === "string"
+                    ? displayError.cause
+                    : displayError.message,
+                ),
+              )
+            : displayError;
+        return; // The composer reports this admission error and preserves its draft.
+      }
       if (displayError instanceof ChatSDKError) {
         const errorMessage =
           typeof displayError.cause === "string"
@@ -1262,6 +1495,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
   });
 
+  const messages = useMemo(
+    () => normalizeStreamedRecoveryMessages(streamedMessages),
+    [streamedMessages],
+  );
+
+  useEffect(() => {
+    if (status === "submitted" || status === "streaming" || status === "error")
+      setCompletedPredictionTurn(null);
+  }, [chatId, status]);
+
+  useChatPerformance({
+    tracker: performanceTracker,
+    chatId,
+    messages,
+    status,
+    runId: agentLongRunId,
+  });
+
   // Guard the shared dispatch boundary as well as the UI. Forks, retries,
   // auto-continue, and queued sends must retain the selected environment.
   const sendMessage = useCallback<typeof sendMessageUnchecked>(
@@ -1272,6 +1523,104 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [sendMessageUnchecked, computerSendDisabledReasonRef],
   );
+  const sendGoalMessage = useCallback(
+    async (
+      message: {
+        text?: string;
+        files?: FileUIPart[];
+        metadata?: ChatMessage["metadata"];
+      },
+      options?: { body?: Record<string, unknown> },
+    ) => {
+      if (goalAdmissionRef.current)
+        throw new Error("A goal is already starting.");
+      const id = uuidv4();
+      let accepted = false;
+      let resolveAdmission!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        resolveAdmission = resolve;
+      });
+      const pending: GoalAdmission = {
+        chatId,
+        id,
+        accepted: false,
+        resolve: () => {
+          accepted = true;
+          pending.accepted = true;
+          resolveAdmission();
+        },
+      };
+      goalAdmissionRef.current = pending;
+      try {
+        // The SDK generates a new ID for text-form sends; use explicit parts so
+        // admission can acknowledge this exact message, including attachments.
+        const sending = sendMessage(
+          {
+            id,
+            role: "user",
+            parts: [
+              ...(message.files ?? []),
+              ...(message.text
+                ? [{ type: "text" as const, text: message.text }]
+                : []),
+            ],
+            metadata: message.metadata,
+          },
+          options,
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted) {
+          if (pending.aborted)
+            throw new DOMException("Goal submission stopped", "AbortError");
+          throw (
+            pending.error ??
+            new Error("Goal could not start. Your draft is saved; try again.")
+          );
+        }
+      } catch (error) {
+        if (
+          isChatMountedRef.current &&
+          activeChatIdRef.current === chatId &&
+          !(error instanceof Error && error.name === "AbortError")
+        ) {
+          // Failed requests can leave an optimistic bubble. Remove it only after
+          // confirming it was never persisted; unknown outcomes stay visible.
+          let persistenceTimeout: ReturnType<typeof setTimeout> | undefined;
+          let persisted: boolean | undefined;
+          try {
+            persisted = await Promise.race([
+              convex
+                .query(api.messages.isUserMessagePersisted, {
+                  chatId,
+                  messageId: id,
+                })
+                .catch(() => undefined),
+              new Promise<undefined>((resolve) => {
+                persistenceTimeout = setTimeout(
+                  () => resolve(undefined),
+                  5_000,
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(persistenceTimeout);
+          }
+          if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
+            if (persisted === false)
+              setMessages((current) =>
+                current.filter((item) => item.id !== id),
+              );
+            clearError?.();
+          }
+        }
+        throw error;
+      } finally {
+        if (goalAdmissionRef.current === pending)
+          goalAdmissionRef.current = null;
+      }
+    },
+    [chatId, sendMessage, convex, setMessages, clearError],
+  );
   const regenerate = useCallback<typeof regenerateUnchecked>(
     (...args) => {
       const reason = computerSendDisabledReasonRef.current;
@@ -1279,6 +1628,97 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       return regenerateUnchecked(...args);
     },
     [regenerateUnchecked, computerSendDisabledReasonRef],
+  );
+
+  const { send: sendQueuedMessage, accept: acceptQueuedMessage } =
+    useQueuedMessageDelivery({
+      chatId,
+      messages,
+      queue: messageQueue,
+      enabled: shouldUseAgentLong,
+      isStopped: () => hasManuallyStoppedRef.current,
+      getRequestGeneration: () => agentLongRequestGenerationRef.current,
+      sendDisabledReason: computerSendDisabledReason,
+      sendMessage,
+      resumeStream,
+      remove: removeQueuedMessage,
+      setDelivery: setQueuedMessageDelivery,
+    });
+  useLayoutEffect(() => {
+    queuedAdmissionRef.current = (admittedChatId, id) => {
+      acceptQueuedMessage(admittedChatId, id);
+      const pending = browserHandoffAdmissionRef.current;
+      if (pending?.chatId === admittedChatId && pending.id === id)
+        pending.resolve();
+    };
+  }, [acceptQueuedMessage]);
+
+  const continueBrowserHandoff = useCallback(
+    async (message: { id: string; text: string }) => {
+      if (browserHandoffAdmissionRef.current)
+        throw new Error("A continuation is already starting.");
+      if (computerSendDisabledReasonRef.current)
+        throw new Error(computerSendDisabledReasonRef.current);
+      // Keep the private saved note immutable; this is only a restart signal.
+      const continuationId = `${message.id}-continue`;
+      let accepted = false;
+      const admitted = new Promise<void>((resolve) => {
+        browserHandoffAdmissionRef.current = {
+          chatId,
+          id: continuationId,
+          resolve: () => {
+            accepted = true;
+            resolve();
+          },
+        };
+      });
+      try {
+        hasManuallyStoppedRef.current = false;
+        setChatMode("agent");
+        chatModeRef.current = "agent";
+        const existing = messagesRef.current.some(
+          (item) => item.id === continuationId,
+        );
+        const sending = sendMessage(
+          {
+            id: continuationId,
+            role: "user",
+            metadata: { isAutoContinue: true },
+            parts: [{ type: "text", text: "Continue after browser takeover." }],
+            ...(existing ? { messageId: continuationId } : {}),
+          },
+          {
+            body: {
+              mode: "agent",
+              isAutoContinue: true,
+              todos: todosRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+              agentPermissionMode: agentPermissionModeRef.current,
+              selectedModel: requestSelectedModelRef.current,
+            },
+          },
+        );
+        await Promise.race([sending, admitted]);
+        if (!accepted)
+          throw new Error(
+            "Your note is saved, but the Agent could not start. Try Send and continue again.",
+          );
+      } finally {
+        browserHandoffAdmissionRef.current = null;
+      }
+    },
+    [
+      chatId,
+      sendMessage,
+      setChatMode,
+      chatModeRef,
+      sandboxPreferenceRef,
+      computerSendDisabledReasonRef,
+      messagesRef,
+      todosRef,
+      agentPermissionModeRef,
+      requestSelectedModelRef,
+    ],
   );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
@@ -1384,41 +1824,36 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const saveAgentLongPartialSnapshot = useCallback(
     (clientReason: string) => {
+      const runCorrelation = agentLongRunCorrelationRef.current;
+      if (!runCorrelation) return;
       const partialMessage = getLatestAgentLongAssistantMessageForPartialSave(
         messagesRef.current,
+        runCorrelation.runId,
       );
       if (!partialMessage) return;
 
       const saveKey = `${chatId}:${partialMessage.id}`;
-      if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
-      agentLongPartialSaveKeysRef.current.add(saveKey);
-      const runCorrelation = agentLongRunCorrelationRef.current;
-
-      void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatId,
-          message: partialMessage,
-          generationStartedAt: partialMessage.generationStartedAt,
-          generationTimeMs: partialMessage.generationTimeMs,
-          clientReason,
-          ...(runCorrelation
-            ? {
-                triggerRunId: runCorrelation.runId,
-                runCorrelationToken: runCorrelation.token,
-              }
-            : {}),
-        }),
-      })
-        .then((response) => {
-          if (!response.ok) {
-            agentLongPartialSaveKeysRef.current.delete(saveKey);
-          }
-        })
-        .catch(() => {
-          agentLongPartialSaveKeysRef.current.delete(saveKey);
-        });
+      // Capture the request now: the correlation ref is cleared on completion.
+      const requestBody = JSON.stringify({
+        chatId,
+        message: partialMessage,
+        generationStartedAt: partialMessage.generationStartedAt,
+        generationTimeMs: partialMessage.generationTimeMs,
+        clientReason,
+        triggerRunId: runCorrelation.runId,
+        runCorrelationToken: runCorrelation.token,
+      });
+      return agentLongPartialSavesRef.current.save(
+        chatId,
+        saveKey,
+        async () => {
+          return fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: requestBody,
+          });
+        },
+      );
     },
     [chatId],
   );
@@ -1611,7 +2046,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         trackedAgentLongRunId ?? undefined,
         requestGeneration,
       );
-      saveAgentLongPartialSnapshot("resume_terminal_204");
+      void saveAgentLongPartialSnapshot("resume_terminal_204")?.catch(() => {
+        // Retain the failed request so an explicit recovery can retry the save.
+      });
 
       // The transport also polls the status endpoint and can deliver a
       // synthetic finish after a terminal status. Give it a brief chance to
@@ -1814,6 +2251,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Legacy chats stored as agent-long map to agent mode
         setChatMode("agent");
       }
+      setInitializedPredictionModeChatId(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
@@ -1977,7 +2415,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
     // up, Convex will push the full set and the normal sync below will apply.
-    if (uiMessages.length < current.length) {
+    if (uiMessages.length < current.length && !persistedGoal) {
       return;
     }
 
@@ -2008,13 +2446,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // final save. Never replace more complete local text or tool progress with a
     // stale persisted snapshot; the later Convex update will rerun the effect.
     if (!arePersistedMessagesAtLeastAsComplete(current, uiMessages)) {
+      if (persistedGoal && isExistingChat) {
+        const merged = mergePersistedGoalMessages(current, uiMessages);
+        if (!areMessagesEquivalentForConvexSync(current, merged))
+          setMessages(merged);
+      }
       return;
     }
 
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessageResults, setMessages, isExistingChat, chatId, status]);
+  }, [
+    paginatedMessageResults,
+    setMessages,
+    isExistingChat,
+    chatId,
+    status,
+    persistedGoal,
+  ]);
 
   // Keep the latest visible user turn anchored while its response streams.
   // Auto-continue prompts are hidden from the timeline and must not replace
@@ -2100,66 +2550,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       : undefined);
   const hasPendingUserWait = !!pendingUserWait;
 
-  // Automatic queue processing - send next queued message when ready
-  useEffect(() => {
-    if (
-      status === "ready" &&
-      !hasPendingUserWait &&
-      !computerSendDisabledReason &&
-      messageQueue.length > 0 &&
-      editingQueuedMessageId === null &&
-      !isProcessingQueue &&
-      !isSendingNowRef.current &&
-      !hasManuallyStoppedRef.current
-    ) {
-      setIsProcessingQueue(true);
-      const nextMessage = messageQueue[0];
-
-      if (nextMessage) {
-        try {
-          const sendPromise = sendMessage(
-            {
-              text: nextMessage.text,
-              files: nextMessage.files as any,
-              metadata: { createdAt: nextMessage.timestamp },
-            },
-            {
-              body: {
-                mode: chatModeRef.current,
-                todos: todosRef.current,
-                sandboxPreference: sandboxPreferenceRef.current,
-                agentPermissionMode: agentPermissionModeRef.current,
-                selectedModel: requestSelectedModelRef.current,
-              },
-            },
-          );
-          removeQueuedMessage(nextMessage.id);
-          sendPromise.catch((error) => {
-            console.error("Failed to send queued message:", error);
-          });
-        } catch (error) {
-          console.error("Failed to send queued message:", error);
-        }
-      }
-
-      setTimeout(() => setIsProcessingQueue(false), 100);
-    }
-  }, [
-    status,
-    hasPendingUserWait,
-    messageQueue,
-    editingQueuedMessageId,
-    computerSendDisabledReason,
-    isProcessingQueue,
-    removeQueuedMessage,
-    sendMessage,
-    chatModeRef,
-    todosRef,
-    sandboxPreferenceRef,
-    agentPermissionModeRef,
-    requestSelectedModelRef,
-  ]);
-
   // The start response can arrive before the Convex subscription catches up.
   // Keep that exact local run available to Stop after the pending POST settles.
   const cancellationTriggerRunRef = useCommittedRef(
@@ -2175,19 +2565,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleEditMessage,
     handleSendNow,
     handleContinue,
+    hasPendingSummarySteer,
   } = useChatHandlers({
     chatId,
     messages,
     sendMessage,
+    sendGoalMessage,
+    sendQueuedMessage:
+      shouldUseAgentLong ||
+      messageQueue.some((message) => message.deliveryStatus)
+        ? sendQueuedMessage
+        : undefined,
     stop,
     regenerate,
     setMessages,
     isExistingChat,
+    isUserMessagePersisted: (messageId) =>
+      convex.query(api.messages.isUserMessagePersisted, { chatId, messageId }),
     status,
+    isSummarizing: summarizationStatus?.status === "started",
+    goalState: persistedGoal?.state,
+    goalGeneration: persistedGoal?.generation,
+    persistedTriggerRunId: activeTriggerRunId,
     isSendingNowRef,
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
     getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
@@ -2199,6 +2603,74 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       : computerSendDisabledReason,
     pendingUserWait,
   });
+
+  // Automatic queue processing - send next queued message when ready
+  useEffect(() => {
+    if (
+      status === "ready" &&
+      !hasPendingSummarySteer &&
+      !hasPendingUserWait &&
+      !computerSendDisabledReason &&
+      messageQueue.length > 0 &&
+      !messageQueue[0].deliveryStatus &&
+      editingQueuedMessageId === null &&
+      !isProcessingQueue &&
+      !isSendingNowRef.current &&
+      !hasManuallyStoppedRef.current
+    ) {
+      setIsProcessingQueue(true);
+      const nextMessage = messageQueue[0];
+
+      if (nextMessage && !nextMessage.deliveryStatus) {
+        const body = {
+          mode: chatModeRef.current,
+          todos: todosRef.current,
+          sandboxPreference: sandboxPreferenceRef.current,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: requestSelectedModelRef.current,
+        };
+        if (shouldUseAgentLong) {
+          void sendQueuedMessage(nextMessage.id, body);
+        } else {
+          try {
+            const sending = sendMessage(
+              {
+                text: nextMessage.text,
+                files: nextMessage.files as any,
+                metadata: { createdAt: nextMessage.timestamp },
+              },
+              { body },
+            );
+            removeQueuedMessage(nextMessage.id);
+            void sending.catch((error) =>
+              console.error("Failed to send queued message:", error),
+            );
+          } catch (error) {
+            console.error("Failed to send queued message:", error);
+          }
+        }
+      }
+
+      setTimeout(() => setIsProcessingQueue(false), 100);
+    }
+  }, [
+    status,
+    hasPendingSummarySteer,
+    hasPendingUserWait,
+    shouldUseAgentLong,
+    messageQueue,
+    editingQueuedMessageId,
+    computerSendDisabledReason,
+    isProcessingQueue,
+    sendQueuedMessage,
+    sendMessage,
+    removeQueuedMessage,
+    chatModeRef,
+    todosRef,
+    sandboxPreferenceRef,
+    agentPermissionModeRef,
+    requestSelectedModelRef,
+  ]);
 
   const handleScrollToBottom = useCallback(() => {
     scrollToBottom({ force: true });
@@ -2225,7 +2697,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         router.push(`/c/${newChatId}`);
       } catch (error) {
         console.error("Failed to branch chat:", error);
-        toast.error("Failed to branch task. Please try again.");
+        toast.error(getBranchErrorMessage(error));
       }
     },
     [branchChatMutation, initializeChat, router],
@@ -2264,9 +2736,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat &&
     !hasResolvedInitialPresentation &&
     !canResolveApprovalPresentation;
-  const showBottomChatInput =
-    (hasMessages || isExistingChat || isMobile) && !isChatNotFound;
+  const isComposerCentered = !hasMessages && !isExistingChat && !isMobile;
   const [composerOverlayHeight, setComposerOverlayHeight] = useState(0);
+  // The mobile goal pill hosts the scroll button when there is room beside it.
+  const [scrollButtonInGoal, setScrollButtonInGoal] = useState(false);
   const agentRunSpendCapWarning =
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
@@ -2276,24 +2749,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-  const [surveyActivation, setSurveyActivation] = useState<{
-    chatId: string;
-    mode: "ask" | "agent";
-  } | null>(null);
-  useEffect(() => {
-    if (status !== "submitted" && status !== "streaming") return;
-    setSurveyActivation({
-      chatId,
-      mode: chatMode === "agent" ? "agent" : "ask",
-    });
-  }, [chatId, chatMode, status]);
-  const lastMessage = messages.at(-1);
-  const acquisitionSurveyEligible =
-    surveyActivation?.chatId === chatId &&
-    status === "ready" &&
-    lastMessage?.role === "assistant" &&
-    hasVisibleAssistantContent([lastMessage]) &&
-    messages.some((message) => message.role === "user");
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
@@ -2308,8 +2763,73 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
 
+  const hasActiveGoalRun =
+    !!activeTriggerRunId &&
+    ["queued", "running", "needs_approval"].includes(
+      persistedGoal?.state ?? "",
+    );
+  const pauseGoalOnSend = [
+    "queued",
+    "running",
+    "waiting",
+    "needs_approval",
+  ].includes(persistedGoal?.state ?? "");
+  const stopGoalRunBeforeControl = async (runId: string) => {
+    // Never let a delayed goal control stop a replacement or unrelated run.
+    if (activeTriggerRunId === runId) cancellationTriggerRunRef.current = runId;
+    if (cancellationTriggerRunRef.current !== runId)
+      throw new Error("The goal run changed. Reload before changing the goal.");
+    return handleStop({
+      requireSavedResponse: true,
+      expectedTriggerRunId: runId,
+    });
+  };
+  const goalPanel = (placement: "attached" | "detached") => (
+    <AgentGoalPanel
+      key={chatId}
+      detached={placement === "detached"}
+      onEdit={() => openSidebar({ kind: "goal", chatId })}
+      chatId={chatId}
+      exists={!!chatDataForCurrentChat}
+      stopRunBeforeControl={stopGoalRunBeforeControl}
+      latestSavedUserMessageAt={paginatedMessageResults?.reduce(
+        (latest, message) =>
+          message.role === "user"
+            ? Math.max(latest, message.created_at)
+            : latest,
+        0,
+      )}
+      eligible={chatMode === "agent" && subscription !== "free"}
+      idle={
+        status === "ready" && !activeTriggerRunId && messageQueue.length === 0
+      }
+      disabledReason={computerSendDisabledReason}
+      mobileAccessory={
+        <ScrollToBottomButton
+          variant="inline"
+          onClick={handleScrollToBottom}
+          hasMessages={hasMessages}
+          isAtBottom={isAtBottom}
+        />
+      }
+      onMobileAccessoryInlineChange={setScrollButtonInGoal}
+      send={async (message, options) => {
+        hasManuallyStoppedRef.current = false;
+        resetAutoContinueCount();
+        if (!isExistingChat)
+          window.history.replaceState({}, "", `/c/${chatId}`);
+        await sendGoalMessage(message, options);
+      }}
+      settings={{
+        sandboxPreference,
+        agentPermissionMode,
+        selectedModel: requestSelectedModel,
+      }}
+    />
+  );
+
   return (
-    <>
+    <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
       <StreamEffects
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
@@ -2343,10 +2863,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         messageCount={messages.length}
         onSubmit={handleSubmit}
       />
-      <AcquisitionSurvey
-        eligible={acquisitionSurveyEligible}
-        activationMode={surveyActivation?.mode ?? "ask"}
-      />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
           {/* Left side - Chat content */}
@@ -2364,12 +2880,31 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               branchedFromChatTitle={branchedFromChatTitle}
             />
 
+            {usesCloudRecovery && (
+              <div className="mx-auto w-full max-w-[768px] px-4">
+                <CloudWorkspaceRecovery
+                  key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
+                  surface={
+                    cloudConnectionFailure?.chatId === chatId
+                      ? "cloud_connection_error"
+                      : "workspace_status"
+                  }
+                />
+              </div>
+            )}
+
             {/* Chat interface */}
-            <div className="bg-background flex flex-col flex-1 relative min-h-0">
+            <div
+              className={`bg-background flex flex-col flex-1 relative min-h-0 ${
+                !showChatLayout && !isChatNotFound
+                  ? "justify-center-safe overflow-y-auto"
+                  : ""
+              }`}
+            >
               {/* Messages area */}
               {isChatNotFound ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                  <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="w-full max-w-full sm:max-w-[768px] flex flex-col items-center space-y-8">
                     <div className="text-center">
                       <h1 className="text-2xl font-bold text-foreground mb-2">
                         Task Not Found
@@ -2432,69 +2967,70 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   )}
                 </div>
               ) : (
-                <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
-                      <div className="text-center">
-                        <HackingSuggestions />
-                      </div>
-
-                      {/* Centered input (desktop only) */}
-                      {!isMobile && (
-                        <div className="w-full">
-                          <ChatInput
-                            onSubmit={handleSubmit}
-                            onStop={handleStop}
-                            onReconnect={resumeStream}
-                            onSendNow={handleSendNow}
-                            status={status}
-                            hideStop={isAgentRunUiTerminal}
-                            isCentered={true}
-                            hasMessages={hasMessages}
-                            isAtBottom={isAtBottom}
-                            onScrollToBottom={handleScrollToBottom}
-                            isNewChat={!isExistingChat}
-                            chatId={chatId}
-                            rateLimitWarning={
-                              rateLimitWarning ? rateLimitWarning : undefined
-                            }
-                            onDismissRateLimitWarning={
-                              handleDismissRateLimitWarning
-                            }
-                            storedApprovalRequest={storedAgentApprovalRequest}
-                            pendingUserWait={pendingUserWait}
-                          />
-                        </div>
-                      )}
+                <div
+                  className={`flex flex-col min-h-0 ${isMobile ? "flex-1" : "shrink-0"}`}
+                >
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-4 min-h-0">
+                    <div className="w-full max-w-[768px] flex flex-col items-center">
+                      <HackingSuggestions />
                     </div>
-                  </div>
-
-                  {/* Footer - only show when user is not logged in */}
-                  <div className="flex-shrink-0">
-                    <Footer />
                   </div>
                 </div>
               )}
 
-              {/* Chat Input - Bottom placement (also for mobile new chats) */}
-              {showBottomChatInput ? (
+              {/* Keep one composer mounted across folding and the first message.
+                  Remounting can restore an older saved draft over live input. */}
+              {!isChatNotFound ? (
                 <ComposerOverlay
                   active={showChatLayout}
                   onHeightChange={setComposerOverlayHeight}
                 >
+                  {/* Anchor above the entire composer, including browser notices. */}
+                  <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
+                    {!scrollButtonInGoal && (
+                      <ScrollToBottomButton
+                        onClick={handleScrollToBottom}
+                        hasMessages={hasMessages}
+                        isAtBottom={isAtBottom}
+                      />
+                    )}
+                  </div>
                   <ChatInput
+                    completedPredictionTurn={completedPredictionTurn}
+                    predictionModeReady={
+                      !isExistingChat ||
+                      initializedPredictionModeChatId === chatId
+                    }
+                    interruptedPredictionTurn={interruptedPredictionTurn}
+                    latestMessageId={messages.at(-1)?.id}
+                    latestMessageIsAssistant={
+                      messages.at(-1)?.role === "assistant"
+                    }
+                    goalPanel={goalPanel}
+                    hasActiveGoalRun={hasActiveGoalRun}
+                    pauseGoalOnSend={pauseGoalOnSend}
+                    topNotice={
+                      showChatLayout ? (
+                        <BrowserHandoffEntry
+                          chatId={chatId}
+                          messages={messages}
+                        />
+                      ) : undefined
+                    }
+
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
-                    hideStop={isAgentRunUiTerminal}
+                    hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
+                    isCentered={isComposerCentered}
                     hasMessages={hasMessages}
-                    isAtBottom={isAtBottom}
-                    onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={computerSendDisabledReason}
+                    sendDisabledReason={
+                      pendingUserWait ? undefined : computerSendDisabledReason
+                    }
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
@@ -2505,23 +3041,75 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   />
                 </ComposerOverlay>
               ) : null}
+              {!showChatLayout && !isChatNotFound && <Footer />}
             </div>
           </div>
 
-          {/* Desktop Computer Sidebar */}
-          {!computerSidebarOverlay && (
+          {/* Keep the controller mounted when switching between split and overlay. */}
+          <div
+            ref={computerDialogRef}
+            className={
+              computerSidebarOverlay
+                ? sidebarOpen
+                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                  : "hidden"
+                : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
+            }
+            role={computerSidebarOverlay && sidebarOpen ? "dialog" : undefined}
+            aria-modal={
+              computerSidebarOverlay && sidebarOpen ? true : undefined
+            }
+            aria-label={
+              computerSidebarOverlay && sidebarOpen
+                ? sidebarContent &&
+                  "kind" in sidebarContent &&
+                  sidebarContent.kind === "goal"
+                  ? "Edit goal"
+                  : "HackerAI’s Computer"
+                : undefined
+            }
+            tabIndex={computerSidebarOverlay ? -1 : undefined}
+            data-layout={computerSidebarOverlay ? "overlay" : "split"}
+            data-testid="computer-sidebar-container"
+          >
             <div
-              className={`min-w-0 transition-[width] duration-300 ${
-                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
-              }`}
-              data-layout="split"
-              data-testid="computer-sidebar-container"
+              className={
+                computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
+              }
             >
               {sidebarOpen && (
-                <ComputerSidebar messages={messages} status={status} />
+                <ComputerSidebar
+                  key={chatId}
+                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
+                  continueGoal={async (goal) => {
+                    if (computerSendDisabledReason)
+                      throw new Error(computerSendDisabledReason);
+                    hasManuallyStoppedRef.current = false;
+                    resetAutoContinueCount();
+                    await sendGoalMessage(
+                      { text: goalResumeMessage(goal) },
+                      {
+                        body: {
+                          sandboxPreference: goal.sandboxPreference,
+                          agentPermissionMode: goal.permissionMode,
+                          selectedModel: goal.selectedModel,
+                          mode: "agent",
+                          goal: {
+                            action: "resume",
+                            expectedGeneration: goal.generation,
+                          },
+                        },
+                      },
+                    );
+                  }}
+                  onBrowserContinue={continueBrowserHandoff}
+                  chatId={chatId}
+                  messages={messages}
+                  status={status}
+                />
               )}
             </div>
-          )}
+          </div>
 
           {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
           <DragDropOverlay
@@ -2529,25 +3117,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             isDragOver={isDragOver}
           />
         </div>
-
-        {/* Computer overlay for mobile and narrow desktop workspaces. */}
-        {computerSidebarOverlay && sidebarOpen && (
-          <div
-            ref={computerDialogRef}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-label="HackerAI’s Computer"
-            tabIndex={-1}
-            data-layout="overlay"
-            data-testid="computer-sidebar-container"
-          >
-            <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
-            </div>
-          </div>
-        )}
       </div>
-    </>
+    </CloudRecoveryAdmissionContext.Provider>
   );
 };

@@ -5,6 +5,10 @@ const mockRetrievePrice = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockGetBillingStatusContext = jest.fn();
 const mockPostHogError = jest.fn();
+const mockCanceledRenewalAtRisk = jest.fn();
+jest.mock("@/lib/billing/canceled-renewal-invoice", () => ({
+  hasRecentCanceledRenewalAtRisk: mockCanceledRenewalAtRisk,
+}));
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -29,6 +33,8 @@ jest.mock("@/lib/posthog/server", () => ({
 describe("getSubscriptionCancellationStatusAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockListSubscriptions.mockReset();
+    mockCanceledRenewalAtRisk.mockResolvedValue(false as never);
     mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_123",
       user: { id: "user_123" },
@@ -44,6 +50,50 @@ describe("getSubscriptionCancellationStatusAction", () => {
       cancelAtPeriodEnd: false,
     });
     expect(mockListSubscriptions).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a recovered customer with more than ten historical subscriptions", async () => {
+    const history = Array.from({ length: 11 }, (_, i) => ({
+      id: `sub_${i}`,
+      status: "canceled",
+    }));
+    mockListSubscriptions.mockImplementation(
+      async ({ limit }: { limit: number }) =>
+        ({
+          data: history.slice(0, limit),
+          has_more: history.length > limit,
+        }) as never,
+    );
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).resolves.toMatchObject({
+      hasActiveSubscription: false,
+      checkoutRequiresReview: false,
+    });
+  });
+
+  it("includes a current subscription beyond the first history page", async () => {
+    mockListSubscriptions
+      .mockResolvedValueOnce({
+        data: Array.from({ length: 100 }, (_, i) => ({
+          id: `sub_old_${i}`,
+          status: "canceled",
+        })),
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [
+          { id: "sub_current", status: "active", cancel_at_period_end: false },
+        ],
+        has_more: false,
+      } as never);
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).resolves.toMatchObject({
+      hasActiveSubscription: true,
+      subscriptionStatus: "active",
+    });
+    expect(mockListSubscriptions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ starting_after: "sub_old_99" }),
+    );
   });
 
   it("returns scheduled cancellation status for active subscriptions", async () => {
@@ -77,6 +127,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: true,
+      billingAccountAvailable: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "active",
@@ -90,7 +141,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
     expect(mockListSubscriptions).toHaveBeenCalledWith({
       customer: "cus_123",
       status: "all",
-      limit: 10,
+      limit: 100,
       expand: [
         "data.items.data.price",
         "data.schedule",
@@ -118,6 +169,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: true,
+      billingAccountAvailable: true,
       cancelAtPeriodEnd: false,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "past_due",
@@ -141,8 +193,28 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: false,
       cancelAtPeriodEnd: false,
     });
+  });
+
+  it("keeps billing accessible and exposes the existing checkout block after cancellation", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    mockCanceledRenewalAtRisk.mockResolvedValue(true as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({
+      hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+    });
+    expect(mockCanceledRenewalAtRisk).toHaveBeenCalledWith(
+      expect.anything(),
+      "cus_123",
+    );
   });
 
   it("logs the action stage when Stripe subscription lookup fails", async () => {
@@ -166,6 +238,26 @@ describe("getSubscriptionCancellationStatusAction", () => {
         stripe_customer_id: "cus_123",
         error,
       }),
+    );
+  });
+
+  it("keeps review controls available without claiming an unpaid invoice when history lookup fails", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    const error = new Error("Stripe history unavailable");
+    mockCanceledRenewalAtRisk.mockRejectedValueOnce(error as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({
+      hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+      billingReviewUnavailable: true,
+    });
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_subscription_status_action_failed",
+      expect.objectContaining({ stage: "canceled_renewal_risk", error }),
     );
   });
 

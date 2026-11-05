@@ -105,6 +105,28 @@ it("surfaces a failed start to Stop and releases the pending handle", async () =
   expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
 });
 
+it("preserves a slow startup handle beyond the old browser deadline", async () => {
+  jest.useFakeTimers();
+  try {
+    const pending = pendingResponse();
+    jest.mocked(fetch).mockReturnValueOnce(pending.promise);
+    const response = fetchAgentLongStream(init()).catch((error) => error);
+    const handoff = getPendingAgentLongRunStart("handoff-chat");
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(jest.mocked(fetch).mock.calls[0][1]?.signal?.aborted).toBe(false);
+    expect(getPendingAgentLongRunStart("handoff-chat")).toBeDefined();
+    // A detached UI still hands Stop the exact durable run that just started.
+    cancelAgentLongRealtimeStreams("handoff-chat");
+    pending.resolve(handleResponse("run-slow-start"));
+    expect(await handoff).toMatchObject({ runId: "run-slow-start" });
+    expect(await response).toMatchObject({ name: "AbortError" });
+    expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("bounds a stalled start even when the request ignores its abort signal", async () => {
   jest.useFakeTimers();
   try {
@@ -113,7 +135,7 @@ it("bounds a stalled start even when the request ignores its abort signal", asyn
     const handoff = getPendingAgentLongRunStart("handoff-chat")!.catch(
       (error) => error,
     );
-    await jest.advanceTimersByTimeAsync(45_000);
+    await jest.advanceTimersByTimeAsync(75_000);
     expect(await response).toMatchObject({
       message: expect.stringContaining("Agent startup timed out"),
     });

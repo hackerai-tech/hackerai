@@ -16,12 +16,14 @@
  *   Server  →  pty_kill     →  Local runner
  */
 
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import {
   estimateRelayPayloadBytes,
-  relayTrafficSampleRate,
+  recordRelayReceivedBytes,
 } from "@/lib/centrifugo/traffic";
 import {
   CentrifugoMessageReassembler,
@@ -169,7 +171,10 @@ export async function createCentrifugoPtyHandle(
   const sessionId = crypto.randomUUID();
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
-  const channel = sandboxConnectionChannel(userId, connectionId);
+  const isolated = sandbox.supportsOperationChannels();
+  const channel = isolated
+    ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
+    : sandboxConnectionChannel(userId, connectionId);
 
   // Long-lived token: PTY sessions can last minutes.
   const tokenExpSeconds = 600;
@@ -186,51 +191,31 @@ export async function createCentrifugoPtyHandle(
   let settled = false;
   let cleanedUp = false;
   let createDispatchStarted = false;
-  let createPublishAttempts = 0;
-  let subscriptionEvents = 0;
   let receivedPayloadBytesEstimate = 0;
   let unmatchedPayloadBytesEstimate = 0;
-  let receivedPublications = 0;
-  let unmatchedPublications = 0;
-  let ptyDataBytes = 0;
   let nextTrafficCheckpointBytes = 1024 * 1024;
-  const startedAt = Date.now();
+  let recordedPayloadBytesEstimate = 0;
+  let recordedUnmatchedPayloadBytesEstimate = 0;
   const reassembler = new CentrifugoMessageReassembler();
 
   const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
-  const logTraffic = (phase: "checkpoint" | "complete") => {
-    const sampleRate =
-      phase === "checkpoint"
-        ? 1
-        : relayTrafficSampleRate(sessionId, receivedPayloadBytesEstimate);
-    if (sampleRate !== null) {
-      console.log(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          event: "local_relay_pty_traffic",
-          phase,
-          user_id: userId,
-          connection_id: connectionId,
-          session_id: sessionId,
-          sample_rate: sampleRate,
-          pty_data_bytes: ptyDataBytes,
-          received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-          unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-          received_publications: receivedPublications,
-          unmatched_publications: unmatchedPublications,
-          subscription_events: subscriptionEvents,
-          create_publish_attempts: createPublishAttempts,
-          duration_ms: Date.now() - startedAt,
-        }),
-      );
-    }
+  const recordTraffic = () => {
+    recordRelayReceivedBytes(
+      "pty",
+      sandbox.getRelayTrafficSource(),
+      receivedPayloadBytesEstimate - recordedPayloadBytesEstimate,
+      unmatchedPayloadBytesEstimate - recordedUnmatchedPayloadBytesEstimate,
+      isolated ? "operation" : "connection",
+    );
+    recordedPayloadBytesEstimate = receivedPayloadBytesEstimate;
+    recordedUnmatchedPayloadBytesEstimate = unmatchedPayloadBytesEstimate;
   };
 
   const cleanup = () => {
     if (cleanedUp) return;
     cleanedUp = true;
-    logTraffic("complete");
+    recordTraffic();
     if (subscription) {
       try {
         subscription.unsubscribe();
@@ -361,12 +346,11 @@ export async function createCentrifugoPtyHandle(
     subscription = client.newSubscription(channel);
 
     subscription.on("publication", (ctx) => {
-      receivedPublications += 1;
+      if (ctx.data?.type === "operation_ready") return;
       const payloadBytes = estimateRelayPayloadBytes(ctx.data);
       receivedPayloadBytesEstimate += payloadBytes;
       try {
         if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -374,7 +358,6 @@ export async function createCentrifugoPtyHandle(
         if (!reassembled) return;
         const msg = parsePtyMessage(reassembled);
         if (!msg || msg.sessionId !== sessionId) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -391,7 +374,6 @@ export async function createCentrifugoPtyHandle(
 
           case "pty_data": {
             const bytes = encoder.encode(msg.data);
-            ptyDataBytes += bytes.byteLength;
             const snapshot = Array.from(listeners);
             for (const listener of snapshot) {
               try {
@@ -428,7 +410,7 @@ export async function createCentrifugoPtyHandle(
           !cleanedUp &&
           receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes
         ) {
-          logTraffic("checkpoint");
+          recordTraffic();
           while (receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes) {
             nextTrafficCheckpointBytes *= 2;
           }
@@ -441,7 +423,6 @@ export async function createCentrifugoPtyHandle(
     });
 
     subscription.on("subscribed", () => {
-      subscriptionEvents += 1;
       if (createDispatchStarted || cleanedUp) return;
       createDispatchStarted = true;
       // Now that we are subscribed, publish pty_create
@@ -456,8 +437,17 @@ export async function createCentrifugoPtyHandle(
         targetConnectionId: connectionId,
       };
 
-      createPublishAttempts += 1;
-      subscription!.publish(createPayload).catch((err: unknown) => {
+      const dispatch = isolated
+        ? dispatchIsolatedOperation(
+            client,
+            userId,
+            connectionId,
+            createPayload as unknown as Record<string, unknown>,
+            () => !cleanedUp,
+            subscription!,
+          )
+        : subscription!.publish(createPayload);
+      dispatch.catch((err: unknown) => {
         failTransport(
           `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,
         );

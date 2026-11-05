@@ -1,3 +1,6 @@
+import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
+import { BrowserSessions } from "./utils/browser-sessions";
+import { createBrowserHandoff } from "./browser-handoff";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -7,7 +10,7 @@ import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createInteractTerminalSession } from "./interact-terminal-session";
 import { createGetTerminalFiles } from "./get-terminal-files";
-import { createFile } from "./file";
+import { createFile, createFileEdit, createFileWrite } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
@@ -17,6 +20,12 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
+import {
+  createCreateVulnerabilityReport,
+  createListReports,
+  createGetReport,
+  createUpdateVulnerabilityReport,
+} from "./findings";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -48,9 +57,7 @@ import {
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
-import { MIOSA_COST_PER_MS } from "./utils/miosa-cost";
 import { phLogger } from "@/lib/posthog/server";
-import { MIOSA_NATIVE_TEMPLATE_ID } from "./utils/miosa-runtime";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -66,6 +73,7 @@ import {
 export { isE2BSandbox };
 
 export type CreateToolsRuntimePolicy = {
+  signal?: AbortSignal;
   allowedToolNames?: readonly string[];
   additionalTools?: (context: ToolContext) => ToolSet;
   ptyScopeId?: string;
@@ -75,18 +83,17 @@ export type CreateToolsRuntimePolicy = {
   triggerRegion?: TriggerRunRegion;
   environment?: string;
   keepE2BLeaseAliveForRun?: boolean;
+  browserAgentId?: string;
+  onBrowserOwnershipLost?: () => void;
 };
 
 export type SandboxSessionUsage = {
   totalCostDollars: number;
-  miosaRuntimeMs: number;
-  miosaCostDollars: number;
   e2bRuntimeMs: number;
   e2bCostDollars: number;
 };
 
 const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
-  miosa: 0,
   e2b: 0,
 });
 
@@ -134,6 +141,17 @@ export const createTools = (
   };
 
   const cloudSandboxContext: CloudSandboxAcquisitionContext = {
+    signal: runtimePolicy.signal,
+    onTimeout: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "timeout", workspacePreserved: true },
+      }),
+    onFailure: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "unavailable", workspacePreserved: true },
+      }),
     provider: runtimePolicy.cloudSandboxProvider,
     selectionReason: runtimePolicy.cloudSandboxSelectionReason,
     subscription,
@@ -181,10 +199,8 @@ export const createTools = (
         sandbox_type: "cloud",
         sandbox_provider: provider,
         provider_selection_reason:
-          provider === runtimePolicy.cloudSandboxProvider
-            ? (runtimePolicy.cloudSandboxSelectionReason ?? "configured")
-            : "provider_fallback",
-        cloud_sandbox_transport: provider === "miosa" ? "miosa_sdk" : "e2b_sdk",
+          runtimePolicy.cloudSandboxSelectionReason ?? "e2b_only",
+        cloud_sandbox_transport: "e2b_sdk",
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
@@ -192,10 +208,7 @@ export const createTools = (
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
-        image_version:
-          provider === "miosa"
-            ? process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID
-            : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
+        image_version: process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox",
         cloud_sandbox_provider_event_version: 8,
       });
     }
@@ -246,7 +259,23 @@ export const createTools = (
     triggerRunId,
   });
 
+  const browserSessions = triggerRunId
+    ? new BrowserSessions(
+        serviceKey
+          ? {
+              userId: userID,
+              chatId,
+              runId: triggerRunId,
+              agentId: runtimePolicy.browserAgentId ?? "parent",
+              triggerRegion: runtimePolicy.triggerRegion,
+              serviceKey,
+            }
+          : undefined,
+        runtimePolicy.onBrowserOwnershipLost,
+      )
+    : undefined;
   const context: ToolContext = {
+    browserSessions,
     sandboxManager,
     writer,
     userLocation,
@@ -281,11 +310,29 @@ export const createTools = (
     // one-time object so model-specific tool schemas can be rebuilt for
     // provider fallback legs.
     const allTools = {
+      ...(browserSessions && {
+        browser_handoff: createBrowserHandoff(
+          browserSessions,
+          runtimePolicy.signal,
+        ),
+      }),
       run_terminal_cmd: createRunTerminalCmd(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
+      file_edit: createFileEdit(context),
+      file_write: createFileWrite(context),
       todo_write: createTodoWrite(context),
+      create_vulnerability_report: createCreateVulnerabilityReport(
+        context,
+        () => sandbox,
+      ),
+      list_reports: createListReports(context),
+      get_report: createGetReport(context),
+      update_vulnerability_report: createUpdateVulnerabilityReport(
+        context,
+        () => sandbox,
+      ),
       ...(notesEnabled && {
         create_note: createCreateNote(context),
         list_notes: createListNotes(context),
@@ -301,10 +348,14 @@ export const createTools = (
       ...(runtimePolicy.additionalTools?.(context) ?? {}),
     };
 
+    const guardedTools = browserSessions
+      ? browserSessions.guardTools(allTools, runtimePolicy.signal)
+      : allTools;
+
     if (runtimePolicy.allowedToolNames) {
       const allowed = new Set(runtimePolicy.allowedToolNames);
       return Object.fromEntries(
-        Object.entries(allTools).filter(([name]) => allowed.has(name)),
+        Object.entries(guardedTools).filter(([name]) => allowed.has(name)),
       ) as ToolSet;
     }
 
@@ -324,7 +375,7 @@ export const createTools = (
             open_url: createOpenUrlTool(context),
           }),
         }
-      : allTools;
+      : guardedTools;
   };
 
   const tools = buildTools();
@@ -387,8 +438,6 @@ export const createTools = (
     if (runtimePolicy.chargeSandboxRuntime === false) {
       return {
         totalCostDollars: 0,
-        miosaRuntimeMs: 0,
-        miosaCostDollars: 0,
         e2bRuntimeMs: 0,
         e2bCostDollars: 0,
       };
@@ -400,11 +449,8 @@ export const createTools = (
         performance.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    const miosaCostDollars = runtimeMs.miosa * MIOSA_COST_PER_MS;
     return {
-      totalCostDollars: e2bCostDollars + miosaCostDollars,
-      miosaRuntimeMs: runtimeMs.miosa,
-      miosaCostDollars,
+      totalCostDollars: e2bCostDollars,
       e2bRuntimeMs: runtimeMs.e2b,
       e2bCostDollars,
     };
@@ -426,7 +472,23 @@ export const createTools = (
   };
 
   return {
+    cloudNetworkPrompt: createCloudNetworkPrompt(
+      userID,
+      () =>
+        isAgentMode(mode) && sandboxManager.getEffectivePreference() === "e2b",
+    ),
     tools,
+    canRecoverBrowserHandoff: (signal?: AbortSignal) =>
+      browserSessions?.canRecoverHumanHandoff(signal ?? runtimePolicy.signal) ??
+      Promise.resolve(false),
+    waitForBrowserHandoff: (signal?: AbortSignal) =>
+      browserSessions?.waitForAgentControl(signal ?? runtimePolicy.signal) ??
+      Promise.resolve(false),
+    getBrowserHandoffNotes: () =>
+      browserSessions?.getExitNotes(runtimePolicy.signal) ??
+      Promise.resolve([]),
+    cleanupBrowserSessions: () =>
+      browserSessions?.cleanup() ?? Promise.resolve(),
     getSandbox,
     ensureSandbox,
     getTodoManager,

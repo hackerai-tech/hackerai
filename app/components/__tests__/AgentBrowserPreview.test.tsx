@@ -1,0 +1,2430 @@
+import "@testing-library/jest-dom";
+import React from "react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { AgentBrowserPreview } from "../AgentBrowserPreview";
+import { normalizeBrowserInputBatch } from "@/lib/ai/browser-handoff/input";
+
+let mockSession: Record<string, unknown> | null;
+jest.mock("convex/react", () => ({ useQuery: () => mockSession }));
+jest.mock("@/convex/_generated/api", () => ({
+  api: { browserHandoffs: { getForUser: "getForUser" } },
+}));
+
+const frame = {
+  image: "data:image/png;base64,test",
+  width: 800,
+  height: 600,
+  capturedAt: 1,
+  browserSessionName: "default",
+};
+const response = (data: unknown, ok = true, status = ok ? 200 : 503) =>
+  ({ ok, status, json: async () => data }) as Response;
+const originalFetch = global.fetch;
+let actions: Array<Record<string, unknown>>;
+let handleAction: (body: Record<string, unknown>) => Promise<Response>;
+
+async function mount() {
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  await act(async () => {});
+  return view;
+}
+
+async function takeControl() {
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Take control of Agent browser" }),
+    );
+  });
+}
+
+beforeEach(() => {
+  jest.useFakeTimers();
+  sessionStorage.clear();
+  mockSession = { sessionId: "session-a", state: "agent" };
+  actions = [];
+  handleAction = async (body) =>
+    response(body.action === "take" ? { grant: "grant-a", frame } : { frame });
+  global.fetch = jest.fn(async (_url, options) => {
+    if (!options?.body) return response({ frame });
+    const body = JSON.parse(String(options.body));
+    actions.push(body);
+    return handleAction(body);
+  });
+});
+
+afterEach(() => {
+  global.fetch = originalFetch;
+  jest.useRealTimers();
+});
+
+it("releases control without resuming when the sidebar closes", async () => {
+  const view = await mount();
+  await takeControl();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+  view.unmount();
+  expect(actions.map((body) => body.action)).toEqual(["take", "release"]);
+});
+
+it("allows takeover while the Agent is waiting for the user", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  await mount();
+  expect(screen.getByText("Waiting for you")).toBeInTheDocument();
+  await takeControl();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+});
+
+it("explains a lost control lease and offers recovery only after it expires", async () => {
+  mockSession = {
+    sessionId: "session-a",
+    state: "human",
+    grantExpiresAt: Date.now() + 30_000,
+  };
+  await mount();
+  expect(screen.getByText("Waiting for browser control…")).toBeInTheDocument();
+  expect(screen.getByText(/If you just reloaded/)).toHaveTextContent(
+    "The Agent stays paused.",
+  );
+  await takeControl();
+  expect(actions).toEqual([]);
+  await act(async () => {
+    jest.advanceTimersByTime(30_001);
+  });
+  expect(screen.getByText("Paused for handoff")).toBeInTheDocument();
+  expect(screen.queryByText(/If you just reloaded/)).not.toBeInTheDocument();
+  await takeControl();
+  expect(actions.at(-1)).toMatchObject({ action: "take" });
+});
+
+it("releases a takeover that completes after the sidebar closes", async () => {
+  let finish!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "take"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({}));
+  const view = await mount();
+  await takeControl();
+  view.unmount();
+  await act(async () => {
+    finish(response({ grant: "late-grant", frame }));
+  });
+  expect(actions.at(-1)).toEqual({ action: "release", grant: "late-grant" });
+});
+
+it("stops input and resume when the preview disconnects", async () => {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  (global.fetch as jest.Mock).mockImplementationOnce(async () =>
+    response({ state: "disconnected" }, false),
+  );
+  await act(async () => {
+    jest.advanceTimersByTime(1600);
+  });
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeDisabled();
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+});
+
+it.each([false, true])(
+  "returns to chat with a disconnected preview without resuming (expired control: %s)",
+  async (expired) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    const defaultFetch = global.fetch;
+    global.fetch = jest.fn((url, options) =>
+      !options?.body
+        ? Promise.resolve(response({ state: "disconnected" }, false))
+        : defaultFetch(url, options),
+    );
+    handleAction = async (body) => {
+      if (body.action === "release") throw new Error("offline");
+      return body.action === "heartbeat" && expired
+        ? response({ state: "expired" }, false, 403)
+        : response({ frame });
+    };
+    await act(async () => {
+      jest.advanceTimersByTime(1600);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Keep my unfinished work." },
+    });
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeDisabled();
+    expect(screen.getByText(/Agent stays paused/)).toBeVisible();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(0);
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("Agent browser")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Exit takeover" })).toHaveFocus();
+    expect(actions.some((body) => body.action === "resume")).toBe(false);
+    if (!expired)
+      expect(actions.at(-1)).toMatchObject({
+        action: "release",
+        grant: "grant-a",
+      });
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    expect(screen.getByRole("textbox")).toHaveValue("Keep my unfinished work.");
+  },
+);
+
+it("keeps a healthy preview connected when the window gains focus", async () => {
+  await mount();
+  await takeControl();
+  const requests = (global.fetch as jest.Mock).mock.calls.length;
+  await act(async () => {
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  // Heartbeat renewal is independent of the preview transport.
+  const newRequests = (global.fetch as jest.Mock).mock.calls.slice(requests);
+  expect(newRequests.every(([, options]) => options?.body)).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Return to chat" })).toBeNull();
+});
+
+it.each(["reconnect", "focus", "visibilitychange"])(
+  "restarts a stalled preview after control expires on %s",
+  async (trigger) => {
+    await mount();
+    await takeControl();
+    mockSession!.state = "recovery";
+    handleAction = async () => response({ state: "expired" }, false, 403);
+    const defaultFetch = global.fetch;
+    let stalledSignal: AbortSignal | undefined;
+    let hang = true;
+    global.fetch = jest.fn((url, options) => {
+      if (options?.body) return defaultFetch(url, options);
+      if (!hang) return Promise.resolve(response({ frame }));
+      stalledSignal = options?.signal as AbortSignal;
+      return new Promise(() => {});
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(stalledSignal).toBeDefined();
+    hang = false;
+    await act(async () => {
+      if (trigger === "reconnect")
+        fireEvent.click(
+          screen.getByRole("button", { name: "Reconnect preview" }),
+        );
+      else if (trigger === "focus") fireEvent.focus(window);
+      else fireEvent(document, new Event("visibilitychange"));
+    });
+    expect(stalledSignal!.aborted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeEnabled();
+    handleAction = async () => response({ frame });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send and continue" }),
+      );
+    });
+    expect(actions.at(-1)).toMatchObject({ action: "resume", grant: null });
+  },
+);
+
+it("times out a stalled preview request and retries", async () => {
+  let signal: AbortSignal | undefined;
+  (global.fetch as jest.Mock).mockImplementationOnce((_url, options) => {
+    signal = options.signal;
+    return new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  });
+  await mount();
+  await act(async () => {
+    jest.advanceTimersByTime(8000);
+  });
+  expect(signal!.aborted).toBe(true);
+  await act(async () => {
+    jest.advanceTimersByTime(1600);
+  });
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
+it("waits for queued keystrokes before resuming and stops accepting new input", async () => {
+  let finishInput!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((resolve) => {
+          finishInput = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "4",
+    });
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.map((body) => body.action)).toEqual(["take", "input"]);
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "2",
+  });
+  await act(async () => {
+    finishInput(response({ ok: true }));
+  });
+  expect(actions.map((body) => body.action)).toEqual([
+    "take",
+    "input",
+    "resume",
+  ]);
+});
+
+it("keeps recovery paused if the final queued input fails", async () => {
+  let finishInput!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((resolve) => {
+          finishInput = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "4",
+    });
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    finishInput(response({ state: "expired" }, false));
+  });
+  expect(actions.some((body) => body.action === "resume")).toBe(false);
+  expect(
+    screen
+      .getAllByRole("alert")
+      .some((alert) =>
+        alert.textContent?.includes("Browser input disconnected"),
+      ),
+  ).toBe(true);
+});
+
+it("allows recovery to continue with an empty optional note", async () => {
+  mockSession!.state = "recovery";
+  await mount();
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "resume",
+    grant: null,
+    note: "",
+    requestId: expect.any(String),
+  });
+});
+
+it("explains an ended browser run instead of removing all handoff controls", async () => {
+  mockSession = null;
+  render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Session ended");
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeDisabled();
+  expect(screen.getByText(/Ask the Agent to reopen the page/)).toBeVisible();
+});
+
+it.each([null, "agent", "closed"])(
+  "hides browser controls for a terminal command with session state %s",
+  async (state) => {
+    mockSession = state ? { sessionId: "session-a", state } : null;
+    render(
+      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    );
+    await act(async () => {});
+    expect(
+      screen.queryByRole("region", { name: "Agent browser preview" }),
+    ).not.toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["waiting", "claiming", "human", "recovery", "resuming"])(
+  "keeps an active %s handoff accessible from terminal history",
+  async (state) => {
+    mockSession = {
+      sessionId: "session-a",
+      state,
+      grantExpiresAt: Date.now() + 30_000,
+      updatedAt: Date.now(),
+    };
+    render(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection={false}
+      />,
+    );
+    await act(async () => {});
+    expect(
+      screen.getByRole("region", { name: "Agent browser preview" }),
+    ).toBeVisible();
+  },
+);
+
+it("stops preview polling on terminal selection and restores it for a browser command", async () => {
+  const view = await mount();
+  expect(
+    screen.getByRole("region", { name: "Agent browser preview" }),
+  ).toBeVisible();
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  (global.fetch as jest.Mock).mockClear();
+  await act(async () => {
+    jest.advanceTimersByTime(5000);
+  });
+  expect(
+    screen.queryByRole("region", { name: "Agent browser preview" }),
+  ).not.toBeInTheDocument();
+  expect(global.fetch).not.toHaveBeenCalled();
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
+it("preserves takeover and its exit note when selection changes to a terminal command", async () => {
+  const view = await mount();
+  await takeControl();
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Finished typing." },
+  });
+  mockSession = null;
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  expect(screen.getByRole("textbox")).toHaveValue("Finished typing.");
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
+});
+
+it("takes the current browser directly from earlier tool history", async () => {
+  const jump = jest.fn();
+  render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection={false}
+      browserRequested
+      onJumpToLive={jump}
+    />,
+  );
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+  await takeControl();
+  expect(jump).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("application")).toBeVisible();
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)?.action).toBe("resume");
+});
+
+it("opens fullscreen immediately while withholding input until takeover is confirmed", async () => {
+  let finish!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "take"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({}));
+  await mount();
+  await takeControl();
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
+  expect(screen.getByRole("status")).toHaveTextContent("Requesting control");
+  expect(screen.queryByRole("application")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeDisabled();
+  await act(async () => {
+    finish(response({ grant: "grant-a", frame }));
+  });
+  expect(screen.getByRole("application")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+});
+
+it("returns to the preview with a retryable error when initial takeover fails", async () => {
+  handleAction = async () => response({ error: "Connection failed" }, false);
+  await mount();
+  await takeControl();
+  expect(
+    screen.queryByRole("dialog", { name: "Browser control" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Connection failed");
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+});
+
+it("keeps a new session usable when an older resume fails late", async () => {
+  let failResume!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise((resolve) => {
+          failResume = resolve;
+        })
+      : Promise.resolve(response({ grant: mockSession?.sessionId, frame }));
+  const view = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  mockSession = { sessionId: "session-b", state: "agent" };
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+  await takeControl();
+  await act(async () => {
+    failResume(response({ state: "expired" }, false));
+  });
+  expect(screen.getByRole("application", { hidden: true })).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("ignores old resume failures before the new session's passive effects run", async () => {
+  let failResume!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise((resolve) => {
+          failResume = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  const view = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  // Model a commit whose passive effects have not yet been scheduled by React.
+  const effects: React.EffectCallback[] = [];
+  const useEffect = React.useEffect;
+  const delayed = jest
+    .spyOn(React, "useEffect")
+    .mockImplementation((effect, deps) => {
+      useEffect(() => {
+        effects.push(effect);
+      }, deps);
+    });
+  try {
+    mockSession = { sessionId: "session-b", state: "agent" };
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+    await act(async () => {
+      failResume(response({ state: "expired" }, false));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    delayed.mockRestore();
+    // Deferred effects were intentionally never started; unmount cleans up the
+    // effects that were installed before the session changed.
+    view.unmount();
+  }
+});
+
+it("opens full-screen control with only an Exit takeover overlay and restores focus on cancel", async () => {
+  await mount();
+  await takeControl();
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
+  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "Escape",
+  });
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toHaveFocus();
+  expect(
+    screen.queryByRole("button", { name: "Back to chat" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/Agent paused. Click, type/),
+  ).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => {
+    jest.advanceTimersByTime(0);
+  });
+  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
+  expect(screen.getByRole("dialog", { name: "Browser control" })).toBeVisible();
+  expect(actions.map((body) => body.action)).toEqual(["take"]);
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "A",
+    });
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "input",
+    grant: "grant-a",
+    inputs: [{ kind: "text", text: "A" }],
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(actions.map((body) => body.action)).toEqual([
+    "take",
+    "input",
+    "resume",
+  ]);
+});
+
+it("keeps the user in chat when takeover fails", async () => {
+  handleAction = async () => response({ state: "unavailable" }, false);
+  await mount();
+  await takeControl();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("unavailable");
+});
+
+it("maps full-screen clicks and scrolling to the displayed browser pixels", async () => {
+  await mount();
+  await takeControl();
+  const image = screen.getByRole("img", {
+    name: "Current Agent browser viewport",
+  });
+  image.getBoundingClientRect = () =>
+    ({ left: 100, top: 50, width: 400, height: 300 }) as DOMRect;
+  Object.defineProperty(image, "naturalWidth", { value: 800 });
+  Object.defineProperty(image, "naturalHeight", { value: 600 });
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  // jsdom does not implement PointerEvent; provide mouse coordinates directly.
+  const down = new MouseEvent("pointerdown", {
+    bubbles: true,
+    clientX: 300,
+    clientY: 200,
+  });
+  const up = new MouseEvent("pointerup", {
+    bubbles: true,
+    clientX: 300,
+    clientY: 200,
+  });
+  const wheel = new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    clientX: 300,
+    clientY: 200,
+    deltaY: 3,
+    deltaMode: 1,
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  screen.getByRole("button", { name: "Exit takeover" }).focus();
+  await act(async () => {
+    fireEvent(image, down);
+    fireEvent(image, up);
+    fireEvent(image, wheel);
+  });
+  expect(
+    screen.getByRole("textbox", {
+      name: "Type in remote browser",
+      hidden: true,
+    }),
+  ).toHaveFocus();
+  expect(wheel.defaultPrevented).toBe(true);
+  expect(
+    actions
+      .filter((body) => body.action === "input")
+      .flatMap((body) => body.inputs),
+  ).toEqual([
+    { kind: "down", x: 400, y: 300 },
+    { kind: "up", x: 400, y: 300 },
+    { kind: "wheel", x: 400, y: 300, deltaX: 0, deltaY: 48 },
+  ]);
+});
+
+function pointer(
+  image: HTMLElement,
+  type: string,
+  x: number,
+  buttons: number,
+  button = 0,
+  pointerType = "mouse",
+) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: 150,
+    buttons,
+    button,
+  });
+  Object.defineProperties(event, {
+    pointerId: { value: 7 },
+    pointerType: { value: pointerType },
+  });
+  fireEvent(image, event);
+}
+
+async function dragImage() {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  const image = screen.getByAltText("Current Agent browser viewport");
+  image.getBoundingClientRect = () =>
+    ({ left: 100, top: 50, width: 400, height: 300 }) as DOMRect;
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  return image;
+}
+
+async function touchDragImage() {
+  const image = await dragImage();
+  // A first touch also exposes the controls on hybrid pointer devices.
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 1, 0, "touch");
+    pointer(image, "pointercancel", 200, 0, 0, "touch");
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Drag", exact: true }));
+  });
+  return image;
+}
+
+it.each([0, 1])(
+  "drags with touch buttons=%s while preserving swipe scrolling when switched back",
+  async (buttons) => {
+    const image = await touchDragImage();
+    expect(
+      screen.getByRole("button", { name: "Drag", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+      pointer(image, "pointermove", 300, buttons, 0, "touch");
+      pointer(image, "pointerup", 400, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "move", x: 400, y: 200, buttons: 1 },
+      { kind: "move", x: 600, y: 200, buttons: 1 },
+      { kind: "move", x: 600, y: 200, buttons: 1 },
+      { kind: "up", x: 600, y: 200 },
+    ]);
+    actions.length = 0;
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Scroll", exact: true }),
+      );
+    });
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+    });
+    await act(async () => {
+      pointer(image, "pointermove", 300, 1, 0, "touch");
+      pointer(image, "pointerup", 300, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([{ kind: "wheel", x: 400, y: 200, deltaX: -100, deltaY: 0 }]);
+  },
+);
+
+it.each(["pointercancel", "lostpointercapture", "blur", "mode change"])(
+  "releases a touch drag exactly once after %s",
+  async (reason) => {
+    const image = await touchDragImage();
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1, 0, "touch");
+    });
+    await act(async () => {
+      if (reason === "blur") fireEvent(window, new Event("blur"));
+      else if (reason === "mode change")
+        fireEvent.click(
+          screen.getByRole("button", { name: "Scroll", exact: true }),
+        );
+      else pointer(image, reason, 200, 0, 0, "touch");
+      pointer(image, "pointerup", 200, 0, 0, "touch");
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "up", x: 200, y: 200 },
+    ]);
+  },
+);
+
+it("preserves drag initiation and the final movement before release during slow input", async () => {
+  let finish!: (value: Response) => void;
+  let pending = true;
+  handleAction = (body) =>
+    body.action === "input" && pending
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  const image = await dragImage();
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 1);
+  });
+  await act(async () => {
+    pointer(image, "pointermove", 300, 1);
+    pointer(image, "pointermove", 350, 1);
+    pointer(image, "pointerup", 400, 0);
+    // A second gesture may start inside the previous move's throttle window.
+    pointer(image, "pointerdown", 200, 1);
+    pointer(image, "pointermove", 300, 1);
+    pointer(image, "pointerup", 400, 0);
+  });
+  expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
+  pending = false;
+  await act(async () => {
+    finish(response({ ok: true }));
+  });
+  const inputs = actions
+    .filter((body) => body.action === "input")
+    .flatMap((body) => body.inputs);
+  expect(inputs).toEqual([
+    { kind: "down", x: 200, y: 200 },
+    { kind: "move", x: 400, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "up", x: 600, y: 200 },
+    { kind: "down", x: 200, y: 200 },
+    { kind: "move", x: 400, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "move", x: 600, y: 200, buttons: 1 },
+    { kind: "up", x: 600, y: 200 },
+  ]);
+  expect(normalizeBrowserInputBatch(inputs)).toMatchObject([
+    { eventType: "mousePressed", button: "left" },
+    { eventType: "mouseMoved", button: "left", x: 400 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseReleased", button: "left", x: 600 },
+    { eventType: "mousePressed", button: "left" },
+    { eventType: "mouseMoved", button: "left", x: 400 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseMoved", button: "left", x: 600 },
+    { eventType: "mouseReleased", button: "left", x: 600 },
+  ]);
+});
+
+it.each(["pointercancel", "lostpointercapture", "blur"])(
+  "releases a held pointer exactly once after %s",
+  async (reason) => {
+    const image = await dragImage();
+    await act(async () => {
+      pointer(image, "pointerdown", 200, 1);
+    });
+    await act(async () => {
+      if (reason === "blur") fireEvent(window, new Event("blur"));
+      else pointer(image, reason, 200, 0);
+      pointer(image, "pointerup", 200, 0);
+    });
+    expect(
+      actions
+        .filter((body) => body.action === "input")
+        .flatMap((body) => body.inputs),
+    ).toEqual([
+      { kind: "down", x: 200, y: 200 },
+      { kind: "up", x: 200, y: 200 },
+    ]);
+  },
+);
+
+it("does not translate a secondary pointer press into a left-button drag", async () => {
+  const image = await dragImage();
+  await act(async () => {
+    pointer(image, "pointerdown", 200, 2, 2);
+    pointer(image, "pointerup", 200, 0, 2);
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+});
+
+it("batches rapid typing in order and drains the entire burst before resuming", async () => {
+  const finish: Array<(value: Response) => void> = [];
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((resolve) => finish.push(resolve))
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "a",
+    });
+  });
+  await act(async () => {
+    for (const key of ".b@c-d!AZ")
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key,
+      });
+  });
+  expect(actions.filter((body) => body.action === "input")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    finish[0](response({ ok: true }));
+  });
+  expect(actions.map((body) => body.action)).toEqual([
+    "take",
+    "input",
+    "input",
+  ]);
+  expect(actions[2].inputs).toEqual(
+    [...".b@c-d!AZ"].map((text) => ({ kind: "text", text })),
+  );
+  await act(async () => {
+    finish[1](response({ ok: true }));
+  });
+  expect(actions.at(-1)?.action).toBe("resume");
+});
+
+it.each([
+  ["chunk boundary", "a".repeat(31) + "😀Z", "a".repeat(31) + "😀Z"],
+  ["size limit", "a".repeat(2046) + "😀", "a".repeat(2046) + "😀"],
+])(
+  "preserves complete Unicode characters at the %s",
+  async (_label, text, expected) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => text },
+      });
+    });
+    const chunks = actions
+      .filter((body) => body.action === "input")
+      .flatMap((body) => body.inputs as Array<{ text: string }>);
+    expect(chunks.map((chunk) => chunk.text).join("")).toBe(expected);
+    for (const chunk of chunks) {
+      expect([...chunk.text].length).toBeLessThanOrEqual(32);
+      expect(chunk.text).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
+    }
+  },
+);
+
+it("keeps an optional note when the run ends and starts a continuation with the saved message", async () => {
+  const onContinue = jest.fn(async () => undefined);
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  await act(async () => {});
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Signed in as my test user." },
+  });
+  mockSession = null;
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  await act(async () => {
+    jest.advanceTimersByTime(15_000);
+  });
+  expect(
+    actions.filter((action) => action.action === "heartbeat"),
+  ).toHaveLength(0);
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox")).toHaveValue("Signed in as my test user.");
+  handleAction = async () =>
+    response({
+      restart: true,
+      continuation: { id: "saved-note", text: "Saved context" },
+    });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "resume",
+    note: "Signed in as my test user.",
+  });
+  expect(onContinue).toHaveBeenCalledWith({
+    id: "saved-note",
+    text: "Saved context",
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("retains a failed continuation and reuses its request id without duplicate sends", async () => {
+  const onContinue = jest
+    .fn<Promise<void>, [{ id: string; text: string }]>()
+    .mockRejectedValueOnce(new Error("Start unavailable"))
+    .mockResolvedValueOnce(undefined);
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  await act(async () => {});
+  await takeControl();
+  mockSession = null;
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Completed the form" },
+  });
+  handleAction = async () =>
+    response({
+      restart: true,
+      continuation: { id: "saved-note", text: "Saved context" },
+    });
+  await act(async () => {
+    const send = screen.getByRole("button", { name: "Send and continue" });
+    fireEvent.click(send);
+    fireEvent.click(send);
+  });
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("textbox")).toHaveValue("Completed the form");
+  const firstId = actions.at(-1)?.requestId;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)?.requestId).toBe(firstId);
+  expect(onContinue).toHaveBeenCalledTimes(2);
+});
+
+it("keeps a new takeover and its draft when an old continuation finishes late", async () => {
+  let finish!: () => void;
+  const onContinue = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const props = {
+    chatId: "chat",
+    agentId: "parent",
+    liveSelection: true,
+    browserRequested: true,
+    onContinue,
+  };
+  const view = render(<AgentBrowserPreview {...props} />);
+  await act(async () => {});
+  await takeControl();
+  mockSession = null;
+  view.rerender(<AgentBrowserPreview {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  handleAction = async (body) =>
+    response(
+      body.action === "resume"
+        ? { restart: true, continuation: { id: "old-note", text: "Old note" } }
+        : { grant: "grant-b", frame },
+    );
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  mockSession = { sessionId: "session-b", state: "agent" };
+  view.rerender(<AgentBrowserPreview {...props} />);
+  await act(async () => {});
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "New session draft!" },
+  });
+  await act(async () => {
+    finish();
+  });
+  expect(screen.getByRole("textbox")).toHaveValue("New session draft!");
+  expect(
+    screen.getByRole("button", { name: "Send and continue" }),
+  ).toBeEnabled();
+});
+
+it("sends ordered takeover input directly to the relay instead of the command API", async () => {
+  handleAction = async (body) =>
+    response(
+      body.action === "take"
+        ? { grant: "grant-a", frame, relayUrl: "https://relay.example" }
+        : {},
+    );
+  const originalMock = global.fetch as jest.Mock;
+  const defaultFetch = originalMock.getMockImplementation()!;
+  const relayInputs: Array<{ sequence: number; inputs: unknown[] }> = [];
+  originalMock.mockImplementation(async (url, options) => {
+    if (url === "https://relay.example/frames") return new Promise(() => {});
+    if (url === "https://relay.example/input") {
+      relayInputs.push(JSON.parse(options.body));
+      return response({ ok: true });
+    }
+    return defaultFetch(url, options);
+  });
+  await mount();
+  await takeControl();
+  for (const key of ["A", "@", "!"]) {
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key,
+      });
+    });
+  }
+  expect(relayInputs).toEqual([
+    { sequence: 1, inputs: [{ kind: "text", text: "A" }] },
+    { sequence: 2, inputs: [{ kind: "text", text: "@" }] },
+    { sequence: 3, inputs: [{ kind: "text", text: "!" }] },
+  ]);
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+});
+
+it("reconnects lost control in full screen and preserves the unsent exit note", async () => {
+  await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Filled the form." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  mockSession!.state = "human";
+  mockSession!.grantExpiresAt = Date.now() + 30_000;
+  handleAction = async (body) =>
+    body.action === "input"
+      ? response({ state: "expired" }, false)
+      : response({ grant: "grant-b", frame });
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "x",
+    });
+  });
+  expect(
+    screen.getByRole("button", { name: "Reconnect control" }),
+  ).toBeDisabled();
+  await act(async () => {
+    jest.advanceTimersByTime(31_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(1600);
+  });
+  expect(
+    screen.getByRole("button", { name: "Reconnect control" }),
+  ).toBeEnabled();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect control" }));
+  });
+  expect(screen.getByRole("application", { hidden: true })).toHaveFocus();
+  expect(
+    screen.queryByRole("button", { name: "Reconnect control" }),
+  ).not.toBeInTheDocument();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "A",
+    });
+  });
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-b" });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Filled the form.");
+});
+
+it.each(["x".repeat(2049), "a".repeat(2047) + "😀"])(
+  "rejects an oversized paste without partially entering it",
+  async (text) => {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => text },
+      });
+    });
+    expect(actions.some((body) => body.action === "input")).toBe(false);
+    expect(screen.getByRole("alert")).toHaveTextContent("Nothing was pasted");
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => "A.b@C-d!\r\n日本語 😀" },
+      });
+    });
+    expect(actions.at(-1)).toMatchObject({
+      inputs: [{ kind: "text", text: "A.b@C-d!\n日本語 😀" }],
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  },
+);
+
+it("restores an unsent exit note after remount and clears it after successful resume", async () => {
+  const first = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Draft after reconnect." },
+  });
+  first.unmount();
+  mockSession!.state = "recovery";
+  const recovered = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Draft after reconnect.");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(actions.at(-1)).toMatchObject({
+    action: "resume",
+    note: "Draft after reconnect.",
+  });
+  recovered.unmount();
+  await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("");
+});
+
+it.each([32, 63])(
+  "pastes %i newlines without exceeding the server wire-size limit",
+  async (count) => {
+    handleAction = async (body) =>
+      body.action === "input"
+        ? response({}, !!normalizeBrowserInputBatch(body.inputs))
+        : response({ grant: "grant-a", frame });
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.paste(screen.getByRole("application", { hidden: true }), {
+        clipboardData: { getData: () => "\n".repeat(count) },
+      });
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const sent = actions.filter((body) => body.action === "input");
+    expect(
+      sent.every((body) => normalizeBrowserInputBatch(body.inputs) !== null),
+    ).toBe(true);
+    expect(
+      sent
+        .flatMap((body) => body.inputs as Array<{ text: string }>)
+        .map((input) => input.text)
+        .join(""),
+    ).toBe("\n".repeat(count));
+  },
+);
+
+it("can submit the note when browser storage is blocked", async () => {
+  const get = jest
+    .spyOn(Storage.prototype, "getItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  const set = jest
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  const remove = jest
+    .spyOn(Storage.prototype, "removeItem")
+    .mockImplementation(() => {
+      throw new Error("blocked");
+    });
+  try {
+    await mount();
+    await takeControl();
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Storage unavailable, context still submitted." },
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send and continue" }),
+      );
+    });
+    expect(actions.at(-1)).toMatchObject({
+      action: "resume",
+      note: "Storage unavailable, context still submitted.",
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    get.mockRestore();
+    set.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+it("ignores a heartbeat failure while ownership is being returned", async () => {
+  await mount();
+  await takeControl();
+  let rejectHeartbeat!: (error: Error) => void;
+  let finishResume!: (response: Response) => void;
+  handleAction = async (body) => {
+    if (body.action === "heartbeat")
+      return new Promise((_resolve, reject) => {
+        rejectHeartbeat = reject;
+      });
+    if (body.action === "resume")
+      return new Promise((resolve) => {
+        finishResume = resolve;
+      });
+    return response({ frame });
+  };
+  await act(async () => {
+    jest.advanceTimersByTime(2_000);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    rejectHeartbeat(new Error("Grant revoked by resume"));
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+  await act(async () => {
+    finishResume(response({ frame }));
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("keeps only one renewal in flight when a heartbeat is slow", async () => {
+  let finish!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "heartbeat"
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(2_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(2_000);
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(1);
+  await act(async () => {
+    finish(response({ state: "human" }));
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("recovers a temporary renewal failure without acquiring a new grant", async () => {
+  let heartbeats = 0;
+  handleAction = async (body) => {
+    if (body.action === "heartbeat") {
+      heartbeats++;
+      return heartbeats === 1
+        ? response({ state: "recovery" }, false)
+        : response({ state: "human" });
+    }
+    return response({ grant: "grant-a", frame });
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+  });
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "A",
+  });
+  await act(async () => {});
+  expect(heartbeats).toBe(2);
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-a" });
+});
+
+it.each([401, 403, 404, 409, 410])(
+  "stops input immediately after renewal is rejected with %s",
+  async (status) => {
+    handleAction = async (body) =>
+      body.action === "heartbeat"
+        ? response({ state: "recovery" }, false, status)
+        : response({ grant: "grant-a", frame });
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByText(/Control expired/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("application", { hidden: true }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("img"), { key: "x" });
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+    });
+    expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(
+      1,
+    );
+    expect(
+      actions.some(
+        (body) => body.action === "input" || body.action === "resume",
+      ),
+    ).toBe(false);
+  },
+);
+
+it("bounds failed renewals and releases only the lost grant without resuming", async () => {
+  handleAction = async (body) =>
+    body.action === "heartbeat"
+      ? response({ state: "recovery" }, false)
+      : response({ grant: "grant-a", frame });
+  await mount();
+  await takeControl();
+  for (let i = 0; i < 3; i++)
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+  expect(screen.getByText(/Browser connection lost/)).toBeInTheDocument();
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(3);
+  expect(actions.at(-1)).toEqual({ action: "release", grant: "grant-a" });
+  expect(actions.some((body) => body.action === "resume")).toBe(false);
+});
+
+it.each(["input", "viewport"])(
+  "allows reconnect when %s fails during a renewal retry",
+  async (kind) => {
+    let failInput!: (cause: Error) => void;
+    handleAction = (body) =>
+      body.action === kind
+        ? new Promise((_resolve, reject) => {
+            failInput = reject;
+          })
+        : Promise.resolve(
+            body.action === "heartbeat"
+              ? response({ state: "recovery" }, false)
+              : response({ grant: "grant-a", frame }),
+          );
+    await mount();
+    await takeControl();
+    if (kind === "input")
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key: "x",
+      });
+    await act(async () => {});
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      failInput(new Error("Input disconnected"));
+    });
+    expect(
+      screen.getByRole("button", { name: "Reconnect control" }),
+    ).toBeEnabled();
+  },
+);
+
+it("renews on focus without waiting for the next scheduled heartbeat", async () => {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.focus(window);
+  });
+  expect(actions.filter((body) => body.action === "heartbeat")).toHaveLength(1);
+  expect(screen.queryByText(/Control expired/)).not.toBeInTheDocument();
+});
+
+it("times out a stalled renewal and recovers before sending more input", async () => {
+  let firstSignal!: AbortSignal;
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    if (++calls > 1)
+      return response({ state: "human", leaseValidForMs: 25_000 });
+    firstSignal = (global.fetch as jest.Mock).mock.lastCall[1].signal;
+    return new Promise((_resolve, reject) =>
+      firstSignal.addEventListener(
+        "abort",
+        () => reject(new Error("Timed out")),
+        { once: true },
+      ),
+    );
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(8_000);
+  });
+  expect(firstSignal.aborted).toBe(true);
+  expect(
+    screen.getByText("Reconnecting browser control. Input is paused."),
+  ).toBeInTheDocument();
+  await act(async () => {
+    jest.advanceTimersByTime(1_000);
+  });
+  expect(calls).toBe(2);
+  expect(
+    screen.queryByText("Reconnecting browser control. Input is paused."),
+  ).not.toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  await act(async () => {});
+  expect(actions.at(-1)).toMatchObject({ action: "input", grant: "grant-a" });
+});
+
+it("does not count slow server renewal work twice when recovering the next heartbeat", async () => {
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    calls++;
+    if (calls === 1)
+      return new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve(
+              response({
+                state: "human",
+                leaseValidForMs: 18_000,
+                processingDurationMs: 7_000,
+              }),
+            ),
+          7_000,
+        ),
+      );
+    if (calls === 2)
+      return new Promise((resolve) =>
+        setTimeout(
+          () => resolve(response({ state: "recovery" }, false)),
+          7_500,
+        ),
+      );
+    return response({
+      state: "human",
+      leaseValidForMs: 25_000,
+      processingDurationMs: 0,
+    });
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(23_000);
+  });
+  expect(calls).toBe(3);
+  expect(actions.some((body) => body.action === "release")).toBe(false);
+  expect(
+    screen.queryByText(/Browser connection lost|Control expired/),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("application", { hidden: true })).toBeInTheDocument();
+});
+
+it("keeps input paused when a renewal acknowledgement arrives after its lease", async () => {
+  let calls = 0;
+  handleAction = async (body) => {
+    if (body.action !== "heartbeat")
+      return response({ grant: "grant-a", frame });
+    if (++calls > 1) return response({ state: "recovery" }, false, 409);
+    return new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            response({
+              state: "human",
+              leaseValidForMs: 1_000,
+              processingDurationMs: 0,
+            }),
+          ),
+        2_000,
+      ),
+    );
+  };
+  await mount();
+  await takeControl();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(3_000);
+  });
+  expect(
+    screen.getByText("Reconnecting browser control. Input is paused."),
+  ).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+    key: "x",
+  });
+  expect(actions.some((body) => body.action === "input")).toBe(false);
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(1_000);
+  });
+  expect(screen.getByText(/Control expired/)).toBeInTheDocument();
+});
+
+it.each([false, true])(
+  "reports unavailable for a non-JSON response (ok: %s)",
+  async (ok) => {
+    await mount();
+    handleAction = async () =>
+      ({
+        ok,
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      }) as Response;
+    await takeControl();
+    expect(screen.getByRole("alert")).toHaveTextContent("Browser unavailable");
+    expect(
+      screen.getByRole("button", { name: "Take control of Agent browser" }),
+    ).toBeEnabled();
+  },
+);
+
+it.each([null, [], "gateway error"])(
+  "rejects malformed successful response %p",
+  async (body) => {
+    await mount();
+    handleAction = async () => response(body);
+    await takeControl();
+    expect(screen.getByRole("alert")).toHaveTextContent("Browser unavailable");
+  },
+);
+
+it("resizes to the visible phone viewport and coalesces rotation before accepting clicks", async () => {
+  const viewport = new EventTarget() as VisualViewport;
+  Object.assign(viewport, {
+    width: 390,
+    height: 844,
+    offsetTop: 0,
+    offsetLeft: 0,
+  });
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: viewport,
+  });
+  try {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    expect(actions.at(-1)).toMatchObject({
+      action: "viewport",
+      width: 390,
+      height: 844,
+      grant: "grant-a",
+    });
+    expect(
+      screen.getByRole("button", { name: "Show browser keyboard" }),
+    ).toBeEnabled();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show browser keyboard" }),
+      );
+    });
+    expect(
+      screen.getByRole("textbox", {
+        name: "Type in remote browser",
+        hidden: true,
+      }),
+    ).toHaveFocus();
+    await act(async () => {
+      Object.assign(viewport, { width: 844, height: 390 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await act(async () => {
+      Object.assign(viewport, { width: 844, height: 350 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    expect(actions.filter((a) => a.action === "viewport")).toEqual([
+      { action: "viewport", width: 390, height: 844, grant: "grant-a" },
+      { action: "viewport", width: 844, height: 350, grant: "grant-a" },
+    ]);
+    expect(screen.getByRole("dialog", { name: "Browser control" })).toHaveStyle(
+      { width: "844px", height: "350px" },
+    );
+  } finally {
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: undefined,
+    });
+  }
+});
+
+it("commits IME text once without sending intermediate composition or Process keys", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  await act(async () => {
+    fireEvent.compositionStart(keyboard);
+    fireEvent.keyDown(keyboard, {
+      key: "Process",
+      code: "KeyA",
+      isComposing: true,
+    });
+    fireEvent.input(keyboard, {
+      target: { value: "に" },
+      inputType: "insertCompositionText",
+      isComposing: true,
+    });
+  });
+  expect(actions.filter((a) => a.action === "input")).toEqual([]);
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "日本語🙂" },
+      inputType: "insertCompositionText",
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(keyboard, { data: "日本語🙂" });
+    fireEvent.input(keyboard, {
+      inputType: "insertFromComposition",
+      data: "日本語🙂",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "日本語🙂" }]);
+});
+
+it("forwards soft-keyboard input, deletion and return without requiring keydown", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  for (const [value, inputType] of [
+    ["AZ!?", "insertText"],
+    ["", "deleteContentBackward"],
+    ["\n", "insertLineBreak"],
+  ]) {
+    await act(async () => {
+      fireEvent.input(keyboard, { target: { value }, inputType });
+    });
+  }
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "text", text: "AZ!?" },
+    { kind: "key", key: "Backspace", code: "Backspace", modifiers: 0 },
+    { kind: "key", key: "Enter", code: "Enter", modifiers: 0 },
+  ]);
+});
+
+it("scrolls touch swipes without clicking and sends a tap only on release", async () => {
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  const image = screen.getByAltText(
+    "Current Agent browser viewport",
+  ) as HTMLImageElement;
+  image.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, width: 800, height: 600 }) as DOMRect;
+  image.setPointerCapture = jest.fn();
+  image.releasePointerCapture = jest.fn();
+  const touch = async (type: string, y: number) => {
+    const event = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: 100,
+      clientY: y,
+    });
+    Object.defineProperties(event, {
+      pointerType: { value: "touch" },
+      pointerId: { value: 1 },
+    });
+    await act(async () => {
+      fireEvent(image, event);
+    });
+  };
+  await touch("pointerdown", 300);
+  await touch("pointermove", 200);
+  await touch("pointerup", 200);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "wheel", x: 100, y: 200, deltaX: 0, deltaY: 100 }]);
+  actions.length = 0;
+  await touch("pointerdown", 200);
+  expect(actions).toEqual([]);
+  await touch("pointerup", 200);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "down", x: 100, y: 200 },
+    { kind: "up", x: 100, y: 200 },
+  ]);
+});
+
+it("lets Android unidentified key events reach native input instead of cancelling them", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  const key = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key: "Unidentified",
+    keyCode: 229,
+  });
+  await act(async () => {
+    fireEvent(keyboard, key);
+  });
+  expect(key.defaultPrevented).toBe(false);
+  expect(actions.filter((a) => a.action === "input")).toEqual([]);
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "Android" },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "Android" }]);
+});
+
+it("never leaks a keyboard placeholder into the remote input", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  }) as HTMLTextAreaElement;
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: `P${keyboard.value}` },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "P" }]);
+});
+
+it("handles soft-keyboard backspace on an empty bridge before the browser drops the input event", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  const deletion = new InputEvent("beforeinput", {
+    bubbles: true,
+    cancelable: true,
+    inputType: "deleteContentBackward",
+  });
+  await act(async () => {
+    fireEvent(keyboard, deletion);
+  });
+  expect(deletion.defaultPrevented).toBe(true);
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([
+    { kind: "key", key: "Backspace", code: "Backspace", modifiers: 0 },
+  ]);
+});
+it("preserves user-provided zero-width characters", async () => {
+  await mount();
+  await takeControl();
+  const keyboard = screen.getByRole("textbox", {
+    name: "Type in remote browser",
+    hidden: true,
+  });
+  await act(async () => {
+    fireEvent.input(keyboard, {
+      target: { value: "A\u200bB" },
+      inputType: "insertText",
+    });
+  });
+  expect(
+    actions.filter((a) => a.action === "input").flatMap((a) => a.inputs),
+  ).toEqual([{ kind: "text", text: "A\u200bB" }]);
+});
+
+it("honors a waiting-session takeover click once, after the preview frame arrives", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  let resolveFrame!: (value: Response) => void;
+  const pendingFrame = new Promise<Response>((resolve) => {
+    resolveFrame = resolve;
+  });
+  (global.fetch as jest.Mock).mockImplementationOnce(() => pendingFrame);
+  const request = { requestId: "click-1", sessionId: "session-a" };
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={request}
+    />,
+  );
+  expect(actions).toEqual([]);
+  await act(async () => resolveFrame(response({ frame })));
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={{ ...request }}
+    />,
+  );
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+});
+
+it.each(["session-b", "session-a"])(
+  "does not apply stale takeover intent to an unrelated session or an Agent that resumed (%s)",
+  async (sessionId) => {
+    mockSession = {
+      sessionId,
+      state: sessionId === "session-a" ? "agent" : "waiting",
+    };
+    const view = render(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={{ requestId: "old-click", sessionId: "session-a" }}
+      />,
+    );
+    await act(async () => {});
+    mockSession = { sessionId: "session-a", state: "waiting" };
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={{ requestId: "old-click", sessionId: "session-a" }}
+      />,
+    );
+    await act(async () => {});
+    expect(actions).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Exit takeover" })).toBeNull();
+  },
+);
+
+it("does not retry a failed requested takeover until another user action", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  handleAction = async () =>
+    response({ error: "Connection interrupted" }, false);
+  render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      takeoverRequest={{ requestId: "click-1", sessionId: "session-a" }}
+    />,
+  );
+  await act(async () => {});
+  expect(screen.getByText("Connection interrupted")).toBeInTheDocument();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(4000);
+  });
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  await takeControl();
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(2);
+});
+
+it("discards consumed click intent before a failed viewer is remounted", async () => {
+  mockSession = { sessionId: "session-a", state: "waiting" };
+  handleAction = async () =>
+    response({ error: "Connection interrupted" }, false);
+  function Host({ show }: { show: boolean }) {
+    const [request, setRequest] = React.useState<
+      { requestId: string; sessionId: string } | undefined
+    >({ requestId: "click-1", sessionId: "session-a" });
+    return show ? (
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+        takeoverRequest={request}
+        onTakeoverRequestConsumed={() => setRequest(undefined)}
+      />
+    ) : null;
+  }
+  const view = render(<Host show />);
+  await act(async () => {});
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+  view.rerender(<Host show={false} />);
+  view.rerender(<Host show />);
+  await act(async () => {});
+  expect(actions.filter((body) => body.action === "take")).toHaveLength(1);
+});
+
+it("recovers from a stalled take request without trapping the user", async () => {
+  handleAction = () => new Promise(() => {});
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(60_000);
+  });
+  expect(
+    screen.queryByRole("dialog", { name: "Browser control" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/timed out/i);
+});
+
+it("preserves the note and unlocks exit when resume never responds", async () => {
+  await mount();
+  await takeControl();
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise(() => {})
+      : Promise.resolve(response({ frame }));
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Keep my note" },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(60_000);
+  });
+  expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+  expect(screen.getByRole("alert")).toHaveTextContent(/timed out/i);
+  expect(screen.getByRole("textbox")).toHaveValue("Keep my note");
+  fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("does not let a stalled old input block a replacement session", async () => {
+  let finishInput!: (r: Response) => void;
+  handleAction = (body) =>
+    body.action === "input"
+      ? new Promise((resolve) => {
+          finishInput = resolve;
+        })
+      : Promise.resolve(
+          response({
+            grant:
+              mockSession?.sessionId === "session-a" ? "grant-a" : "grant-b",
+            frame,
+          }),
+        );
+  const view = await mount();
+  await takeControl();
+  await act(async () => {
+    fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+      key: "4",
+    });
+  });
+  expect(actions.some((a) => a.action === "input")).toBe(true);
+  mockSession = { sessionId: "session-b", state: "agent" };
+  await act(async () => {
+    view.rerender(
+      <AgentBrowserPreview
+        chatId="chat"
+        agentId="parent"
+        liveSelection
+        browserRequested
+      />,
+    );
+  });
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  expect(
+    actions.some((a) => a.action === "viewport" && a.grant === "grant-b"),
+  ).toBe(true);
+  await act(async () => {
+    finishInput(response({ ok: true }));
+  });
+  expect(
+    actions.some((a) => a.action === "viewport" && a.grant === "grant-b"),
+  ).toBe(true);
+});
+
+it("does not resize the hidden browser when the exit-note keyboard opens", async () => {
+  const viewport = new EventTarget() as VisualViewport;
+  Object.assign(viewport, {
+    width: 390,
+    height: 844,
+    offsetTop: 0,
+    offsetLeft: 0,
+  });
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: viewport,
+  });
+  try {
+    await mount();
+    await takeControl();
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeEnabled();
+    handleAction = (body) =>
+      Promise.resolve(
+        body.action === "viewport"
+          ? response({ error: "failed" }, false)
+          : response({ frame }),
+      );
+    await act(async () => {
+      Object.assign(viewport, { height: 450 });
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(250);
+    });
+    expect(actions.filter((a) => a.action === "viewport")).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Send and continue" }),
+    ).toBeEnabled();
+  } finally {
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: undefined,
+    });
+  }
+});
+
+it.each(["input", "viewport"])(
+  "recovers a stalled %s request without resuming the Agent",
+  async (stalledAction) => {
+    handleAction = (body) =>
+      body.action === stalledAction
+        ? new Promise(() => {})
+        : Promise.resolve(response({ grant: "grant-a", frame }));
+    await mount();
+    await takeControl();
+    if (stalledAction === "input") {
+      await act(async () => {
+        fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+          key: "a",
+        });
+      });
+    } else {
+      await act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send and continue" }),
+      );
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(10_001);
+    });
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+    expect(actions.some((body) => body.action === "resume")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  },
+);
+
+it("bounds a stalled response body as well as the request", async () => {
+  handleAction = async () =>
+    ({ ok: true, status: 200, json: () => new Promise(() => {}) }) as Response;
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(35_001);
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/timed out/i);
+});
+
+it("retries a timed-out continuation without starting another Agent turn", async () => {
+  let finish!: () => void;
+  const onContinue = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = render(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  await act(async () => {});
+  await takeControl();
+  mockSession = null;
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+      onContinue={onContinue}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Signed in" },
+  });
+  handleAction = async () =>
+    response({
+      restart: true,
+      continuation: { id: "saved-note", text: "Saved context" },
+    });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  const firstId = actions.at(-1)?.requestId;
+  await act(async () => {
+    jest.advanceTimersByTime(30_001);
+  });
+  expect(screen.getByRole("button", { name: "Return to chat" })).toBeEnabled();
+  expect(screen.getByRole("textbox")).toHaveValue("Signed in");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  expect(actions.at(-1)?.requestId).toBe(firstId);
+  await act(async () => {
+    finish();
+  });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(sessionStorage.length).toBe(0);
+});
+
+it("restores the resume request id and note after returning to chat and reopening", async () => {
+  const view = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  fireEvent.change(screen.getByRole("textbox"), {
+    target: { value: "Keep my context" },
+  });
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise(() => {})
+      : Promise.resolve(response({ frame }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  const firstId = actions.find((a) => a.action === "resume")?.requestId;
+  await act(async () => {
+    jest.advanceTimersByTime(35_001);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+  view.unmount();
+  await mount();
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeDisabled();
+  await takeControl();
+  expect(actions.filter((a) => a.action === "take")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Exit takeover" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Keep my context");
+  handleAction = async () => response({ frame });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  const resumes = actions.filter((a) => a.action === "resume");
+  expect(resumes).toHaveLength(2);
+  expect(resumes[1]).toMatchObject({
+    requestId: firstId,
+    note: "Keep my context",
+  });
+});
+
+it("does not resume after an already-sent resize fails while the exit note is open", async () => {
+  let failResize!: (reason: Error) => void;
+  handleAction = (body) =>
+    body.action === "viewport"
+      ? new Promise((_resolve, reject) => {
+          failResize = reject;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  await mount();
+  await takeControl();
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+    failResize(new Error("Resize lost the connection"));
+  });
+  expect(actions.some((body) => body.action === "resume")).toBe(false);
+  expect(screen.getByRole("button", { name: "Return to chat" })).toBeEnabled();
+});
+
+it("isolates a reconnected grant from an old timed-out input and its cleanup", async () => {
+  let takeCount = 0;
+  let finishOld!: (value: Response) => void;
+  let finishNew!: (value: Response) => void;
+  let newInputs = 0;
+  handleAction = (body) => {
+    if (body.action === "take")
+      return Promise.resolve(
+        response({ grant: ++takeCount === 1 ? "grant-a" : "grant-b", frame }),
+      );
+    if (body.action === "input" && body.grant === "grant-a")
+      return new Promise((resolve) => {
+        finishOld = resolve;
+      });
+    if (
+      body.action === "input" &&
+      body.grant === "grant-b" &&
+      ++newInputs === 1
+    )
+      return new Promise((resolve) => {
+        finishNew = resolve;
+      });
+    return Promise.resolve(response({ frame }));
+  };
+  await mount();
+  await takeControl();
+  const key = async (value: string) =>
+    act(async () => {
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key: value,
+      });
+    });
+  await key("a");
+  fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Send and continue" }));
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(10_001);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(/may not have been sent/);
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect control" }));
+  });
+  await act(async () => {
+    jest.advanceTimersByTime(250);
+  });
+  await key("b");
+  expect(
+    actions.some((a) => a.action === "input" && a.grant === "grant-b"),
+  ).toBe(true);
+  await key("c");
+  await act(async () => {
+    finishOld(response({ ok: true }));
+  });
+  await key("d");
+  await act(async () => {
+    finishNew(response({ ok: true }));
+  });
+  const inputs = actions.filter(
+    (a) => a.action === "input" && a.grant === "grant-b",
+  );
+  expect(inputs).toHaveLength(2);
+  expect(inputs[1].inputs).toEqual([
+    expect.objectContaining({ kind: "text", text: "c" }),
+    expect.objectContaining({ kind: "text", text: "d" }),
+  ]);
+});

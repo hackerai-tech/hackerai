@@ -29,6 +29,25 @@ let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
 let authenticatedAnalyticsUserId: string | null = null;
 let identifiedAnalyticsUserId: string | null = null;
+const authenticatedAnalyticsListeners = new Set<() => void>();
+
+export function subscribeAuthenticatedAnalytics(listener: () => void) {
+  authenticatedAnalyticsListeners.add(listener);
+  return () => {
+    authenticatedAnalyticsListeners.delete(listener);
+  };
+}
+
+/** Null until consent permits capture and the provider has identified this user. */
+export function getIdentifiedAnalyticsUserId() {
+  return identifiedAnalyticsUserId === authenticatedAnalyticsUserId
+    ? identifiedAnalyticsUserId
+    : null;
+}
+
+function notifyAuthenticatedAnalyticsListeners() {
+  authenticatedAnalyticsListeners.forEach((listener) => listener());
+}
 const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
 const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
@@ -70,6 +89,21 @@ function captureWithPostHogClient(
   options?: PostHogCaptureOptions,
 ) {
   try {
+    const buildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    if (
+      (event === "sandbox_connection_terminated" ||
+        event === "desktop_bridge_relay_state_changed") &&
+      properties.native_auth_diagnostic_version === 1 &&
+      buildCommit &&
+      /^[a-f0-9]{40}$/i.test(buildCommit)
+    ) {
+      // The auth policy marker does not identify the loaded frontend bundle.
+      // This build-time commit describes that bundle, not the native binary.
+      properties = {
+        ...properties,
+        hackerai_frontend_build_commit: buildCommit.toLowerCase(),
+      };
+    }
     if (options) {
       posthog.capture(event, properties, options);
     } else {
@@ -105,6 +139,7 @@ export function setAuthenticatedAnalyticsUserId(userId: string | null) {
   authenticatedAnalyticsUserId = userId;
   identifiedAnalyticsUserId = null;
   pendingAuthenticatedEvents.splice(0);
+  notifyAuthenticatedAnalyticsListeners();
 }
 
 export function flushPendingAuthenticatedEvents(userId: string) {
@@ -138,6 +173,7 @@ export function flushPendingAuthenticatedEvents(userId: string) {
 export function confirmAuthenticatedAnalyticsUserId(userId: string) {
   if (authenticatedAnalyticsUserId !== userId) return false;
   identifiedAnalyticsUserId = userId;
+  notifyAuthenticatedAnalyticsListeners();
   return flushPendingAuthenticatedEvents(userId);
 }
 

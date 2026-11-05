@@ -1,3 +1,4 @@
+import { MAX_TOKENS_PAID } from "@/lib/token-limits";
 const mockQuery = jest.fn();
 jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("../convex-client", () => ({
@@ -71,5 +72,46 @@ it.each(["agent", "ask"] as const)(
     expect(context).toContain("<current_todos>");
     expect(context).toContain("opaque-42");
     expect(context).toContain("Verify webhook replay defense");
+  },
+);
+
+it.each([
+  ["agent", true, true],
+  ["agent", false, false],
+  ["ask", true, false],
+] as const)(
+  "retains long resumed history only for enabled Agent (%s, %s)",
+  async (mode, enabled, retained) => {
+    mockQuery.mockReset();
+    const older = {
+      id: "older-evidence",
+      role: "user",
+      parts: [{ type: "text", text: "Candidate A was rejected." }],
+    };
+    const recent = {
+      id: "recent",
+      role: "assistant",
+      parts: [
+        { type: "text", text: " ordinary".repeat(MAX_TOKENS_PAID + 10_000) },
+      ],
+    };
+    mockQuery.mockResolvedValueOnce({ id: "chat-test" }).mockResolvedValueOnce({
+      page: [recent, older],
+      isDone: true,
+      continueCursor: null,
+    });
+    const result = await getMessagesByChatId({
+      chatId: "chat-test",
+      userId: "user-test",
+      subscription: "pro",
+      mode,
+      agentModelContextEnabled: enabled,
+      newMessages: [],
+    });
+    expect(
+      result.truncatedMessages.some(
+        (message) => message.id === "older-evidence",
+      ),
+    ).toBe(retained);
   },
 );

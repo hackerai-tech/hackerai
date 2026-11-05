@@ -9,6 +9,7 @@ interface BillingFrequencySelectorProps {
   onChange: (value: BillingFrequency) => void;
   isOpen?: boolean;
   className?: string;
+  showSavings?: boolean;
 }
 
 const BillingFrequencySelector: React.FC<BillingFrequencySelectorProps> = ({
@@ -16,6 +17,7 @@ const BillingFrequencySelector: React.FC<BillingFrequencySelectorProps> = ({
   onChange,
   isOpen,
   className = "",
+  showSavings = true,
 }) => {
   const segmentedRef = React.useRef<HTMLDivElement | null>(null);
   const monthlyRef = React.useRef<HTMLLabelElement | null>(null);
@@ -121,9 +123,11 @@ const BillingFrequencySelector: React.FC<BillingFrequencySelectorProps> = ({
             }
           >
             Yearly
-            <span className="text-[#615EEB] dark:text-[#B9B7FF] text-xs font-medium">
-              Save 17%
-            </span>
+            {showSavings && (
+              <span className="text-[#615EEB] dark:text-[#B9B7FF] text-xs font-medium">
+                Save 17%
+              </span>
+            )}
           </span>
         </label>
       </div>

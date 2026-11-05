@@ -1,4 +1,23 @@
 import {
+  DesktopFileBridgeError,
+  desktopFileUnavailableMessage,
+  getDesktopFileFailure,
+  parseDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { persistenceCommandError } from "./persistence-failure";
+import {
+  createReceiverDiagnostics,
+  type ReceiverCleanupReason,
+} from "@/lib/centrifugo/receiver-diagnostics";
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import {
+  dispatchIsolatedOperation,
+  RelayOperationReadinessTimeout,
+} from "@/lib/centrifugo/dispatch-operation";
+import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
 } from "./attachment-command";
@@ -9,6 +28,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxConnectionChannel,
+  DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type CommandResponseMessage,
   type CommandMessage,
   type FileRequestMessage,
@@ -21,19 +41,41 @@ import {
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import {
   estimateRelayPayloadBytes,
-  relayTrafficSampleRate,
+  recordRelayReceivedBytes,
 } from "@/lib/centrifugo/traffic";
 import {
+  isCentrifugoPublishTimeout,
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
-import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+  getSandboxFileName,
+} from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
-import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
+import {
+  buildUploadNetworkProbeCommand,
+  parseUploadNetworkProbe,
+  type UploadProbeShell,
+} from "./sandbox-upload-network-diagnostics";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalCommandDispatchError,
+  LocalFileRequestError,
+  getLocalFileRequestFailure,
+  isLocalCommandRelayUnsubscribedError,
+} from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
+  "command_output_unavailable",
   "command",
   "command_cancel",
   "command_cancel_result",
@@ -44,6 +86,8 @@ const VALID_MESSAGE_TYPES = new Set([
 ]);
 
 const IGNORED_MESSAGE_TYPES = new Set([
+  "command_output_ack",
+  "command_output_resume",
   "file_stat",
   "file_read",
   "file_write",
@@ -70,6 +114,7 @@ const SETUP_COMMAND_TIMEOUT_MS = 30000;
 const SETUP_COMMAND_MAX_ATTEMPTS = 2;
 const SETUP_COMMAND_RETRY_DELAY_MS = 500;
 const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
+const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
@@ -167,6 +212,12 @@ export function parseSandboxMessage(
     return null;
   }
 
+  if (
+    msg.outputProtocol !== undefined &&
+    (msg.outputProtocol !== "ack-v1" || msg.sequence === undefined)
+  )
+    return null;
+
   switch (msg.type) {
     case "exit":
       if (typeof msg.exitCode !== "number") {
@@ -181,6 +232,7 @@ export function parseSandboxMessage(
         return null;
       }
       break;
+    case "command_output_unavailable":
     case "error":
       if (typeof msg.message !== "string") {
         console.warn("Invalid error message: missing message field", msg);
@@ -283,6 +335,8 @@ export interface CentrifugoConfig {
 export class CentrifugoSandbox extends EventEmitter {
   readonly sandboxKind = "centrifugo" as const;
   private activeClients: Centrifuge[] = [];
+  private nativeFileRelayConfirmed = false;
+  private nativeFileRelayConfirmation?: Promise<void>;
 
   constructor(
     private userId: string,
@@ -327,8 +381,67 @@ export class CentrifugoSandbox extends EventEmitter {
   supportsNativeFileRelay(): boolean {
     return (
       this.connectionInfo.isDesktop === true &&
-      this.connectionInfo.capabilities?.files === true
+      (this.connectionInfo.capabilities?.files === true ||
+        this.nativeFileRelayConfirmed)
     );
+  }
+
+  /** Call once before exposing this sandbox: artifact paths must not flip mid-run. */
+  confirmNativeFileRelay(): Promise<void> {
+    if (
+      this.connectionInfo.isDesktop !== true ||
+      this.connectionInfo.capabilities?.files === true
+    )
+      return Promise.resolve();
+    return (this.nativeFileRelayConfirmation ??= this.probeNativeFileRelay());
+  }
+
+  private async probeNativeFileRelay(): Promise<void> {
+    // A slow startup probe can leave a working Desktop registered as files=false.
+    // Confirm on that same connection before choosing artifact paths/transport.
+    // Do not grant commandStdin or bypass Local's private-storage preparation.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 3000);
+    let failure: string | undefined;
+    let fileFailure: DesktopFileFailure | undefined;
+    try {
+      await this.dispatchFileRequest<FileStatResultMessage>(
+        { type: "file_stat", path: "." },
+        new Set(["file_stat_result"]),
+        3000,
+        controller.signal,
+      );
+      this.nativeFileRelayConfirmed = true;
+    } catch (error) {
+      failure = controller.signal.aborted
+        ? "timeout"
+        : getLocalFileRequestFailure(error);
+      fileFailure =
+        error instanceof LocalFileRequestError ? error.fileFailure : undefined;
+    } finally {
+      clearTimeout(deadline);
+    }
+    console.info(
+      JSON.stringify({
+        event: "desktop_file_capability_probe",
+        service: this.getRelayTrafficSource(),
+        request_id: this.triggerRunId,
+        connection_id: this.connectionInfo.connectionId,
+        outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
+        failure,
+        file_failure: fileFailure,
+      }),
+    );
+    if (!this.nativeFileRelayConfirmed) {
+      throw new DesktopFileBridgeError(
+        fileFailure ?? "unknown",
+        desktopFileUnavailableMessage(fileFailure ?? "unknown"),
+      );
+    }
+  }
+
+  supportsOperationChannels(): boolean {
+    return this.connectionInfo.capabilities?.operationChannels === true;
   }
 
   supportsCommandStdin(): boolean {
@@ -340,6 +453,7 @@ export class CentrifugoSandbox extends EventEmitter {
     if (
       this.connectionInfo.isDesktop === true &&
       this.connectionInfo.capabilities?.files === false &&
+      !this.nativeFileRelayConfirmed &&
       this.workingDirectory
     ) {
       // The native adapter enforces allowedRoot, including symlinks. Do not
@@ -353,6 +467,10 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getUserId(): string {
     return this.userId;
+  }
+
+  getRelayTrafficSource(): "agent-long" | "chat-handler" {
+    return this.triggerRunId ? "agent-long" : "chat-handler";
   }
 
   getWsUrl(): string {
@@ -374,7 +492,8 @@ export class CentrifugoSandbox extends EventEmitter {
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const shellInfo = this.connectionInfo.isDesktop
@@ -398,12 +517,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
 
-Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Do not install host tools without the user's request.
+Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Other than the browser setup described below, do not install host tools without the user's request.
 
-Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
-    return null;
+    return `You are connected to a computer in DANGEROUS MODE. Commands run directly on the host without Docker isolation. OS information is unavailable; inspect the host before choosing shell-specific commands.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   }
 
   /**
@@ -418,17 +539,58 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     expectedTypes: Set<string>,
     timeoutMs = 30000,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
-      throw new Error("Native desktop file relay is not available.");
+      throw new LocalFileRequestError(
+        "unavailable",
+        "Native desktop file relay is not available.",
+      );
     }
 
-    const requestId = crypto.randomUUID();
-    const channel = sandboxConnectionChannel(
-      this.userId,
-      this.connectionInfo.connectionId,
+    return this.dispatchFileRequest<T>(
+      input,
+      expectedTypes,
+      timeoutMs,
+      signal,
+      nativePaths,
     );
+  }
+
+  // Only the read-only acquisition probe may enter here without an advertised
+  // capability. All public file operations still pass through runFileRequest.
+  private async dispatchFileRequest<T extends FileResponseMessage>(
+    input: FileRequestInput,
+    expectedTypes: Set<string>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    // Resolve before subscribing so a failed/cancelled shell lookup cannot
+    // leave a pending native mutation or an unhandled subscription callback.
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(input.path),
+      signal,
+      nativePaths,
+    );
+    const allowedRoot =
+      this.workingDirectory &&
+      (input.type === "file_write" || input.type === "file_append")
+        ? await this.toNativePath(this.workingDirectory, signal, nativePaths)
+        : undefined;
+    signal?.throwIfAborted();
+    const requestId = crypto.randomUUID();
+    const isolated = this.supportsOperationChannels();
+    const channel = isolated
+      ? sandboxOperationChannel(
+          this.userId,
+          this.connectionInfo.connectionId,
+          "file",
+          requestId,
+        )
+      : sandboxConnectionChannel(this.userId, this.connectionInfo.connectionId);
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
     signal?.throwIfAborted();
@@ -440,42 +602,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
-      let requestPublishAttempts = 0;
-      let subscriptionEvents = 0;
+      let requestPublicationStarted = false;
+      let uncertainReadiness = false;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
-      let receivedPublications = 0;
-      let unmatchedPublications = 0;
-      const startedAt = Date.now();
+      let trafficMetricRecorded = false;
       const reassembler = new CentrifugoMessageReassembler();
 
-      const onAbort = () => fail(new Error("Desktop file request aborted"));
-      const cleanup = () => {
-        const sampleRate = relayTrafficSampleRate(
-          requestId,
-          receivedPayloadBytesEstimate,
+      const onAbort = () =>
+        fail(
+          new LocalFileRequestError("aborted", "Desktop file request aborted"),
         );
-        if (sampleRate !== null) {
-          console.log(
-            JSON.stringify({
-              timestamp: new Date().toISOString(),
-              event: "local_relay_file_traffic",
-              service: this.triggerRunId ? "agent-long" : "chat-handler",
-              user_id: this.userId,
-              connection_id: this.connectionInfo.connectionId,
-              chat_id: this.chatId ?? null,
-              trigger_run_id: this.triggerRunId ?? null,
-              request_id: requestId,
-              request_type: input.type,
-              sample_rate: sampleRate,
-              received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-              unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-              received_publications: receivedPublications,
-              unmatched_publications: unmatchedPublications,
-              subscription_events: subscriptionEvents,
-              request_publish_attempts: requestPublishAttempts,
-              duration_ms: Date.now() - startedAt,
-            }),
+      const cleanup = () => {
+        if (!trafficMetricRecorded) {
+          trafficMetricRecorded = true;
+          recordRelayReceivedBytes(
+            "file",
+            this.triggerRunId ? "agent-long" : "chat-handler",
+            receivedPayloadBytesEstimate,
+            unmatchedPayloadBytesEstimate,
+            isolated ? "operation" : "connection",
           );
         }
         signal?.removeEventListener("abort", onAbort);
@@ -516,7 +662,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
       timeoutId = setTimeout(() => {
         fail(
-          new Error(
+          new LocalFileRequestError(
+            uncertainReadiness ? "readiness_timeout" : "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -524,12 +671,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription = client.newSubscription(channel);
       subscription.on("publication", (ctx) => {
+        if (ctx.data?.type === "operation_ready") return;
         if (settled) return;
-        receivedPublications += 1;
+
         const payloadBytes = estimateRelayPayloadBytes(ctx.data);
         receivedPayloadBytesEstimate += payloadBytes;
         if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -538,27 +685,62 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         if (!reassembled) return;
         const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new Error(message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Receipt is final even if the broker never acknowledges our ACK.
+        // Keep the subscription briefly for delivery, but bound caller cleanup.
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (message.type === "file_error")
+            reject(
+              new LocalFileRequestError(
+                "native_error",
+                message.message,
+                parseDesktopFileFailure(message.fileFailure) ??
+                  getDesktopFileFailure(new Error(message.message)),
+              ),
+            );
+          else resolve(message as T);
+        };
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(finish, 1000);
+        void Promise.resolve()
+          .then(() =>
+            isolated && subscription
+              ? subscription.publish({
+                  type: "file_response_ack",
+                  requestId,
+                  targetConnectionId: this.connectionInfo.connectionId,
+                })
+              : undefined,
+          )
+          .catch(() => {})
+          .finally(finish);
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
-          new Error(
+          new LocalFileRequestError(
+            "subscription_error",
             `Centrifugo file subscription error: ${ctx.error?.message ?? "unknown"}`,
           ),
         );
@@ -566,22 +748,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription.on("subscribed", () => {
         if (settled || !subscription) return;
-        subscriptionEvents += 1;
+
         // File writes and appends are not safe to replay after a reconnect.
         if (requestDispatchStarted) return;
         requestDispatchStarted = true;
 
         void (async () => {
           try {
-            const presence = await subscription!.presence();
+            const presence = isolated ? null : await subscription!.presence();
             if (
+              presence !== null &&
               !presenceHasConnectionId(
                 presence,
                 this.connectionInfo.connectionId,
               )
             ) {
               fail(
-                new Error(
+                new LocalFileRequestError(
+                  "relay_unsubscribed",
                   `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the file relay. Reconnect the Desktop app, wait until it is ready, then try again.`,
                 ),
               );
@@ -603,21 +787,52 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
-            path: this.resolveWorkingPath(input.path),
+            ...(isolated ? { fileResponseAck: true } : {}),
+            // Native metadata and mutations must name the same file as shell
+            // transfers, including Windows /tmp and Git Bash drive paths.
+            path: nativePath,
             requestId,
-            ...(this.workingDirectory &&
-            (input.type === "file_write" || input.type === "file_append")
-              ? { allowedRoot: this.workingDirectory }
-              : {}),
+            ...(allowedRoot ? { allowedRoot } : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
           try {
-            requestPublishAttempts += 1;
-            await subscription.publish(request);
+            if (isolated) {
+              await dispatchIsolatedOperation(
+                client,
+                this.userId,
+                this.connectionInfo.connectionId,
+                request as unknown as Record<string, unknown>,
+                () => !settled,
+                subscription!,
+                () => {
+                  requestPublicationStarted = true;
+                },
+              );
+            } else {
+              await subscription.publish(request);
+            }
           } catch (error) {
+            if (
+              isolated &&
+              requestPublicationStarted &&
+              !settled &&
+              (error instanceof RelayOperationReadinessTimeout ||
+                isCentrifugoPublishTimeout(error))
+            ) {
+              // Publication may have reached the client. Retain the original
+              // reply channel and deadline; never replay a write or append.
+              uncertainReadiness =
+                error instanceof RelayOperationReadinessTimeout;
+              return;
+            }
             fail(
-              new Error(
+              new LocalFileRequestError(
+                error instanceof RelayOperationReadinessTimeout
+                  ? "readiness_timeout"
+                  : isLocalCommandRelayUnsubscribedError(error)
+                    ? "relay_unsubscribed"
+                    : "dispatch_error",
                 `Failed to publish desktop file request: ${
                   error instanceof Error ? error.message : String(error)
                 }`,
@@ -654,20 +869,40 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       pid?: number;
     }> => {
       if (opts?.stdin !== undefined && !this.supportsCommandStdin()) {
-        throw new Error(
-          "Command stdin requires an updated HackerAI local client",
+        throw new LocalCommandDispatchError(
+          new Error("Command stdin requires an updated HackerAI local client"),
+          false,
         );
       }
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
-      const channel = sandboxConnectionChannel(
-        this.userId,
-        this.connectionInfo.connectionId,
-      );
+      const isolated = this.supportsOperationChannels();
+      const channel = isolated
+        ? sandboxOperationChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+            "command",
+            commandId,
+          )
+        : sandboxConnectionChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+          );
 
-      // Generate short-lived JWT for this subscription (30s + command timeout)
-      const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
-      const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+      // Desktop retains output across relay outages after native execution ends.
+      // Keep the receiver and its token alive for that bounded delivery window;
+      // this does not extend native execution or change CLI command deadlines.
+      const maxWaitTime =
+        timeout +
+        5000 +
+        (this.connectionInfo.isDesktop ? DESKTOP_COMMAND_DELIVERY_GRACE_MS : 0);
+      const tokenExpSeconds = Math.ceil(maxWaitTime / 1000) + 30;
+      const token = await generateCentrifugoToken(
+        this.userId,
+        tokenExpSeconds,
+      ).catch((error: unknown) => {
+        throw new LocalCommandDispatchError(error, false);
+      });
 
       // Create a centrifuge client for this command
       const client = new Centrifuge(this.config.wsUrl, {
@@ -675,34 +910,107 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       });
       this.activeClients.push(client);
 
-      const result = await new Promise<CommandResult>((resolve, reject) => {
+      const result = await new Promise<CommandResult>((resolve, fail) => {
+        let commandPublicationStarted = false;
+        const reject = (error: unknown, retryable = false) =>
+          fail(
+            isLocalCommandRelayUnsubscribedError(error)
+              ? error
+              : new LocalCommandDispatchError(
+                  error,
+                  commandPublicationStarted,
+                  retryable && !commandPublicationStarted,
+                ),
+          );
         let stdout = "";
         let stderr = "";
         let settled = false;
         let timeoutId: NodeJS.Timeout | undefined;
         let cancelAckTimeoutId: NodeJS.Timeout | undefined;
+        let cancelRetryTimeoutId: NodeJS.Timeout | undefined;
         let subscription: Subscription | undefined;
         let publishedCommand = false;
         let commandPublishInFlight = false;
         let commandDispatchStarted = false;
-        let subscriptionEvents = 0;
-        let commandPublishAttempts = 0;
-        let stdoutBytes = 0;
-        let stderrBytes = 0;
-        let outputChunks = 0;
         let receivedPayloadBytesEstimate = 0;
         let unmatchedPayloadBytesEstimate = 0;
-        let receivedPublications = 0;
-        let unmatchedPublications = 0;
+        let trafficMetricRecorded = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
         let lastStreamSequence = -1;
+        let streamInterrupted = false;
+        let streamRecoveryIncomplete = false;
+        let receivedUnsequencedOutput = false;
+        let acknowledgedOutput = false;
+        let acknowledgementTimer: ReturnType<typeof setTimeout> | undefined;
+        let terminalReceived = false;
+        let terminalCursorPublished = false;
+        let terminalReceivedDuringCancellation = false;
+        let completeTerminal: (() => void) | undefined;
+        const diagnostics = createReceiverDiagnostics(
+          {
+            commandId,
+            triggerRunId: this.triggerRunId,
+            enabled: isolated && this.connectionInfo.isDesktop === true,
+          },
+          () => ({
+            sequence: lastStreamSequence,
+            terminalReceived,
+            cancelRequested,
+            dispatched: commandPublicationStarted,
+          }),
+        );
+        diagnostics.start();
+        const sendOutputCursor = async (
+          type: "command_output_ack" | "command_output_resume",
+        ) => {
+          if (!subscription || settled || !acknowledgedOutput) return;
+          // A preceding output ACK may complete after terminal receipt. Only
+          // a successfully published terminal cursor can release its receiver.
+          const sequence = lastStreamSequence;
+          diagnostics.cursorAttempt(type === "command_output_resume");
+          try {
+            await subscription.publish({
+              type,
+              commandId,
+              sequence,
+              targetConnectionId: this.connectionInfo.connectionId,
+            });
+            diagnostics.cursorResult(
+              type === "command_output_resume",
+              sequence,
+              true,
+            );
+            if (
+              !settled &&
+              terminalReceived &&
+              sequence === lastStreamSequence
+            ) {
+              terminalCursorPublished = true;
+              completeTerminal?.();
+            }
+          } catch (error: unknown) {
+            diagnostics.cursorResult(
+              type === "command_output_resume",
+              sequence,
+              false,
+              isCentrifugoPublishTimeout(error),
+            );
+            // Keep the receiver until sender replay, reconnect, cancellation,
+            // or the existing deadline; never redispatch the command.
+          }
+        };
+        const acknowledgeOutput = () => {
+          if (acknowledgementTimer !== undefined) return;
+          acknowledgementTimer = setTimeout(() => {
+            acknowledgementTimer = undefined;
+            void sendOutputCursor("command_output_ack");
+          }, 25);
+        };
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
         const reassembler = new CentrifugoMessageReassembler();
-
-        const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
         // Timing diagnostics — track which phase we reached before timeout
         const t0 = Date.now();
@@ -711,37 +1019,23 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tPublished = 0;
         let tFirstMessage = 0;
 
-        const cleanup = () => {
-          // Sample ordinary commands, but always record large streams. This
-          // attributes relay traffic without logging command or output data.
-          const outputBytes = stdoutBytes + stderrBytes;
-          const sampleRate = relayTrafficSampleRate(
-            commandId,
-            Math.max(outputBytes, receivedPayloadBytesEstimate),
-          );
-          if (sampleRate !== null) {
-            console.log(
-              JSON.stringify({
-                timestamp: new Date().toISOString(),
-                event: "local_relay_command_traffic",
-                service: this.triggerRunId ? "agent-long" : "chat-handler",
-                user_id: this.userId,
-                connection_id: this.connectionInfo.connectionId,
-                chat_id: this.chatId ?? null,
-                trigger_run_id: this.triggerRunId ?? null,
-                command_id: commandId,
-                sample_rate: sampleRate,
-                stdout_bytes: stdoutBytes,
-                stderr_bytes: stderrBytes,
-                output_chunks: outputChunks,
-                received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-                unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-                received_publications: receivedPublications,
-                unmatched_publications: unmatchedPublications,
-                subscription_events: subscriptionEvents,
-                command_publish_attempts: commandPublishAttempts,
-                duration_ms: Date.now() - t0,
-              }),
+        const cleanup = (reason: ReceiverCleanupReason) => {
+          diagnostics.finish(reason);
+          clearTimeout(acknowledgementTimer);
+          // Every terminal path must release Stop callers before clearing the
+          // cancellation timers. Confirmed cancellation resolves true first.
+          resolveCancelAttempt?.(false);
+          resolveCancelAttempt = null;
+          cancelAttemptPromise = null;
+
+          if (!trafficMetricRecorded) {
+            trafficMetricRecorded = true;
+            recordRelayReceivedBytes(
+              "command",
+              this.triggerRunId ? "agent-long" : "chat-handler",
+              receivedPayloadBytesEstimate,
+              unmatchedPayloadBytesEstimate,
+              isolated ? "operation" : "connection",
             );
           }
           if (timeoutId) {
@@ -752,6 +1046,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
           }
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (subscription) {
             try {
               subscription.unsubscribe();
@@ -778,7 +1074,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           resolveCancelAttempt = null;
           cancelAttemptPromise = null;
           settled = true;
-          cleanup();
+          cleanup("canceled");
           resolve({
             stdout,
             stderr,
@@ -787,6 +1083,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         };
 
         const failCancellation = (message: string) => {
+          clearTimeout(cancelRetryTimeoutId);
+          cancelRetryTimeoutId = undefined;
           if (cancelAckTimeoutId) {
             clearTimeout(cancelAckTimeoutId);
             cancelAckTimeoutId = undefined;
@@ -796,17 +1094,29 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           cancelAttemptPromise = null;
           cancelRequested = false;
           cancelPublishStarted = false;
+          if (terminalReceivedDuringCancellation) {
+            // A later ACK must not turn a failed/timed-out Stop into success.
+            completeTerminal = () => {
+              if (settled) return;
+              settled = true;
+              cleanup("cancel_failed");
+              reject(new Error(message));
+            };
+          }
 
           if (cancelTriggeredBySignal && !settled) {
             settled = true;
-            cleanup();
+            cleanup("cancel_failed");
             reject(new Error(message));
           }
         };
 
         const publishCancel = () => {
           if (settled) return;
-          cancelRequested = true;
+          if (!cancelRequested) {
+            cancelRequested = true;
+            diagnostics.transition("cancel_requested");
+          }
           if (!publishedCommand || !subscription) {
             if (commandPublishInFlight) return;
             resolveCanceled();
@@ -823,19 +1133,35 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
           }, COMMAND_CANCEL_ACK_TIMEOUT_MS);
 
-          subscription
-            .publish({
-              type: "command_cancel",
-              commandId,
-              targetConnectionId: this.connectionInfo.connectionId,
-            })
-            .catch(() => {
-              if (cancelAttemptPromise === attempt) {
-                failCancellation(
-                  "Failed to publish local command cancellation.",
-                );
-              }
-            });
+          let retried = false;
+          const sendCancel = (retry: boolean) => {
+            subscription!
+              .publish({
+                type: "command_cancel",
+                commandId,
+                targetConnectionId: this.connectionInfo.connectionId,
+              })
+              .catch((error: unknown) => {
+                if (cancelAttemptPromise === attempt && (retry || !retried)) {
+                  // A missing RPC ACK does not prove the control was rejected.
+                  // Leave the bounded resend/acknowledgement deadline in charge.
+                  if (isCentrifugoPublishTimeout(error)) return;
+                  failCancellation(
+                    "Failed to publish local command cancellation.",
+                  );
+                }
+              });
+          };
+          // Stop is idempotent for this exact command/connection. Resend once
+          // if no terminal response arrives, even if the first RPC is stalled.
+          // Never replay the command or extend the acknowledgement deadline.
+          cancelRetryTimeoutId = setTimeout(() => {
+            cancelRetryTimeoutId = undefined;
+            if (settled || cancelAttemptPromise !== attempt) return;
+            retried = true;
+            sendCancel(true);
+          }, COMMAND_CANCEL_RETRY_MS);
+          sendCancel(false);
         };
 
         const requestCancellation = (
@@ -868,7 +1194,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         timeoutId = setTimeout(() => {
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("deadline");
             const phases = [
               `connected: ${tConnected ? `${tConnected - t0}ms` : "no"}`,
               `subscribed: ${tSubscribed ? `${tSubscribed - t0}ms` : "no"}`,
@@ -880,6 +1206,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 `Command timeout after ${maxWaitTime}ms [${phases}]` +
                   ` connectionId=${this.connectionInfo.connectionId}`,
               ),
+              true,
             );
           }
         }, maxWaitTime);
@@ -888,12 +1215,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription = client.newSubscription(channel);
 
         subscription.on("publication", (ctx) => {
+          if (ctx.data?.type === "operation_ready") return;
           if (settled) return;
-          receivedPublications += 1;
+
           const payloadBytes = estimateRelayPayloadBytes(ctx.data);
           receivedPayloadBytesEstimate += payloadBytes;
           if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
@@ -909,26 +1236,62 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               typeof reassembled.type === "string" &&
               IGNORED_MESSAGE_TYPES.has(reassembled.type)
             ) {
-              unmatchedPublications += 1;
               unmatchedPayloadBytesEstimate += payloadBytes;
             }
             return;
           }
           if (message.commandId !== commandId) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
+            return;
+          }
+          if (message.type === "command_output_unavailable") {
+            settled = true;
+            cleanup("output_unavailable");
+            reject(new Error(message.message));
             return;
           }
           if (message.type === "command" || message.type === "command_cancel") {
             return;
           }
 
+          if (
+            message.type !== "command_cancel_result" &&
+            message.outputProtocol === "ack-v1" &&
+            isolated &&
+            this.connectionInfo.isDesktop
+          )
+            acknowledgedOutput = true;
           const sequence = "sequence" in message ? message.sequence : undefined;
+          if (
+            acknowledgedOutput &&
+            message.type === "error" &&
+            sequence === undefined
+          ) {
+            settled = true;
+            cleanup("unsequenced_error");
+            reject(new Error(message.message));
+            return;
+          }
+
+          if (terminalReceived && message.type !== "command_cancel_result") {
+            if (acknowledgedOutput && sequence === lastStreamSequence)
+              acknowledgeOutput();
+            return;
+          }
+
           if (sequence !== undefined) {
-            if (sequence <= lastStreamSequence) return;
+            if (sequence <= lastStreamSequence) {
+              if (acknowledgedOutput) acknowledgeOutput();
+              return;
+            }
+            if (sequence !== lastStreamSequence + 1 && acknowledgedOutput) {
+              diagnostics.transition("sequence_gap");
+              void sendOutputCursor("command_output_resume");
+              return;
+            }
             if (sequence !== lastStreamSequence + 1) {
               settled = true;
-              cleanup();
+              cleanup("sequence_gap");
               console.error(
                 JSON.stringify({
                   timestamp: new Date().toISOString(),
@@ -952,37 +1315,93 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             }
             lastStreamSequence = sequence;
           }
+          if (acknowledgedOutput && sequence !== undefined) acknowledgeOutput();
           if (!tFirstMessage) tFirstMessage = Date.now();
+
+          if (
+            !cancelRequested &&
+            (message.type === "exit" || message.type === "error") &&
+            streamRecoveryIncomplete &&
+            (sequence === undefined || receivedUnsequencedOutput)
+          ) {
+            settled = true;
+            cleanup("recovery_incomplete");
+            reject(
+              new Error(
+                "Local command output completeness is unknown after an unrecovered relay interruption.",
+              ),
+            );
+            return;
+          }
 
           switch (message.type) {
             case "stdout":
-              stdoutBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
+              receivedUnsequencedOutput ||= sequence === undefined;
               stdout += message.data;
               opts?.onStdout?.(message.data);
               break;
             case "stderr":
-              stderrBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
+              receivedUnsequencedOutput ||= sequence === undefined;
               stderr += message.data;
               opts?.onStderr?.(message.data);
               break;
             case "exit":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr,
-                exitCode: message.exitCode,
-                pid: message.pid,
-              });
+              if (terminalReceived) break;
+              terminalReceived = true;
+              diagnostics.terminal(message.type);
+              completeTerminal = () => {
+                if (settled) return;
+                settled = true;
+                cleanup(
+                  terminalCursorPublished
+                    ? "terminal_ack_published"
+                    : "legacy_terminal",
+                );
+                resolve({
+                  stdout,
+                  stderr,
+                  exitCode: message.exitCode,
+                  pid: message.pid,
+                });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
             case "command_cancel_result":
               if (!cancelRequested) break;
+              diagnostics.cancelResult(message.canceled);
+              if (terminalReceivedDuringCancellation && acknowledgedOutput) {
+                // A cancel reply does not acknowledge the sequenced terminal.
+                // Preserve receiver ownership until its ACK or the existing deadline.
+                if (!message.canceled) {
+                  completeTerminal = () => {
+                    const reason =
+                      "Local command cancellation was not confirmed.";
+                    failCancellation(reason);
+                    if (!settled) {
+                      settled = true;
+                      cleanup("cancel_failed");
+                      reject(new Error(reason));
+                    }
+                  };
+                }
+                break;
+              }
               if (message.canceled) {
                 resolveCanceled();
               } else {
@@ -993,7 +1412,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               break;
             case "error":
               if (cancelRequested) {
-                resolveCanceled();
+                // A terminal can race the cancel result (including native Stop).
+                // Retain the receiver for its sequenced ACK just as on completion.
+                if (!terminalReceived) {
+                  terminalReceived = true;
+                  diagnostics.terminal(message.type);
+                }
+                terminalReceivedDuringCancellation = true;
+                completeTerminal = resolveCanceled;
+                if (acknowledgedOutput && sequence !== undefined)
+                  void sendOutputCursor("command_output_ack");
+                else resolveCanceled();
                 break;
               }
               console.warn(
@@ -1008,48 +1437,103 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   message: message.message,
                 }),
               );
-              settled = true;
-              cleanup();
-              resolve({
-                stdout,
-                stderr: stderr
-                  ? `${stderr}\n${message.message}`
-                  : message.message,
-                exitCode: -1,
-              });
+              if (terminalReceived) break;
+              terminalReceived = true;
+              diagnostics.terminal(message.type);
+              completeTerminal = () => {
+                if (settled) return;
+                settled = true;
+                cleanup(
+                  terminalCursorPublished
+                    ? "terminal_ack_published"
+                    : "legacy_terminal",
+                );
+                resolve({
+                  stdout,
+                  stderr: stderr
+                    ? `${stderr}\n${message.message}`
+                    : message.message,
+                  exitCode: -1,
+                });
+              };
+              if (acknowledgedOutput && sequence !== undefined)
+                void sendOutputCursor("command_output_ack");
+              else completeTerminal();
               break;
           }
         });
 
         subscription.on("error", (ctx) => {
+          // Centrifuge resubscribes after temporary subscription failures. Keep
+          // the same command and its output until recovery or the existing deadline.
+          if (
+            commandDispatchStarted &&
+            ctx.type === "subscribe" &&
+            (ctx.error.code < 100 ||
+              ("temporary" in ctx.error && ctx.error.temporary === true))
+          ) {
+            diagnostics.transition("subscription_retry");
+            return;
+          }
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("subscription_error");
             reject(
               new Error(
                 `Centrifugo subscription error: ${ctx.error?.message ?? "unknown"}`,
               ),
+              ctx.type === "subscribe" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true)),
             );
           }
+        });
+
+        subscription.on("unsubscribed", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup("unsubscribed");
+          reject(
+            new Error(
+              `Centrifugo subscription terminally unsubscribed: ${ctx.reason}`,
+            ),
+          );
         });
 
         // Wait for subscription to be fully established before publishing command.
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
-        subscription.on("subscribed", () => {
+        subscription.on("subscribing", () => {
+          diagnostics.transition("subscribing");
+          if (publishedCommand || commandPublishInFlight)
+            streamInterrupted = true;
+        });
+        subscription.on("subscribed", (ctx) => {
           if (settled) return;
-          subscriptionEvents += 1;
+          diagnostics.subscribed(ctx?.recovered === true);
+
+          if (commandDispatchStarted && streamInterrupted) {
+            // Legacy clients do not sequence chunks. Unless broker recovery
+            // succeeded, their next exit cannot prove all output was received.
+            streamRecoveryIncomplete ||= ctx?.recovered !== true;
+            streamInterrupted = false;
+          }
+
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the
           // second event arrives before the first presence check completes.
-          if (commandDispatchStarted) return;
+          if (commandDispatchStarted) {
+            void sendOutputCursor("command_output_resume");
+            return;
+          }
           commandDispatchStarted = true;
           tSubscribed = Date.now();
 
           void (async () => {
             try {
-              const presence = await subscription!.presence();
+              const presence = isolated ? null : await subscription!.presence();
               if (
+                presence !== null &&
                 !presenceHasConnectionId(
                   presence,
                   this.connectionInfo.connectionId,
@@ -1057,7 +1541,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               ) {
                 if (settled) return;
                 settled = true;
-                cleanup();
+                cleanup("presence_missing");
                 reject(
                   new LocalCommandRelayUnsubscribedError(
                     this.connectionInfo.connectionId,
@@ -1100,12 +1584,28 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               chatId: this.chatId,
               triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
+              ...(isolated && this.connectionInfo.isDesktop
+                ? { outputProtocol: "ack-v1" as const }
+                : {}),
             };
 
+            if (!isolated) commandPublicationStarted = true;
             commandPublishInFlight = true;
-            commandPublishAttempts += 1;
+
             (async () => {
-              if (opts?.stdin === undefined) {
+              if (isolated) {
+                await dispatchIsolatedOperation(
+                  client,
+                  this.userId,
+                  this.connectionInfo.connectionId,
+                  commandMessage as unknown as Record<string, unknown>,
+                  () => !settled,
+                  subscription!,
+                  () => {
+                    commandPublicationStarted = true;
+                  },
+                );
+              } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);
@@ -1127,6 +1627,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               })
               .catch((err: unknown) => {
                 commandPublishInFlight = false;
+                if (
+                  !settled &&
+                  isolated &&
+                  commandPublicationStarted &&
+                  (err instanceof RelayOperationReadinessTimeout ||
+                    isCentrifugoPublishTimeout(err))
+                ) {
+                  // A lost publish/readiness reply does not prove the command
+                  // failed to execute. Keep its original receiver and deadline;
+                  // never resend execution. Stop must still target this command.
+                  publishedCommand = true;
+                  diagnostics.transition("dispatch_uncertain");
+                  if (cancelRequested || opts?.signal?.aborted) publishCancel();
+                  return;
+                }
                 if (cancelRequested || opts?.signal?.aborted) {
                   failCancellation(
                     "Command publication failed while cancellation was pending.",
@@ -1134,7 +1649,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 }
                 if (!settled) {
                   settled = true;
-                  cleanup();
+                  cleanup("dispatch_failed");
+                  if (
+                    !commandPublicationStarted &&
+                    isLocalCommandRelayUnsubscribedError(err)
+                  ) {
+                    reject(err);
+                    return;
+                  }
                   reject(
                     new Error(
                       `Failed to publish command: ${
@@ -1156,23 +1678,44 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             if (!settled) {
               commandPublishInFlight = false;
               settled = true;
-              cleanup();
+              cleanup("dispatch_failed");
               reject(err instanceof Error ? err : new Error(String(err)));
             }
           });
         });
 
-        subscription.subscribe();
-        client.connect();
+        client.on("disconnected", (ctx) => {
+          if (settled) return;
+          settled = true;
+          cleanup("disconnected");
+          reject(
+            new Error(
+              `Centrifugo client terminally disconnected: ${ctx.reason}`,
+            ),
+          );
+        });
 
         client.on("connected", () => {
+          diagnostics.transition("connected");
           tConnected = Date.now();
         });
 
         client.on("error", (ctx) => {
+          // A failed reconnect attempt is not a command failure. Centrifuge
+          // owns transport retries; never replace an already dispatched command.
+          if (
+            commandDispatchStarted &&
+            (ctx.type === "transport" ||
+              (ctx.type === "connect" &&
+                (ctx.error.code < 100 ||
+                  ("temporary" in ctx.error && ctx.error.temporary === true))))
+          ) {
+            diagnostics.transition("client_retry");
+            return;
+          }
           if (!settled) {
             settled = true;
-            cleanup();
+            cleanup("client_error");
             const msg = ctx.error?.message ?? "unknown";
             const isConnectionLimit =
               msg.includes("connection limit") || ctx.error?.code === 4503;
@@ -1182,9 +1725,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
                   : `Centrifugo client error: ${msg}`,
               ),
+              isConnectionLimit ||
+                ctx.type === "transport" ||
+                (ctx.type === "connect" &&
+                  (ctx.error.code < 100 ||
+                    ("temporary" in ctx.error &&
+                      ctx.error.temporary === true))),
             );
           }
         });
+
+        subscription.subscribe();
+        client.connect();
       });
 
       return result;
@@ -1204,14 +1756,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       /^[A-Za-z]:[\\/]/.test(path);
     if (isAbsolute) return path;
 
-    const separator = this.workingDirectory.includes("\\") ? "\\" : "/";
-    const base = this.workingDirectory.replace(/[\\/]+$/, "");
-    const relative = path.replace(/^[\\/]+/, "");
+    const windows = this.isWindows();
+    const separator =
+      windows && this.workingDirectory.includes("\\") ? "\\" : "/";
+    const base = this.workingDirectory.replace(
+      windows ? /[\\/]+$/ : /\/+$/,
+      "",
+    );
+    const relative = path.replace(windows ? /^[\\/]+/ : /^\/+/, "");
     return `${base}${separator}${relative}`;
   }
 
-  // Max chunk size ~500KB base64 to stay under size limits (bash path)
-  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+  // Bound the complete shell argument, including quoting and path, below
+  // Linux per-argument and Windows Git Bash process command-line limits.
+  private static readonly MAX_POSIX_FILE_COMMAND_BYTES = 16 * 1024;
 
   // Keep native file relay messages comfortably below common WebSocket frame
   // limits after JSON overhead. Base64 chunks must stay divisible by 4.
@@ -1221,9 +1779,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // `echo `, redirect operator, and file path — keep data under 7000 chars.
   private static readonly MAX_CMD_CHUNK_SIZE = 7000;
 
-  /** Extract parent directory from a path, handling both `/` and `\` separators. */
-  private static parentDir(path: string): string {
-    const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  /** Backslashes are filename characters on POSIX, separators on Windows. */
+  private parentDir(path: string): string {
+    const lastSep = this.isWindows()
+      ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+      : path.lastIndexOf("/");
     return lastSep > 0 ? path.substring(0, lastSep) : "";
   }
 
@@ -1233,23 +1793,54 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    */
   isWindows(): boolean {
     return (
-      this.connectionInfo.osInfo?.platform === "win32" ||
-      this.shellKind === "cmd"
+      normalizeSandboxPlatform(this.connectionInfo.osInfo?.platform ?? "") ===
+        "win32" || this.shellKind === "cmd"
     );
   }
 
-  /**
-   * Convert Unix-style paths (e.g. /tmp/hackerai-upload/file.png) to
-   * Windows-native paths when running on a Windows sandbox.
-   * Paths are generated before the sandbox platform is known, so they
-   * always arrive in Unix form and need translating here.
-   */
-  private toNativePath(path: string): string {
+  /** Resolve POSIX mount paths using the same Windows shell that created them. */
+  private async toNativePath(
+    path: string,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     if (!this.isWindows()) return path;
-    if (path.startsWith("/tmp/")) {
+    if (
+      path.startsWith("/") &&
+      !path.startsWith("//") &&
+      (await this.detectShell(signal)) === "bash"
+    ) {
+      const cached = nativePaths?.get(path);
+      if (cached !== undefined) return cached;
+      // Git Bash /tmp is an MSYS mount, often the user's Windows TEMP directory.
+      // Use its installed utility, independent of PATH or project executables.
+      const result = await this.runSetupCommand(
+        `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
+        { signal },
+      );
+      const resolved = result.stdout.replace(/\r?\n$/, "");
+      if (
+        result.exitCode !== 0 ||
+        /[\r\n\0]/.test(resolved) ||
+        !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
+      ) {
+        // Never guess another file location when conversion fails.
+        throw new Error(
+          "Failed to resolve the Windows file path through Git Bash",
+        );
+      }
+      nativePaths?.set(path, resolved);
+      return resolved;
+    }
+    // cmd.exe has no MSYS mount table; preserve its established upload alias.
+    if (path === "/tmp" || path.startsWith("/tmp/")) {
       return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
     }
-    // Translate any remaining absolute Unix paths to Windows-style
+    const bashDrive = path.match(/^\/([A-Za-z])(?:\/(.*))?$/);
+    if (bashDrive) {
+      return `${bashDrive[1].toUpperCase()}:\\${(bashDrive[2] ?? "").replace(/\//g, "\\")}`;
+    }
     return path.replace(/\//g, "\\");
   }
 
@@ -1288,14 +1879,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
    * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
-  private async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
+  async detectShell(signal?: AbortSignal): Promise<"bash" | "cmd"> {
     signal?.throwIfAborted();
     if (this.shellKind) return this.shellKind;
     const declaredPlatform = this.connectionInfo.osInfo?.platform;
     // Older desktop clients did not publish osInfo. Probe those connections
     // instead of assuming Bash: a Windows cmd relay would otherwise receive
     // single-quoted signed URLs and split their `&` query fields into commands.
-    if (declaredPlatform && declaredPlatform !== "win32") {
+    if (declaredPlatform && !this.isWindows()) {
       this.shellKind = "bash";
       return "bash";
     }
@@ -1303,6 +1894,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
       displayName: "",
     });
+    if (probe.exitCode !== 0) {
+      throw persistenceCommandError("Failed to detect local shell", probe);
+    }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
@@ -1370,10 +1964,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const shell = await this.detectShell(signal);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
-    const path = useBash
-      ? CentrifugoSandbox.toBashPath(nativePath)
-      : nativePath;
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(rawPath),
+      signal,
+    );
+    const path =
+      useBash && this.isWindows()
+        ? CentrifugoSandbox.toBashPath(nativePath)
+        : nativePath;
     const escapePath = useBash
       ? (v: string) => CentrifugoSandbox.escapePath(v)
       : (v: string) => this.escapeForTarget(v);
@@ -1407,13 +2005,173 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
   // Cache for the detected HTTP client.
   private httpClient: HttpClient | null = null;
+  private powerShellExecutable: string | undefined;
+  private uploadReadDiagnosticStarted = false;
+
+  private async diagnoseUploadReadFailure(path: string): Promise<void> {
+    // Reserve before awaiting: concurrent and repeated failed files share one
+    // metadata-only probe per adapter. Never read file contents or list folders.
+    if (this.uploadReadDiagnosticStarted) return;
+    this.uploadReadDiagnosticStarted = true;
+    const escaped = CentrifugoSandbox.escapePath(path);
+    const marker = "__HACKERAI_UPLOAD_READ_FLAGS__:";
+    const command =
+      `printf '${marker}'; ` +
+      ["-e", "-f", "-r"]
+        .map(
+          (flag) =>
+            `if test ${flag} ${escaped}; then printf 1; else printf 0; fi; `,
+        )
+        .join("") +
+      "printf '\\n'";
+    let probeStatus: "complete" | "invalid_response" | "unavailable" =
+      "unavailable";
+    let flags: boolean[] | null = null;
+    try {
+      const result = await this.commands.run(command, {
+        timeoutMs: 2_000,
+        displayName: "",
+      });
+      const match = result.stdout.match(
+        /(?:^|\n)__HACKERAI_UPLOAD_READ_FLAGS__:([01])([01])([01])\r?(?:\n|$)/,
+      );
+      if (result.exitCode === 0 && match) {
+        probeStatus = "complete";
+        flags = match.slice(1).map((flag) => flag === "1");
+      } else if (result.exitCode === 0) {
+        probeStatus = "invalid_response";
+      }
+    } catch {
+      // Diagnostics must not replace the upload failure or retry publication.
+    }
+    try {
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_input_diagnostic",
+          sandbox_type: "desktop",
+          platform: "posix",
+          http_client: "curl",
+          exit_code: 26,
+          probe_status: probeStatus,
+          input_exists: flags?.[0] ?? null,
+          input_regular_file: flags?.[1] ?? null,
+          // A confined curl process can still differ from this shell's view.
+          input_readable_by_shell: flags?.[2] ?? null,
+          native_file_relay: this.supportsNativeFileRelay(),
+        }),
+      );
+    } catch {
+      // Logging is optional; preserve the original redacted upload error.
+    }
+  }
+
+  private async resolvePowerShellExecutable(
+    signal?: AbortSignal,
+  ): Promise<string> {
+    signal?.throwIfAborted();
+    if (this.powerShellExecutable) return this.powerShellExecutable;
+    // Cache only verified results: an in-flight probe belongs to its caller,
+    // so Stop cannot cancel another transfer sharing this sandbox.
+    const shell = await this.detectShell(signal);
+    // Resolve on the selected computer, never against the worker's PATH.
+    const candidates =
+      shell === "bash"
+        ? [
+            "powershell.exe",
+            "pwsh.exe",
+            '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+          ]
+        : [
+            "powershell",
+            "pwsh",
+            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+          ];
+    for (const executable of candidates) {
+      const result = await this.runSetupCommand(
+        `${executable} -NoLogo -NoProfile -NonInteractive -Command "Write-Output 'hackerai-powershell-ready'"`,
+        { displayName: "", timeoutMs: 5_000, signal },
+      );
+      signal?.throwIfAborted();
+      if (
+        result.exitCode === 0 &&
+        result.stdout.trim() === "hackerai-powershell-ready"
+      ) {
+        this.powerShellExecutable = executable;
+        return executable;
+      }
+    }
+    throw new Error(
+      "No supported Windows attachment transfer client is available. Install curl or PowerShell, or restore it to PATH.",
+    );
+  }
+
   private snapCurlFallbackSelected = false;
+
+  private uploadNetworkProbeAttempted = false;
+
+  private async diagnoseUploadNetworkFailure(
+    uploadUrl: string,
+    useBash: boolean,
+    exitCode: 6 | 28 | 35 | 124 | -1,
+  ): Promise<void> {
+    try {
+      if (this.uploadNetworkProbeAttempted) return;
+      const shell: UploadProbeShell = this.isWindows()
+        ? useBash
+          ? "windows-bash"
+          : "cmd"
+        : "posix";
+      const command = buildUploadNetworkProbeCommand(
+        uploadUrl,
+        shell,
+        this.isWindows() && this.curlCaps?.sslNoRevoke === true,
+      );
+      if (!command) return;
+      // Set before awaiting: concurrent uploads share this instance's budget.
+      this.uploadNetworkProbeAttempted = true;
+      let output: string | undefined;
+      let commandExitCode: number | null = null;
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 10_000,
+          displayName: "",
+        });
+        output = result.stdout;
+        if (
+          Number.isSafeInteger(result.exitCode) &&
+          result.exitCode >= 0 &&
+          result.exitCode <= 255
+        )
+          commandExitCode = result.exitCode;
+      } catch {
+        // No retry: this measures connectivity, never repeats the upload.
+      }
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_network_diagnostic",
+          diagnostic_version: 1,
+          sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+          platform: this.isWindows() ? "windows" : "posix",
+          shell,
+          upload_exit_code: exitCode,
+          command_exit_code: commandExitCode,
+          ...parseUploadNetworkProbe(output),
+        }),
+      );
+    } catch {
+      // Even a failed probe or logging sink must preserve the original error.
+    }
+  }
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -1479,6 +2237,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         return "curl";
       }
 
+      await this.resolvePowerShellExecutable(signal);
       this.httpClient = "powershell";
       return "powershell";
     }
@@ -1572,24 +2331,25 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     signal?: AbortSignal,
   ): Promise<{ command: string; cleanup: () => Promise<void> }> {
     signal?.throwIfAborted();
+    const executable = await this.resolvePowerShellExecutable(signal);
     const scriptName = `hackerai-transfer-${crypto.randomUUID()}.ps1`;
     // Native Desktop writes enforce the selected project root. Stage helper
     // scripts there too, rather than attempting an out-of-project temp write.
     const scriptPath = this.workingDirectory
       ? scriptName
       : `/tmp/${scriptName}`;
-    const nativeScriptPath = this.toNativePath(
+    const nativeScriptPath = await this.toNativePath(
       this.resolveWorkingPath(scriptPath),
+      signal,
     );
     try {
       // files.write already chunks legacy cmd.exe writes below its command
       // length limit and uses the native file relay when the client supports it.
       await this.files.write(nativeScriptPath, script, { signal });
-      const { useBash, path, escapePath } = await this.shellContext(
+      const { path, escapePath } = await this.shellContext(
         nativeScriptPath,
         signal,
       );
-      const executable = useBash ? "powershell.exe" : "powershell";
       return {
         command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
@@ -1698,6 +2458,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     firstChunkType: "file_write" | "file_append",
     signal?: AbortSignal,
   ): Promise<void> {
+    // Pin successful mount resolutions only for this write, including its root.
+    // This avoids per-chunk relay probes without reusing stale mounts on a later
+    // operation or replacement connection, or redirecting an append mid-write.
+    const nativePaths = new Map<string, string>();
     for (
       let offset = 0;
       offset < encodedContent.length;
@@ -1716,6 +2480,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         new Set(["file_ok"]),
         120000,
         signal,
+        nativePaths,
       );
     }
   }
@@ -1817,13 +2582,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         return;
       }
 
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
+      const escapedPath = escapePath(path);
+      // Legacy Windows relays may launch Bash through cmd.exe, whose command
+      // line limit applies even though the inner shell accepts POSIX syntax.
+      const commandBudget = this.isWindows()
+        ? CentrifugoSandbox.MAX_CMD_CHUNK_SIZE
+        : CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      const overhead = Buffer.byteLength(
+        `printf '%s' "" | base64 -d >> ${escapedPath}`,
+        "utf8",
+      );
+      const chunkSize = Math.floor((commandBudget - overhead) / 4) * 4;
+      if (useBash && chunkSize < 4) {
+        // Reject before even issuing mkdir with an oversized path argument.
+        throw new Error("File path exceeds the local file command limit");
+      }
 
-      // Ensure parent directory exists. Pass the native (unconverted) dir
-      // so ensureDirectory re-applies its own shell-aware path handling.
-      const dir = CentrifugoSandbox.parentDir(this.toNativePath(rawPath));
+      // Use the resolved parent so mkdir and the write target the same mount.
+      const dir = this.parentDir(nativePath);
       if (dir) {
         await this.ensureDirectory(dir, signal);
       }
@@ -1843,7 +2622,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       if (!useBash) {
         // Windows cmd.exe: use certutil to decode base64
-        const escapedPath = escapePath(path);
         const b64 = isBinary
           ? contentStr
           : Buffer.from(contentStr).toString("base64");
@@ -1871,67 +2649,63 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
           // Decode and clean up temp file
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
-        }
-      } else if (
-        isBinary &&
-        contentStr.length > CentrifugoSandbox.MAX_CHUNK_SIZE
-      ) {
-        // POSIX: Chunk large binary files to stay under size limits
-        const chunks: string[] = [];
-        for (
-          let i = 0;
-          i < contentStr.length;
-          i += CentrifugoSandbox.MAX_CHUNK_SIZE
-        ) {
-          chunks.push(
-            contentStr.slice(i, i + CentrifugoSandbox.MAX_CHUNK_SIZE),
-          );
-        }
-
-        const escapedPath = escapePath(path);
-        for (let i = 0; i < chunks.length; i++) {
-          const operator = i === 0 ? ">" : ">>";
-          const result = await this.runFileCommand(
-            `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
-          );
-          if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
-          }
         }
       } else {
-        const escapedPath = escapePath(path);
-        // Quote text as one literal argument; printf preserves trailing newlines
-        // exactly, unlike a heredoc which always adds a final newline.
-        let command: string;
-        if (isBinary) {
-          command = `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`;
-        } else {
-          command = `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
+        const literalCommand = isBinary
+          ? undefined
+          : `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
+        if (
+          literalCommand &&
+          Buffer.byteLength(literalCommand, "utf8") <= commandBudget
+        ) {
+          const result = await this.runFileCommand(literalCommand, {
+            displayName: `Writing: ${fileName}`,
+            signal,
+          });
+          if (result.exitCode !== 0) {
+            throw persistenceCommandError("Failed to write file", result);
+          }
+          return;
         }
 
-        const result = await this.runFileCommand(command, {
-          displayName: `Writing: ${fileName}`,
-          signal,
-        });
-        if (result.exitCode !== 0) {
-          throw new Error(`Failed to write file: ${result.stderr}`);
+        // Encode large text as well as binary data. Chunking base64 on a
+        // multiple of four preserves UTF-8 bytes and avoids shell expansion.
+        const encoded = isBinary
+          ? contentStr
+          : Buffer.from(contentStr, "utf8").toString("base64");
+        for (
+          let offset = 0;
+          offset < encoded.length || offset === 0;
+          offset += chunkSize
+        ) {
+          const chunk = encoded.slice(offset, offset + chunkSize);
+          const operator = offset === 0 ? ">" : ">>";
+          const result = await this.runFileCommand(
+            `printf '%s' "${chunk}" | base64 -d ${operator} ${escapedPath}`,
+            { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
+          );
+          if (result.exitCode !== 0) {
+            throw persistenceCommandError("Failed to write file", result);
+          }
         }
       }
     },
@@ -1946,7 +2720,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
 
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe uses `type`, bash uses `cat`
       const command = useBash ? `cat ${escaped}` : `type ${escaped}`;
@@ -1967,8 +2741,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       options?.signal?.throwIfAborted();
       const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
       const destCtx = await this.shellContext(destRawPath, options?.signal);
-      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
-      const dir = CentrifugoSandbox.parentDir(destCtx.path);
+      const fileName = getSandboxFileName(destCtx.path, this.isWindows());
+      const dir = this.parentDir(destCtx.path);
 
       const mkdirPart = !dir
         ? ""
@@ -2013,7 +2787,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         rawPath,
         signal,
       );
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
       const command = useBash
@@ -2075,8 +2849,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
       const httpClient = await this.detectHttpClient(signal);
-      const dir = CentrifugoSandbox.parentDir(path);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const dir = this.parentDir(path);
+      const fileName = getSandboxFileName(path, this.isWindows());
 
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
@@ -2133,6 +2907,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       // JS-level retry safety net on top of curl's --retry, for transient
       // network/TLS errors that can survive curl's own retry loop:
+      //   6  = temporary DNS resolution failure
       //   7  = couldn't connect
       //   18 = partial transfer
       //   23 = write error
@@ -2143,7 +2918,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   124 = local command wrapper timeout
       const transientExitCodes =
         httpClient === "curl"
-          ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
+          ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
           : httpClient === "wget"
             ? new Set([4, 124])
             : new Set<number>();
@@ -2180,7 +2955,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (result.exitCode === 0) break;
           if (
             attempt === MAX_ATTEMPTS ||
-            !transientExitCodes.has(result.exitCode)
+            !transientExitCodes.has(result.exitCode) ||
+            /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
+              result.stderr,
+            )
           ) {
             break;
           }
@@ -2201,10 +2979,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           const diagCmd = useBash
             ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
             : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-          const diag = await this.commands.run(diagCmd, {
-            displayName: "",
-            signal,
-          });
+          let diagnosticOutput = "unavailable";
+          try {
+            const diag = await this.commands.run(diagCmd, {
+              displayName: "",
+              timeoutMs: 5_000,
+              signal,
+            });
+            diagnosticOutput = diag.stdout.slice(0, 1024);
+          } catch (error) {
+            throwIfAttachmentAborted(signal, error);
+          }
           signal?.throwIfAborted();
           const safeStderr = redactTransferDetails(result.stderr, url, [
             rawPath,
@@ -2217,7 +3002,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               `  destination: [redacted-destination-path]\n` +
               `  command: ${httpClient}\n` +
               `  exitCode: ${result.exitCode}\n` +
-              `  diagnostics: ${diag.stdout}`,
+              `  diagnostics: ${diagnosticOutput}`,
           );
         }
       } finally {
@@ -2230,7 +3015,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, nativePath, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -2251,8 +3036,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         }
       }
 
-      const fileName = path.split(/[/\\]/).pop() || "file";
-      const escapedPath = escapePath(path);
+      const fileName = getSandboxFileName(path, this.isWindows());
+      // Both native Windows curl and MSYS curl accept C:/... paths. /c/...
+      // depends on MSYS argument conversion, which a caller can disable.
+      const uploadPath =
+        this.isWindows() && useBash ? nativePath.replace(/\\/g, "/") : path;
+      const escapedPath = escapePath(uploadPath);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
       const curlUploadFlags =
@@ -2270,7 +3059,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let command: string;
       let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
-        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+        command =
+          this.isWindows() && !useBash
+            ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+            : buildPosixCurlUploadCommand(uploadPath, uploadUrl, contentType, {
+                sslNoRevoke:
+                  this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke,
+              });
       } else if (httpClient === "wget") {
         command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
       } else {
@@ -2293,12 +3088,61 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: `Uploading: ${fileName}`,
         });
         if (result.exitCode !== 0) {
+          // The thrown error retains the existing redacted message. Record the
+          // command outcome separately without paths, signed URLs or output.
+          console.warn(
+            "[centrifugo-http]",
+            JSON.stringify({
+              level: "warn",
+              event: "sandbox_file_upload_command_failed",
+              sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+              platform: this.isWindows() ? "windows" : "posix",
+              http_client: httpClient,
+              ...(httpClient === "curl"
+                ? getUploadFailureDiagnostics(uploadUrl, result.stderr)
+                : {}),
+              exit_code: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : null,
+            }),
+          );
+          if (
+            httpClient === "curl" &&
+            (result.exitCode === 6 ||
+              result.exitCode === 28 ||
+              result.exitCode === 35 ||
+              result.exitCode === 124 ||
+              (result.exitCode === -1 &&
+                result.stderr.trim() === "Command timed out"))
+          ) {
+            await this.diagnoseUploadNetworkFailure(
+              uploadUrl,
+              useBash,
+              result.exitCode,
+            );
+          }
+          if (
+            result.exitCode === 26 &&
+            httpClient === "curl" &&
+            this.connectionInfo.isDesktop &&
+            !this.isWindows()
+          ) {
+            await this.diagnoseUploadReadFailure(path);
+          }
           const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
             rawPath,
             path,
             nativePath,
+            uploadPath,
           ]);
-          throw new Error(`Failed to upload file: ${safeStderr}`);
+          throw Object.assign(
+            new Error(`Failed to upload file: ${safeStderr}`),
+            {
+              exitCode: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : undefined,
+            },
+          );
         }
       } finally {
         await cleanupPowerShellScript?.().catch(() => undefined);

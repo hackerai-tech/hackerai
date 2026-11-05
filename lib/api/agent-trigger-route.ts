@@ -1,3 +1,14 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
+import { api as goalApi } from "@/convex/_generated/api";
+import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
+import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import type { GoalContract } from "@/lib/goals/contracts";
+import { validGoalRequest } from "@/lib/goals/contracts";
+import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
+import {
+  readCloudWorkspaceState,
+  assertCloudWorkspaceAvailable,
+} from "@/lib/ai/tools/utils/cloud-workspace-guard";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -16,7 +27,9 @@ import {
   getChatById,
   getUserCustomization,
   handleInitialChatAndUserMessage,
+  type InitialChatPersistenceStep,
   setActiveTriggerRun,
+  replaceActiveTriggerRun,
 } from "@/lib/db/actions";
 import {
   assertFreeAgentGates,
@@ -157,16 +170,52 @@ export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
   VERCEL_ENV?: string;
+  TRIGGER_VERSION?: string;
+  TRIGGER_EXTERNAL_DEPLOYMENT_ID?: string;
+  TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION?: string;
+  VERCEL_GIT_COMMIT_SHA?: string;
 };
 
-export const shouldRequireAgentApprovalWorkerVersion = (
+export const getAgentApprovalDeploymentPin = (
+  environment: AgentDeploymentEnvironment = process.env,
+): { lockToVersion?: string; externalDeploymentId?: string } => {
+  // Preserve the legacy pin until the coordinated migration removes it.
+  const workerVersion = environment.TRIGGER_VERSION?.trim();
+  if (workerVersion) return { lockToVersion: workerVersion };
+
+  const normalizeId = (value: string | undefined) => {
+    const id = value?.trim();
+    return id && id.length <= 128 ? id : undefined;
+  };
+  const automatic =
+    environment.TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION?.trim().toLowerCase();
+  // Match the SDK's explicit-id / Vercel discovery precedence. Pass the pin
+  // explicitly so Session identity and the worker it schedules cannot diverge.
+  const externalDeploymentId =
+    normalizeId(environment.TRIGGER_EXTERNAL_DEPLOYMENT_ID) ??
+    (automatic === "1" || automatic === "true"
+      ? normalizeId(environment.VERCEL_GIT_COMMIT_SHA)
+      : undefined);
+  return externalDeploymentId ? { externalDeploymentId } : {};
+};
+
+export const shouldRequireAgentApprovalDeploymentPin = (
   environment: AgentDeploymentEnvironment = process.env,
 ) =>
   environment.VERCEL_ENV
     ? environment.VERCEL_ENV === "production"
     : environment.NODE_ENV === "production";
 
+type AgentGoalRequest =
+  | ({
+      action: "start";
+      expectedGeneration?: number;
+      objective: string;
+      criteria: string[];
+    } & GoalContract)
+  | { action: "resume"; expectedGeneration?: number; resumeOnReply?: boolean };
 type AgentTriggerRequestBody = {
+  goal?: AgentGoalRequest;
   messages: UIMessage[];
   chatId: string;
   todos?: Todo[];
@@ -250,9 +299,16 @@ const parseAgentTriggerRequestBody = async (
     };
   }
 
+  if (body.goal !== undefined && !validGoalRequest(body.goal)) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid goal request", { status: 400 }),
+    };
+  }
   return {
     ok: true,
     body: {
+      goal: body.goal as AgentGoalRequest | undefined,
       messages: body.messages as UIMessage[],
       chatId: body.chatId,
       todos: Array.isArray(body.todos) ? (body.todos as Todo[]) : undefined,
@@ -334,17 +390,23 @@ export const buildAgentApprovalSessionId = ({
   keyParts,
   approvalProtocolVersion,
   approvalWorkerVersion,
+  approvalExternalDeploymentId,
 }: {
   chatId: string;
   keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>;
   approvalProtocolVersion: number;
   approvalWorkerVersion: string | undefined;
+  approvalExternalDeploymentId?: string;
 }) => {
   const digest = createHash("sha256")
     .update(
       [
         `protocol:${approvalProtocolVersion}`,
-        `worker:${approvalWorkerVersion ?? "unversioned"}`,
+        approvalWorkerVersion
+          ? `worker:${approvalWorkerVersion}`
+          : approvalExternalDeploymentId
+            ? `deployment:${approvalExternalDeploymentId}`
+            : "worker:unversioned",
         ...keyParts,
       ].join("\0"),
     )
@@ -359,16 +421,25 @@ type StartedAgentRunAccess = {
 };
 
 export const finalizeStartedAgentRun = async ({
+  expectedRunId = null,
   chatId,
   runId,
   approvalSessionId,
+  goal,
 }: {
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
+  goal?: { userId: string; generation: number };
+  expectedRunId?: string | null;
 }): Promise<StartedAgentRunAccess> => {
+  let failureStage:
+    | "create_tokens"
+    | "associate_run"
+    | "cancel_previous_run"
+    | "close_previous_session" = "create_tokens";
   try {
-    const [publicAccessToken, approvalSessionPublicAccessToken, association] =
+    const [publicAccessToken, approvalSessionPublicAccessToken] =
       await Promise.all([
         auth.createPublicToken({
           scopes: { read: { runs: [runId] } },
@@ -383,14 +454,72 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        setActiveTriggerRun({
+      ]);
+
+    failureStage = "associate_run";
+    let expectedApprovalSessionId: string | null = null;
+    if (!goal) {
+      const previousChat = await getChatById({ id: chatId });
+      const previousRunId = previousChat?.active_trigger_run_id ?? null;
+      expectedApprovalSessionId =
+        previousChat?.active_agent_approval_session_id ?? null;
+      if (
+        previousRunId !== null &&
+        previousRunId !== runId &&
+        previousRunId !== expectedRunId
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Another Agent run started in this chat. Reconnect to that run before sending again.",
+          { agent_run_association: "stale" },
+        );
+      }
+      // Keep the previous ownership record until both cleanup operations finish.
+      // A failed close must remain discoverable by Stop or a later send.
+      if (previousRunId && previousRunId !== runId) {
+        failureStage = "cancel_previous_run";
+        await cancelAgentTriggerRun(previousRunId);
+      }
+      if (
+        expectedApprovalSessionId &&
+        expectedApprovalSessionId !== approvalSessionId
+      ) {
+        failureStage = "close_previous_session";
+        await closeAgentApprovalSession(
+          expectedApprovalSessionId,
+          "agent-run-replaced",
+        );
+      }
+    }
+
+    failureStage = "associate_run";
+    // Goal startup has its own generation fence and must not reattach a worker
+    // that already finished. Ordinary sends atomically replace the prior owner.
+    const association = goal
+      ? (await goalConvex().mutation(goalApi.agentGoals.associateStartedRun, {
+          serviceKey: goalServiceKey(),
+          chatId,
+          runId,
+          approvalSessionId,
+          ...goal,
+        }))
+        ? { previousRunId: null, previousApprovalSessionId: null }
+        : "stale"
+      : await replaceActiveTriggerRun({
+          expectedRunId,
+          expectedApprovalSessionId,
           chatId,
           triggerRunId: runId,
           approvalSessionId: approvalSessionId ?? null,
-        }),
-      ]);
-
-    if (association !== "updated") {
+        });
+    if (association === "stale") {
+      throw new ChatSDKError(
+        "bad_request:api",
+        "Another Agent run started in this chat. Reconnect to that run before sending again.",
+        { agent_run_association: association },
+      );
+    }
+    if (typeof association === "string") {
       throw new ChatSDKError(
         "not_found:chat",
         "The chat was deleted while the Agent run was starting.",
@@ -422,6 +551,55 @@ export const finalizeStartedAgentRun = async ({
         clearApprovalPending: true,
       }),
     ]);
+    try {
+      const associationRejection =
+        error instanceof ChatSDKError
+          ? error.metadata?.agent_run_association
+          : undefined;
+      const [sessionCleanup, runCleanup, associationCleanup] = cleanupResults;
+      const clearAssociationResult =
+        associationCleanup.status === "rejected"
+          ? "rejected"
+          : typeof associationCleanup.value === "string" &&
+              ["updated", "stale", "not_found", "deleting"].includes(
+                associationCleanup.value,
+              )
+            ? associationCleanup.value
+            : "unrecognized";
+      // Helper fulfillment is not proof of Trigger termination or lasting chat
+      // ownership. Keep only the conditional write's bounded acknowledgement.
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "agent_run_handoff_cleanup_result",
+          service: "hackerai-web",
+          timestamp: new Date().toISOString(),
+          failure_stage: failureStage,
+          // This is the original guard rejection, not the later clear result.
+          // Null leaves the original association outcome unobserved.
+          association_rejection_reason:
+            failureStage === "associate_run" &&
+            (associationRejection === "stale" ||
+              associationRejection === "not_found" ||
+              associationRejection === "deleting")
+              ? associationRejection
+              : null,
+          chat_id: /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(chatId)
+            ? chatId
+            : undefined,
+          trigger_run_id: /^run_[a-z0-9]{20,64}$/.test(runId)
+            ? runId
+            : undefined,
+          close_session_status: approvalSessionId
+            ? sessionCleanup.status
+            : "not_requested",
+          cancel_run_status: runCleanup.status,
+          clear_association_result: clearAssociationResult,
+        }),
+      );
+    } catch {
+      // Optional diagnostics must not replace the original handoff failure.
+    }
     for (const cleanupResult of cleanupResults) {
       if (cleanupResult.status === "rejected") {
         console.error("Failed to clean up an unreturned Agent run:", {
@@ -439,6 +617,68 @@ export const createAgentTriggerPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
+    let stage = "parse_request";
+    let initialPersistenceStep: InitialChatPersistenceStep | undefined;
+    let desktopAttachmentStep:
+      | "sandbox_context"
+      | "acquire_sandbox"
+      | "upload_files"
+      | "close_sandbox"
+      | undefined;
+    const diagnosticContext: {
+      requestId?: string;
+      userId?: string;
+      chatId?: string;
+      runId?: string;
+    } = {
+      requestId: req.headers.get("x-vercel-id")?.slice(0, 128) ?? undefined,
+    };
+    // A platform timeout cannot run catch/finally. Emit the in-flight phase
+    // before that deadline, without including request contents or credentials.
+    const slowRequestInterval = setInterval(() => {
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "agent_start_slow_request",
+          service: "hackerai-web",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          endpoint,
+          request_id: diagnosticContext.requestId,
+          user_id: diagnosticContext.userId,
+          chat_id: diagnosticContext.chatId,
+          trigger_run_id: diagnosticContext.runId,
+          stage,
+          ...(stage === "persist_user_message" && initialPersistenceStep
+            ? { initial_persistence_step: initialPersistenceStep }
+            : {}),
+          ...(stage === "prepare_desktop_attachments" && desktopAttachmentStep
+            ? { desktop_attachment_step: desktopAttachmentStep }
+            : {}),
+          elapsed_ms: Date.now() - routeStartedAt,
+        }),
+      );
+    }, 10_000);
+    let reservedGoal:
+      { chatId: string; userId: string; generation: number } | undefined;
+    const releaseReservedGoal = async () => {
+      if (!reservedGoal) return;
+      const goal = reservedGoal;
+      reservedGoal = undefined;
+      try {
+        await goalConvex().mutation(goalApi.agentGoals.failDispatch, {
+          serviceKey: goalServiceKey(),
+          ...goal,
+        });
+      } catch {
+        // A persistence outage leaves the goal fenced for explicit recovery.
+      }
+      await captureGoalLifecycle("admission_failed", {
+        ...goal,
+        goalGeneration: goal.generation,
+      });
+    };
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
@@ -457,16 +697,24 @@ export const createAgentTriggerPost =
         limitRescue,
         agentRunRequestId,
         projectId: requestedProjectId,
+        goal: goalRequest,
       } = parsedBody.body;
 
+      diagnosticContext.chatId = chatId.slice(0, 128);
+      stage = "authenticate";
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
+      diagnosticContext.userId = userId.slice(0, 128);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
-      await assertUserCanMakeCostIncurringRequest(userId);
+      stage = "access_gates";
+      await assertUserCanMakeCostIncurringRequest(userId, {
+        retryNetworkFailure: true,
+        signal: req.signal,
+      });
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({
@@ -476,7 +724,7 @@ export const createAgentTriggerPost =
         surface: "agent",
       });
       const userLocation = geolocation(req);
-      const { triggerRegion, requestRegionClass } =
+      const { triggerRegion: requestTriggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
       const genericDelegationEnabled = true;
 
@@ -485,6 +733,27 @@ export const createAgentTriggerPost =
         subscription,
         sandboxPreference,
       });
+
+      stage = "workspace_routing";
+      const triggerRegion =
+        !sandboxPreference || sandboxPreference === "e2b"
+          ? await resolveCloudWorkspaceRegion({
+              userId,
+              preferredRegion: requestTriggerRegion,
+              signal: req.signal,
+            })
+          : requestTriggerRegion;
+
+      // Serialize cloud Agent admission with recovery before a run is queued.
+      // The same activity/fence CAS protects acquisition and cached clients.
+      if (!sandboxPreference || sandboxPreference === "e2b") {
+        const workspace = await readCloudWorkspaceState(userId);
+        await assertCloudWorkspaceAvailable(
+          userId,
+          workspace?.phase === "e2b" ? workspace.destinationId : undefined,
+          triggerRegion,
+        );
+      }
 
       const requestMessages = Array.isArray(messages) ? messages : [];
       if (!regenerate && !isAutoContinue && requestMessages.length === 0) {
@@ -513,6 +782,7 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
+      stage = "load_chat_and_preferences";
       const [existingChat, userCustomization] = await Promise.all([
         getChatById({ id: chatId }),
         getUserCustomization({ userId }),
@@ -524,9 +794,51 @@ export const createAgentTriggerPost =
         );
       }
 
+      if (
+        goalRequest &&
+        (subscription === "free" ||
+          limitRescue ||
+          (regenerate &&
+            (goalRequest.action !== "resume" ||
+              goalRequest.expectedGeneration === undefined)) ||
+          !(await goalEnabled(userId, subscription)))
+      )
+        throw new ChatSDKError(
+          "forbidden:chat",
+          "Persistent goals are unavailable for this request.",
+        );
+      if (existingChat && existingChat.user_id !== userId)
+        throw new ChatSDKError("forbidden:chat");
+      const existingGoal = existingChat
+        ? await reconcileGoal(chatId, userId)
+        : null;
+      if (
+        !goalRequest &&
+        existingGoal &&
+        (existingGoal.activeRunId ||
+          ["queued", "running", "waiting", "needs_approval"].includes(
+            existingGoal.state,
+          ))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Pause the goal and wait for its current run to settle before sending another Agent request.",
+        );
+      if (
+        goalRequest?.action === "resume" &&
+        existingGoal &&
+        (existingGoal.sandboxPreference !== (sandboxPreference ?? "e2b") ||
+          existingGoal.permissionMode !== agentPermissionMode ||
+          existingGoal.selectedModel !== (selectedModelOverride ?? "auto"))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Restore the goal’s original sandbox, model and permission mode before resuming.",
+        );
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
+      stage = "resolve_execution_context";
       const [projectContext, extraUsageConfig] = await Promise.all([
         resolveProjectExecutionContext({
           chat: existingChat,
@@ -561,6 +873,7 @@ export const createAgentTriggerPost =
       let localDesktopAttachmentsPrepared = false;
 
       if (hasLocalDesktopSourcePaths(requestMessages)) {
+        stage = "prepare_desktop_attachments";
         if (!isDesktopPreference(sandboxPreference ?? "e2b")) {
           throw new ChatSDKError(
             "bad_request:api",
@@ -582,6 +895,7 @@ export const createAgentTriggerPost =
             null,
             subscription,
           );
+          desktopAttachmentStep = "sandbox_context";
           await sandboxManager.getSandboxContextForPrompt();
           assertLocalSandboxFallbackAllowed({
             fallbackInfo: sandboxManager.consumeFallbackInfo(),
@@ -591,14 +905,17 @@ export const createAgentTriggerPost =
           let stagedSandbox: any = null;
           let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
           try {
+            desktopAttachmentStep = "upload_files";
             uploadResult = await uploadSandboxFiles(
               sandboxFiles,
               async () => {
+                desktopAttachmentStep = "acquire_sandbox";
                 const { sandbox } = await getSandboxWithFallbackGuard({
                   sandboxManager,
                   requireLocalSandbox: true,
                 });
                 stagedSandbox = sandbox;
+                desktopAttachmentStep = "upload_files";
                 return sandbox;
               },
               {
@@ -612,6 +929,7 @@ export const createAgentTriggerPost =
               },
             );
           } finally {
+            desktopAttachmentStep = "close_sandbox";
             await stagedSandbox?.close?.().catch(() => {});
           }
           if (uploadResult.failedCount > 0) {
@@ -619,7 +937,7 @@ export const createAgentTriggerPost =
               uploadResult.failedCount === 1 ? "attachment" : "attachments";
             throw new ChatSDKError(
               "bad_request:api",
-              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Please reattach and try again.`,
+              `Failed to prepare ${uploadResult.failedCount} local ${noun}. Reconnect this computer and retry the message. If the file was moved or deleted, reattach it.`,
             );
           }
           preparedMessages = rewriteSandboxFilePathsInMessages(
@@ -631,6 +949,49 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
+      const reserveGoal = async () => {
+        if (!goalRequest) return;
+        const savedGoal =
+          goalRequest.action === "start"
+            ? await goalConvex().mutation(goalApi.agentGoals.start, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { expectedGeneration: goalRequest.expectedGeneration }
+                  : {}),
+                objective: goalRequest.objective,
+                criteria: goalRequest.criteria,
+                verificationCommand: goalRequest.verificationCommand,
+                constraints: goalRequest.constraints,
+                boundaries: goalRequest.boundaries,
+                stopWhen: goalRequest.stopWhen,
+                sandboxPreference: sandboxPreference ?? "e2b",
+                permissionMode: agentPermissionMode,
+                selectedModel: selectedModelOverride ?? "auto",
+              })
+            : await goalConvex().mutation(goalApi.agentGoals.control, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                action: "resume",
+                ...(goalRequest.resumeOnReply ? { resumeOnReply: true } : {}),
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { generation: goalRequest.expectedGeneration }
+                  : {}),
+              });
+        reservedGoal = { chatId, userId, generation: savedGoal.generation };
+        await captureGoalLifecycle(
+          goalRequest.action === "start" ? "admitted" : "resumed",
+          { chatId, userId, subscription },
+          savedGoal,
+        );
+      };
+
+      // Fence an existing goal before writing input that a queued worker could
+      // otherwise consume. New chats must exist before reserving their goal.
+      if (existingChat) await reserveGoal();
+      stage = "persist_user_message";
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
@@ -639,8 +1000,25 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+        sandboxType: sandboxPreference ?? "e2b",
+        onPersistenceStep: (step) => {
+          initialPersistenceStep = step;
+        },
       });
+      initialPersistenceStep = undefined;
 
+      if (!existingChat) await reserveGoal();
+      if (reservedGoal && goalRequest?.action === "start") {
+        const goalMessage = messagesForPersistence.findLast(
+          (m) => m.role === "user",
+        );
+        if (goalMessage)
+          await goalConvex().mutation(goalApi.agentGoals.markMessage, {
+            serviceKey: goalServiceKey(),
+            ...reservedGoal,
+            messageId: goalMessage.id,
+          });
+      }
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =
@@ -660,10 +1038,10 @@ export const createAgentTriggerPost =
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
       const triggerMachine = getAgentTriggerMachine(subscription);
-      // Trigger.dev's atomic Vercel integration pins the app and worker from the
-      // same commit. Reuse that pin so Sessions cannot schedule an older worker.
-      const approvalWorkerVersion =
-        process.env.TRIGGER_VERSION?.trim() || undefined;
+      const approvalDeploymentPin = getAgentApprovalDeploymentPin();
+      const approvalWorkerVersion = approvalDeploymentPin.lockToVersion;
+      const approvalExternalDeploymentId =
+        approvalDeploymentPin.externalDeploymentId;
       const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
@@ -674,6 +1052,7 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         agentRunRequestId,
       });
+      stage = "create_idempotency_key";
       const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
         triggerDedupeKeyParts,
       );
@@ -683,12 +1062,14 @@ export const createAgentTriggerPost =
             keyParts: triggerDedupeKeyParts,
             approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
             approvalWorkerVersion,
+            approvalExternalDeploymentId,
           })
         : undefined;
       if (
         approvalSessionId &&
-        shouldRequireAgentApprovalWorkerVersion() &&
-        !approvalWorkerVersion
+        shouldRequireAgentApprovalDeploymentPin() &&
+        !approvalWorkerVersion &&
+        !approvalExternalDeploymentId
       ) {
         throw new ChatSDKError(
           "bad_request:api",
@@ -699,6 +1080,7 @@ export const createAgentTriggerPost =
       // The v2 worker must reject unsupported approvalProtocolVersion values;
       // old workers ignore this field, so the route that emits v2 deploys last.
       const agentPayload = {
+        ...(reservedGoal ? { goalGeneration: reservedGoal.generation } : {}),
         chatId,
         userId,
         subscription,
@@ -739,6 +1121,15 @@ export const createAgentTriggerPost =
       const triggerApiMethod = approvalSessionId
         ? "sessions.start"
         : "tasks.trigger";
+      const requestId = req.headers.get("x-vercel-id");
+      const webRequestId =
+        requestId &&
+        requestId.length <= 128 &&
+        /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+          requestId,
+        )
+          ? requestId
+          : undefined;
       const triggerMetadata = {
         status: "queued",
         chatId,
@@ -746,6 +1137,9 @@ export const createAgentTriggerPost =
         subscription,
         loginRequired: false,
         endpoint,
+        // Task metadata identifies its creating request. Session metadata may
+        // reflect a later cached start; it does not prove that start made a run.
+        ...(webRequestId ? { webRequestId } : {}),
         routeStartedAt,
         triggerRequestedAt,
         triggerPriority,
@@ -756,6 +1150,9 @@ export const createAgentTriggerPost =
         genericDelegationEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
+        ...(approvalExternalDeploymentId
+          ? { approvalExternalDeploymentId }
+          : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
@@ -771,7 +1168,7 @@ export const createAgentTriggerPost =
         metadata: triggerMetadata,
       };
       let triggerRequestBodyBytes: number | undefined;
-      const triggerPayloadTooLargeResponse = (
+      const triggerPayloadTooLargeResponse = async (
         reason: "payload_limit_exceeded" | "trigger_api_413",
       ) => {
         console.warn(
@@ -801,20 +1198,20 @@ export const createAgentTriggerPost =
           }),
         );
 
+        await releaseReservedGoal();
         return createAgentTriggerPayloadTooLargeResponse();
       };
 
       let runId: string;
       try {
+        stage = triggerApiMethod;
         if (approvalSessionId) {
           const approvalTriggerConfig = {
             basePayload: agentPayload,
             machine: triggerMachine,
             tags: getAgentApprovalTriggerTags(triggerTags),
             region: triggerRegion,
-            ...(approvalWorkerVersion
-              ? { lockToVersion: approvalWorkerVersion }
-              : {}),
+            ...approvalDeploymentPin,
           };
           const approvalSessionBody = {
             type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,
@@ -859,15 +1256,21 @@ export const createAgentTriggerPost =
       }
 
       const triggerCompletedAt = Date.now();
+      diagnosticContext.runId = runId;
+      stage = "create_tokens_and_associate_run";
 
-      // Access-token creation and durable association are independent, so
-      // overlap them while treating every post-start failure as terminal.
+      // Claim ownership only after tokens are available, then settle the exact
+      // displaced owner. Concurrent admissions cannot overwrite a newer claim.
       const { publicAccessToken, approvalSessionPublicAccessToken } =
         await finalizeStartedAgentRun({
+          expectedRunId: existingChat?.active_trigger_run_id ?? null,
           chatId,
           runId,
           approvalSessionId,
+          goal: reservedGoal,
         });
+      // The associated worker owns this generation, even if response creation fails.
+      reservedGoal = undefined;
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,
@@ -899,11 +1302,15 @@ export const createAgentTriggerPost =
       });
       return response;
     } catch (error) {
+      await releaseReservedGoal();
       return handleAgentRouteError({
         error,
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
+        context: { ...diagnosticContext, stage, initialPersistenceStep },
       });
+    } finally {
+      clearInterval(slowRequestInterval);
     }
   };

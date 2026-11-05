@@ -6,7 +6,7 @@ import Stripe from "stripe";
 
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { internalAction } from "./_generated/server";
+import { internalAction } from "./lib/serviceFunctions";
 import {
   applySupportConfirmedFraudSuspension,
   buildSupportConfirmedFraudSuspensionPlan,

@@ -1,4 +1,19 @@
 import {
+  AGENT_MODEL_CONTEXT_FLAG,
+  type AgentModelContextVariant,
+  type AgentModelContextFlag,
+} from "@/lib/experiments/agent-model-context";
+import {
+  PAID_DEEPSEEK_1017_KEY,
+  PAID_MODEL_OUTCOME_EVENT,
+} from "@/lib/experiments/paid-deepseek-1017";
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  FREE_ASK_DEEPSEEK_1017_KEY,
+  FREE_ASK_MODEL_OUTCOME_EVENT,
+} from "@/lib/experiments/free-ask-deepseek-1017";
+import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
+import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsPolicy,
 } from "@/lib/rate-limit/regional-free-limits";
@@ -40,7 +55,16 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PRO_THREE_STEPS_KEY,
+  isFreeThreeStepsPolicy,
+} from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -266,7 +290,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
-  "upload_retried_with_fresh_sandbox",
+  "upload_retried_after_reconnect",
   "localSandboxFallbackBlocked",
   "sandboxFallbackReason",
   "requestedPreference",
@@ -283,6 +307,12 @@ const compactChatErrorMetadata = (
     const value = metadata[key];
     if (value !== undefined) compact[key] = value;
   }
+  const acquisitionStage =
+    metadata.upload_failure_phase === "acquisition"
+      ? parseCloudAcquisitionStage(metadata.upload_failure_acquisition_stage)
+      : undefined;
+  if (acquisitionStage)
+    compact.upload_failure_acquisition_stage = acquisitionStage;
 
   return Object.keys(compact).length > 0 ? compact : undefined;
 };
@@ -319,6 +349,7 @@ const sanitizeProviderFingerprintPart = (value: string): string =>
 
 const buildProviderErrorFingerprint = (details: {
   category: ProviderErrorCategory;
+  origin?: "browser_handoff_read";
   statusCode?: number;
   requestedModelSlug?: string;
   modelProviderSlug?: string;
@@ -329,6 +360,7 @@ const buildProviderErrorFingerprint = (details: {
     "provider_error",
     details.category,
     details.statusCode ? `status_${details.statusCode}` : undefined,
+    details.origin ? `origin_${details.origin}` : undefined,
     providerPart
       ? `provider_${sanitizeProviderFingerprintPart(providerPart)}`
       : undefined,
@@ -797,21 +829,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
         openRouterMetadata?: OpenRouterModelMetadata;
       },
     ) {
+      const details = extractErrorDetails(error);
+      const browserHandoffRead = details.errorOrigin === "browser_handoff_read";
+      // prepareStep can fail before a provider call. Its context still describes
+      // the previous request, which cannot identify the owner of a safety read.
       const {
         providerRequest,
         openRouterMetadata: providedOpenRouterMetadata,
         ...providerContext
-      } = context;
-      const details = extractErrorDetails(error);
-      const openRouterMetadata = mergeOpenRouterMetadata(
-        providedOpenRouterMetadata ?? {},
-        extractOpenRouterMetadataFromError(error),
-      );
+      } = browserHandoffRead
+        ? {
+            mode: context.mode,
+            userId: context.userId,
+            subscription: context.subscription,
+          }
+        : context;
+      const openRouterMetadata: OpenRouterModelMetadata = browserHandoffRead
+        ? {}
+        : mergeOpenRouterMetadata(
+            providedOpenRouterMetadata ?? {},
+            extractOpenRouterMetadataFromError(error),
+          );
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
       const diagnosticMessage = getProviderDiagnosticMessage(details);
-      const providerName = nonEmptyString(details.providerName);
+      const providerName = browserHandoffRead
+        ? undefined
+        : nonEmptyString(details.providerName);
       const attributedProviderName =
         nonEmptyString(openRouterMetadata.provider_name) ?? providerName;
       const configuredModel =
@@ -821,34 +866,42 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerContext.requestedModelSlug) ??
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
-      const openrouterGenerationId = nonEmptyString(
-        openRouterMetadata.openrouter_generation_id ??
-          details.openrouterGenerationId,
-      );
+      const openrouterGenerationId = browserHandoffRead
+        ? undefined
+        : nonEmptyString(
+            openRouterMetadata.openrouter_generation_id ??
+              details.openrouterGenerationId,
+          );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
+        origin:
+          details.errorOrigin === "browser_handoff_read"
+            ? "browser_handoff_read"
+            : undefined,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
         providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
-        ...(attributedProviderName && {
-          provider_name: attributedProviderName,
-          provider_name_source: "openrouter_error_metadata",
+        ...(browserHandoffRead && {
+          selected_model: undefined,
+          response_model: undefined,
+          requested_model_slug: undefined,
+          model_provider_slug: undefined,
         }),
+        // Clear response-level attribution inherited from diagnostic context.
+        // A previous successful step does not identify this failed call.
+        provider_name: attributedProviderName,
+        provider_name_source: attributedProviderName
+          ? "openrouter_error_metadata"
+          : undefined,
         ...(configuredModel && { configured_model: configuredModel }),
         ...(requestedModelSlug && { requested_model_slug: requestedModelSlug }),
         ...(modelProviderSlug && { model_provider_slug: modelProviderSlug }),
-        ...(openrouterGenerationId && {
-          openrouter_generation_id: openrouterGenerationId,
-        }),
-        ...(openRouterMetadata.openrouter_request_id && {
-          openrouter_request_id: openRouterMetadata.openrouter_request_id,
-        }),
-        ...(openRouterMetadata.openrouter_upstream_id && {
-          openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
-        }),
+        openrouter_generation_id: openrouterGenerationId,
+        openrouter_request_id: openRouterMetadata.openrouter_request_id,
+        openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
       };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
@@ -1309,6 +1362,8 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  agentModelContextVariant?: AgentModelContextVariant;
+  agentModelContextFlag?: AgentModelContextFlag;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
@@ -1325,6 +1380,7 @@ type AgentCompletionAnalyticsArgs = {
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
   hasResponseContent: boolean;
+  responseMessageId?: string;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1375,6 +1431,8 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  agentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG,
+  agentModelContextVariant,
   cacheHistoryTelemetry,
   usageMeasurement,
   abliteratedProviderSummary,
@@ -1550,7 +1608,8 @@ export function captureAgentRun({
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
-      ...(finishReason && { finish_reason: finishReason }),
+      finish_reason: finishReason || "unknown",
+      run_metadata_version: 1,
       ...(abortSource && { abort_source: abortSource }),
       ...(providerErrorCategory && {
         provider_error_category: providerErrorCategory,
@@ -1580,7 +1639,13 @@ export function captureAgentRun({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-agent_run",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-agent_run"),
+    }),
     properties: {
+      ...(agentModelContextVariant && {
+        [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
+      }),
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
@@ -1675,9 +1740,7 @@ export function captureAgentRun({
       ...(hadSummarization !== undefined && {
         had_summarization: hadSummarization,
       }),
-      ...(isAutoContinue !== undefined && {
-        is_auto_continue: isAutoContinue,
-      }),
+      is_auto_continue: isAutoContinue ?? null,
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
@@ -1692,7 +1755,8 @@ export function captureAgentRun({
       ...(sandboxInfo?.provider && {
         sandbox_provider: sandboxInfo.provider,
       }),
-      ...(finishReason && { finish_reason: finishReason }),
+      finish_reason: finishReason || "unknown",
+      run_metadata_version: 1,
       ...(upstreamProvider && { upstream_provider: upstreamProvider }),
       ...(providerErrorProvider && {
         provider_error_provider: providerErrorProvider,
@@ -1745,6 +1809,73 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  // Operational success only means the run finished without an unhandled error.
+  // A guardrail halt, limit, or unknown finish reason is not a natural completion.
+  const naturalCompletion =
+    outcome === "success" &&
+    args.hasResponseContent &&
+    !args.stepLimitTelemetry?.stepLimitReached &&
+    args.finishReason === "stop";
+  const isFreeAskExperiment =
+    args.experiment?.key === FREE_ASK_DEEPSEEK_1017_KEY;
+  if (
+    args.experiment &&
+    (args.experiment.key === PAID_DEEPSEEK_1017_KEY || isFreeAskExperiment)
+  ) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: isFreeAskExperiment
+          ? FREE_ASK_MODEL_OUTCOME_EVENT
+          : PAID_MODEL_OUTCOME_EVENT,
+        properties: {
+          ...getExperimentAnalyticsProperties(args.experiment),
+          ...args.usageMeasurement,
+          chat_id: args.chatId,
+          message_id: args.responseMessageId ?? args.experiment.requestId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          has_response_content: args.hasResponseContent,
+          natural_completion: naturalCompletion,
+          natural_completion_version: 2,
+          duration_ms:
+            args.experiment.startedAt === undefined
+              ? undefined
+              : Math.max(0, Date.now() - args.experiment.startedAt),
+          time_to_first_chunk_ms:
+            args.experiment.startedAt !== undefined &&
+            args.experiment.firstModelChunkAt !== undefined
+              ? Math.max(
+                  0,
+                  args.experiment.firstModelChunkAt - args.experiment.startedAt,
+                )
+              : undefined,
+          request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+          active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+          selected_model: args.selectedModel,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served: args.fallbackServed,
+          finish_reason: args.finishReason,
+          abort_source: args.abortSource,
+          provider_error_category: args.providerErrorCategory,
+          provider_error_status_code: args.providerErrorStatusCode,
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          handled_tool_failure_count: args.handledToolFailureCount,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
+          sandbox_type: sandboxInfo?.type,
+          sandbox_provider: sandboxInfo?.provider,
+          $insert_id: `${args.experiment.requestId}:${isFreeAskExperiment ? "free-ask-1017" : "paid-model"}-outcome`,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Outcome reporting must not interrupt persistence or billing.
+    }
+  }
   // A successful free response is activation evidence; metered cost alone also
   // occurs on failed requests. Keep this separate from task-completion claims.
   if (
@@ -1769,7 +1900,17 @@ export function captureAgentCompletionAnalytics(
     }
   }
 
-  if (args.experiment?.key === ABLITERATED_EXPERIMENT_KEY) {
+  if (
+    args.experiment?.key === ABLITERATED_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_THREE_STEPS_KEY ||
+    args.experiment?.key ===
+      ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ||
+    args.experiment?.key === ABLITERATED_PRO_THREE_STEPS_KEY ||
+    isFreeThreeStepsPolicy(args.experiment?.key)
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,
@@ -1777,10 +1918,35 @@ export function captureAgentCompletionAnalytics(
         properties: {
           ...args.abliteratedProviderSummary,
           ...getExperimentAnalyticsProperties(args.experiment),
+          ...(isFreeThreeStepsPolicy(args.experiment?.key) &&
+            args.experiment && {
+              ...args.usageMeasurement,
+              message_id: args.responseMessageId ?? args.experiment.requestId,
+              trigger_run_id: args.triggerRunId,
+              natural_completion: naturalCompletion,
+              natural_completion_version: 2,
+              request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+              active_model_stream_duration_ms: args.activeModelStreamDurationMs,
+              approval_wait_duration_ms: args.approvalWaitDurationMs,
+              handled_tool_failure_count: args.handledToolFailureCount,
+              attachment_count: args.attachmentCount,
+              image_attachment_count: args.imageAttachmentCount,
+              sandbox_type: sandboxInfo?.type,
+              sandbox_provider: sandboxInfo?.provider,
+              trigger_total_cost_usd: args.triggerTotalCostUsd,
+              provider_error_category: args.providerErrorCategory,
+              provider_error_status_code: args.providerErrorStatusCode,
+              ...(args.experiment.requestId && {
+                $insert_id: `${args.experiment.requestId}:free-three-step-outcome`,
+              }),
+            }),
           chat_id: args.chatId,
           mode,
           subscription_tier: subscription,
           outcome,
+          has_response_content: args.hasResponseContent,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
           abort_source: args.abortSource,
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
@@ -1805,6 +1971,8 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    agentModelContextVariant: args.agentModelContextVariant,
+    agentModelContextFlag: args.agentModelContextFlag,
     cacheHistoryTelemetry: args.cacheHistoryTelemetry,
     usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
@@ -1944,7 +2112,11 @@ export function captureUsageCost({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-usage_cost"),
+    }),
     properties: {
+      cost_accounting_status: "recorded",
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       user_id: userId,
@@ -1982,6 +2154,9 @@ export function captureUsageCost({
         extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
       usage_deduction_failed: usage.usageDeductionFailed,
+      ...(usage.usageDeductionOutcomeUnknown && {
+        usage_deduction_outcome_unknown: true,
+      }),
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
@@ -1989,8 +2164,6 @@ export function captureUsageCost({
         sandbox_cost_accounting_version: 2,
         sandbox_cost_source: "request_runtime_rate",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
-        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
-        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
       }),
@@ -2123,6 +2296,9 @@ export function captureUsageSettlement({
       extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
       uncovered_points: deduction.uncoveredPoints,
       usage_deduction_failed: deduction.usageDeductionFailed,
+      ...(deduction.usageDeductionOutcomeUnknown && {
+        usage_deduction_outcome_unknown: true,
+      }),
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
       ...usagePricingAnalyticsProperties,

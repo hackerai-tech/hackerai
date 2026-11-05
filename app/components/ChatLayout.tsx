@@ -194,9 +194,8 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
         <div
           data-testid="sidebar"
           data-layout={forceTaskSidebarRail ? "compact-rail" : "standard"}
-          className={`relative z-10 min-w-0 shrink-0 overflow-hidden bg-sidebar transition-all duration-300 ${
-            desktopSidebarExpanded ? "w-[300px]" : "w-12"
-          }`}
+          // Sidebar's gap owns the width so the chat tracks its panel throughout toggles.
+          className="relative z-10 min-w-0 shrink-0 overflow-hidden bg-sidebar"
         >
           <SidebarProvider
             open={desktopSidebarExpanded}

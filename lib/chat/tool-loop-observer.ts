@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-/** Diagnostic only: a repeated result is evidence to inspect, not proof of failure. */
+/** A repeated result is evidence to inspect, not proof of failure. */
 export type AgentGuardrailObservation = {
   reason: string;
   action: "observe" | "nudge" | "exclude" | "halt";
@@ -12,12 +12,67 @@ export type AgentGuardrailObservation = {
   run_cost_dollars?: number;
 };
 
+export type ToolResultCycle = {
+  toolNames: string[];
+  repeatCount: number;
+  cycleLength: number;
+  /** Every result in the cycle explicitly confirms no operation was executed. */
+  confirmedNonExecution?: true;
+  /** Present for confirmed non-execution cycles. */
+  toolCallCount?: number;
+};
+
 type ToolCall = { toolCallId: string; toolName: string; input: unknown };
 type ToolResult = { toolCallId: string; output: unknown };
-type Step = { fingerprint: string; toolNames: string[] };
+type Step = {
+  fingerprint: string;
+  toolNames: string[];
+  confirmedNonExecution: boolean;
+  toolCallCount: number;
+};
 const MAX_PERIOD = 4;
 const REPORT_LAPS = [3, 5] as const;
 const POLLING_TOOLS = new Set(["interact_terminal_session", "wait_for_agents"]);
+const TERMINAL_BOOKKEEPING_FIELDS = new Set([
+  "session",
+  "recordPath",
+  "pid",
+  "rawSnapshot",
+  "callTiming",
+]);
+
+// New handles and replay bytes are not new command evidence. Preserve stdout,
+// errors, exit status and provenance so real output or environment changes
+// still break the cycle. Other tools keep their complete result fingerprint.
+function comparisonOutput(toolName: string, output: unknown): unknown {
+  try {
+    if (
+      (toolName !== "run_terminal_cmd" &&
+        toolName !== "interact_terminal_session") ||
+      !output ||
+      typeof output !== "object" ||
+      Object.getPrototypeOf(output) !== Object.prototype
+    )
+      return output;
+    const result = (output as Record<string, unknown>).result;
+    if (
+      !result ||
+      typeof result !== "object" ||
+      Object.getPrototypeOf(result) !== Object.prototype
+    )
+      return output;
+    return {
+      ...output,
+      result: Object.fromEntries(
+        Object.entries(result).filter(
+          ([key]) => !TERMINAL_BOOKKEEPING_FIELDS.has(key),
+        ),
+      ),
+    };
+  } catch {
+    return output; // The bounded fingerprint rejects unsupported values.
+  }
+}
 
 // Never retain inputs/results or emit their hashes. Oversized, cyclic, or exotic
 // values break observation rather than adding work to an already expensive run.
@@ -67,7 +122,19 @@ function fingerprint(value: unknown): string | undefined {
 /** Bounded request-lifetime history, shared by replacement provider streams. */
 export class ToolLoopObserver {
   private history: Step[] = [];
+  private currentCycle: ToolResultCycle | undefined;
   private reported = new Set<string>();
+
+  /** Latest completed-step cycle, including laps that do not emit a nudge. */
+  getCurrentCycle(): ToolResultCycle | undefined {
+    return this.currentCycle;
+  }
+
+  /** Break evidence continuity while retaining per-request telemetry limits. */
+  reset(): void {
+    this.history = [];
+    this.currentCycle = undefined;
+  }
 
   /** Share report suppression across fallback streams to bound per-request log volume. */
   shouldReport(reason: string, action: string, repeatCount: number): boolean {
@@ -82,11 +149,11 @@ export class ToolLoopObserver {
     calls: readonly ToolCall[],
     results: readonly ToolResult[],
     allowedTools: ReadonlySet<string>,
-  ):
-    | { toolNames: string[]; repeatCount: number; cycleLength: number }
-    | undefined {
+  ): ToolResultCycle | undefined {
+    const previousCycle = this.currentCycle;
+    this.currentCycle = undefined;
     const clear = () => {
-      this.history = [];
+      this.reset();
       return undefined;
     };
     if (!calls.length || calls.length > 64 || results.length > 64)
@@ -95,12 +162,22 @@ export class ToolLoopObserver {
     // and accidentally join otherwise unrelated calls into a repeating cycle.
     if (calls.every((call) => POLLING_TOOLS.has(call.toolName))) return clear();
     const signatures: string[] = [];
+    let confirmedNonExecution = true;
     for (const call of calls) {
       if (!allowedTools.has(call.toolName)) return clear();
       const result = results.find(
         (entry) => entry.toolCallId === call.toolCallId,
       );
       if (!result) return clear();
+      const output = result.output;
+      confirmedNonExecution &&=
+        (call.toolName === "file" ||
+          call.toolName === "file_edit" ||
+          call.toolName === "file_write") &&
+        output !== null &&
+        typeof output === "object" &&
+        Object.getPrototypeOf(output) === Object.prototype &&
+        (output as Record<string, unknown>).executionOutcome === "not_executed";
       const input =
         call.input &&
         typeof call.input === "object" &&
@@ -111,13 +188,19 @@ export class ToolLoopObserver {
               ),
             )
           : call.input;
-      const signature = fingerprint([call.toolName, input, result.output]);
+      const signature = fingerprint([
+        call.toolName,
+        input,
+        comparisonOutput(call.toolName, result.output),
+      ]);
       if (!signature) return clear();
       signatures.push(signature);
     }
     this.history.push({
       fingerprint: signatures.sort().join(":"),
       toolNames: [...new Set(calls.map((call) => call.toolName))],
+      confirmedNonExecution,
+      toolCallCount: calls.length,
     });
     this.history = this.history.slice(-MAX_PERIOD * REPORT_LAPS[1]);
     for (let period = 1; period <= MAX_PERIOD; period++) {
@@ -135,17 +218,26 @@ export class ToolLoopObserver {
       )
         laps++;
       if (laps >= REPORT_LAPS[0]) {
-        if (!(REPORT_LAPS as readonly number[]).includes(laps))
-          return undefined;
-        return {
-          toolNames: [
-            ...new Set(
-              this.history.slice(-period).flatMap((step) => step.toolNames),
-            ),
-          ],
+        const cycleSteps = this.history.slice(-period);
+        this.currentCycle = {
+          toolNames: [...new Set(cycleSteps.flatMap((step) => step.toolNames))],
           repeatCount: laps,
           cycleLength: period,
+          ...(cycleSteps.every((step) => step.confirmedNonExecution)
+            ? {
+                confirmedNonExecution: true as const,
+                toolCallCount: cycleSteps[0].toolCallCount,
+              }
+            : {}),
         };
+        // Rotating ABABAB into BABABA is still the same lap. Expose current
+        // state to the hard stop, but only emit a nudge when a threshold is
+        // first reached. A gap or changed result clears previousCycle.
+        const reachedThreshold =
+          (REPORT_LAPS as readonly number[]).includes(laps) &&
+          (previousCycle?.repeatCount !== laps ||
+            previousCycle.cycleLength !== period);
+        return reachedThreshold ? this.currentCycle : undefined;
       }
     }
     return undefined;

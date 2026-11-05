@@ -1,4 +1,4 @@
-import type { MutationCtx } from "../_generated/server";
+import type { MutationCtx } from "./serviceFunctions";
 import { v } from "convex/values";
 
 export const analyticsFields = {

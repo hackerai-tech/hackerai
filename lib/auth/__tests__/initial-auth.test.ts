@@ -3,6 +3,32 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { resolveClientInitialAuth } from "../initial-auth";
 
 describe("resolveClientInitialAuth", () => {
+  it("hydrates a terminal invalid refresh token as signed out with a bounded diagnostic", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        resolveClientInitialAuth(
+          jest.fn<() => Promise<never>>().mockRejectedValue({
+            name: "TokenRefreshError",
+            isTransient: false,
+            cause: {
+              status: 400,
+              error: "invalid_grant",
+              errorDescription: "Invalid refresh token.",
+            },
+          }),
+        ),
+      ).resolves.toEqual({ user: null });
+      expect(warn).toHaveBeenCalledWith(
+        JSON.stringify({
+          event: "auth.invalid_refresh_token",
+          boundary: "initial_auth",
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it("preserves the ordinary signed-out state", async () => {
     await expect(
       resolveClientInitialAuth(

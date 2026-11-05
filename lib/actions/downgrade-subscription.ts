@@ -92,6 +92,7 @@ export default async function downgradeSubscriptionAction(
         api.cancellationReasons.recordCancellationStarted,
         {
           serviceKey,
+          operation: "downgrade",
           userId: user.id,
           organizationId,
           stripeCustomerId,

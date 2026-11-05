@@ -52,9 +52,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
-  ASK_MODEL_OPTIONS,
   AGENT_MODEL_OPTIONS,
-  getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
 
@@ -162,14 +160,12 @@ const AutoOptionButton = ({
     aria-pressed={isSelected}
     className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
       mobile ? "py-2.5" : "py-2"
-    } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+    } ${isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted active:bg-muted"}`}
   >
     <div className="flex-1 min-w-0">
       <span
         className={`text-sm font-medium transition-colors ${
-          isSelected
-            ? "text-accent-foreground"
-            : "text-muted-foreground group-hover:text-foreground"
+          isSelected ? "text-accent-foreground" : "text-popover-foreground"
         }`}
       >
         Auto
@@ -222,17 +218,15 @@ const ModelOptionButton = ({
         isPending
           ? `cursor-wait opacity-80 ${isSelected ? "bg-accent" : ""}`
           : isSelected
-            ? "cursor-pointer bg-accent"
-            : "cursor-pointer hover:bg-muted/50 active:bg-muted/50"
+            ? "cursor-pointer bg-accent text-accent-foreground"
+            : "cursor-pointer hover:bg-muted active:bg-muted"
       }`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span
             className={`text-sm transition-colors ${
-              isSelected
-                ? "text-accent-foreground"
-                : "text-muted-foreground group-hover:text-foreground"
+              isSelected ? "text-accent-foreground" : "text-popover-foreground"
             }`}
           >
             {option.label}
@@ -468,9 +462,10 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         }) ?? "auto");
   const isAuto = displayValue === "auto";
 
-  const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
+  // Free users see the paid Agent tiers as locked upgrade options.
+  const options = AGENT_MODEL_OPTIONS;
 
-  const effectiveValue = isAuto ? getDefaultModelForMode(mode) : displayValue;
+  const effectiveValue = isAuto ? options[0].id : displayValue;
   const selected =
     options.find((opt) => opt.id === effectiveValue) ?? options[0];
 
@@ -482,6 +477,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       : isAuto
         ? "Auto"
         : selected.label;
+  const mobileTriggerLabel = triggerLabel.replace(/^HackerAI /, "");
 
   const handleAutoSelect = () => {
     onChange("auto");
@@ -532,9 +528,17 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       onClick={isMobile ? () => setOpen(true) : undefined}
       aria-expanded={isMobile ? open : undefined}
       aria-haspopup={isMobile ? "dialog" : undefined}
-      className="h-7 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      aria-label={triggerLabel}
+      title={triggerLabel}
+      className="h-7 max-w-20 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink min-[360px]:max-w-32 md:max-w-none"
     >
-      <span className="truncate">{triggerLabel}</span>
+      <span className="truncate min-[360px]:hidden">
+        {mobileTriggerLabel === "Standard" ? "Std" : mobileTriggerLabel}
+      </span>
+      <span className="hidden truncate min-[360px]:inline md:hidden">
+        {mobileTriggerLabel}
+      </span>
+      <span className="hidden truncate md:inline">{triggerLabel}</span>
       <ChevronDown className="h-3 w-3 ml-0.5 shrink-0" />
     </Button>
   );
@@ -583,6 +587,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         {trigger}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
+            data-chat-input-agent-menu
             side="bottom"
             className="rounded-t-2xl px-3 pb-8 pt-0 overscroll-contain"
           >
@@ -616,7 +621,11 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-        <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
+        <PopoverContent
+          data-chat-input-agent-menu
+          className="w-[270px] p-1.5 rounded-xl"
+          align="start"
+        >
           <ModelOptionList
             options={options}
             value={displayValue}

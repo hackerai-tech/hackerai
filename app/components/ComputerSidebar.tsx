@@ -1,3 +1,5 @@
+import { AgentGoalEditor, type GoalEditorDraft } from "./AgentGoalEditor";
+import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
@@ -14,12 +16,15 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  X,
+  PanelRight,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { UIMessage } from "ai";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { ExpandedTerminalButton } from "./ExpandedTerminalButton";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
@@ -33,6 +38,8 @@ import {
   isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarFinding,
+  isSidebarToolError,
   isSidebarSharedFiles,
   isSidebarSubagents,
   type SidebarContent,
@@ -40,6 +47,8 @@ import {
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
+import { FindingDetail } from "./findings/FindingDetail";
+import { ToolErrorDetail } from "./tools/ToolErrorDetail";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -50,13 +59,15 @@ import {
   getCategoryColor,
   getLanguageFromPath,
   getActionText,
-  getSidebarIcon,
   getToolName,
   getDisplayTarget,
 } from "./computer-sidebar-utils";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { AgentBrowserPreview } from "./AgentBrowserPreview";
+import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -82,6 +93,10 @@ interface ComputerSidebarProps {
   realtimeRecovery?: {
     onRetry: () => void;
   };
+  browserChatId?: string;
+  browserAgentId?: string;
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  onTakeoverRequestConsumed?: (requestId: string) => void;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -319,10 +334,34 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   onFollowingLiveChange,
   backNavigation,
   realtimeRecovery,
+  browserChatId,
+  browserAgentId = "parent",
+  onBrowserContinue,
+  onTakeoverRequestConsumed,
 }) => {
+  const computerSidebarOverlay = useComputerSidebarOverlay();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const isFullscreen = isExpanded && !computerSidebarOverlay;
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [isWrapped, setIsWrapped] = useState(true);
+  const [browserPreviewVisible, setBrowserPreviewVisible] = useState(false);
   const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isFullscreen || !sidebarOpen || !sidebarRef.current) return;
+
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    fullscreenButtonRef.current?.focus();
+
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [isFullscreen, sidebarOpen]);
 
   const navigateManually = useCallback(
     (content: SidebarContent, context: { isLatest: boolean }) => {
@@ -495,6 +534,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isProxy = isSidebarProxy(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
+  const isFinding = isSidebarFinding(sidebarContent);
+  const isToolError = isSidebarToolError(sidebarContent);
   const isSharedFiles = isSidebarSharedFiles(sidebarContent);
 
   // Use resolved versions for display metadata so streaming updates are reflected
@@ -505,20 +546,45 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     sidebarContent;
 
   const actionText = getActionText(displayContent);
-  const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
-  const headerTitle = isProxy
-    ? "HackerAI\u2019s Proxy"
-    : "HackerAI\u2019s Computer";
+  const headerTitle = isFinding
+    ? "Finding"
+    : isToolError
+      ? "Tool details"
+      : isProxy
+        ? "HackerAI\u2019s Proxy"
+        : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
+    setIsExpanded(false);
     closeSidebar();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isFullscreen) return;
+
     if (e.key === "Escape") {
-      handleClose();
+      e.preventDefault();
+      e.stopPropagation();
+      setIsExpanded(false);
+    }
+
+    if (e.key === "Tab") {
+      const focusableElements = Array.from(
+        e.currentTarget.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements.at(-1);
+      if (e.shiftKey && document.activeElement === firstElement) {
+        e.preventDefault();
+        lastElement?.focus();
+      } else if (!e.shiftKey && document.activeElement === lastElement) {
+        e.preventDefault();
+        firstElement?.focus();
+      }
     }
   };
 
@@ -526,8 +592,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     setIsWrapped(!isWrapped);
   };
 
+  const usesCloseAction = isFinding || isToolError;
+
   return (
-    <div className="h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0">
+    <div
+      ref={sidebarRef}
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 h-full w-full bg-background p-4"
+          : "h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0"
+      }
+      role={isFullscreen ? "dialog" : undefined}
+      aria-modal={isFullscreen ? true : undefined}
+      aria-label={isFullscreen ? headerTitle : undefined}
+      onKeyDown={handleKeyDown}
+    >
       <div className="h-full w-full">
         <div className="shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-border/20 dark:border-border flex h-full w-full bg-background rounded-[22px]">
           <div className="flex-1 min-w-0 p-4 flex flex-col h-full">
@@ -551,44 +630,131 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               <div className="text-foreground text-lg font-semibold flex-1">
                 {headerTitle}
               </div>
+              {!computerSidebarOverlay && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      ref={fullscreenButtonRef}
+                      onClick={() => setIsExpanded((expanded) => !expanded)}
+                      className="hidden desktop:inline-flex w-7 h-7 relative rounded-md items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={
+                        isFullscreen ? "Exit full screen" : "Expand sidebar"
+                      }
+                      aria-pressed={isFullscreen}
+                    >
+                      {isFullscreen ? (
+                        <Minimize2
+                          className="w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      ) : (
+                        <Maximize2
+                          className="w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     onClick={handleClose}
                     className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
-                    aria-label="Minimize sidebar"
+                    aria-label={
+                      usesCloseAction ? "Close details" : "Minimize sidebar"
+                    }
                     tabIndex={0}
-                    onKeyDown={handleKeyDown}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && !isFullscreen) handleClose();
+                    }}
                   >
-                    <Minimize2 className="w-5 h-5 text-muted-foreground" />
+                    {usesCloseAction ? (
+                      <X
+                        className="w-5 h-5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <>
+                        <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
+                        <PanelRight
+                          className="hidden desktop:block w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      </>
+                    )}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Minimize</TooltipContent>
+                <TooltipContent>
+                  {usesCloseAction ? "Close" : "Minimize"}
+                </TooltipContent>
               </Tooltip>
             </div>
 
             {/* Action Status */}
-            <div className="flex items-center gap-2 mt-2">
-              <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                {icon}
+            <div className="mt-2 flex min-w-0 flex-col gap-1 text-xs text-muted-foreground desktop:flex-row desktop:items-center desktop:gap-2">
+              <div
+                className="shrink-0 whitespace-nowrap"
+                title={
+                  isToolError
+                    ? `${toolName} needs attention`
+                    : `HackerAI is using ${toolName}`
+                }
+              >
+                {isToolError ? (
+                  <>
+                    <span className="text-foreground">{toolName}</span> needs
+                    attention
+                  </>
+                ) : (
+                  <>
+                    HackerAI is using{" "}
+                    <span className="text-foreground">{toolName}</span>
+                  </>
+                )}
               </div>
-              <div className="flex-1 flex flex-col gap-1 min-w-0">
-                <div className="text-[12px] text-muted-foreground">
-                  HackerAI is using{" "}
-                  <span className="text-foreground">{toolName}</span>
-                </div>
-                <div
-                  title={`${actionText} ${displayTarget}`}
-                  className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                >
-                  {actionText}
-                  <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>{displayTarget}</code>
-                  </span>
-                </div>
+              <div
+                aria-hidden="true"
+                className="hidden h-3 w-px shrink-0 bg-border desktop:block"
+              />
+              <div
+                title={`${actionText} ${displayTarget}`}
+                className="min-w-0 truncate desktop:flex-1"
+              >
+                {actionText}
+                {displayTarget && (
+                  <code className="ml-1 font-mono">{displayTarget}</code>
+                )}
               </div>
             </div>
+
+            {sidebarOpen && browserChatId && (
+              <AgentBrowserPreview
+                onReturnToChat={closeSidebar}
+                onVisibilityChange={setBrowserPreviewVisible}
+                onTakeoverRequestConsumed={onTakeoverRequestConsumed}
+                takeoverRequest={
+                  isSidebarTerminal(sidebarContent)
+                    ? sidebarContent.browserTakeoverRequest
+                    : undefined
+                }
+                onContinue={onBrowserContinue}
+                chatId={browserChatId}
+                agentId={browserAgentId}
+                liveSelection={isAtLive && isFollowingLive}
+                browserRequested={
+                  !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
+                }
+                runActive={status === "streaming" || status === "submitted"}
+                onJumpToLive={handleJumpToLive}
+              />
+            )}
 
             {realtimeRecovery && (
               <div
@@ -609,7 +775,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             {/* Content Container */}
             <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
               {/* Unified Header */}
-              <div className="h-[36px] flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)]">
+              <div
+                className={`h-[36px] shrink-0 flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)] ${isTerminal && browserPreviewVisible ? "max-sm:h-auto max-sm:min-h-12 max-sm:flex-wrap max-sm:[&_button]:min-h-11 max-sm:[&_button]:min-w-11" : ""}`}
+              >
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
                   {isProxy ? (
@@ -629,6 +797,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Notes
                     </div>
+                  ) : isFinding ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Vulnerability report
+                    </div>
+                  ) : isToolError ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Error details
+                    </div>
                   ) : isSharedFiles ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Shared Files
@@ -645,49 +821,65 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch && !isNotes && !isSharedFiles && (
-                  <CodeActionButtons
-                    content={
-                      isFile && resolvedFile
-                        ? resolvedFile.content
-                        : isTerminal && resolvedTerminal
-                          ? resolvedTerminal.output
-                            ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                            : `$ ${resolvedTerminal.command}`
-                          : isProxy && resolvedProxy
-                            ? resolvedProxy.output
-                              ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
-                              : `$ ${resolvedProxy.command}`
-                            : ""
-                    }
-                    filename={
-                      isFile
-                        ? sidebarContent.action === "searching"
-                          ? "search-results.txt"
-                          : sidebarContent.path.split("/").pop() || "code.txt"
-                        : "terminal-output.txt"
-                    }
-                    language={
-                      isFile
-                        ? sidebarContent.action === "searching"
-                          ? "text"
-                          : sidebarContent.language ||
-                            getLanguageFromPath(sidebarContent.path)
-                        : "ansi"
-                    }
-                    isWrapped={isWrapped}
-                    onToggleWrap={handleToggleWrap}
-                    variant="sidebar"
-                    // xterm manages its own wrapping; the toggle is a no-op
-                    // for interactive PTY output.
-                    showWrap={
-                      !(
-                        (isTerminal && resolvedTerminal?.rawBytes) ||
-                        (isFile && resolvedFile?.action === "viewing")
-                      )
-                    }
-                  />
-                )}
+                <div
+                  className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
+                >
+                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
+                    <ExpandedTerminalButton
+                      key={resolvedTerminal.toolCallId}
+                      terminal={resolvedTerminal}
+                      onExpand={() => setIsFollowingLive(false)}
+                    />
+                  )}
+                  {!isWebSearch &&
+                    !isNotes &&
+                    !isFinding &&
+                    !isToolError &&
+                    !isSharedFiles && (
+                      <CodeActionButtons
+                        content={
+                          isFile && resolvedFile
+                            ? resolvedFile.content
+                            : isTerminal && resolvedTerminal
+                              ? resolvedTerminal.output
+                                ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                                : `$ ${resolvedTerminal.command}`
+                              : isProxy && resolvedProxy
+                                ? resolvedProxy.output
+                                  ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                                  : `$ ${resolvedProxy.command}`
+                                : ""
+                        }
+                        filename={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "search-results.txt"
+                              : sidebarContent.path.split("/").pop() ||
+                                "code.txt"
+                            : "terminal-output.txt"
+                        }
+                        language={
+                          isFile
+                            ? sidebarContent.action === "searching"
+                              ? "text"
+                              : sidebarContent.language ||
+                                getLanguageFromPath(sidebarContent.path)
+                            : "ansi"
+                        }
+                        isWrapped={isWrapped}
+                        onToggleWrap={handleToggleWrap}
+                        variant="sidebar"
+                        // xterm manages its own wrapping; the toggle is a no-op
+                        // for interactive PTY output.
+                        showWrap={
+                          !(
+                            (isTerminal && resolvedTerminal?.rawBytes) ||
+                            (isFile && resolvedFile?.action === "viewing")
+                          )
+                        }
+                      />
+                    )}
+                </div>
               </div>
 
               {/* Content */}
@@ -796,12 +988,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     rel="noreferrer"
                                     className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
                                   >
-                                    <img
-                                      width={16}
-                                      height={16}
-                                      alt="favicon"
-                                      className="float-left mr-2 mt-0.5 rounded-full border border-border"
-                                      src={`https://s2.googleusercontent.com/s2/favicons?domain=${encodeURIComponent(result.url)}&sz=32`}
+                                    <SourceIcon
+                                      url={result.url}
+                                      size={16}
+                                      className="float-left mr-2 mt-0.5 text-muted-foreground"
                                     />
                                     {result.title}
                                   </a>
@@ -852,6 +1042,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                             )}
                           </div>
                         </div>
+                      )}
+                      {isFinding && (
+                        <FindingDetail
+                          findingId={sidebarContent.findingId}
+                          surface="computer_sidebar"
+                          className="font-sans"
+                        />
+                      )}
+                      {isToolError && (
+                        <ToolErrorDetail content={sidebarContent} />
                       )}
                       {isNotes && (
                         <div className="flex-1 min-h-0 h-full overflow-y-auto">
@@ -1111,12 +1311,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 };
 
 const SubagentComputerSidebar = ({
+  chatId,
   closeSidebar,
   parentMessages,
   openSidebar,
   origin,
   sidebarContent,
+  onBrowserContinue,
 }: {
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+  chatId: string;
   closeSidebar: () => void;
   parentMessages: any[];
   openSidebar: (content: SidebarContent) => void;
@@ -1218,7 +1422,10 @@ const SubagentComputerSidebar = ({
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
       sidebarOpen
+      browserChatId={chatId}
+      browserAgentId={origin.subagentId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}
@@ -1242,11 +1449,120 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  stopGoalRunBeforeControl?: (runId: string) => Promise<boolean>;
+  continueGoal?: React.ComponentProps<typeof AgentGoalEditor>["continueGoal"];
+  chatId?: string;
   messages?: any[];
   status?: ChatStatus;
-}> = ({ messages, status }) => {
-  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
-    useGlobalState();
+  onBrowserContinue?: (message: { id: string; text: string }) => Promise<void>;
+}> = ({
+  chatId,
+  messages,
+  status,
+  onBrowserContinue,
+  stopGoalRunBeforeControl,
+  continueGoal,
+}) => {
+  const {
+    sidebarOpen,
+    sidebarContent,
+    closeSidebar,
+    openSidebar,
+    consumeBrowserTakeoverRequest,
+  } = useGlobalState();
+
+  const [goalDraft, setGoalDraft] = useState<GoalEditorDraft>();
+  const keepGoalDraft = useCallback((draft: GoalEditorDraft | undefined) => {
+    setGoalDraft(draft);
+  }, []);
+  const closeGoalEditor = useCallback(() => {
+    setGoalDraft(undefined);
+    closeSidebar();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Edit goal"], [aria-label="Show goal controls"], [aria-label="Show goal details"]',
+        )
+        ?.focus(),
+    );
+  }, [closeSidebar]);
+
+  const editorChatId =
+    sidebarOpen &&
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal"
+      ? sidebarContent.chatId
+      : undefined;
+  const editorGoal = useQuery(
+    api.agentGoals.get,
+    editorChatId ? { chatId: editorChatId } : "skip",
+  );
+  const lastEditorGoal = useRef<
+    | {
+        chatId: string;
+        id: string;
+        startedAt?: number;
+        state: string;
+      }
+    | undefined
+  >(undefined);
+  useEffect(() => {
+    if (!editorChatId) {
+      lastEditorGoal.current = undefined;
+      return;
+    }
+    if (editorGoal === undefined) return;
+    const previous = lastEditorGoal.current;
+    if (editorGoal === null) {
+      // Only close the goal being viewed. A preserved draft may belong to an
+      // older objective while another goal is being replaced or cleared.
+      lastEditorGoal.current = undefined;
+      if (
+        previous?.chatId === editorChatId &&
+        (!goalDraft ||
+          (goalDraft.chatId === editorChatId &&
+            goalDraft.original._id === previous.id &&
+            goalDraft.original.startedAt === previous.startedAt))
+      )
+        closeSidebar();
+      return;
+    }
+    lastEditorGoal.current = {
+      chatId: editorChatId,
+      id: editorGoal._id,
+      startedAt: editorGoal.startedAt,
+      state: editorGoal.state,
+    };
+    if (
+      editorGoal.state === "achieved" &&
+      previous?.state !== "achieved" &&
+      previous?.chatId === editorChatId &&
+      previous.id === editorGoal._id &&
+      previous.startedAt === editorGoal.startedAt &&
+      (!goalDraft ||
+        (goalDraft.chatId === editorChatId &&
+          goalDraft.original._id === editorGoal._id &&
+          goalDraft.original.startedAt === editorGoal.startedAt))
+    )
+      closeSidebar();
+  }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
+
+  if (editorChatId) {
+    return (
+      <AgentGoalEditor
+        key={editorChatId}
+        chatId={editorChatId}
+        onClose={closeGoalEditor}
+        continueGoal={editorChatId === chatId ? continueGoal : undefined}
+        draft={goalDraft?.chatId === editorChatId ? goalDraft : undefined}
+        onDraftChange={keepGoalDraft}
+        stopRunBeforeControl={
+          editorChatId === chatId ? stopGoalRunBeforeControl : undefined
+        }
+      />
+    );
+  }
 
   if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
     return (
@@ -1261,7 +1577,9 @@ export const ComputerSidebar: React.FC<{
   if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
     return (
       <SubagentComputerSidebar
+        onBrowserContinue={onBrowserContinue}
         key={sidebarContent.origin.subagentId}
+        chatId={chatId ?? ""}
         closeSidebar={closeSidebar}
         parentMessages={messages ?? []}
         openSidebar={openSidebar}
@@ -1273,7 +1591,10 @@ export const ComputerSidebar: React.FC<{
 
   return (
     <ComputerSidebarBase
+      onBrowserContinue={onBrowserContinue}
+      onTakeoverRequestConsumed={consumeBrowserTakeoverRequest}
       sidebarOpen={sidebarOpen}
+      browserChatId={chatId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}

@@ -165,8 +165,12 @@ describe("agent-long post-wait authorization contract", () => {
     );
   });
 
-  it("excludes suspension time and reacquires free concurrency after checks", () => {
+  it("excludes suspension time and rechecks cost capacity under reacquired free concurrency", () => {
     const beforeSuspend = taskSource.indexOf("await beforeSuspend()");
+    const claimSlot = taskSource.indexOf(
+      "approvalPendingMarked = await claimApprovalSlot(",
+      beforeSuspend,
+    );
     const pause = taskSource.indexOf(
       "activeRuntimeBudget.pause()",
       beforeSuspend,
@@ -174,23 +178,24 @@ describe("agent-long post-wait authorization contract", () => {
     const wait = taskSource.indexOf("await waitForApprovalInput", pause);
     const resume = taskSource.indexOf("activeRuntimeBudget.resume()", wait);
     const capacity = taskSource.indexOf("await checkRateLimitCapacity(");
-    const monthlyCost = taskSource.indexOf(
-      "await checkFreeMonthlyCostLimit(",
-      capacity,
-    );
     const reacquire = taskSource.indexOf(
       "await acquireFreeRunConcurrencyLock(",
-      monthlyCost,
+      capacity,
+    );
+    const cost = taskSource.indexOf(
+      "await checkFreeMonthlyCostLimit(",
+      reacquire,
     );
 
     expect(beforeSuspend).toBeGreaterThan(-1);
+    expect(claimSlot).toBeGreaterThan(beforeSuspend);
     expect(pause).toBeGreaterThan(beforeSuspend);
     expect(wait).toBeGreaterThan(pause);
     expect(resume).toBeGreaterThan(wait);
     expect(taskSource).toMatch(/beforeSuspend:[\s\S]*releaseFreeRunLockOnce/);
     expect(capacity).toBeGreaterThan(-1);
-    expect(monthlyCost).toBeGreaterThan(capacity);
-    expect(reacquire).toBeGreaterThan(monthlyCost);
+    expect(reacquire).toBeGreaterThan(capacity);
+    expect(cost).toBeGreaterThan(reacquire);
   });
 
   it("releases the free concurrency lock from the outer task cleanup", () => {

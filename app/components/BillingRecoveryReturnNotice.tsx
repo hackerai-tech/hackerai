@@ -3,6 +3,8 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 const NOTICE_ID = "billing-recovery-return";
 
@@ -25,14 +27,42 @@ export function BillingRecoveryReturnNotice() {
       try {
         const status = await getSubscriptionCancellationStatus();
         if (!mounted || checkId !== latestCheck.current) return;
-        if (
+        if (status.checkoutRequiresReview) {
+          toast.warning(
+            status.billingReviewUnavailable
+              ? "We couldn't verify your billing status"
+              : "Your previous subscription payment still needs review",
+            {
+              id: NOTICE_ID,
+              description: status.billingReviewUnavailable
+                ? "We couldn't check your payment history. Open Account settings to retry or get billing help."
+                : "Updating your card does not restart an ended subscription. Open Account settings for billing help.",
+              action: {
+                label: "Review billing",
+                onClick: () => openSettingsDialog("Account"),
+              },
+            },
+          );
+        } else if (!status.hasActiveSubscription) {
+          toast.info("You can choose a plan to subscribe again", {
+            id: NOTICE_ID,
+            description: "Updating a card does not start a subscription.",
+          });
+        } else if (
           status.renewalInvoicePaid &&
           (status.subscriptionStatus === "active" ||
             status.subscriptionStatus === "trialing")
         ) {
-          toast.success("Your renewal invoice is paid. Your plan is active.", {
-            id: NOTICE_ID,
-          });
+          toast.success(
+            "Your renewal invoice is paid. Refresh to update your access.",
+            {
+              id: NOTICE_ID,
+              action: {
+                label: "Refresh",
+                onClick: reloadWithEntitlementRefresh,
+              },
+            },
+          );
         } else if (status.renewalPaymentRequired) {
           const detail =
             status.renewalPaymentFailure === "insufficient_funds"
@@ -44,9 +74,13 @@ export function BillingRecoveryReturnNotice() {
                   : "A successful payment has not been confirmed yet.";
           toast.error("Your renewal invoice is still unpaid", {
             id: NOTICE_ID,
-            description: `${detail} Check your payment in billing to restore access.`,
+            description: `${detail} Open billing to pay the invoice, complete verification, or update your card.`,
             duration: Infinity,
             action: {
+              label: "Resolve payment",
+              onClick: () => openSettingsDialog("Account"),
+            },
+            cancel: {
               label: "Check again",
               onClick: () => void checkPayment(),
             },

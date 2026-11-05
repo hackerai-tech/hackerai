@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "dotenv";
-import { getSharp } from "next/dist/server/image-optimizer";
+import sharp from "sharp";
 import type { UIMessage } from "ai";
 
 /** Requires one exact CASE|CODE row per fixture, in order, without extra output. */
@@ -45,8 +45,6 @@ async function main() {
   const { getProviderUsageRawModelCost } =
     await import("../lib/provider-usage-cost");
   const output = mkdtempSync(join(tmpdir(), "hackerai-vision-recovery-"));
-  // Use the image dependency already owned by the installed Next.js version.
-  const sharp = getSharp(undefined, undefined);
   const fixtures = await Promise.all(
     Array.from({ length: 23 }, async (_, i) => {
       const label = `R${String(i + 1).padStart(2, "0")}`;
@@ -195,7 +193,7 @@ async function main() {
       for (const count of [1, 11, 23]) {
         await score(
           `recovered-answer-${count}`,
-          "model-deepseek-v4-flash-0731",
+          "model-deepseek-v4-flash-vision",
           recovered,
           count,
         );
