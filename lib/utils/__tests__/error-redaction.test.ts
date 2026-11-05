@@ -18,6 +18,18 @@ describe("error redaction", () => {
     expect(redactSensitiveErrorMessage(redacted)).toBe(redacted);
   });
 
+  it("redacts a sensitive value before its field name matches a provider key", () => {
+    const message = "sk-abcdefghijklmnopqrst-token=FAKE_SECRET";
+    expect(redactSensitiveErrorMessage(message)).toBe(
+      '[Redacted]="[Redacted]"',
+    );
+    expect(
+      stringifyRedactedError({
+        "sk-abcdefghijklmnopqrst-token": "FAKE_SECRET",
+      }),
+    ).not.toContain("FAKE_SECRET");
+  });
+
   it("preserves short labels and embedded non-credential identifiers", () => {
     const message =
       "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345 task-sk-SYNTHETIC_identifier_012345";

@@ -61,6 +61,11 @@ export const redactSensitiveErrorMessage = (message: string): string =>
   message
     .replace(ANSI_ESCAPE_PATTERN, "\0")
     .replace(CONTROL_CHARACTER_PATTERN, "\0")
+    // Protect values before a provider-shaped field name loses its suffix.
+    // The later field pass still handles names revealed by control cleanup.
+    .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
+      return `${key}${separator}"${REDACTED_VALUE}"`;
+    })
     .replace(PROVIDER_KEY_CANDIDATE_PATTERN, (candidate) => {
       const key = candidate.replaceAll("\0", "");
       // Require at least 20 body characters, excluding control markers.
