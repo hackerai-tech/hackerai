@@ -290,11 +290,20 @@ export function isAgentBrowserSnapshotCommand(command: string): boolean {
  */
 export function getStandaloneSnapshotHint(command: string): string | null {
   if (/[`$\\<>\n\r]/.test(command.replaceAll("2>&1", ""))) return null;
-  const parts = splitShellCommands(command.trim()).map(splitShellWords);
-  const snapshot = parts[0]?.join(" ");
-  if (!snapshot || !isAgentBrowserSnapshotCommand(snapshot)) return null;
+  const parts = splitShellCommands(command.trim())
+    .map(splitShellWords)
+    .filter((words) => words.length > 0);
+  const snapshots = parts
+    .map((words) => words.join(" "))
+    .filter(isAgentBrowserSnapshotCommand);
+  if (snapshots.length !== 1) return null;
+  const snapshot = snapshots[0];
   if (
-    parts.slice(1).some((words) => !["head", "tail", "date"].includes(words[0]))
+    parts.some(
+      (words) =>
+        words.join(" ") !== snapshot &&
+        !["head", "tail", "date"].includes(words[0]),
+    )
   )
     return null;
   return snapshot;
