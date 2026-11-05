@@ -62,6 +62,11 @@ export async function POST(req: NextRequest) {
     if (!enabled && assignment !== "control") return empty();
     const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
     const convex = getConvexClient(signal);
+    const preference = await convex.query(
+      api.userCustomization.getPredictionPreferenceForBackend,
+      { serviceKey, userId },
+    );
+    if (!preference.enabled) return empty();
     const chat = await convex.query(api.chats.getChatById, {
       serviceKey,
       id: chatId,

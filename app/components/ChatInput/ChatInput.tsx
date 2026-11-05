@@ -914,6 +914,10 @@ const ChatInputContent = ({
     setGoalMode(true);
     setInput(goalSuggestionDraft);
   };
+  const predictionPreference = useQuery(
+    api.userCustomization.getPredictionPreference,
+    user ? {} : "skip",
+  );
   const nextActions = useNextActions({
     userId: user?.id,
     chatId,
@@ -931,6 +935,7 @@ const ChatInputContent = ({
       getUploadedFiles().length > 0 ||
       getDraftAttachmentsById(draftId).length > 0,
     blocked:
+      predictionPreference?.enabled !== true ||
       goalMode ||
       hasActiveGoalRun ||
       pauseGoalOnSend ||

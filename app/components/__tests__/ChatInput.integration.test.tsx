@@ -3151,12 +3151,46 @@ describe("ChatInput - Integration Tests", () => {
   );
 
   it.each([
-    { hasActiveGoalRun: false, pauseGoalOnSend: false, requests: 1 },
-    { hasActiveGoalRun: true, pauseGoalOnSend: false, requests: 0 },
-    { hasActiveGoalRun: false, pauseGoalOnSend: true, requests: 0 },
+    {
+      hasActiveGoalRun: false,
+      pauseGoalOnSend: false,
+      preference: true,
+      requests: 1,
+    },
+    {
+      hasActiveGoalRun: false,
+      pauseGoalOnSend: false,
+      preference: false,
+      requests: 0,
+    },
+    {
+      hasActiveGoalRun: false,
+      pauseGoalOnSend: false,
+      preference: undefined,
+      requests: 0,
+    },
+    {
+      hasActiveGoalRun: true,
+      pauseGoalOnSend: false,
+      preference: true,
+      requests: 0,
+    },
+    {
+      hasActiveGoalRun: false,
+      pauseGoalOnSend: true,
+      preference: true,
+      requests: 0,
+    },
   ])(
-    "does not generate next-message predictions while a goal owns the composer: %j",
-    async ({ hasActiveGoalRun, pauseGoalOnSend, requests }) => {
+    "gates next-message predictions on preference readiness and goal ownership: %j",
+    async ({ hasActiveGoalRun, pauseGoalOnSend, requests, preference }) => {
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) ===
+          "userCustomization:getPredictionPreference" &&
+        preference !== undefined
+          ? { enabled: preference }
+          : undefined,
+      );
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "prediction-user" },
         entitlements: [],

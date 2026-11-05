@@ -183,3 +183,20 @@ it("a late consumption cannot erase a newer assistant's saved batch", async () =
   expect(ctx.rows.chats.next_actions.batch).toEqual(newer);
   expect(ctx.db.patch).not.toHaveBeenCalled();
 });
+
+it("opt-out fences late generation saves and saved restoration without consuming the existing batch", async () => {
+  const ctx = context();
+  await saveForBackend.handler(ctx, { ...args, finishedAt: 123, batch });
+  ctx.rows.user_customization = {
+    user_id: "owner",
+    predictions_enabled: false,
+  };
+  ctx.db.patch.mockClear();
+  expect(await getForBackend.handler(ctx, args)).toBeNull();
+  expect(
+    await saveForBackend.handler(ctx, { ...args, finishedAt: 123, batch }),
+  ).toBeNull();
+  expect(ctx.db.patch).not.toHaveBeenCalled();
+  ctx.rows.user_customization.predictions_enabled = true;
+  expect((await getForBackend.handler(ctx, args)).batch).toEqual(batch);
+});

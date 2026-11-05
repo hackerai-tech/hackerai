@@ -32,6 +32,7 @@ jest.mock("@/lib/experiments/regional-subscription-first.server", () => ({
 const query = jest.fn();
 const mutation = jest.fn();
 let saved: unknown = null;
+let predictionsEnabled = true;
 const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
@@ -55,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   shutdown.mockResolvedValue(undefined);
   saved = null;
+  predictionsEnabled = true;
   mutation.mockImplementation(async (_name, args) => args.batch ?? true);
   chat = {
     id: chatId,
@@ -72,31 +74,33 @@ beforeEach(() => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
   query.mockImplementation(async (_name, args) =>
-    args.chatId && !args.paginationOpts
-      ? saved
-      : args.paginationOpts
-        ? {
-            page: [
-              {
-                id: "answer",
-                role: "assistant",
-                parts: [
-                  {
-                    type: "text",
-                    text: "Synthetic finding lacks impact evidence.",
-                  },
-                ],
-              },
-              {
-                id: "user",
-                role: "user",
-                parts: [
-                  { type: "text", text: "Explain this synthetic finding." },
-                ],
-              },
-            ],
-          }
-        : chat,
+    args.userId && !args.chatId
+      ? { enabled: predictionsEnabled }
+      : args.chatId && !args.paginationOpts
+        ? saved
+        : args.paginationOpts
+          ? {
+              page: [
+                {
+                  id: "answer",
+                  role: "assistant",
+                  parts: [
+                    {
+                      type: "text",
+                      text: "Synthetic finding lacks impact evidence.",
+                    },
+                  ],
+                },
+                {
+                  id: "user",
+                  role: "user",
+                  parts: [
+                    { type: "text", text: "Explain this synthetic finding." },
+                  ],
+                },
+              ],
+            }
+          : chat,
   );
   jest.mocked(createRedisClient).mockReturnValue({ eval: reserve } as never);
   reserve.mockResolvedValue(1);
@@ -357,3 +361,22 @@ test("consumption is bound to the authenticated user rather than caller identity
   );
   expect(generateNextActions).not.toHaveBeenCalled();
 });
+
+test.each([false, true])(
+  "opt-out blocks generation and restoration (restoreOnly=%s) before spend or content",
+  async (restoreOnly) => {
+    predictionsEnabled = false;
+    saved = {
+      consumed: false,
+      batch: { suggestions: ["Never restore while disabled"] },
+    };
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly } as never),
+    );
+    expect(await result.json()).toEqual({ suggestions: [] });
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+  },
+);
