@@ -339,8 +339,10 @@ export function useNextActions(options: Options): NextActionsController {
           controller.signal.aborted ||
           keyRef.current !== eligibleKey ||
           !canRetain()
-        )
+        ) {
+          report("aborted");
           return;
+        }
         remember(attempted.current, attemptKey);
         sent = true;
         const response = await fetch("/api/chat/next-actions", {

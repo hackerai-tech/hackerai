@@ -144,6 +144,23 @@ test("restoration has its own request kind and never claims a new generation", a
   });
 });
 
+test("a retry revoked by the synchronous attachment guard settles as aborted", async () => {
+  jest.mocked(fetch).mockResolvedValue({ ok: false, status: 409 } as Response);
+  renderHook(() => useNextActions(base()));
+  await settle();
+  // Attachment state can change before React commits the next render.
+  attachments = true;
+  await act(async () => jest.advanceTimersByTimeAsync(1000));
+  expect(generationCalls()).toHaveLength(1);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "aborted",
+    elapsed_ms: 1500,
+  });
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(settledEvents()).toHaveLength(1);
+});
+
 test.each(["empty", "failed", "timeout"])(
   "reports %s independently of a ready batch",
   async (outcome) => {
