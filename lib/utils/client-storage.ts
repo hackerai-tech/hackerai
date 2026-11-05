@@ -12,6 +12,7 @@ export type ConversationDraft = {
   content: string;
   timestamp: number;
   attachments?: Array<ConversationDraftAttachment>;
+  goalMode?: true;
 };
 
 export type ConversationDraftAttachment = {
@@ -535,6 +536,31 @@ export const getDraftContentById = (id: string): string | null => {
   return entry ? entry.content : null;
 };
 
+export const isDraftGoalModeById = (id: string): boolean =>
+  readDraftStore().drafts.find((draft) => draft.id === id)?.goalMode === true;
+
+export const setDraftGoalMode = (id: string, enabled: boolean): void => {
+  const store = readDraftStore();
+  const existing = store.drafts.find((draft) => draft.id === id);
+  const entry: ConversationDraft = {
+    ...existing,
+    id,
+    content: existing?.content ?? "",
+    timestamp: Date.now(),
+  };
+  if (enabled) entry.goalMode = true;
+  else delete entry.goalMode;
+  const drafts = store.drafts.filter((draft) => draft.id !== id);
+  if (
+    enabled ||
+    entry.content.trim() ||
+    normalizeDraftAttachments(entry.attachments).length > 0
+  ) {
+    drafts.push(entry);
+  }
+  writeDraftStore({ ...store, drafts });
+};
+
 const normalizeDraftAttachments = (
   attachments: unknown,
 ): ConversationDraftAttachment[] => {
@@ -627,6 +653,7 @@ export const upsertDraft = (
   const entry: ConversationDraft = {
     id,
     content,
+    ...(existing?.goalMode === true ? { goalMode: true } : {}),
     timestamp: typeof timestamp === "number" ? timestamp : Date.now(),
     ...(attachments.length > 0 ? { attachments } : {}),
   };
@@ -650,6 +677,7 @@ export const upsertDraftAttachments = (
   const entry: ConversationDraft = {
     id,
     content: existing?.content ?? "",
+    ...(existing?.goalMode === true ? { goalMode: true } : {}),
     timestamp: typeof timestamp === "number" ? timestamp : Date.now(),
     ...(normalizedAttachments.length > 0
       ? { attachments: normalizedAttachments }
@@ -658,7 +686,11 @@ export const upsertDraftAttachments = (
 
   if (idx >= 0) {
     store.drafts[idx] = entry;
-  } else if (entry.content.trim() || normalizedAttachments.length > 0) {
+  } else if (
+    entry.content.trim() ||
+    normalizedAttachments.length > 0 ||
+    entry.goalMode
+  ) {
     store.drafts.push(entry);
   }
   writeDraftStore(store);
@@ -670,10 +702,11 @@ export const removeDraftAttachments = (id: string): void => {
   if (idx < 0) return;
 
   const existing = store.drafts[idx];
-  if (existing.content.trim()) {
+  if (existing.content.trim() || existing.goalMode === true) {
     store.drafts[idx] = {
       id: existing.id,
       content: existing.content,
+      ...(existing.goalMode === true ? { goalMode: true } : {}),
       timestamp: Date.now(),
     };
   } else {

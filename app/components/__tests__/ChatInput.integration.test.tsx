@@ -3234,6 +3234,167 @@ describe("ChatInput - Integration Tests", () => {
     },
   );
 
+  it.each([false, true])(
+    "restores a goal draft on reload and submits it as a goal (mobile=%s)",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "restore-goal-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+        chatModeAccessResolved: true,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "restore-goal",
+              content: "Verify this goal",
+              goalMode: true,
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      const ui = () => (
+        <TestWrapper>
+          <ChatInput
+            chatId="restore-goal"
+            onSubmit={mockOnSubmit}
+            status="ready"
+          />
+        </TestWrapper>
+      );
+      mockOnSubmit.mockResolvedValue(false);
+      const first = render(ui());
+      const input = await screen.findByRole("textbox");
+      expect(input).toHaveValue("Verify this goal");
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled(),
+      );
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          "/goal start Verify this goal",
+        ),
+      );
+      // Rejected sends retain intent for a retry even across a full reload.
+      first.unmount();
+      mockOnSubmit.mockResolvedValue(true);
+      const second = render(ui());
+      const restored = await screen.findByRole("textbox");
+      expect(restored).toHaveAttribute("placeholder", "Describe your goal");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled(),
+      );
+      fireEvent.keyDown(restored, { key: "Enter" });
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "Exit goal mode" }),
+        ).not.toBeInTheDocument(),
+      );
+      second.unmount();
+      render(ui());
+      expect(await screen.findByRole("textbox")).not.toHaveAttribute(
+        "placeholder",
+        "Describe your goal",
+      );
+    },
+  );
+
+  it("keeps restored goal intent through entitlement and flag loading without sending a normal request", async () => {
+    jest.mocked(useAuth).mockReturnValue({
+      user: { id: "goal-loading-user" },
+      entitlements: [],
+    } as ReturnType<typeof useAuth>);
+    mockSandboxState = {
+      chatMode: "ask",
+      subscription: "free",
+      isCheckingProPlan: true,
+      chatModeAccessResolved: false,
+    };
+    let resolveGoal: (value: unknown) => void = () => {};
+    const goalResponse = new Promise((resolve) => {
+      resolveGoal = resolve;
+    });
+    mockFetch.mockImplementation((url) =>
+      url === "/api/agent-goal"
+        ? goalResponse
+        : Promise.resolve({
+            ok: true,
+            json: async () => ({ assignment: null }),
+          }),
+    );
+    window.localStorage.setItem(
+      CONVERSATION_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        drafts: [
+          {
+            id: "loading-goal",
+            content: "Keep my goal",
+            goalMode: true,
+            timestamp: Date.now(),
+          },
+        ],
+      }),
+    );
+    const ui = () => (
+      <TestWrapper>
+        <ChatInput
+          chatId="loading-goal"
+          onSubmit={mockOnSubmit}
+          status="ready"
+        />
+      </TestWrapper>
+    );
+    const { rerender } = render(ui());
+    fireEvent.keyDown(await screen.findByRole("textbox"), { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    mockSandboxState = {
+      chatMode: "agent",
+      subscription: "pro",
+      isCheckingProPlan: false,
+      chatModeAccessResolved: true,
+    };
+    rerender(ui());
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(mockOnSubmit).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveGoal({ ok: true, json: async () => ({ enabled: true }) });
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled(),
+    );
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "placeholder",
+      "Describe your goal",
+    );
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    await waitFor(() =>
+      expect(mockOnSubmit).toHaveBeenCalledWith(
+        expect.anything(),
+        "/goal start Keep my goal",
+      ),
+    );
+  });
+
   it("selects a goal from the mobile add menu without losing the draft or attachments", async () => {
     mockIsMobile = true;
     jest.mocked(useAuth).mockReturnValue({
@@ -3629,6 +3790,11 @@ describe("ChatInput - Integration Tests", () => {
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "Verify the attachment" },
     });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled(),
+    );
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     await waitFor(() =>
       expect(mockOnSubmit).toHaveBeenCalledWith(

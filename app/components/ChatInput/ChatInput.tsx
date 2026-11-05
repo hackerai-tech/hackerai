@@ -297,6 +297,7 @@ const ChatInputContent = ({
 }: ChatInputProps) => {
   const {
     chatMode,
+    chatModeAccessResolved,
     setChatMode,
     uploadedFiles,
     getUploadedFiles,
@@ -859,24 +860,15 @@ const ChatInputContent = ({
     selectedComputerUnavailable,
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
-  const effectiveSendDisabledReason =
-    (submissionPending ? "Sending message…" : undefined) ??
-    (uploadedFiles.some((file) => file.removing)
-      ? "Wait for the attachment to finish removing."
-      : undefined) ??
-    sendDisabledReason ??
-    (status === "ready" && editingQueuedMessageId
-      ? "Finish editing the queued message before sending a new request"
-      : undefined) ??
-    (user
-      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
-      : undefined);
-
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
-  const [goalEnabled, setGoalEnabled] = useState(false);
+  const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
   const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
   useEffect(() => {
-    setGoalEnabled(false);
+    setGoalEnabled(null);
+    // Entitlements and the saved chat mode hydrate after the first render.
+    // Do not erase a restored goal draft while that state is unresolved.
+    if (!chatModeAccessResolved || isCheckingProPlan || isResolvingInitialState)
+      return;
     if (chatMode !== "agent" || subscription === "free") {
       setGoalMode(false);
       return;
@@ -887,9 +879,39 @@ const ChatInputContent = ({
       .then((data) => {
         if (!abort.signal.aborted) setGoalEnabled(data?.enabled === true);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!abort.signal.aborted) setGoalEnabled(false);
+      });
     return () => abort.abort();
-  }, [chatId, chatMode, subscription, setGoalMode]);
+  }, [
+    chatId,
+    chatMode,
+    chatModeAccessResolved,
+    isCheckingProPlan,
+    isResolvingInitialState,
+    subscription,
+    setGoalMode,
+  ]);
+  const goalSendDisabledReason =
+    goalMode && !goalEnabled
+      ? goalEnabled === false
+        ? "Goal mode is unavailable. Exit goal mode to send a normal message."
+        : "Checking goal availability…"
+      : undefined;
+  const effectiveSendDisabledReason =
+    (submissionPending ? "Sending message…" : undefined) ??
+    (uploadedFiles.some((file) => file.removing)
+      ? "Wait for the attachment to finish removing."
+      : undefined) ??
+    sendDisabledReason ??
+    goalSendDisabledReason ??
+    (status === "ready" && editingQueuedMessageId
+      ? "Finish editing the queued message before sending a new request"
+      : undefined) ??
+    (user
+      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      : undefined);
+
   useEffect(() => setDismissedGoalSuggestion(false), [input]);
   const goalSuggestionDraft = getGoalSuggestionDraft(input);
   const showGoalSuggestion =
