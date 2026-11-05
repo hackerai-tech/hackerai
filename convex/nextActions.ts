@@ -63,6 +63,11 @@ export const getForBackend = query({
   returns: v.union(nextActionsStateValidator, v.null()),
   handler: async (ctx, args) => {
     const chat = await completedChat(ctx, args);
+    const preference = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+    if (preference?.predictions_enabled === false) return null;
     const saved = chat?.next_actions;
     if (!saved || saved.messageId !== args.messageId) return null;
     // Message IDs identify turns even if final persistence advances its clock.
@@ -102,6 +107,12 @@ export const saveForBackend = mutation({
       args.batch.batchId.length > 100
     )
       return null;
+    // Read inside the transaction: an opt-out during model work fences its late save.
+    const preference = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+    if (preference?.predictions_enabled === false) return null;
     const saved = chat.next_actions;
     if (saved?.messageId === args.messageId && saved.consumed) return null;
     if (

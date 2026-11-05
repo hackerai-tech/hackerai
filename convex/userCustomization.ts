@@ -3,6 +3,67 @@ import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
+// Product preferences are separate from customization returned to model prompts.
+export const getPredictionPreference = query({
+  args: {},
+  returns: v.union(v.null(), v.object({ enabled: v.boolean() })),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || (await isUserDeletionFenced(ctx.db, identity.subject)))
+      return null;
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    return { enabled: row?.predictions_enabled ?? true };
+  },
+});
+
+export const setPredictionPreference = mutation({
+  args: { enabled: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { enabled }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity)
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Sign in to update this preference.",
+      });
+    if (await isUserDeletionFenced(ctx.db, identity.subject))
+      throw new ConvexError({
+        code: "ACCOUNT_DELETING",
+        message: "This account is being deleted.",
+      });
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+      .first();
+    const patch = { predictions_enabled: enabled, updated_at: Date.now() };
+    if (row) await ctx.db.patch(row._id, patch);
+    else
+      await ctx.db.insert("user_customization", {
+        user_id: identity.subject,
+        ...patch,
+      });
+    return null;
+  },
+});
+
+export const getPredictionPreferenceForBackend = query({
+  args: { serviceKey: v.string(), userId: v.string() },
+  returns: v.object({ enabled: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId))
+      return { enabled: false };
+    const row = await ctx.db
+      .query("user_customization")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+    return { enabled: row?.predictions_enabled ?? true };
+  },
+});
+
 // Keep this preference out of customization payloads used to build model prompts.
 // A default-on preference must never be treated as consent or export eligibility.
 export const getModelImprovementPreference = query({
