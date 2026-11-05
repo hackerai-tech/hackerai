@@ -20,9 +20,28 @@ describe("error redaction", () => {
 
   it("preserves short labels and embedded non-credential identifiers", () => {
     const message =
-      "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345";
+      "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345 task-sk-SYNTHETIC_identifier_012345";
     expect(redactSensitiveErrorMessage(message)).toBe(message);
   });
+
+  it("redacts a provider key after a serialized newline", () => {
+    const message = {
+      message: "Provider rejected\nsk-proj-SYNTHETIC_provider_key_012345",
+    };
+    expect(JSON.parse(stringifyRedactedError(message))).toEqual({
+      message: "Provider rejected\n[Redacted]",
+    });
+  });
+
+  it.each(["\\t", "\\r", "\\u0020", "%22", "%20"])(
+    "redacts a provider key after an encoded separator %s",
+    (separator) => {
+      const message = `detail=${separator}sk-proj-SYNTHETIC_provider_key_012345`;
+      expect(redactSensitiveErrorMessage(message)).toBe(
+        `detail=${separator}[Redacted]`,
+      );
+    },
+  );
 
   it.each([
     "access_token=FAKE_CREDENTIAL",

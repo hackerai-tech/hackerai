@@ -12,7 +12,9 @@ const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
 // Provider errors can quote keys without a credential field or auth header.
 // Keep short labels and identifiers intact, and consume the whole token body.
-const PROVIDER_KEY_PATTERN = /(?<![A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}/g;
+// Serialized JSON and diagnostic URLs can encode the preceding separator.
+const PROVIDER_KEY_PATTERN =
+  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrt]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_-]{20,}/g;
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
