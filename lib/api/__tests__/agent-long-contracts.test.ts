@@ -1306,7 +1306,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
-      /expectedRunId:\s*triggerRunId,[\s\S]*clearApprovalPending:\s*true/,
+      /await clearFinishedAgentRun\([\s\S]*?triggerRunId,[\s\S]*?approvalSessionId,[\s\S]*?approvalSessionClosed/,
     );
     expect(resumeSrc).toMatch(
       /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
@@ -1351,7 +1351,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("parent completion clears the active run after terminal teardown", () => {
     expect(taskSrc).toMatch(
-      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId/,
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?clearFinishedAgentRun\([\s\S]*?triggerRunId/,
     );
     expect(taskSrc).toMatch(
       /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
@@ -1520,7 +1520,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*(?:!activeGoal\s*&&\s*)?autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
       );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
       expect(source).toMatch(/agent_auto_continue_suppressed/);
@@ -1843,12 +1843,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(lookupIdx).toBeGreaterThan(lookupGuardIdx);
   });
 
+  test("goal continuation claims ownership before persisting a fresh hidden model turn", () => {
+    const claim = taskSrc.indexOf("goalApi.agentGoals.claimRun");
+    const eligibility = taskSrc.indexOf(
+      "await assertGoalExecutionAllowed(payload)",
+      claim,
+    );
+    const protocol = taskSrc.indexOf(
+      "approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION",
+      eligibility,
+    );
+    const regional = taskSrc.indexOf(
+      "await enforceRegionalSubscriptionFirst({",
+      protocol,
+    );
+    const continuation = taskSrc.indexOf(
+      "if (activeGoal && isAutomaticContinuation)",
+      regional,
+    );
+    const hiddenMessage = taskSrc.indexOf(
+      "id: `goal-continue:${ctx.run.id}`",
+      continuation,
+    );
+    const history = taskSrc.indexOf("getMessagesByChatId({", hiddenMessage);
+    expect(claim).toBeGreaterThan(-1);
+    expect(eligibility).toBeGreaterThan(claim);
+    expect(protocol).toBeGreaterThan(eligibility);
+    expect(regional).toBeGreaterThan(protocol);
+    expect(continuation).toBeGreaterThan(regional);
+    expect(hiddenMessage).toBeGreaterThan(continuation);
+    expect(history).toBeGreaterThan(hiddenMessage);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/role: "user"/);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/isHidden: true/);
+  });
+
+  test("persistent goals suppress the separate client auto-continue loop", () => {
+    expect(taskSrc).toMatch(
+      /if \(\s*!activeGoal\s*&&\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+    );
+  });
+
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*(?:!activeGoal\s*&&\s*)?autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
       );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }

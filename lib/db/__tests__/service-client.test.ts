@@ -525,15 +525,23 @@ describe("bounded RPC failure diagnostics", () => {
 
 it("cancels only the request-scoped client's in-flight transport", async () => {
   const controller = new AbortController();
+  const sharedReady = Promise.withResolvers<void>();
+  const sharedHeaders = Promise.withResolvers<Response>();
+  let sharedSettled = false;
   let connected!: () => void;
   const ready = new Promise<void>((resolve) => {
     connected = resolve;
   });
   globalThis.fetch = jest.fn(async (_input, init) => {
-    if (!init?.signal)
+    if (!init?.signal) {
+      if (JSON.parse(String(init?.body)).args[0].fixture === "held") {
+        sharedReady.resolve();
+        return sharedHeaders.promise;
+      }
       return new Response(
         JSON.stringify({ status: "success", value: null, logLines: [] }),
       );
+    }
     connected();
     return new Promise<Response>((_resolve, reject) =>
       init.signal!.addEventListener(
@@ -544,15 +552,30 @@ it("cancels only the request-scoped client's in-flight transport", async () => {
     );
   });
   const reference = makeFunctionReference<"mutation">("fixture:accept");
+  const ordinary = createServiceConvexClient(deployment);
+  const earlier = ordinary.mutation(reference, { fixture: "held" }).then(() => {
+    sharedSettled = true;
+  });
+  await sharedReady.promise;
   const scoped = createServiceConvexClient(deployment, {
     signal: controller.signal,
   });
   const pending = scoped.mutation(reference, {});
   const rejected = expect(pending).rejects.toThrow("fixture deadline");
-  await ready;
-  controller.abort(new Error("fixture deadline"));
-  await rejected;
-  const ordinary = createServiceConvexClient(deployment);
+  try {
+    await ready;
+    controller.abort(new Error("fixture deadline"));
+    await rejected;
+    expect(sharedSettled).toBe(false);
+  } finally {
+    controller.abort(new Error("fixture cleanup"));
+    sharedHeaders.resolve(
+      new Response(
+        JSON.stringify({ status: "success", value: null, logLines: [] }),
+      ),
+    );
+    await earlier;
+  }
   await expect(ordinary.mutation(reference, {})).resolves.toBeNull();
 });
 

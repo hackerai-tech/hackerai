@@ -959,9 +959,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFilesRef.current[indexToRemove];
-    if (!uploadedFile || removingFilesRef.current.has(uploadedFile.file))
+    if (
+      !uploadedFile ||
+      uploadedFile.removing ||
+      removingFilesRef.current.has(uploadedFile.file)
+    )
       return;
     removingFilesRef.current.add(uploadedFile.file);
+    updateUploadedFile(uploadedFile.file, { removing: true });
     const matchesAttachment = (item: UploadedFileState) =>
       item.file === uploadedFile.file ||
       (uploadedFile.generatedTextAttachment !== undefined &&
@@ -1029,6 +1034,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       );
     } finally {
       removingFilesRef.current.delete(uploadedFile.file);
+      const remainingFile = uploadedFilesRef.current.find(matchesAttachment);
+      if (remainingFile)
+        updateUploadedFile(remainingFile.file, { removing: false });
     }
   };
 
@@ -1202,7 +1210,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     [applyUploadedFileUpdate, uploadFileToS3],
   );
 
-  const handleAttachClick = () => {
+  const handleAttachClick = (source: "camera" | "files" = "files") => {
     const isTauri = isTauriEnvironment();
     logLocalAttachmentDebug("attach-click", {
       isTauri,
@@ -1229,7 +1237,17 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         });
       return;
     }
-    fileInputRef.current?.click();
+    const input = fileInputRef.current;
+    if (!input) return;
+    // Configure every opening so Camera cannot restrict a later Files picker.
+    input.accept = source === "files" ? "" : "image/*";
+    input.multiple = source !== "camera";
+    if (source === "camera") {
+      input.setAttribute("capture", "environment");
+    } else {
+      input.removeAttribute("capture");
+    }
+    input.click();
   };
 
   const handlePastedTextAttachment = useCallback(

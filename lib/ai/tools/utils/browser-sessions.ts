@@ -206,7 +206,7 @@ export class BrowserSessions {
       if (!session.registered || !isE2BSandbox(session.sandbox)) continue;
       try {
         const state = await withCancellation(
-          getConvexClient().query(api.browserHandoffs.getForBackend, {
+          getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
             serviceKey: scope.serviceKey,
             userId: scope.userId,
             sessionId: session.sessionId,
@@ -374,7 +374,7 @@ export class BrowserSessions {
       Promise.all(
         sessions.map(async (session) => ({
           session,
-          state: await getConvexClient().query(
+          state: await getConvexClient(signal).query(
             api.browserHandoffs.getForBackend,
             {
               serviceKey: scope.serviceKey,
@@ -428,7 +428,7 @@ export class BrowserSessions {
       const states = await withCancellation(
         Promise.all(
           sessions.map((session) =>
-            getConvexClient().query(api.browserHandoffs.getForBackend, {
+            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
               serviceKey: scope.serviceKey,
               userId: scope.userId,
               sessionId: session.sessionId,
@@ -485,7 +485,9 @@ export class BrowserSessions {
     ) as ToolSet;
   }
 
-  async getExitNotes(): Promise<Array<{ id: string; text: string }>> {
+  async getExitNotes(
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: string; text: string }>> {
     if (!this.handoffScope || this.closed) return [];
     const scope = this.handoffScope;
     // Preview registration is optional, but saved notes are user instructions.
@@ -494,11 +496,14 @@ export class BrowserSessions {
       [...this.sessions.values()]
         .filter((session) => session.registered)
         .map((session) =>
-          getConvexClient().query(api.browserHandoffs.getExitNotesForBackend, {
-            serviceKey: scope.serviceKey,
-            userId: scope.userId,
-            sessionId: session.sessionId,
-          }),
+          getConvexClient(signal).query(
+            api.browserHandoffs.getExitNotesForBackend,
+            {
+              serviceKey: scope.serviceKey,
+              userId: scope.userId,
+              sessionId: session.sessionId,
+            },
+          ),
         ),
     ).catch(rethrowBrowserHandoffReadError);
     return notes.flat();

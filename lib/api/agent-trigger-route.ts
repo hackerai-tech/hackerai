@@ -1,3 +1,9 @@
+import { captureGoalLifecycle } from "@/lib/goals/analytics";
+import { api as goalApi } from "@/convex/_generated/api";
+import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
+import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import type { GoalContract } from "@/lib/goals/contracts";
+import { validGoalRequest } from "@/lib/goals/contracts";
 import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
 import {
   readCloudWorkspaceState,
@@ -200,7 +206,16 @@ export const shouldRequireAgentApprovalDeploymentPin = (
     ? environment.VERCEL_ENV === "production"
     : environment.NODE_ENV === "production";
 
+type AgentGoalRequest =
+  | ({
+      action: "start";
+      expectedGeneration?: number;
+      objective: string;
+      criteria: string[];
+    } & GoalContract)
+  | { action: "resume"; expectedGeneration?: number; resumeOnReply?: boolean };
 type AgentTriggerRequestBody = {
+  goal?: AgentGoalRequest;
   messages: UIMessage[];
   chatId: string;
   todos?: Todo[];
@@ -284,9 +299,16 @@ const parseAgentTriggerRequestBody = async (
     };
   }
 
+  if (body.goal !== undefined && !validGoalRequest(body.goal)) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid goal request", { status: 400 }),
+    };
+  }
   return {
     ok: true,
     body: {
+      goal: body.goal as AgentGoalRequest | undefined,
       messages: body.messages as UIMessage[],
       chatId: body.chatId,
       todos: Array.isArray(body.todos) ? (body.todos as Todo[]) : undefined,
@@ -403,10 +425,12 @@ export const finalizeStartedAgentRun = async ({
   chatId,
   runId,
   approvalSessionId,
+  goal,
 }: {
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
+  goal?: { userId: string; generation: number };
   expectedRunId?: string | null;
 }): Promise<StartedAgentRunAccess> => {
   let failureStage:
@@ -433,12 +457,61 @@ export const finalizeStartedAgentRun = async ({
       ]);
 
     failureStage = "associate_run";
-    const association = await replaceActiveTriggerRun({
-      expectedRunId,
-      chatId,
-      triggerRunId: runId,
-      approvalSessionId: approvalSessionId ?? null,
-    });
+    let expectedApprovalSessionId: string | null = null;
+    if (!goal) {
+      const previousChat = await getChatById({ id: chatId });
+      const previousRunId = previousChat?.active_trigger_run_id ?? null;
+      expectedApprovalSessionId =
+        previousChat?.active_agent_approval_session_id ?? null;
+      if (
+        previousRunId !== null &&
+        previousRunId !== runId &&
+        previousRunId !== expectedRunId
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Another Agent run started in this chat. Reconnect to that run before sending again.",
+          { agent_run_association: "stale" },
+        );
+      }
+      // Keep the previous ownership record until both cleanup operations finish.
+      // A failed close must remain discoverable by Stop or a later send.
+      if (previousRunId && previousRunId !== runId) {
+        failureStage = "cancel_previous_run";
+        await cancelAgentTriggerRun(previousRunId);
+      }
+      if (
+        expectedApprovalSessionId &&
+        expectedApprovalSessionId !== approvalSessionId
+      ) {
+        failureStage = "close_previous_session";
+        await closeAgentApprovalSession(
+          expectedApprovalSessionId,
+          "agent-run-replaced",
+        );
+      }
+    }
+
+    failureStage = "associate_run";
+    // Goal startup has its own generation fence and must not reattach a worker
+    // that already finished. Ordinary sends atomically replace the prior owner.
+    const association = goal
+      ? (await goalConvex().mutation(goalApi.agentGoals.associateStartedRun, {
+          serviceKey: goalServiceKey(),
+          chatId,
+          runId,
+          approvalSessionId,
+          ...goal,
+        }))
+        ? { previousRunId: null, previousApprovalSessionId: null }
+        : "stale"
+      : await replaceActiveTriggerRun({
+          expectedRunId,
+          expectedApprovalSessionId,
+          chatId,
+          triggerRunId: runId,
+          approvalSessionId: approvalSessionId ?? null,
+        });
     if (association === "stale") {
       throw new ChatSDKError(
         "bad_request:api",
@@ -452,20 +525,6 @@ export const finalizeStartedAgentRun = async ({
         "The chat was deleted while the Agent run was starting.",
         { agent_run_association: association },
       );
-    }
-
-    if (association.previousRunId && association.previousRunId !== runId) {
-      // Cancel only the owner displaced by this transaction. Its conditional
-      // cleanup cannot detach the replacement, and persisted output is retained.
-      failureStage = "cancel_previous_run";
-      await cancelAgentTriggerRun(association.previousRunId);
-      if (association.previousApprovalSessionId !== approvalSessionId) {
-        failureStage = "close_previous_session";
-        await closeAgentApprovalSession(
-          association.previousApprovalSessionId ?? undefined,
-          "agent-run-replaced",
-        );
-      }
     }
 
     return {
@@ -601,6 +660,25 @@ export const createAgentTriggerPost =
         }),
       );
     }, 10_000);
+    let reservedGoal:
+      { chatId: string; userId: string; generation: number } | undefined;
+    const releaseReservedGoal = async () => {
+      if (!reservedGoal) return;
+      const goal = reservedGoal;
+      reservedGoal = undefined;
+      try {
+        await goalConvex().mutation(goalApi.agentGoals.failDispatch, {
+          serviceKey: goalServiceKey(),
+          ...goal,
+        });
+      } catch {
+        // A persistence outage leaves the goal fenced for explicit recovery.
+      }
+      await captureGoalLifecycle("admission_failed", {
+        ...goal,
+        goalGeneration: goal.generation,
+      });
+    };
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
@@ -619,6 +697,7 @@ export const createAgentTriggerPost =
         limitRescue,
         agentRunRequestId,
         projectId: requestedProjectId,
+        goal: goalRequest,
       } = parsedBody.body;
 
       diagnosticContext.chatId = chatId.slice(0, 128);
@@ -709,6 +788,47 @@ export const createAgentTriggerPost =
         getUserCustomization({ userId }),
       ]);
 
+      if (
+        goalRequest &&
+        (subscription === "free" ||
+          limitRescue ||
+          (regenerate &&
+            (goalRequest.action !== "resume" ||
+              goalRequest.expectedGeneration === undefined)) ||
+          !(await goalEnabled(userId, subscription)))
+      )
+        throw new ChatSDKError(
+          "forbidden:chat",
+          "Persistent goals are unavailable for this request.",
+        );
+      if (existingChat && existingChat.user_id !== userId)
+        throw new ChatSDKError("forbidden:chat");
+      const existingGoal = existingChat
+        ? await reconcileGoal(chatId, userId)
+        : null;
+      if (
+        !goalRequest &&
+        existingGoal &&
+        (existingGoal.activeRunId ||
+          ["queued", "running", "waiting", "needs_approval"].includes(
+            existingGoal.state,
+          ))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Pause the goal and wait for its current run to settle before sending another Agent request.",
+        );
+      if (
+        goalRequest?.action === "resume" &&
+        existingGoal &&
+        (existingGoal.sandboxPreference !== (sandboxPreference ?? "e2b") ||
+          existingGoal.permissionMode !== agentPermissionMode ||
+          existingGoal.selectedModel !== (selectedModelOverride ?? "auto"))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Restore the goal’s original sandbox, model and permission mode before resuming.",
+        );
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
@@ -823,6 +943,48 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
+      const reserveGoal = async () => {
+        if (!goalRequest) return;
+        const savedGoal =
+          goalRequest.action === "start"
+            ? await goalConvex().mutation(goalApi.agentGoals.start, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { expectedGeneration: goalRequest.expectedGeneration }
+                  : {}),
+                objective: goalRequest.objective,
+                criteria: goalRequest.criteria,
+                verificationCommand: goalRequest.verificationCommand,
+                constraints: goalRequest.constraints,
+                boundaries: goalRequest.boundaries,
+                stopWhen: goalRequest.stopWhen,
+                sandboxPreference: sandboxPreference ?? "e2b",
+                permissionMode: agentPermissionMode,
+                selectedModel: selectedModelOverride ?? "auto",
+              })
+            : await goalConvex().mutation(goalApi.agentGoals.control, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                action: "resume",
+                ...(goalRequest.resumeOnReply ? { resumeOnReply: true } : {}),
+                ...(goalRequest.expectedGeneration !== undefined
+                  ? { generation: goalRequest.expectedGeneration }
+                  : {}),
+              });
+        reservedGoal = { chatId, userId, generation: savedGoal.generation };
+        await captureGoalLifecycle(
+          goalRequest.action === "start" ? "admitted" : "resumed",
+          { chatId, userId, subscription },
+          savedGoal,
+        );
+      };
+
+      // Fence an existing goal before writing input that a queued worker could
+      // otherwise consume. New chats must exist before reserving their goal.
+      if (existingChat) await reserveGoal();
       stage = "persist_user_message";
       await handleInitialChatAndUserMessage({
         chatId,
@@ -839,6 +1001,18 @@ export const createAgentTriggerPost =
       });
       initialPersistenceStep = undefined;
 
+      if (!existingChat) await reserveGoal();
+      if (reservedGoal && goalRequest?.action === "start") {
+        const goalMessage = messagesForPersistence.findLast(
+          (m) => m.role === "user",
+        );
+        if (goalMessage)
+          await goalConvex().mutation(goalApi.agentGoals.markMessage, {
+            serviceKey: goalServiceKey(),
+            ...reservedGoal,
+            messageId: goalMessage.id,
+          });
+      }
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =
@@ -900,6 +1074,7 @@ export const createAgentTriggerPost =
       // The v2 worker must reject unsupported approvalProtocolVersion values;
       // old workers ignore this field, so the route that emits v2 deploys last.
       const agentPayload = {
+        ...(reservedGoal ? { goalGeneration: reservedGoal.generation } : {}),
         chatId,
         userId,
         subscription,
@@ -987,7 +1162,7 @@ export const createAgentTriggerPost =
         metadata: triggerMetadata,
       };
       let triggerRequestBodyBytes: number | undefined;
-      const triggerPayloadTooLargeResponse = (
+      const triggerPayloadTooLargeResponse = async (
         reason: "payload_limit_exceeded" | "trigger_api_413",
       ) => {
         console.warn(
@@ -1017,6 +1192,7 @@ export const createAgentTriggerPost =
           }),
         );
 
+        await releaseReservedGoal();
         return createAgentTriggerPayloadTooLargeResponse();
       };
 
@@ -1085,7 +1261,10 @@ export const createAgentTriggerPost =
           chatId,
           runId,
           approvalSessionId,
+          goal: reservedGoal,
         });
+      // The associated worker owns this generation, even if response creation fails.
+      reservedGoal = undefined;
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,
@@ -1117,6 +1296,7 @@ export const createAgentTriggerPost =
       });
       return response;
     } catch (error) {
+      await releaseReservedGoal();
       return handleAgentRouteError({
         error,
         endpoint,

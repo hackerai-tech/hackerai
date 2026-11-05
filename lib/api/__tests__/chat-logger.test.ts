@@ -335,6 +335,9 @@ describe("captureAgentRun", () => {
       event: "hackerai-agent_run",
       uuid: agentRunEventUuid("run_123", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -811,6 +814,38 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each(["success", "aborted", "error"] as const)(
+    "keeps unknown termination explicit for %s without inventing a natural finish",
+    (outcome) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "synthetic",
+        chatId: "synthetic",
+        endpoint: "/api/agent",
+        mode: "agent",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome,
+        hasResponseContent: true,
+        chatLogger: undefined,
+        selectedModel: "auto",
+        configuredModelId: "synthetic",
+        abliteratedProviderSummary: undefined,
+        isAutoContinue: false,
+      });
+      const event = capture.mock.calls.find(
+        ([entry]) => entry.event === "hackerai-agent_run",
+      )?.[0];
+      expect(event.properties).toMatchObject({
+        outcome,
+        finish_reason: "unknown",
+        is_auto_continue: false,
+        run_metadata_version: 1,
+      });
+      expect(event.properties.finish_reason).not.toBe("stop");
+    },
+  );
   it("enriches existing run and usage events without adding events", () => {
     const capture = jest.fn();
     const shared = {
@@ -1180,6 +1215,9 @@ describe("captureAgentCompletionAnalytics", () => {
       distinctId: "user_123",
       event: "hackerai-agent_run",
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "free",
         subscription_tier: "free",
@@ -1229,6 +1267,9 @@ describe("captureAgentCompletionAnalytics", () => {
       event: "hackerai-agent_run",
       uuid: agentRunEventUuid("run_completion", "hackerai-agent_run"),
       properties: {
+        finish_reason: "unknown",
+        run_metadata_version: 1,
+        is_auto_continue: null,
         mode: "agent",
         subscription: "pro",
         subscription_tier: "pro",
@@ -2910,6 +2951,62 @@ it.each([
       $process_person_profile: false,
     });
     expect(events[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+  },
+);
+
+it.each(["success", "error", "aborted"] as const)(
+  "retains Free Ask first assignment through fallback and %s termination",
+  (outcome) => {
+    const capture = jest.fn();
+    const startedAt = Date.now() - 250;
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "free",
+      outcome,
+      hasResponseContent: outcome === "success",
+      finishReason: outcome === "success" ? "stop" : "error",
+      responseMessageId: "recovered-message",
+      selectedModel: "ask-model-free-deepseek-v41",
+      configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+      responseModel: "z-ai/glm-5.3-flash",
+      fallbackServed: true,
+      sandboxInfo: null,
+      chatLogger: undefined,
+      abliteratedProviderSummary: undefined,
+      experiment: {
+        key: "free_ask_deepseek_1017_conversion_v2",
+        variant: "test",
+        requestId: "original-request",
+        startedAt,
+        firstModelChunkAt: startedAt + 50,
+      },
+    });
+    const events = capture.mock.calls.map(([event]) => event);
+    const terminal = events.filter(
+      (event) => event.event === "free_ask_model_response_outcome",
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      experiment_request_id: "original-request",
+      experiment_key: "free_ask_deepseek_1017_conversion_v2",
+      experiment_variant: "test",
+      message_id: "recovered-message",
+      outcome,
+      has_response_content: outcome === "success",
+      natural_completion: outcome === "success",
+      response_model: "z-ai/glm-5.3-flash",
+      fallback_served: true,
+      time_to_first_chunk_ms: 50,
+      $insert_id: "original-request:free-ask-1017-outcome",
+    });
+    expect(terminal[0].properties.duration_ms).toBeGreaterThanOrEqual(250);
+    expect(
+      events.some((event) => event.event === "paid_model_response_outcome"),
+    ).toBe(false);
   },
 );
 

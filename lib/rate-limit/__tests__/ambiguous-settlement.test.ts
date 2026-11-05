@@ -24,15 +24,21 @@ afterAll(() => {
   else process.env.CONVEX_SERVICE_ROLE_KEY = originalServiceKey;
 });
 const mockAction = jest.fn();
+const mockReceiptQuery = jest.fn();
 const mockRefund = jest.fn();
 const mockRedisEval = jest.fn();
 beforeEach(() => {
   mockAction.mockReset();
+  mockReceiptQuery.mockReset().mockResolvedValue(null);
   mockRefund.mockReset();
   mockRedisEval.mockReset();
 });
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ action: mockAction, mutation: mockRefund }),
+  getConvexClient: () => ({
+    action: mockAction,
+    query: mockReceiptQuery,
+    mutation: mockRefund,
+  }),
 }));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { error: jest.fn(), warn: jest.fn() },
@@ -57,6 +63,22 @@ it.each(["pro", "team"] as const)(
   async (subscription) => {
     const organizationId = subscription === "team" ? "fixture-org" : undefined;
     let wallet = 1000;
+    mockReceiptQuery.mockImplementation(async (_ref, args) => ({
+      operation_id: args.operation_id,
+      user_id: args.user_id,
+      organization_id: args.organization_id,
+      usage_settlement_id: "fixture-settlement",
+      amount_points: 43,
+      status: "pending",
+      created_at: 1,
+      debits: [
+        {
+          outcome: "applied",
+          previous_balance_points: 1000,
+          new_balance_points: 957,
+        },
+      ],
+    }));
     mockAction
       .mockImplementationOnce(async (_ref, args) => {
         wallet -= args.amountPoints;
@@ -93,6 +115,7 @@ it.each(["pro", "team"] as const)(
       config,
       organizationId,
       "fixture-settlement",
+      1,
     );
     addUsageDeductionDelta(state, delta);
     expect(
@@ -118,11 +141,103 @@ it.each(["pro", "team"] as const)(
       "fixture-settlement",
     );
     expect(mockAction).toHaveBeenCalledTimes(1);
+    expect(mockReceiptQuery).toHaveBeenCalledTimes(1);
+    expect(mockRefund).not.toHaveBeenCalled();
+    expect(mockRedisEval).not.toHaveBeenCalled();
     expect(wallet).toBe(957);
     expect(final.usageDeductionFailed).toBe(true);
     expect(final.usageDeductionOutcomeUnknown).toBe(true);
     replaceUsageSettlementState(state, final);
     expect(state.usageDeductionOutcomeUnknown).toBe(true);
+  },
+);
+
+it.each(["pro", "team"] as const)(
+  "accounts for a completed %s receipt through delta and finalization without another financial call",
+  async (subscription) => {
+    const organizationId = subscription === "team" ? "fixture-org" : undefined;
+    let wallet = 1000;
+    let saved: Record<string, unknown> | null = null;
+    mockAction.mockImplementationOnce(async (_ref, args) => {
+      wallet -= args.amountPoints;
+      saved = {
+        operation_id: args.settlementOperationId,
+        user_id: args.userId,
+        organization_id: args.organizationId,
+        usage_settlement_id: args.usageSettlementId,
+        amount_points: args.amountPoints,
+        status: "completed",
+        result: {
+          success: true,
+          newBalanceDollars: wallet * 0.00015,
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
+          autoReloadTriggered: false,
+        },
+        debits: [
+          {
+            outcome: "applied",
+            previous_balance_points: 1000,
+            new_balance_points: wallet,
+            result: { success: true },
+          },
+        ],
+      };
+      throw new TypeError("fetch failed");
+    });
+    mockReceiptQuery.mockImplementation(async () => saved);
+    const config = {
+      enabled: true,
+      hasBalance: true,
+      autoReloadEnabled: false,
+    };
+    const state = createUsageSettlementState({
+      remaining: 0,
+      resetTime: new Date(),
+      limit: 250000,
+      pointsDeducted: 0,
+    });
+    const delta = await deductUsageDelta(
+      "fixture-user",
+      subscription,
+      43,
+      config,
+      organizationId,
+      "fixture-settlement",
+      1,
+    );
+    addUsageDeductionDelta(state, delta);
+    expect(delta).toMatchObject({
+      extraUsagePointsDeducted: 43,
+      uncoveredPoints: 0,
+      usageDeductionFailed: false,
+    });
+    const final = await deductUsage(
+      "fixture-user",
+      subscription,
+      0,
+      0,
+      0,
+      config,
+      43 / 12000,
+      undefined,
+      0,
+      organizationId,
+      getUsageSettlementInitialDeduction(state),
+      undefined,
+      "fixture-settlement",
+    );
+    expect(final).toMatchObject({
+      extraUsagePointsDeducted: 43,
+      uncoveredPoints: 0,
+      usageDeductionFailed: false,
+    });
+    expect(final.usageDeductionOutcomeUnknown).not.toBe(true);
+    expect(wallet).toBe(957);
+    expect(mockAction).toHaveBeenCalledTimes(1);
+    expect(mockReceiptQuery).toHaveBeenCalledTimes(1);
+    expect(mockRefund).not.toHaveBeenCalled();
+    expect(mockRedisEval).not.toHaveBeenCalled();
   },
 );
 

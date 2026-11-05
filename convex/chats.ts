@@ -1,3 +1,4 @@
+import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
@@ -385,6 +386,11 @@ async function deleteSubagentDataForChat(
 
 async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   await prepareChatForDeletion(ctx, chat);
+  const goal = await ctx.db
+    .query("agent_goals")
+    .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
+    .unique();
+  if (goal) await ctx.db.delete(goal._id);
 
   if (await deleteFindingsForChatBatch(ctx, chat)) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
@@ -461,6 +467,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
   }
 
   await prepareChatForDeletion(ctx, chat);
+  const goal = await ctx.db
+    .query("agent_goals")
+    .withIndex("by_chatId", (q) => q.eq("chatId", chat.id))
+    .unique();
+  if (goal) await ctx.db.delete(goal._id);
 
   if (await deleteFindingsForChatBatch(ctx, chat)) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
@@ -594,6 +605,7 @@ export const getChatByIdFromClient = query({
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        next_actions: _privateNextActions,
         ...chatPublic
       } = chat;
 
@@ -700,6 +712,7 @@ export const getChatById = query({
       const {
         codex_thread_id: _legacy,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        next_actions: _privateNextActions,
         ...chatPublic
       } = chat;
       return chatPublic;
@@ -1191,7 +1204,11 @@ export const getUserChats = query({
 
       // Step 4: Enhance chats using the map
       const enhancedChats = combinedPage.map(
-        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => {
+        ({
+          objective_checkpoint: _privateObjectiveCheckpoint,
+          next_actions: _privateNextActions,
+          ...chat
+        }) => {
           if (chat.branched_from_chat_id) {
             const branchedFromChat = branchedChatMap.get(
               chat.branched_from_chat_id,
@@ -1724,6 +1741,7 @@ export const replaceActiveTriggerRun = mutation({
     chatId: v.string(),
     triggerRunId: v.string(),
     expectedRunId: v.union(v.string(), v.null()),
+    expectedApprovalSessionId: v.optional(v.union(v.string(), v.null())),
     approvalSessionId: v.union(v.string(), v.null()),
   },
   returns: v.union(
@@ -1752,6 +1770,17 @@ export const replaceActiveTriggerRun = mutation({
       currentRunId !== null &&
       currentRunId !== args.triggerRunId &&
       currentRunId !== args.expectedRunId
+    )
+      return "stale" as const;
+    const currentApprovalSessionId =
+      chat.active_agent_approval_session_id ?? null;
+    // Cleanup may have cleared the old owner while the caller was awaiting it.
+    // A different retained session must not be overwritten without cleanup.
+    if (
+      args.expectedApprovalSessionId !== undefined &&
+      currentApprovalSessionId !== null &&
+      currentApprovalSessionId !== args.approvalSessionId &&
+      currentApprovalSessionId !== args.expectedApprovalSessionId
     )
       return "stale" as const;
     const previous = {
@@ -1906,6 +1935,20 @@ export const setActiveAgentApprovalPending = mutation({
         active_agent_approval_pending: true,
         active_agent_approval_request: args.request,
       });
+      const goal = await ctx.db
+        .query("agent_goals")
+        .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+        .unique();
+      if (
+        goal?.activeRunId === chat.active_trigger_run_id &&
+        goal?.state === "running"
+      )
+        await ctx.db.patch(goal._id, {
+          ...goalTimingForState(goal, "needs_approval", Date.now()),
+          state: "needs_approval",
+          reason: "Waiting for existing tool approval",
+          updatedAt: Date.now(),
+        });
       return "acquired" as const;
     }
     if (
@@ -1918,6 +1961,19 @@ export const setActiveAgentApprovalPending = mutation({
       active_agent_approval_pending: undefined,
       active_agent_approval_request: undefined,
     });
+    const goal = await ctx.db
+      .query("agent_goals")
+      .withIndex("by_chatId", (q) => q.eq("chatId", args.chatId))
+      .unique();
+    if (
+      goal?.activeRunId === chat.active_trigger_run_id &&
+      goal?.state === "needs_approval"
+    )
+      await ctx.db.patch(goal._id, {
+        ...goalTimingForState(goal, "running", Date.now()),
+        state: "running",
+        updatedAt: Date.now(),
+      });
     return "released" as const;
   },
 });

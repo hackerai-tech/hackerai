@@ -1,3 +1,4 @@
+import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
@@ -1171,6 +1172,12 @@ export const getMessagesByChatId = query({
           }),
           v.null(),
         ),
+        goal: v.optional(
+          v.object({
+            sent: v.optional(v.boolean()),
+            achievedElapsedMs: v.optional(v.number()),
+          }),
+        ),
         generation_time_ms: v.optional(v.number()),
         generation_started_at: v.optional(v.number()),
         mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
@@ -1315,6 +1322,7 @@ export const getMessagesByChatId = query({
           feedback,
           mode: message.mode,
           generation_started_at: message.generation_started_at,
+          goal: message.goal,
           generation_time_ms: message.generation_time_ms,
           fileDetails,
         });
@@ -1625,6 +1633,12 @@ export const getLastAssistantMessage = query({
       metadata: v.optional(
         v.object({
           generationStartedAt: v.optional(v.number()),
+          goal: v.optional(
+            v.object({
+              sent: v.optional(v.boolean()),
+              achievedElapsedMs: v.optional(v.number()),
+            }),
+          ),
           generationTimeMs: v.optional(v.number()),
           mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
         }),
@@ -1658,10 +1672,12 @@ export const getLastAssistantMessage = query({
         role: message.role,
         parts: message.parts,
         metadata:
+          message.goal ||
           message.mode ||
           typeof message.generation_started_at === "number" ||
           typeof message.generation_time_ms === "number"
             ? {
+                ...(message.goal ? { goal: message.goal } : {}),
                 ...(message.mode ? { mode: message.mode } : {}),
                 ...(typeof message.generation_started_at === "number"
                   ? { generationStartedAt: message.generation_started_at }
@@ -2222,6 +2238,7 @@ export const regenerateWithNewContent = mutation({
   args: {
     messageId: v.string(),
     newContent: v.string(),
+    goalGeneration: v.optional(v.number()),
     fileIds: v.optional(v.array(v.string())),
     todos: v.optional(
       v.array(
@@ -2239,7 +2256,7 @@ export const regenerateWithNewContent = mutation({
       ),
     ),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.object({ goalGeneration: v.number() })),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -2297,6 +2314,80 @@ export const regenerateWithNewContent = mutation({
           code: "MESSAGE_NOT_EDITABLE",
           message: "Only the latest user message can be edited",
         });
+      }
+
+      // Update the saved objective in the same transaction as the message.
+      // A stale/cleared goal or unfinished cancellation must not rewrite history.
+      let editedGoalGeneration: number | undefined;
+      if (message.goal?.sent) {
+        const goal = await ctx.db
+          .query("agent_goals")
+          .withIndex("by_chatId", (q) => q.eq("chatId", message.chat_id))
+          .unique();
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+          .first();
+        if (
+          !goal ||
+          goal.deletedAt ||
+          goal.userId !== user.subject ||
+          args.goalGeneration === undefined ||
+          goal.generation !== args.goalGeneration
+        ) {
+          throw new ConvexError(
+            "The goal changed or was cleared. Reopen it before editing.",
+          );
+        }
+        if (
+          goal.activeRunId ||
+          chat?.active_trigger_run_id ||
+          chat?.active_stream_id ||
+          ["queued", "running", "waiting", "needs_approval"].includes(
+            goal.state,
+          )
+        ) {
+          throw new ConvexError(
+            "Wait for the goal to stop before editing its message.",
+          );
+        }
+        const objective = args.newContent.trim();
+        const criteria =
+          goal.criteria.length === 1 &&
+          goal.criteria[0] === defaultGoalCriterion(goal.objective)
+            ? [defaultGoalCriterion(objective)]
+            : goal.criteria;
+        if (!validGoalStart({ ...goal, objective, criteria })) {
+          throw new ConvexError(
+            "Invalid goal objective or completion criteria",
+          );
+        }
+        editedGoalGeneration = goal.generation + 1;
+        await ctx.db.replace(goal._id, {
+          chatId: goal.chatId,
+          userId: goal.userId,
+          objective,
+          criteria,
+          verificationCommand: goal.verificationCommand,
+          constraints: goal.constraints,
+          boundaries: goal.boundaries,
+          stopWhen: goal.stopWhen,
+          sandboxPreference: goal.sandboxPreference,
+          permissionMode: goal.permissionMode,
+          selectedModel: goal.selectedModel,
+          generation: editedGoalGeneration,
+          state: "paused",
+          runs: 0,
+          noProgressRuns: 0,
+          progress: "",
+          evidence: [],
+          elapsedMs: 0,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+          reason: "Goal message edited. Ready to restart.",
+        });
+      } else if (args.goalGeneration !== undefined) {
+        throw new ConvexError("This message was not sent as a goal.");
       }
 
       // Determine which files to keep
@@ -2434,7 +2525,9 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
-      return null;
+      return editedGoalGeneration === undefined
+        ? null
+        : { goalGeneration: editedGoalGeneration };
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
       if (!(

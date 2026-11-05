@@ -656,22 +656,20 @@ export class HybridSandboxManager implements SandboxManager {
       // Old saved UUIDs can be upgraded only through their authenticated,
       // user-owned session record. Never infer identity from host metadata.
       if (/^[0-9a-f-]{36}$/i.test(this.sandboxPreference)) {
-        this.sandboxPreference = await getConvexClient().query(
-          api.localSandbox.resolveEnvironmentPreferenceForBackend,
-          {
-            serviceKey: this.serviceKey,
-            userId: this.userID,
-            preference: this.sandboxPreference,
-          },
-        );
-      }
-      const storedConnections = await getConvexClient().query(
-        api.localSandbox.listConnectionsForBackend,
-        {
+        this.sandboxPreference = await getConvexClient(
+          this.cloudSandboxContext?.signal,
+        ).query(api.localSandbox.resolveEnvironmentPreferenceForBackend, {
           serviceKey: this.serviceKey,
           userId: this.userID,
-        },
-      );
+          preference: this.sandboxPreference,
+        });
+      }
+      const storedConnections = await getConvexClient(
+        this.cloudSandboxContext?.signal,
+      ).query(api.localSandbox.listConnectionsForBackend, {
+        serviceKey: this.serviceKey,
+        userId: this.userID,
+      });
       const connections = storedConnections.filter(
         (connection) =>
           !this.quarantinedConnectionIds.has(connection.connectionId),

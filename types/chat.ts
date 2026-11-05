@@ -431,7 +431,14 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
@@ -535,6 +542,7 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export type MessageMetadata = {
+  goal?: { sent?: boolean; achievedElapsedMs?: number };
   feedbackType?: "positive" | "negative";
   isAutoContinue?: boolean;
   mode?: "agent" | "ask";
@@ -560,6 +568,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  /** Durable operation identity of the initial wallet debit, if any. */
+  extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };

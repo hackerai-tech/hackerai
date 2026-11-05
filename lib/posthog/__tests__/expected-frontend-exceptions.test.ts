@@ -3,6 +3,14 @@ import {
   sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "../expected-frontend-exceptions";
+import {
+  getComposerChangeDiagnostics,
+  recordComposerChange,
+} from "../composer-change-diagnostics";
+
+jest.mock("@/lib/analytics/client", () => ({
+  getIdentifiedAnalyticsUserId: () => "synthetic-user",
+}));
 
 describe("shouldDropExpectedFrontendException", () => {
   it("keeps non-exception events", () => {
@@ -631,6 +639,43 @@ describe("shouldDropExpectedFrontendException", () => {
       hackerai_exception_deployment_id: "dpl_G8NpYMgn7xvPfdr4XW6jYBmeC4yB",
       hackerai_route_kind: "chat",
     });
+  });
+
+  it("attaches recent composer metadata only to retained React update-depth errors", () => {
+    const clock = jest.spyOn(performance, "now").mockReturnValue(10000);
+    try {
+      recordComposerChange({ inputType: "insertText", isTrusted: true });
+      const event = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: { $exception_values: ["Minified React error #185"] },
+      });
+      expect(event.properties).toMatchObject({
+        hackerai_composer_change_recent_count: 1,
+        hackerai_composer_change_last_input_type: "insertText",
+      });
+      expect(shouldDropExpectedFrontendException(event)).toBe(false);
+      for (const message of [
+        "Maximum call stack size exceeded",
+        "Unknown failure",
+      ]) {
+        const other = enrichFrontendExceptionEvent({
+          event: "$exception",
+          properties: { $exception_values: [message] },
+        });
+        expect(
+          Object.keys(other.properties).some((key) =>
+            key.startsWith("hackerai_composer_change_"),
+          ),
+        ).toBe(false);
+      }
+      const ordinary = { event: "chat_user_submission", properties: {} };
+      expect(enrichFrontendExceptionEvent(ordinary)).toBe(ordinary);
+      expect(ordinary.properties).toEqual({});
+    } finally {
+      clock.mockReturnValue(16000);
+      getComposerChangeDiagnostics();
+      clock.mockRestore();
+    }
   });
 
   describe("browser build identity", () => {

@@ -1,3 +1,4 @@
+import { recordWalletDebit } from "./lib/settlementReceipts";
 import {
   internalMutation,
   mutation,
@@ -710,6 +711,8 @@ export const deductPoints = mutation({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
+    settlementDebitSequence: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -720,115 +723,128 @@ export const deductPoints = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    return recordWalletDebit(
+      ctx,
+      args.settlementOperationId
+        ? {
+            operation_id: args.settlementOperationId,
+            user_id: args.userId,
+            usage_settlement_id: args.usageSettlementId,
+            amount_points: args.amountPoints,
+          }
+        : undefined,
+      args.settlementDebitSequence,
+      async () => {
+        // Get current settings
+        const settings = await ctx.db
+          .query("extra_usage")
+          .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+          .first();
 
-    // Get current settings
-    const settings = await ctx.db
-      .query("extra_usage")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
+        if (!settings) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            reason: "no_settings",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: 0,
+            newBalanceDollars: 0,
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    if (!settings) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        reason: "no_settings",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: 0,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        const currentBalancePoints = settings.balance_points ?? 0;
 
-    const currentBalancePoints = settings.balance_points ?? 0;
+        // Check if user has enough balance
+        if (currentBalancePoints < args.amountPoints) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            current_balance_points: currentBalancePoints,
+            reason: "insufficient_balance",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: currentBalancePoints,
+            newBalanceDollars: pointsToDollars(currentBalancePoints),
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    // Check if user has enough balance
-    if (currentBalancePoints < args.amountPoints) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        current_balance_points: currentBalancePoints,
-        reason: "insufficient_balance",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        // Calculate current month for tracking
+        const now = new Date();
+        const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
-    // Calculate current month for tracking
-    const now = new Date();
-    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+        // Reset monthly spending if month changed
+        let monthlySpentPoints = settings.monthly_spent_points ?? 0;
+        const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
+        if (shouldResetMonthly) {
+          monthlySpentPoints = 0;
+        }
 
-    // Reset monthly spending if month changed
-    let monthlySpentPoints = settings.monthly_spent_points ?? 0;
-    const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
-    if (shouldResetMonthly) {
-      monthlySpentPoints = 0;
-    }
+        // Check monthly spending cap before deducting
+        const monthlyCapPoints = settings.monthly_cap_points;
+        if (monthlyCapPoints !== undefined) {
+          const newMonthlySpent = monthlySpentPoints + args.amountPoints;
+          if (newMonthlySpent > monthlyCapPoints) {
+            convexLogger.warn("deduct_points_failed", {
+              user_id: args.userId,
+              amount_points: args.amountPoints,
+              usage_settlement_id: args.usageSettlementId,
+              monthly_spent_points: monthlySpentPoints,
+              monthly_cap_points: monthlyCapPoints,
+              reason: "monthly_cap_exceeded",
+              monthly_cap_exceeded: true,
+            });
+            return {
+              success: false,
+              newBalancePoints: currentBalancePoints,
+              newBalanceDollars: pointsToDollars(currentBalancePoints),
+              insufficientFunds: true,
+              monthlyCapExceeded: true,
+            };
+          }
+        }
 
-    // Check monthly spending cap before deducting
-    const monthlyCapPoints = settings.monthly_cap_points;
-    if (monthlyCapPoints !== undefined) {
-      const newMonthlySpent = monthlySpentPoints + args.amountPoints;
-      if (newMonthlySpent > monthlyCapPoints) {
-        convexLogger.warn("deduct_points_failed", {
+        // Add to monthly spending
+        monthlySpentPoints += args.amountPoints;
+
+        // Deduct balance and update monthly tracking
+        const newBalancePoints = currentBalancePoints - args.amountPoints;
+        await ctx.db.patch(settings._id, {
+          balance_points: newBalancePoints,
+          monthly_spent_points: monthlySpentPoints,
+          monthly_reset_date: currentMonth,
+          updated_at: Date.now(),
+        });
+
+        convexLogger.info("points_deducted", {
           user_id: args.userId,
           amount_points: args.amountPoints,
           usage_settlement_id: args.usageSettlementId,
+          previous_balance_points: currentBalancePoints,
+          new_balance_points: newBalancePoints,
           monthly_spent_points: monthlySpentPoints,
           monthly_cap_points: monthlyCapPoints,
-          reason: "monthly_cap_exceeded",
-          monthly_cap_exceeded: true,
         });
+
         return {
-          success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
-          insufficientFunds: true,
-          monthlyCapExceeded: true,
+          success: true,
+          newBalancePoints,
+          newBalanceDollars: pointsToDollars(newBalancePoints),
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
         };
-      }
-    }
-
-    // Add to monthly spending
-    monthlySpentPoints += args.amountPoints;
-
-    // Deduct balance and update monthly tracking
-    const newBalancePoints = currentBalancePoints - args.amountPoints;
-    await ctx.db.patch(settings._id, {
-      balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_reset_date: currentMonth,
-      updated_at: Date.now(),
-    });
-
-    convexLogger.info("points_deducted", {
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      previous_balance_points: currentBalancePoints,
-      new_balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_cap_points: monthlyCapPoints,
-    });
-
-    return {
-      success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
-      insufficientFunds: false,
-      monthlyCapExceeded: false,
-    };
+      },
+    );
   },
 });
 

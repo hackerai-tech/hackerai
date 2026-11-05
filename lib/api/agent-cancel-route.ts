@@ -9,6 +9,11 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { logger } from "@/lib/logger";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { goalServiceKey } from "@/lib/goals/server";
+
+const GOAL_PAUSE_WAIT_MS = 5_000;
 
 type AgentCancelRejectionReason =
   "chat_owner_mismatch" | "chat_missing" | "stale_run";
@@ -48,6 +53,7 @@ export const createAgentCancelPost =
       | "read_request"
       | "authenticate"
       | "get_chat"
+      | "pause_goal"
       | "close_approval_session"
       | "cancel_trigger_run"
       | "clear_active_run" = "read_request";
@@ -158,9 +164,54 @@ export const createAgentCancelPost =
         runId: runId ?? undefined,
         approvalSessionId: approvalSessionId ?? undefined,
       };
-      stage = "close_approval_session";
-      await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
+      if (runId) {
+        stage = "pause_goal";
+        const goalPauseAbort = new AbortController();
+        let goalPauseTimer: ReturnType<typeof setTimeout> | undefined;
+        const goalPauseDeadline = new Promise<never>((_, reject) => {
+          goalPauseTimer = setTimeout(() => {
+            goalPauseAbort.abort();
+            reject(new Error("Goal pause wait budget exceeded"));
+          }, GOAL_PAUSE_WAIT_MS);
+        });
+        try {
+          // Isolate this best-effort write from the shared mutation queue. The
+          // race also bounds a queued SDK call that does not observe abort.
+          await Promise.race([
+            getConvexClient(goalPauseAbort.signal).mutation(
+              api.agentGoals.pauseForCanceledRun,
+              { serviceKey: goalServiceKey(), chatId, userId, runId },
+            ),
+            goalPauseDeadline,
+          ]);
+        } catch {
+          // Stopping cost-incurring work must survive a goal-storage failure.
+          // Worker cleanup also resolves canceled goal runs to paused.
+          logger.warn(
+            "Could not confirm goal pause before Agent cancellation",
+            {
+              event: goalPauseAbort.signal.aborted
+                ? "agent_cancel_goal_pause_unconfirmed"
+                : "agent_cancel_goal_pause_failed",
+              pause_acknowledgement: "unconfirmed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              request_id: requestId,
+              failure_reason: goalPauseAbort.signal.aborted
+                ? "deadline_exceeded"
+                : "request_failed",
+            },
+          );
+        } finally {
+          clearTimeout(goalPauseTimer);
+        }
+      }
       if (!runId) {
+        stage = "close_approval_session";
+        await closeAgentApprovalSession(
+          approvalSessionId,
+          "agent-run-canceled",
+        );
         if (approvalSessionId) {
           stage = "clear_active_run";
           await setActiveTriggerRun({
@@ -176,7 +227,34 @@ export const createAgentCancelPost =
       }
 
       stage = "cancel_trigger_run";
-      await cancelAgentTriggerRun(runId);
+      // Approval cleanup must not prevent Stop from reaching the worker.
+      // Await both outcomes before clearing ownership or acknowledging success.
+      const [cancellation, approvalClose] = await Promise.allSettled([
+        cancelAgentTriggerRun(runId).finally(() => {
+          stage = "close_approval_session";
+        }),
+        closeAgentApprovalSession(approvalSessionId, "agent-run-canceled"),
+      ]);
+      if (cancellation.status === "rejected") {
+        if (approvalClose.status === "rejected") {
+          logger.warn(
+            "Approval cleanup also failed during Agent cancellation",
+            {
+              event: "agent_cancel_approval_cleanup_failed",
+              chat_id: chatId,
+              trigger_run_id: runId,
+              approval_session_id: approvalSessionId,
+              request_id: requestId,
+            },
+          );
+        }
+        stage = "cancel_trigger_run";
+        throw cancellation.reason;
+      }
+      if (approvalClose.status === "rejected") {
+        stage = "close_approval_session";
+        throw approvalClose.reason;
+      }
       stage = "clear_active_run";
       await setActiveTriggerRun({
         chatId,

@@ -469,6 +469,25 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         occurred_at: 1,
       },
     ],
+    usage_settlement_operations: [
+      {
+        _id: "settlement-operation-user",
+        user_id: userId,
+        operation_id: "op-1",
+        status: "pending",
+        amount_points: 20,
+      },
+    ],
+    usage_settlement_debits: [
+      {
+        _id: "settlement-debit-user",
+        user_id: userId,
+        operation_id: "op-1",
+        outcome: "applied",
+        sequence: 0,
+        amount_points: 20,
+      },
+    ],
     usage_logs: [
       {
         _id: "usage-user",
@@ -895,6 +914,20 @@ describe("userDeletion", () => {
     expect(
       row(tables, "involuntary_churn_events", "churn-other"),
     ).toMatchObject({ user_id: "user_other" });
+    expect(
+      row(tables, "usage_settlement_operations", "settlement-operation-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      status: "pending",
+    });
+    expect(
+      row(tables, "usage_settlement_debits", "settlement-debit-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      outcome: "applied",
+    });
     expect(row(tables, "usage_logs", "usage-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });

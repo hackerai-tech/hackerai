@@ -44,6 +44,8 @@ export const USER_DELETION_TABLE_POLICY = {
   anonymize: [
     "usage_logs",
     "captcha_attempts",
+    "usage_settlement_operations",
+    "usage_settlement_debits",
     "cancellation_reasons",
     "involuntary_churn_events",
     "referral_codes",
@@ -765,6 +767,16 @@ async function cleanupUserDataForUser(
     "by_user",
     (q) => q.eq("user_id", userId),
   );
+  const settlementOperationsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_operations">
+  >(ctx, budget, "usage_settlement_operations", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const settlementDebitsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_debits">
+  >(ctx, budget, "usage_settlement_debits", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const involuntaryChurnEventsBatch = await collectByIndexBatch<
     Doc<"involuntary_churn_events">
   >(ctx, budget, "involuntary_churn_events", "by_user_and_occurred", (q) =>
@@ -850,6 +862,8 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    settlementOperationsBatch,
+    settlementDebitsBatch,
     involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
@@ -908,6 +922,22 @@ async function cleanupUserDataForUser(
       chat_id: undefined,
       assistant_message_id: undefined,
     }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_operations",
+    settlementOperationsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_debits",
+    settlementDebitsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
     mode,
   );
   await anonymizeDocs(

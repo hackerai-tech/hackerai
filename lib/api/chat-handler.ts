@@ -842,6 +842,7 @@ export const createChatHandler = () => {
         : ((activeFlashRoutingAssignment && {
             ...activeFlashRoutingAssignment,
             requestId: assistantMessageId,
+            startedAt: Date.now(),
           }) ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
@@ -1577,6 +1578,7 @@ export const createChatHandler = () => {
                     extraUsageConfig,
                     organizationId,
                     usageTracker.usageSettlementId,
+                    usageSettlementSequence,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {

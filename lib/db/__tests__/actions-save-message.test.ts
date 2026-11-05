@@ -3383,6 +3383,35 @@ describe("initial chat persistence diagnostics", () => {
   ];
 
   it.each([
+    ["an emoji split by the title cap", "a".repeat(99) + "😀", "a".repeat(99)],
+    [
+      "an emoji fitting at the title cap",
+      "a".repeat(98) + "😀tail",
+      "a".repeat(98) + "😀",
+    ],
+    ["BMP text at the title cap", "界".repeat(101), "界".repeat(100)],
+    ["a short title", "Hello 😀", "Hello 😀"],
+  ])("persists a valid Unicode title for %s", async (_label, text, title) => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await handleInitialChatAndUserMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      messages: [{ id: "message-1", parts: [{ type: "text", text }] }],
+      chat: null,
+    });
+
+    const savedTitle = (mockMutation.mock.calls[0][1] as { title: string })
+      .title;
+    expect(savedTitle).toBe(title);
+    expect(Buffer.from(savedTitle, "utf8").toString("utf8")).toBe(savedTitle);
+    expect(savedTitle.length).toBeLessThanOrEqual(100);
+    expect(mockMutation.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ parts: [{ type: "text", text }] }),
+    );
+  });
+
+  it.each([
     ["save_chat", null, false, "chats:saveChat"],
     [
       "reset_stream",

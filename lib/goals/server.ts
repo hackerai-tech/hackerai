@@ -1,0 +1,196 @@
+import { captureGoalLifecycle } from "./analytics";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import PostHogClient from "@/app/posthog";
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
+import { GOAL_FLAG } from "./contracts";
+import { getCurrentAgentEntitlementContext } from "@/lib/db/actions";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import type { Doc } from "@/convex/_generated/dataModel";
+import type { SubscriptionTier } from "@/types";
+import type { GoalJudgment } from "./contracts";
+type GoalExecutionContext = {
+  chatId: string;
+  userId: string;
+  subscription: SubscriptionTier;
+  organizationId?: string;
+  convexUrl?: string;
+  goalGeneration?: number;
+};
+import { ChatSDKError } from "@/lib/errors";
+
+export const goalServiceKey = () => {
+  const value = process.env.CONVEX_SERVICE_ROLE_KEY;
+  if (!value) throw new Error("Goal persistence unavailable");
+  return value;
+};
+export async function getGoal(
+  chatId: string,
+  userId: string,
+): Promise<Doc<"agent_goals"> | null> {
+  return getConvexClient().query(api.agentGoals.getForBackend, {
+    serviceKey: goalServiceKey(),
+    chatId,
+    userId,
+  });
+}
+export async function goalEnabled(
+  userId: string,
+  subscription: string,
+): Promise<boolean> {
+  if (subscription === "free") return false;
+  const posthog = PostHogClient();
+  if (!posthog) return false;
+  try {
+    return (
+      (await getPostHogFlagWithoutExposure(posthog, GOAL_FLAG, userId, {
+        subscription,
+      })) === true
+    );
+  } catch {
+    return false;
+  } finally {
+    await posthog.shutdown().catch(() => undefined);
+  }
+}
+export async function assertGoalExecutionAllowed(
+  payload: GoalExecutionContext,
+) {
+  await assertUserCanMakeCostIncurringRequest(payload.userId);
+  const fresh = await getCurrentAgentEntitlementContext({
+    userId: payload.userId,
+    organizationId: payload.organizationId,
+  });
+  if (
+    fresh.subscription !== payload.subscription ||
+    fresh.organizationId !== payload.organizationId ||
+    !(await goalEnabled(payload.userId, fresh.subscription))
+  ) {
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Goal access or subscription changed. Review saved progress and resume after refreshing your account.",
+    );
+  }
+}
+export async function finishGoalRun(
+  payload: GoalExecutionContext,
+  runId: string,
+  outcome: {
+    finishReason?: string;
+    messageId?: string;
+    messageIds?: string[];
+    canceled: boolean;
+    failed: boolean;
+    usageExhausted: boolean;
+    judgment?: GoalJudgment;
+  },
+) {
+  if (payload.goalGeneration === undefined) return null;
+  if (payload.convexUrl) {
+    const { setConvexUrl } = await import("@/lib/db/convex-client");
+    setConvexUrl(payload.convexUrl);
+  }
+  const args = {
+    serviceKey: goalServiceKey(),
+    chatId: payload.chatId,
+    userId: payload.userId,
+    runId,
+    ...outcome,
+  };
+  let goal: Doc<"agent_goals"> | null = null;
+  // finish is fenced by activeRunId: a committed or superseded run returns null
+  // on replay. Retry only this settlement, preserving the paid verdict and IDs;
+  // never retry the Agent work or completion verification.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      goal = await getConvexClient().mutation(api.agentGoals.finish, args);
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+
+  if (goal) {
+    let posthog: ReturnType<typeof PostHogClient> = null;
+    try {
+      posthog = PostHogClient();
+      posthog?.capture({
+        distinctId: payload.userId,
+        event: "agent_goal_state_changed",
+        properties: {
+          goal_id: goal._id,
+          chat_id: goal.chatId,
+          run_id: runId,
+          state: goal.state,
+          runs_used: goal.runs,
+          verified_criteria_count: new Set(
+            goal.evidence.map((e) => e.criterion),
+          ).size,
+          $geoip_disable: true,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Analytics must not turn a persisted outcome into a failed run.
+    } finally {
+      try {
+        await posthog?.shutdown(1000);
+      } catch {
+        // Delivery failures cannot change the persisted result.
+      }
+    }
+  }
+  if (goal) await captureGoalLifecycle("settled", { ...payload, runId }, goal);
+  return goal;
+}
+
+/** Reconcile only a recorded, owned run. Unknown/provider failures never authorize a restart. */
+export async function reconcileGoal(chatId: string, userId: string) {
+  const goal = await getGoal(chatId, userId);
+  if (!goal?.activeRunId) return goal;
+  const { runs } = await import("@trigger.dev/sdk");
+  const run = await runs.retrieve(goal.activeRunId);
+  const metadata = run.metadata as Record<string, unknown> | undefined;
+  if (metadata?.chatId !== chatId || metadata?.userId !== userId)
+    throw new ChatSDKError(
+      "forbidden:chat",
+      "Goal run identity could not be verified.",
+    );
+  if (
+    ![
+      "COMPLETED",
+      "FAILED",
+      "CANCELED",
+      "CRASHED",
+      "SYSTEM_FAILURE",
+      "EXPIRED",
+      "TIMED_OUT",
+    ].includes(run.status)
+  )
+    return goal;
+  const settled = await getConvexClient().mutation(api.agentGoals.finish, {
+    serviceKey: goalServiceKey(),
+    chatId,
+    userId,
+    runId: goal.activeRunId,
+    canceled: run.status === "CANCELED",
+    failed: run.status !== "CANCELED",
+    usageExhausted: false,
+  });
+  const { setActiveTriggerRun } = await import("@/lib/db/actions");
+  await setActiveTriggerRun({
+    chatId,
+    triggerRunId: null,
+    approvalSessionId: null,
+    expectedRunId: goal.activeRunId,
+    clearApprovalPending: true,
+  });
+  if (settled)
+    await captureGoalLifecycle(
+      "reconciled",
+      { userId, chatId, runId: goal.activeRunId },
+      settled,
+    );
+  return settled ?? (await getGoal(chatId, userId));
+}
