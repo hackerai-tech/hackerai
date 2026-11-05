@@ -69,50 +69,6 @@ const PersonalizationTab = ({
       {/* Personalization Section */}
       <div>
         <div className="space-y-4">
-          <div className="flex items-start justify-between gap-4 py-3 border-b">
-            <div className="min-w-0">
-              <label htmlFor="show-predictions" className="font-medium">
-                Show predictions
-              </label>
-              <p
-                id="show-predictions-description"
-                className="mt-1 text-sm text-muted-foreground"
-              >
-                Predict your next message based on the conversation.
-              </p>
-              <p
-                id="show-predictions-status"
-                role="status"
-                className="mt-2 text-sm text-muted-foreground empty:mt-0"
-              >
-                {predictions === undefined
-                  ? "Loading preference…"
-                  : predictions === null
-                    ? "Sign in to manage this preference."
-                    : pendingPredictions !== null
-                      ? "Saving…"
-                      : null}
-              </p>
-              {predictionError && (
-                <p role="alert" className="mt-2 text-sm text-destructive">
-                  Your change wasn&apos;t saved. Please try again.
-                </p>
-              )}
-            </div>
-            <Switch
-              id="show-predictions"
-              className="mt-1 shrink-0 data-[state=checked]:bg-blue-600"
-              aria-describedby="show-predictions-description show-predictions-status"
-              checked={
-                predictions
-                  ? (pendingPredictions ?? predictions.enabled)
-                  : false
-              }
-              disabled={!predictions || pendingPredictions !== null}
-              onCheckedChange={changePredictions}
-            />
-          </div>
-
           <div
             className="flex items-center justify-between py-3 border-b cursor-pointer hover:bg-muted/50 transition-colors rounded-md px-2 -mx-2"
             onClick={onCustomInstructions}
@@ -175,6 +131,48 @@ const PersonalizationTab = ({
           </div>
         </div>
       )}
+
+      <div className="flex items-start justify-between gap-4 border-t pt-6 pb-3">
+        <div className="min-w-0">
+          <label htmlFor="show-predictions" className="font-medium">
+            Show predictions
+          </label>
+          <p
+            id="show-predictions-description"
+            className="mt-1 text-sm text-muted-foreground"
+          >
+            Predict your next message based on the conversation.
+          </p>
+          <p
+            id="show-predictions-status"
+            role="status"
+            className="mt-2 text-sm text-muted-foreground empty:mt-0"
+          >
+            {predictions === undefined
+              ? "Loading preference…"
+              : predictions === null
+                ? "Sign in to manage this preference."
+                : pendingPredictions !== null
+                  ? "Saving…"
+                  : null}
+          </p>
+          {predictionError && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              Your change wasn&apos;t saved. Please try again.
+            </p>
+          )}
+        </div>
+        <Switch
+          id="show-predictions"
+          className="mt-1 shrink-0 data-[state=checked]:bg-blue-600"
+          aria-describedby="show-predictions-description show-predictions-status"
+          checked={
+            predictions ? (pendingPredictions ?? predictions.enabled) : false
+          }
+          disabled={!predictions || pendingPredictions !== null}
+          onCheckedChange={changePredictions}
+        />
+      </div>
     </div>
   );
 };
