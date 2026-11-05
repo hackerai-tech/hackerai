@@ -10,12 +10,29 @@ const SENSITIVE_FIELD_PATTERN =
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
+// These fixed Unicode whitespace characters can appear URI- or JSON-encoded
+// before a key. Only constants enter the pattern; diagnostic text never does.
+const ENCODED_UNICODE_WHITESPACE = Array.from(
+  "\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff",
+)
+  .flatMap((character) => [
+    encodeURIComponent(character),
+    String.raw`\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  ])
+  .map((encoded) =>
+    encoded.replace(
+      /[a-f]/gi,
+      (hex) => `[${hex.toLowerCase()}${hex.toUpperCase()}]`,
+    ),
+  )
+  .join("|");
+
 // Null markers retain stripped control boundaries and are transparent inside
-// a key. Serialized JSON and diagnostic URLs can encode the separator too.
-// Encoded ASCII boundaries exclude letters, digits, underscores and hyphens.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: internal control-boundary marker
-const PROVIDER_KEY_CANDIDATE_PATTERN =
-  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|(?:%|\\u00)(?:[01][\da-fA-F]|2[\da-cA-Ce-fE-F]|3[a-fA-F]|40|5[b-eB-E]|60|7[b-fB-F])))s\x00*k\x00*-[A-Za-z0-9_\x00-]+/g;
+// a key. Encoded ASCII boundaries exclude identifier characters.
+const PROVIDER_KEY_CANDIDATE_PATTERN = new RegExp(
+  String.raw`(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|(?:%|\\u00)(?:[01][\da-fA-F]|2[\da-cA-Ce-fE-F]|3[a-fA-F]|40|5[b-eB-E]|60|7[b-fB-F])|${ENCODED_UNICODE_WHITESPACE}))s\x00*k\x00*-[A-Za-z0-9_\x00-]+`,
+  "g",
+);
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =

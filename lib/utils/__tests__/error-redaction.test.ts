@@ -33,15 +33,22 @@ describe("error redaction", () => {
     });
   });
 
-  it.each(["\\t", "\\r", "\\u0020", "%22", "%20"])(
-    "redacts a provider key after an encoded separator %s",
-    (separator) => {
-      const message = `detail=${separator}sk-proj-SYNTHETIC_provider_key_012345`;
-      expect(redactSensitiveErrorMessage(message)).toBe(
-        `detail=${separator}[Redacted]`,
-      );
-    },
-  );
+  it.each([
+    "\\t",
+    "\\r",
+    "\\u0020",
+    "%22",
+    "%20",
+    "%C2%A0",
+    "%e2%80%83",
+    "\\u00a0",
+    "\\u2028",
+  ])("redacts a provider key after an encoded separator %s", (separator) => {
+    const message = `detail=${separator}sk-proj-SYNTHETIC_provider_key_012345`;
+    expect(redactSensitiveErrorMessage(message)).toBe(
+      `detail=${separator}[Redacted]`,
+    );
+  });
 
   it.each(["\b", "\f"])(
     "redacts keys after raw and serialized control separator %j",
@@ -99,7 +106,7 @@ describe("error redaction", () => {
     },
   );
 
-  it.each(["%2D", "\\u002d", "%41", "%5F", "%30"])(
+  it.each(["%2D", "\\u002d", "%41", "%5F", "%30", "%C3%A9", "\\u00e9"])(
     "preserves an identifier after encoded identifier character %s",
     (encoded) => {
       const message = `task${encoded}sk-proj-SYNTHETIC_identifier_012345`;
