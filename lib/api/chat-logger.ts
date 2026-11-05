@@ -1604,7 +1604,8 @@ export function captureAgentRun({
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
-      ...(finishReason && { finish_reason: finishReason }),
+      finish_reason: finishReason || "unknown",
+      run_metadata_version: 1,
       ...(abortSource && { abort_source: abortSource }),
       ...(providerErrorCategory && {
         provider_error_category: providerErrorCategory,
@@ -1735,9 +1736,7 @@ export function captureAgentRun({
       ...(hadSummarization !== undefined && {
         had_summarization: hadSummarization,
       }),
-      ...(isAutoContinue !== undefined && {
-        is_auto_continue: isAutoContinue,
-      }),
+      is_auto_continue: isAutoContinue ?? null,
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
@@ -1752,7 +1751,8 @@ export function captureAgentRun({
       ...(sandboxInfo?.provider && {
         sandbox_provider: sandboxInfo.provider,
       }),
-      ...(finishReason && { finish_reason: finishReason }),
+      finish_reason: finishReason || "unknown",
+      run_metadata_version: 1,
       ...(upstreamProvider && { upstream_provider: upstreamProvider }),
       ...(providerErrorProvider && {
         provider_error_provider: providerErrorProvider,

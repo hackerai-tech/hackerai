@@ -1959,6 +1959,7 @@ export const agentLongTask = task({
       chatId,
       subscription,
       endpoint,
+      isAutoContinue: !!isAutoContinue,
     });
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;

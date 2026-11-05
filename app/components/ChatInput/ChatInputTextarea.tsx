@@ -29,6 +29,7 @@ export interface ChatInputTextareaProps {
   prediction?: string;
   onAcceptPrediction?: () => boolean;
   onPredictionExposed?: () => void;
+  onPredictionTyping?: () => void;
   composerFocused?: boolean;
   onDismissPrediction?: () => void;
   composerRef?: React.RefObject<HTMLTextAreaElement | null>;
@@ -49,6 +50,7 @@ export function ChatInputTextarea({
   prediction,
   onAcceptPrediction,
   onPredictionExposed,
+  onPredictionTyping,
   composerFocused = false,
   onDismissPrediction,
   composerRef,
@@ -243,6 +245,7 @@ export function ChatInputTextarea({
           onChange={(e) => {
             // Record before setInput: React can throw synchronously in the setter.
             recordComposerChange(e.nativeEvent);
+            if (e.target.value !== "") onPredictionTyping?.();
             setInput(e.target.value);
           }}
           aria-label={defaultPlaceholder}

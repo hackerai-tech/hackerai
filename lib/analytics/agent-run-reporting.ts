@@ -89,6 +89,7 @@ export function createAgentRunReporting(context: {
   chatId: string;
   subscription: string;
   endpoint: string;
+  isAutoContinue?: boolean;
 }) {
   let stage: FailureStage = "setup";
   let agentModelContextFlag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG;
@@ -180,6 +181,8 @@ export function createAgentRunReporting(context: {
         trigger_run_id: context.runId,
         endpoint: context.endpoint,
         terminal_reporting_version: 1,
+        run_metadata_version: 1,
+        is_auto_continue: context.isAutoContinue ?? null,
         terminal_reporting_source: "run_finally",
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",

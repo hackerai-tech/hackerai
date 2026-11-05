@@ -43,7 +43,8 @@ export async function POST(req: NextRequest) {
   const posthog = PostHogClient();
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(15_000)]);
   try {
-    const { userId, subscription } = await getUserIDAndPro(req);
+    const { userId, subscription, analyticsAccountCohort } =
+      await getUserIDAndPro(req);
     const raw = await req.text();
     if (raw.length > 512) return empty(400);
     const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
@@ -127,6 +128,8 @@ export async function POST(req: NextRequest) {
       definition_version: NEXT_ACTIONS_VERSION,
       flag_key: NEXT_ACTIONS_FLAG,
       experiment_version: "next-actions-v1",
+      account_metadata_version: 1,
+      account_cohort: analyticsAccountCohort ?? "unknown",
       [`$feature/${NEXT_ACTIONS_FLAG}`]: enabled ? "test" : "control",
       chat_id: chatId,
       message_id: messageId,

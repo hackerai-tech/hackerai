@@ -21,6 +21,32 @@ function setup() {
 }
 
 describe("Agent run reporting", () => {
+  it.each([false, true])(
+    "preserves automatic-continuation=%s on setup failure",
+    (isAutoContinue) => {
+      const capture = jest.fn();
+      const reporter = createAgentRunReporting({
+        posthog: { capture } as unknown as PostHog,
+        runId: "synthetic",
+        userId: "synthetic",
+        chatId: "synthetic",
+        subscription: "pro",
+        endpoint: "/api/agent",
+        isAutoContinue,
+      });
+      reporter.fail(new Error("setup failed"));
+      reporter.finalize({ canceled: false });
+      expect(
+        capture.mock.calls.find(
+          ([event]) => event.event === "hackerai-agent_run",
+        )?.[0].properties,
+      ).toMatchObject({
+        is_auto_continue: isAutoContinue,
+        run_metadata_version: 1,
+        outcome: "error",
+      });
+    },
+  );
   it.each(
     (["agent_model_context_v1", "agent_pro_context_v1"] as const).flatMap(
       (flag) =>

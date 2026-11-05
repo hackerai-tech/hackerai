@@ -7,6 +7,10 @@ import {
   resolveSubscriptionTier,
 } from "@/lib/auth/entitlements";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
+import {
+  analyticsAccountCohort,
+  type AnalyticsAccountCohort,
+} from "@/lib/analytics/account-cohort";
 
 const getSessionUserEmail = (session: unknown): string | undefined => {
   if (!session || typeof session !== "object") return undefined;
@@ -61,6 +65,7 @@ export const getUserIDAndPro = async (
   userId: string;
   subscription: SubscriptionTier;
   emailVerified: boolean;
+  analyticsAccountCohort?: AnalyticsAccountCohort;
   organizationId?: string;
   freeQuotaSubject?: string;
 }> => {
@@ -79,6 +84,9 @@ export const getUserIDAndPro = async (
       userId: session.user.id,
       subscription,
       emailVerified: session.user.emailVerified === true,
+      analyticsAccountCohort: analyticsAccountCohort(
+        getSessionUserEmail(session),
+      ),
       organizationId: (session as any).organizationId as string | undefined,
       freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
     };

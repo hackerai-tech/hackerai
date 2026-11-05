@@ -1274,6 +1274,7 @@ const ChatInputContent = ({
               prediction={nextActions.batch?.suggestions[0]}
               onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
               onPredictionExposed={nextActions.exposed}
+              onPredictionTyping={nextActions.recordTyping}
               composerFocused={composerFocused}
               onDismissPrediction={nextActions.dismiss}
               composerRef={composerTextareaRef}
