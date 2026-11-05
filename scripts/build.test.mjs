@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
@@ -114,7 +114,7 @@ test(
       assert.equal(result.error, undefined);
       assert.notEqual(result.status, 0);
       assert.match(output, /TS2322/);
-      assert.ok(output.includes(fixture.split("/").pop()));
+      assert.ok(output.includes(basename(fixture)));
       assert.doesNotMatch(output, /Creating an optimized production build/);
     } finally {
       rmSync(fixture, { force: true });
