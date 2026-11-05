@@ -6,6 +6,195 @@ import {
 
 describe("error redaction", () => {
   it.each([
+    "sk-proj-SYNTHETIC_provider_key_with-underscores_012345",
+    "sk-ant-api03-SYNTHETIC_provider_key_with-underscores_012345",
+    "sk-or-v1-SYNTHETIC_provider_key_with-underscores_012345",
+  ])("redacts a standalone provider key: %s", (key) => {
+    const message = `Provider rejected '${key}'; status 401, request req_123.`;
+    const redacted = redactSensitiveErrorMessage(message);
+    expect(redacted).toBe(
+      "Provider rejected '[Redacted]'; status 401, request req_123.",
+    );
+    expect(redactSensitiveErrorMessage(redacted)).toBe(redacted);
+  });
+
+  it("redacts a sensitive value before its field name matches a provider key", () => {
+    const message = "sk-abcdefghijklmnopqrst-token=FAKE_SECRET";
+    expect(redactSensitiveErrorMessage(message)).toBe(
+      '[Redacted]="[Redacted]"',
+    );
+    expect(
+      stringifyRedactedError({
+        "sk-abcdefghijklmnopqrst-token": "FAKE_SECRET",
+      }),
+    ).not.toContain("FAKE_SECRET");
+  });
+
+  it("redacts signed URLs before field values can change their boundaries", () => {
+    for (const signature of ["X-Amz-Signature", "X-Amz-\0Signature"]) {
+      const message = `https://example.test/token=public,private.png?${signature}=SIGNATURE`;
+      expect(redactSensitiveErrorMessage(message)).toBe(
+        "[Redacted signed URL]",
+      );
+    }
+  });
+
+  it.each(["to\0ken", "api\0_\0key", "service\0Role\0Key"])(
+    "protects a sensitive field suffix split by controls: %j",
+    (suffix) => {
+      const message = `sk-abcdefghijklmnopqrst-${suffix}=FAKE_SECRET`;
+      expect(redactSensitiveErrorMessage(message)).toBe(
+        '[Redacted]="[Redacted]"',
+      );
+    },
+  );
+
+  it("preserves complete-field normalization and removes keys with shared prefixes", () => {
+    const key = "sk-abcdefghijklmnopqrst";
+    expect(
+      redactSensitiveErrorMessage(`${key} ${key}-longer echo-${key}`),
+    ).toBe("[Redacted] [Redacted] echo-[Redacted]");
+    expect(redactSensitiveErrorMessage('"token"\0=FAKE_SECRET')).not.toContain(
+      "FAKE_SECRET",
+    );
+    expect(
+      redactSensitiveErrorMessage("Authorization: Bea\0rer FAKE_SECRET"),
+    ).not.toContain("FAKE_SECRET");
+    expect(
+      redactSensitiveErrorMessage(
+        "ht\0tps://example.test/private.png?X-Amz-Signature=SIGNATURE",
+      ),
+    ).toBe("[Redacted signed URL]");
+  });
+
+  it("redacts credentials in JSON property names without hiding sensitive values", () => {
+    const input = {
+      "sk-proj-abc\0defghijklmnopqrst": "safe",
+      "sk-proj-abcdefghijklmnopqrst\0TAIL_SECRET": "safe",
+      "sk-proj-abc\0defghijklmnopqrst-to\0ken": "FAKE_SECRET",
+      tokenCount: 42,
+      nested: { "sk-ant-abc\0defghijklmnopqrst": "safe" },
+    };
+    const result = stringifyRedactedError(input);
+    expect(result).not.toContain("defghijklmnopqrst");
+    expect(result).not.toContain("FAKE_SECRET");
+    expect(result).not.toContain("TAIL_SECRET");
+    expect(JSON.parse(result)).toMatchObject({ tokenCount: 42 });
+    expect(input["sk-proj-abc\0defghijklmnopqrst-to\0ken"]).toBe("FAKE_SECRET");
+  });
+
+  it("preserves short labels and embedded non-credential identifiers", () => {
+    const message =
+      "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345 task-sk-SYNTHETIC_identifier_012345";
+    expect(redactSensitiveErrorMessage(message)).toBe(message);
+  });
+
+  it("redacts a provider key after a serialized newline", () => {
+    const message = {
+      message: "Provider rejected\nsk-proj-SYNTHETIC_provider_key_012345",
+    };
+    expect(JSON.parse(stringifyRedactedError(message))).toEqual({
+      message: "Provider rejected\n[Redacted]",
+    });
+  });
+
+  it.each([
+    "\\t",
+    "\\r",
+    "\\u0020",
+    "%22",
+    "%20",
+    "%C2%A0",
+    "%e2%80%83",
+    "\\u00a0",
+    "\\u2028",
+  ])("redacts a provider key after an encoded separator %s", (separator) => {
+    const message = `detail=${separator}sk-proj-SYNTHETIC_provider_key_012345`;
+    expect(redactSensitiveErrorMessage(message)).toBe(
+      `detail=${separator}[Redacted]`,
+    );
+  });
+
+  it.each(["\b", "\f"])(
+    "redacts keys after raw and serialized control separator %j",
+    (separator) => {
+      const message = `Provider rejected${separator}sk-proj-SYNTHETIC_provider_key_012345`;
+      for (const error of [new Error(message), { message }]) {
+        const redacted = stringifyRedactedError(error);
+        expect(redacted).not.toContain("SYNTHETIC_provider_key");
+        expect(redacted).toContain("[Redacted]");
+      }
+    },
+  );
+
+  it("retains a key boundary while removing ANSI inside and before the key", () => {
+    const esc = String.fromCharCode(27);
+    for (const key of [
+      "sk-proj-SYNTHETIC_provider_key_012345",
+      `sk-proj-SYNTHETIC_${esc}[1mprovider_key_012345`,
+    ]) {
+      const redacted = redactSensitiveErrorMessage(
+        `Provider rejected${esc}[31m${key}${esc}[0m; status 401`,
+      );
+      expect(redacted).not.toContain("SYNTHETIC");
+      expect(redacted).not.toContain("provider_key");
+      expect(redacted).not.toContain(esc);
+      expect(redacted).toContain("[Redacted]");
+      expect(redacted).toContain("status 401");
+    }
+  });
+
+  it("does not split one credential at a control sequence before an interior sk prefix", () => {
+    const esc = String.fromCharCode(27);
+    const redacted = redactSensitiveErrorMessage(
+      `rejected sk-proj-abc${esc}[1msk-123456789012345; status 401`,
+    );
+    expect(redacted).toBe("rejected [Redacted]; status 401");
+  });
+
+  it("does not count control sequences toward the minimum key length", () => {
+    const esc = String.fromCharCode(27);
+    expect(
+      redactSensitiveErrorMessage(`sk-short${`${esc}[0m`.repeat(30)}`),
+    ).toBe("sk-short");
+  });
+
+  it.each([1, 2])(
+    "redacts a control sequence at prefix offset %s",
+    (offset) => {
+      const esc = String.fromCharCode(27);
+      const key = "sk-proj-SYNTHETIC_provider_key_012345";
+      const decorated = `${key.slice(0, offset)}${esc}[31m${key.slice(offset)}`;
+      expect(redactSensitiveErrorMessage(`rejected ${decorated}`)).toBe(
+        "rejected [Redacted]",
+      );
+    },
+  );
+
+  it.each(["%2D", "\\u002d", "%41", "%5F", "%30", "%C3%A9", "\\u00e9"])(
+    "preserves an identifier after encoded identifier character %s",
+    (encoded) => {
+      const message = `task${encoded}sk-proj-SYNTHETIC_identifier_012345`;
+      expect(redactSensitiveErrorMessage(message)).toBe(message);
+    },
+  );
+
+  it("redacts ANSI-decorated string values before serializing diagnostics", () => {
+    const esc = String.fromCharCode(27);
+    const redacted = stringifyRedactedError({
+      nested: [
+        `rejected${esc}[31msk-abcdefghijklmnopqrst${esc}[0m`,
+        `sk-proj-abc${esc}[1msk-123456789012345`,
+      ],
+      status: 401,
+    });
+    expect(JSON.parse(redacted)).toEqual({
+      nested: ["rejected[Redacted]", "[Redacted]"],
+      status: 401,
+    });
+  });
+
+  it.each([
     "access_token=FAKE_CREDENTIAL",
     "client_secret: FAKE_CREDENTIAL",
     "refreshToken=FAKE_CREDENTIAL",
