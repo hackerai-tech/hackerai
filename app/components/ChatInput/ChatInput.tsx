@@ -64,12 +64,12 @@ import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { GoalModeButton } from "./GoalModeButton";
 import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -962,11 +962,53 @@ const ChatInputContent = ({
       goalExposure.current = true;
       captureAuthenticatedEvent("agent_goal_exposed", {
         surface: "goal_slash_command",
+        composer_layout:
+          isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+        goal_ui_version: 2,
       });
     }
-  }, [showGoalSuggestion]);
+  }, [showGoalSuggestion, isMobile]);
+  const captureGoalComposerAction = (
+    action:
+      | "submit_attempt"
+      | "submit_accepted"
+      | "submit_refused"
+      | "submit_error"
+      | "blocked"
+      | "exit",
+    reason?:
+      | "close_button"
+      | "escape"
+      | "offline"
+      | "send_disabled"
+      | "empty"
+      | "uploading"
+      | "not_ready",
+  ) => {
+    captureAuthenticatedEvent("agent_goal_composer_action", {
+      goal_ui_version: 2,
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      action,
+      ...(reason ? { reason } : {}),
+      has_draft: !!input.trim(),
+      has_attachments: uploadedFiles.length > 0,
+      is_new_chat: draftId === "new",
+      ...(chatId ? { chat_id: chatId } : {}),
+    });
+  };
+  const exitGoalMode = (reason: "close_button" | "escape") => {
+    if (goalMode) captureGoalComposerAction("exit", reason);
+    setGoalMode(false);
+  };
   const selectGoal = () => {
     if (goalSuggestionDraft === null) return;
+    captureAuthenticatedEvent("agent_goal_selected", {
+      surface: "goal_slash_command",
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      goal_ui_version: 2,
+    });
     setGoalMode(true);
     setInput(goalSuggestionDraft);
   };
@@ -1010,6 +1052,7 @@ const ChatInputContent = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
+    const isGoalSubmission = goalMode && !isWaitingForReply;
     if (showGoalSuggestion) {
       selectGoal();
       return;
@@ -1017,19 +1060,25 @@ const ChatInputContent = ({
     if (
       isOffline ||
       effectiveSendDisabledReason ||
-      (goalMode && !isWaitingForReply && !input.trim())
+      (isGoalSubmission && !input.trim())
     ) {
+      if (isGoalSubmission)
+        captureGoalComposerAction(
+          "blocked",
+          isOffline ? "offline" : !input.trim() ? "empty" : "send_disabled",
+        );
       return;
     }
 
     const canSubmit =
       (status === "ready" ||
-        status === "streaming" ||
-        status === "submitted") &&
+        status === "submitted" ||
+        status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      if (isGoalSubmission) captureGoalComposerAction("submit_attempt");
       isSubmittingRef.current = true;
       const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
@@ -1040,10 +1089,14 @@ const ChatInputContent = ({
           clearDraftOnSubmit && uploadedFiles.length > 0;
         const accepted = await onSubmit(
           e,
-          goalMode && !isWaitingForReply ? `/goal start ${input}` : undefined,
+          isGoalSubmission ? `/goal start ${input}` : undefined,
         );
+        if (isGoalSubmission)
+          captureGoalComposerAction(
+            accepted === false ? "submit_refused" : "submit_accepted",
+          );
         finishPredictionSubmission(accepted !== false);
-        if (accepted !== false && !isWaitingForReply) setGoalMode(false);
+        if (accepted !== false && isGoalSubmission) setGoalMode(false);
         if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
@@ -1074,6 +1127,7 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
+        if (isGoalSubmission) captureGoalComposerAction("submit_error");
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         console.error("Failed to submit message:", error);
@@ -1081,6 +1135,11 @@ const ChatInputContent = ({
         isSubmittingRef.current = false;
         if (isMountedRef.current) setSubmissionPending(false);
       }
+    } else if (isGoalSubmission) {
+      captureGoalComposerAction(
+        "blocked",
+        isUploadingFiles ? "uploading" : !input.trim() ? "empty" : "not_ready",
+      );
     }
   };
 
@@ -1377,7 +1436,7 @@ const ChatInputContent = ({
                   selectGoal();
                 }
                 if (e.key === "Escape") {
-                  setGoalMode(false);
+                  exitGoalMode("escape");
                   setDismissedGoalSuggestion(true);
                 }
               }}
@@ -1398,13 +1457,17 @@ const ChatInputContent = ({
             />
             <ChatInputToolbar
               goalMenu={
-                isMobile === true &&
+                !isWaitingForReply &&
+                isMobile !== undefined &&
                 user &&
                 chatMode === "agent" &&
                 subscription !== "free" &&
                 goalEnabled
                   ? {
                       active: goalMode,
+                      layout: isMobile === true ? "mobile" : "desktop",
+                      hasDraft: !!input.trim(),
+                      hasAttachments: uploadedFiles.length > 0,
                       onSelect: () => {
                         setGoalMode(true);
                       },
@@ -1419,7 +1482,7 @@ const ChatInputContent = ({
                 goalMode && !isWaitingForReply ? (
                   <GoalModeButton
                     compact={isMobile === true}
-                    onClear={() => setGoalMode(false)}
+                    onClear={() => exitGoalMode("close_button")}
                   />
                 ) : undefined
               }

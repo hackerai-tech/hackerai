@@ -28,6 +28,19 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
+const mockGoalCapture = jest.fn<
+  (event: string, properties: Record<string, unknown>) => boolean
+>(() => true);
+
+jest.mock("@/lib/analytics/client", () => ({
+  ...jest.requireActual<typeof import("@/lib/analytics/client")>(
+    "@/lib/analytics/client",
+  ),
+  captureAuthenticatedEvent: (
+    event: string,
+    properties: Record<string, unknown>,
+  ) => mockGoalCapture(event, properties),
+}));
 
 let mockIsMobile = false;
 jest.mock("@/hooks/use-mobile", () => ({
@@ -1817,6 +1830,46 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeVisible();
     });
 
+    it("shows a reply prompt and sends during a paused Agent run", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      render(
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            chatId="reply-chat"
+            hasMessages
+            pendingUserWait={{
+              runId: "run-1",
+              toolCallId: "tool-1",
+              status: "waiting",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(screen.getByTestId("waiting-for-reply-banner")).toHaveTextContent(
+        "Agent is waiting for your reply",
+      );
+      const input = screen.getByRole("textbox");
+      expect(input).toHaveAttribute(
+        "aria-describedby",
+        "waiting-for-reply-description",
+      );
+      fireEvent.change(input, { target: { value: "Use the first option" } });
+      const send = screen.getByRole("button", {
+        name: "Send reply and resume agent",
+      });
+      expect(send).toBeEnabled();
+      fireEvent.click(send);
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+    });
+
     it("merges the stored reviewer summary into the matching live approval", async () => {
       render(
         <TestWrapper>
@@ -3463,67 +3516,158 @@ describe("ChatInput - Integration Tests", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("selects a goal from the mobile add menu without losing the draft or attachments", async () => {
-    mockIsMobile = true;
-    jest.mocked(useAuth).mockReturnValue({
-      user: { id: "goal-menu-user" },
-      entitlements: [],
-    } as ReturnType<typeof useAuth>);
-    mockSandboxState = {
-      chatMode: "agent",
-      subscription: "pro",
-      isCheckingProPlan: false,
-    };
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ enabled: true }),
-    });
-    mockOnSubmit.mockResolvedValue(true);
-    const file: UploadedFileState = {
-      file: new File(["fixture"], "goal-context.txt", { type: "text/plain" }),
-      uploading: false,
-      uploaded: true,
-      storage: "s3",
-      fileId: "goal-context",
-    };
-    render(
-      <TestWrapper>
-        <UploadedFilesSetter files={[file]} label="Attach context" />
-        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
-      </TestWrapper>,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Attach context" }));
-    const input = await screen.findByRole("textbox");
-    fireEvent.change(input, { target: { value: "Verify the attached file" } });
-    const add = await screen.findByRole("button", {
-      name: "Add files or pursue a goal",
-    });
-    fireEvent.keyDown(add, { key: "Enter" });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Pursue goal" }),
-    );
-    await waitFor(() => expect(input).toHaveFocus());
-    expect(input).toHaveValue("Verify the attached file");
-    expect(input).toHaveAttribute("placeholder", "Describe your goal");
-    expect(screen.getByText("goal-context.txt")).toBeVisible();
-    expect(mockOnSubmit).not.toHaveBeenCalled();
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() =>
-      expect(mockOnSubmit).toHaveBeenCalledWith(
-        expect.anything(),
-        "/goal start Verify the attached file",
-      ),
+  describe("goal composer analytics", () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it.each(["accepted", "refused", "error"] as const)(
+      "records %s separately without leaking the objective",
+      async (outcome) => {
+        const capture = mockGoalCapture;
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "goal-analytics-user" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ enabled: true }),
+        });
+        if (outcome === "error")
+          mockOnSubmit.mockRejectedValue(new Error("PRIVATE_ERROR_TEXT"));
+        else mockOnSubmit.mockResolvedValue(outcome === "accepted");
+        render(
+          <TestWrapper>
+            <ChatInput onSubmit={mockOnSubmit} status="ready" />
+          </TestWrapper>,
+        );
+        const input = await screen.findByRole("textbox");
+        fireEvent.change(input, { target: { value: "PRIVATE_OBJECTIVE" } });
+        fireEvent.keyDown(
+          await screen.findByRole("button", {
+            name: "Add files or pursue a goal",
+          }),
+          { key: "Enter" },
+        );
+        fireEvent.click(
+          await screen.findByRole("menuitem", { name: "Pursue goal" }),
+        );
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() =>
+          expect(capture).toHaveBeenCalledWith(
+            "agent_goal_composer_action",
+            expect.objectContaining({
+              action: `submit_${outcome}`,
+              composer_layout: "desktop",
+            }),
+          ),
+        );
+        const goalEvents = capture.mock.calls.filter(
+          ([name]) => name === "agent_goal_composer_action",
+        );
+        expect(goalEvents.map(([, properties]) => properties.action)).toEqual([
+          "submit_attempt",
+          `submit_${outcome}`,
+        ]);
+        expect(JSON.stringify(capture.mock.calls)).not.toContain(
+          "PRIVATE_OBJECTIVE",
+        );
+        expect(JSON.stringify(capture.mock.calls)).not.toContain(
+          "PRIVATE_ERROR_TEXT",
+        );
+        if (outcome !== "accepted") {
+          expect(input).toHaveValue("PRIVATE_OBJECTIVE");
+          expect(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          ).toBeVisible();
+          fireEvent.click(
+            screen.getByRole("button", { name: "Exit goal mode" }),
+          );
+          expect(capture).toHaveBeenLastCalledWith(
+            "agent_goal_composer_action",
+            expect.objectContaining({ action: "exit", reason: "close_button" }),
+          );
+          expect(input).toHaveValue("PRIVATE_OBJECTIVE");
+        }
+      },
     );
   });
 
+  it.each([false, true])(
+    "selects a goal from the add menu without losing draft or attachments (mobile=%s)",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "goal-menu-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      mockOnSubmit.mockResolvedValue(true);
+      const file: UploadedFileState = {
+        file: new File(["fixture"], "goal-context.txt", { type: "text/plain" }),
+        uploading: false,
+        uploaded: true,
+        storage: "s3",
+        fileId: "goal-context",
+      };
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[file]} label="Attach context" />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Attach context" }));
+      const input = await screen.findByRole("textbox");
+      fireEvent.change(input, {
+        target: { value: "Verify the attached file" },
+      });
+      const add = await screen.findByRole("button", {
+        name: "Add files or pursue a goal",
+      });
+      fireEvent.keyDown(add, { key: "Enter" });
+      fireEvent.click(
+        await screen.findByRole("menuitem", { name: /^Pursue goal/ }),
+      );
+      await waitFor(() => expect(input).toHaveFocus());
+      expect(input).toHaveValue("Verify the attached file");
+      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      expect(screen.getByText("goal-context.txt")).toBeVisible();
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          "/goal start Verify the attached file",
+        ),
+      );
+    },
+  );
+
   it.each([
-    { mobile: false, subscription: "pro", chatMode: "agent", enabled: true },
+    { mobile: false, subscription: "free", chatMode: "agent", enabled: true },
+    { mobile: false, subscription: "pro", chatMode: "ask", enabled: true },
+    { mobile: false, subscription: "pro", chatMode: "agent", enabled: false },
     { mobile: true, subscription: "free", chatMode: "agent", enabled: true },
     { mobile: true, subscription: "pro", chatMode: "ask", enabled: true },
     { mobile: true, subscription: "pro", chatMode: "agent", enabled: false },
   ] as const)(
-    "keeps the existing attachment action outside eligible mobile Agent: %j",
+    "keeps the existing attachment action outside eligible Agent: %j",
     async ({ mobile, subscription, chatMode, enabled }) => {
       mockIsMobile = mobile;
       jest.mocked(useAuth).mockReturnValue({
