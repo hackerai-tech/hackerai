@@ -26,7 +26,8 @@ export async function generateNextActions(
     providerOptions: {
       openrouter: {
         reasoning: { enabled: false },
-        provider: { require_parameters: true },
+        // Hints appear only after the whole structured batch is ready.
+        provider: { require_parameters: true, sort: "throughput" },
       },
     },
     system: SYSTEM,
