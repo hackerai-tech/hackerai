@@ -103,13 +103,29 @@ export const stringifyRedactedError = (error: unknown): string => {
         ? error
         : (() => {
             try {
-              return (
-                JSON.stringify(error, (_key, value) =>
-                  typeof value === "string"
-                    ? redactSensitiveErrorMessage(value)
-                    : value,
-                ) ?? "Unknown error occurred"
-              );
+              const propertyNames = new Map<string, string>();
+              const serialized = JSON.stringify(error, (key, value) => {
+                const redactedKey = redactSensitiveErrorMessage(key);
+                if (redactedKey !== key) {
+                  propertyNames.set(
+                    JSON.stringify(key),
+                    JSON.stringify(redactedKey),
+                  );
+                }
+                // Use the existing field rule while the raw property name is
+                // available, before renaming it can hide a sensitive suffix.
+                const field = `${JSON.stringify(stripControlSequencesFromErrorMessage(key))}:0`;
+                if (field.search(SENSITIVE_FIELD_PATTERN) >= 0)
+                  return REDACTED_VALUE;
+                return typeof value === "string"
+                  ? redactSensitiveErrorMessage(value)
+                  : value;
+              });
+              let redacted = serialized ?? "Unknown error occurred";
+              for (const [name, replacement] of propertyNames) {
+                redacted = redacted.replaceAll(name, replacement);
+              }
+              return redacted;
             } catch {
               return String(error);
             }

@@ -67,6 +67,22 @@ describe("error redaction", () => {
     ).toBe("[Redacted signed URL]");
   });
 
+  it("redacts credentials in JSON property names without hiding sensitive values", () => {
+    const input = {
+      "sk-proj-abc\0defghijklmnopqrst": "safe",
+      "sk-proj-abcdefghijklmnopqrst\0TAIL_SECRET": "safe",
+      "sk-proj-abc\0defghijklmnopqrst-to\0ken": "FAKE_SECRET",
+      tokenCount: 42,
+      nested: { "sk-ant-abc\0defghijklmnopqrst": "safe" },
+    };
+    const result = stringifyRedactedError(input);
+    expect(result).not.toContain("defghijklmnopqrst");
+    expect(result).not.toContain("FAKE_SECRET");
+    expect(result).not.toContain("TAIL_SECRET");
+    expect(JSON.parse(result)).toMatchObject({ tokenCount: 42 });
+    expect(input["sk-proj-abc\0defghijklmnopqrst-to\0ken"]).toBe("FAKE_SECRET");
+  });
+
   it("preserves short labels and embedded non-credential identifiers", () => {
     const message =
       "sk-example task-SYNTHETIC_identifier_012345 mask-SYNTHETIC_identifier_012345 task-sk-SYNTHETIC_identifier_012345";
