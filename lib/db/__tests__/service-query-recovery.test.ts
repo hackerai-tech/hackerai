@@ -11,6 +11,8 @@ import {
 } from "../service-client";
 import { runWithServiceQueryRecovery } from "../service-query-recovery.node";
 import { verifyServiceArgs } from "../service-proof";
+import * as convexClient from "../convex-client";
+import { BrowserSessions } from "@/lib/ai/tools/utils/browser-sessions";
 
 jest.mock("@trigger.dev/sdk", () => ({ tasks: { middleware: jest.fn() } }));
 jest.mock("next/server", () => ({
@@ -30,6 +32,10 @@ jest.mock("@/lib/auth/get-user-id", () => ({
   }),
 }));
 jest.mock("server-only", () => ({}), { virtual: true });
+jest.mock("../convex-client", () => {
+  const actual = jest.requireActual("../convex-client");
+  return { ...actual, getConvexClient: jest.fn(actual.getConvexClient) };
+});
 jest.mock("@/lib/cloud-recovery/service", () => ({
   recoveryView: jest.fn().mockResolvedValue({ status: "none" }),
   confirmRecovery: jest.fn(),
@@ -105,6 +111,54 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   jest.restoreAllMocks();
+});
+
+it("counts an SDK-retried browser state query as one logical successful read", async () => {
+  let stateAttempts = 0;
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    const { path } = JSON.parse(String(init?.body));
+    let value: unknown = null;
+    if (path === "browserHandoffs:registerForBackend") value = true;
+    if (path === "browserHandoffs:getForBackend") {
+      if (++stateAttempts === 1) throw reset();
+      value = { state: "agent", runActive: true };
+    }
+    return new Response(
+      JSON.stringify({ status: "success", value, logLines: [] }),
+    );
+  });
+  const client = createServiceConvexClient(deployment);
+  jest
+    .mocked(convexClient.getConvexClient)
+    .mockReturnValueOnce(client)
+    .mockReturnValueOnce(client)
+    .mockReturnValueOnce(client);
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run_fixture",
+    agentId: "parent",
+    serviceKey: secret,
+  });
+  await runWithServiceQueryRecovery(async () => {
+    await sessions.prepare({
+      sandboxId: "fixture",
+      commands: { run: async () => ({ exitCode: 0, stdout: "/usr/bin" }) },
+    } as any);
+    await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+    await sessions.cleanup();
+  });
+  expect(stateAttempts).toBe(2);
+  const summaries = info.mock.calls
+    .map(([line]) => JSON.parse(String(line)))
+    .filter((entry) => entry.event === "browser_handoff_read_summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toMatchObject({
+    state_read_calls: 1,
+    state_read_succeeded: 1,
+    state_read_rejected: 0,
+    state_read_pending: 0,
+  });
 });
 
 it("recovers an actual SDK read after a reset, retaining scoped proofs and its result", async () => {
