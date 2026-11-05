@@ -72,6 +72,21 @@ const invalidMessagesError = (
     },
   );
 
+export const requireChatId = (value: unknown): string => {
+  if (typeof value !== "string") {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid chat request: chatId must be a string.",
+      {
+        invalid_request_field: "chatId",
+        invalid_request_field_type: getValueKind(value),
+        invalid_request_field_reason: "not_string",
+      },
+    );
+  }
+  return value;
+};
+
 export const requireOptionalIdentifier = (
   field: string,
   value: unknown,
