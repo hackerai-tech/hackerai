@@ -111,6 +111,12 @@ beforeEach(() => {
     modelId: "deepseek/deepseek-v4.1-flash-1017",
     reasoningTokens: 0,
     cost: 0.0001,
+    knownCost: 0.0001,
+    providerCalls: 2,
+    pricedProviderCalls: 2,
+    unknownProviderCalls: 0,
+    modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
+    unavailable: false,
   });
 });
 
@@ -192,6 +198,12 @@ test("provider failure and a new run during generation suppress predictions", as
       modelId: "deepseek/deepseek-v4.1-flash-1017",
       reasoningTokens: 0,
       cost: 0,
+      knownCost: 0,
+      providerCalls: 0,
+      pricedProviderCalls: 0,
+      unknownProviderCalls: 0,
+      modelIds: [],
+      unavailable: false,
     };
   });
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -218,6 +230,12 @@ test.each([
         modelId: "deepseek/deepseek-v4.1-flash-1017",
         reasoningTokens: 0,
         cost: 0,
+        knownCost: 0,
+        providerCalls: 0,
+        pricedProviderCalls: 0,
+        unknownProviderCalls: 0,
+        modelIds: [],
+        unavailable: false,
       };
     });
     expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -303,6 +321,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
+    validationVersion: 2,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -315,6 +334,78 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(generateNextActions).not.toHaveBeenCalled();
   expect(reserve).not.toHaveBeenCalled();
   expect(capture).not.toHaveBeenCalled();
+});
+
+test("does not restore legacy unverified hints or make a model call", async () => {
+  saved = {
+    consumed: false,
+    batch: {
+      batchId: "legacy",
+      messageId: "answer",
+      mode: "ask",
+      suggestions: ["Explain the evidence."],
+    },
+  };
+  const result = await POST(
+    request({ chatId, messageId: "answer", restoreOnly: true } as never),
+  );
+  expect(await result.json()).toEqual({ suggestions: [] });
+  expect(generateNextActions).not.toHaveBeenCalled();
+  expect(reserve).not.toHaveBeenCalled();
+  expect(mutation).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+});
+
+test("does not expose an unverified legacy batch returned by a concurrent save", async () => {
+  mutation.mockResolvedValueOnce({
+    batchId: "legacy-concurrent",
+    messageId: "answer",
+    mode: "ask",
+    suggestions: ["Explain the evidence."],
+  });
+  expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
+});
+
+test("saves the verification version alongside new drafts", async () => {
+  await POST(request());
+  expect(mutation).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      batch: expect.objectContaining({ validationVersion: 2 }),
+    }),
+  );
+});
+
+test("emits partial known spend and unknown-call coverage on unavailable verification", async () => {
+  jest.mocked(generateNextActions).mockResolvedValueOnce({
+    suggestions: [],
+    unavailable: true,
+    inputTokens: undefined,
+    outputTokens: undefined,
+    reasoningTokens: undefined,
+    modelId: "deepseek/deepseek-v4.1-flash-1017",
+    modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
+    providerCalls: 2,
+    pricedProviderCalls: 1,
+    unknownProviderCalls: 1,
+    knownCost: 0.0001,
+    cost: undefined,
+  });
+  expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "contextual_next_actions_generated",
+      properties: expect.objectContaining({
+        outcome: "unavailable",
+        cost_usd: undefined,
+        known_cost_usd: 0.0001,
+        provider_calls: 2,
+        priced_provider_calls: 1,
+        unknown_provider_calls: 1,
+      }),
+    }),
+  );
+  expect(mutation).not.toHaveBeenCalled();
 });
 
 test.each(["consumed", "absent", "control", "disabled"])(

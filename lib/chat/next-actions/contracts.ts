@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
+// Persisted batches from older prompts have not passed semantic verification.
+export const NEXT_ACTIONS_VALIDATION_VERSION = 2;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
@@ -17,6 +19,7 @@ export const nextActionsResponseSchema = z.object({
   batchId: z.string(),
   messageId: z.string(),
   mode: z.enum(["ask", "agent"]),
+  validationVersion: z.number().int().optional(),
   suggestions: z.array(z.string().trim().min(1).max(240)).max(3),
 });
 export type NextActionsBatch = z.infer<typeof nextActionsResponseSchema>;
