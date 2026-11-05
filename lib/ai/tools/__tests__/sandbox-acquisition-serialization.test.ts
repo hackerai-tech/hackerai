@@ -149,9 +149,19 @@ describe("sandbox acquisition serialization", () => {
       ).resolves.toMatchObject({ reason: "attempt_limit" });
       expect(mockCaptchaSolve).toHaveBeenCalledTimes(1);
       args[22] = { environment: "PRODUCTION" };
-      expect(createTools(...args).tools.browser_challenge).toBeUndefined();
+      await expect(
+        createTools(...args).tools.run_terminal_cmd.execute!(
+          { action: "solve" },
+          { toolCallId: "production", messages: [] },
+        ),
+      ).resolves.toBeUndefined();
       args[22] = { environment: "PREVIEW", browserAgentId: "child-1" };
-      expect(createTools(...args).tools.browser_challenge).toBeUndefined();
+      await expect(
+        createTools(...args).tools.run_terminal_cmd.execute!(
+          { action: "solve" },
+          { toolCallId: "child", messages: [] },
+        ),
+      ).resolves.toBeUndefined();
     } finally {
       evaluator.mockRestore();
       process.env = originalEnv;

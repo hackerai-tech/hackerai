@@ -104,7 +104,9 @@ export function isSupportedCaptchaTarget(
   url: string,
   widget: CaptchaWidget,
   configuration = process.env.CAPTCHA_SOLVER_TARGETS ??
-    process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS,
+    (process.env.HACKERAI_ENVIRONMENT === "preview"
+      ? process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS
+      : undefined),
 ): boolean {
   if (isSupportedCaptchaDemo(url, widget)) return true;
   if (!configuration || configuration.length > 16384) return false;

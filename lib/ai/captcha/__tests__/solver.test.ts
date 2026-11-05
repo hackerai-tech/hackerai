@@ -153,7 +153,7 @@ it("awaits durable task registration and never creates again when registration f
   const register = jest
     .fn()
     .mockRejectedValue(new Error("journal unavailable"));
-  await expect(
+  const rejected = expect(
     createTwoCaptchaSolver("provider-key").solve(
       demo,
       widget,
@@ -162,7 +162,60 @@ it("awaits durable task registration and never creates again when registration f
     ),
   ).rejects.toThrow("journal unavailable");
   await jest.advanceTimersByTimeAsync(10000);
+  await rejected;
   expect(register).toHaveBeenCalledWith(123);
+  expect(register).toHaveBeenCalledTimes(3);
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+});
+
+it("recovers a transient registration failure using the same paid task", async () => {
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+  mockFetch.mockResolvedValueOnce(
+    reply({
+      errorId: 0,
+      status: "ready",
+      cost: "0.00299",
+      solution: { gRecaptchaResponse: "response" },
+    }),
+  );
+  const register = jest
+    .fn()
+    .mockRejectedValueOnce(new Error("transient"))
+    .mockResolvedValue(undefined);
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    demo,
+    widget,
+    new AbortController().signal,
+    register,
+  );
+  await jest.advanceTimersByTimeAsync(5500);
+  await expect(pending).resolves.toEqual({
+    token: "response",
+    costDollars: 0.00299,
+  });
+  expect(register.mock.calls).toEqual([[123], [123]]);
+  expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+    "https://api.2captcha.com/createTask",
+    "https://api.2captcha.com/getTaskResult",
+  ]);
+});
+
+it("stops registration retries when canceled and never polls or recreates", async () => {
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+  const controller = new AbortController();
+  const register = jest.fn().mockRejectedValue(new Error("transient"));
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    demo,
+    widget,
+    controller.signal,
+    register,
+  );
+  const rejected = expect(pending).rejects.toThrow("stopped");
+  await jest.advanceTimersByTimeAsync(1);
+  controller.abort(new Error("stopped"));
+  await rejected;
+  await jest.advanceTimersByTimeAsync(10000);
+  expect(register).toHaveBeenCalledTimes(1);
   expect(mockFetch).toHaveBeenCalledTimes(1);
 });
 

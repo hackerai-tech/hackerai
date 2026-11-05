@@ -29,7 +29,7 @@ export interface CaptchaSolver {
   ): Promise<CaptchaSolution>;
 }
 
-/** Fixed provider origin; no caller-controlled endpoints, redirects or retries. */
+/** Fixed provider origin; no caller-controlled endpoints or paid-task retries. */
 export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
   return {
     async solve(url, widget, signal, onTaskCreated, onCostKnown) {
@@ -85,7 +85,18 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         throw new Error("CAPTCHA provider returned no task identity.");
       // Cancellation cannot cancel a provider's already-created task. Preserve
       // its billing identity for reconciliation even if polling never finishes.
-      await onTaskCreated?.(created.taskId);
+      if (onTaskCreated) {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await onTaskCreated(created.taskId);
+            break;
+          } catch (error) {
+            // Registration is idempotent; creation is never repeated.
+            if (attempt >= 2) throw error;
+            await abortableDelay(500 * (attempt + 1), deadline);
+          }
+        }
+      }
       for (let poll = 0; poll < 35; poll++) {
         await abortableDelay(5000, deadline);
         const result = await request("getTaskResult", {

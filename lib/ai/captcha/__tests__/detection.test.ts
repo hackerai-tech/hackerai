@@ -45,6 +45,42 @@ it("requires an exact server-approved URL, kind and site key for non-demo solvin
   ).toBe(false);
 });
 
+it.each(["preview", "production", undefined])(
+  "isolates legacy Preview target configuration in %s",
+  (environment) => {
+    const original = process.env;
+    const url = "https://authorized.example.test/login";
+    const widget = {
+      kind: "hcaptcha" as const,
+      siteKey: "public-widget-key",
+      invisible: false,
+      observationId: "0123456789abcdef0123456789abcdef",
+      tokenPresent: false,
+    };
+    const configuration = JSON.stringify([
+      { url, kind: widget.kind, siteKey: widget.siteKey },
+    ]);
+    process.env = {
+      ...original,
+      CAPTCHA_SOLVER_PREVIEW_TARGETS: configuration,
+    };
+    delete process.env.CAPTCHA_SOLVER_TARGETS;
+    if (environment) process.env.HACKERAI_ENVIRONMENT = environment;
+    else delete process.env.HACKERAI_ENVIRONMENT;
+    try {
+      expect(isSupportedCaptchaTarget(url, widget)).toBe(
+        environment === "preview",
+      );
+      process.env.CAPTCHA_SOLVER_TARGETS = configuration;
+      expect(isSupportedCaptchaTarget(url, widget)).toBe(true);
+      process.env.CAPTCHA_SOLVER_TARGETS = "";
+      expect(isSupportedCaptchaTarget(url, widget)).toBe(false);
+    } finally {
+      process.env = original;
+    }
+  },
+);
+
 it.each([
   "https://user:password@authorized.example.test/login",
   "https://authorized.example.test/login?token=private",
