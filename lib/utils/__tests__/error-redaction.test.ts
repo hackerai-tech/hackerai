@@ -43,6 +43,35 @@ describe("error redaction", () => {
     },
   );
 
+  it.each(["\b", "\f"])(
+    "redacts keys after raw and serialized control separator %j",
+    (separator) => {
+      const message = `Provider rejected${separator}sk-proj-SYNTHETIC_provider_key_012345`;
+      for (const error of [new Error(message), { message }]) {
+        const redacted = stringifyRedactedError(error);
+        expect(redacted).not.toContain("SYNTHETIC_provider_key");
+        expect(redacted).toContain("[Redacted]");
+      }
+    },
+  );
+
+  it("retains a key boundary while removing ANSI inside and before the key", () => {
+    const esc = String.fromCharCode(27);
+    for (const key of [
+      "sk-proj-SYNTHETIC_provider_key_012345",
+      `sk-proj-SYNTHETIC_${esc}[1mprovider_key_012345`,
+    ]) {
+      const redacted = redactSensitiveErrorMessage(
+        `Provider rejected${esc}[31m${key}${esc}[0m; status 401`,
+      );
+      expect(redacted).not.toContain("SYNTHETIC");
+      expect(redacted).not.toContain("provider_key");
+      expect(redacted).not.toContain(esc);
+      expect(redacted).toContain("[Redacted]");
+      expect(redacted).toContain("status 401");
+    }
+  });
+
   it.each([
     "access_token=FAKE_CREDENTIAL",
     "client_secret: FAKE_CREDENTIAL",

@@ -14,7 +14,7 @@ const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 // Keep short labels and identifiers intact, and consume the whole token body.
 // Serialized JSON and diagnostic URLs can encode the preceding separator.
 const PROVIDER_KEY_PATTERN =
-  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrt]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_-]{20,}/g;
+  /(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|\\u[\da-fA-F]{4}|%[\da-fA-F]{2}))sk-[A-Za-z0-9_-]{20,}/g;
 
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
@@ -32,6 +32,13 @@ const ANSI_ESCAPE_PATTERN =
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-byte cleanup for model/log-facing errors
 const CONTROL_CHARACTER_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
+// Removing a control sequence before a key must not join it to the preceding
+// word. Interior sequences still disappear so split key bodies are redacted.
+const PROVIDER_KEY_CONTROL_BOUNDARY_PATTERN = new RegExp(
+  `(?:${ANSI_ESCAPE_PATTERN.source}|${CONTROL_CHARACTER_PATTERN.source})(?=sk-)`,
+  "g",
+);
+
 export const stripControlSequencesFromErrorMessage = (
   message: string,
 ): string =>
@@ -40,7 +47,9 @@ export const stripControlSequencesFromErrorMessage = (
     .replace(CONTROL_CHARACTER_PATTERN, "");
 
 export const redactSensitiveErrorMessage = (message: string): string =>
-  stripControlSequencesFromErrorMessage(message)
+  stripControlSequencesFromErrorMessage(
+    message.replace(PROVIDER_KEY_CONTROL_BOUNDARY_PATTERN, " "),
+  )
     .replace(URL_PATTERN, (url) => {
       if (!SIGNED_URL_CREDENTIAL_PATTERN.test(url)) return url;
 
