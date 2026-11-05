@@ -40,6 +40,37 @@ test("combines hits before enforcing coverage and retains intentionally skipped 
   assert.equal(result.pending, 2);
 });
 
+test("preserves distinct functions sharing a source-mapped body and rejects different instrumentation", () => {
+  const shards = [shard("a", 0), shard("b", 2)];
+  for (const s of shards) {
+    const file = s.coverage["/repo/shared.ts"];
+    file.fnMap = {
+      0: { name: "outer", decl: location, loc: location },
+      1: {
+        name: "inner",
+        decl: { ...location, start: { line: 1, column: 1 } },
+        loc: location,
+      },
+    };
+    file.f = { 0: 1, 1: 0 };
+    file.branchMap = {
+      0: { type: "if", loc: location, locations: [location, location] },
+    };
+    file.b = { 0: [1, 0] };
+  }
+  const result = mergeCoverage(["a", "b"], shards);
+  const file = result.merged.fileCoverageFor("/repo/shared.ts");
+  assert.equal(file.toSummary().functions.total, 2);
+  assert.deepEqual(file.f, { 0: 2, 1: 0 });
+  assert.deepEqual(file.b, { 0: [2, 0] });
+  assert.equal(shards[0].coverage["/repo/shared.ts"].f[0], 1);
+  shards[1].coverage["/repo/shared.ts"].fnMap[1].name = "different";
+  assert.throws(
+    () => mergeCoverage(["a", "b"], shards),
+    /Instrumentation mismatch/,
+  );
+});
+
 test("fails closed on missing or duplicated test coverage and failed shards", () => {
   for (const change of [
     (shards) => shards.pop(),

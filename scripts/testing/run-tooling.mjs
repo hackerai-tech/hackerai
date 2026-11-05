@@ -26,6 +26,7 @@ export const suites = [
   },
 ];
 
+/** Read every staged, unstaged and untracked dependency path; Git errors throw. */
 export function changedFiles(cwd = root) {
   // Separate staged and unstaged diffs retain both sides of a partially staged
   // edit. Disable rename detection so both the old and new dependencies count.
@@ -49,6 +50,7 @@ export function changedFiles(cwd = root) {
   ];
 }
 
+/** Select inspected tooling dependencies, falling back to all for unknown paths. */
 export function selectSuites(paths) {
   const selected = new Set(["testing"]);
   for (const path of paths) {
@@ -77,6 +79,7 @@ export function selectSuites(paths) {
   return suites.filter((suite) => selected.has(suite.name));
 }
 
+/** Run each selected Node suite serially and propagate the first failure. */
 export function runSuites(selected, cwd = root) {
   for (const suite of selected) {
     console.log(`Tooling tests: ${suite.name}`);

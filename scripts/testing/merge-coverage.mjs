@@ -8,8 +8,10 @@ import reports from "istanbul-reports";
 
 const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 
-// The complete discovery list is independent of the shard results, so a missing
-// artifact, duplicate shard, or accidental test filter cannot produce a green gate.
+/** Validate the complete suite inventory, preserve instrumentation IDs when
+ * combining shard counters, and enforce configured global coverage thresholds.
+ * Missing/duplicate suites and incompatible instrumentation fail closed.
+ */
 export function mergeCoverage(expectedTests, shards, thresholds = {}) {
   assert(expectedTests.length > 0, "No tests discovered");
   assert.equal(new Set(expectedTests).size, expectedTests.length);
@@ -30,7 +32,41 @@ export function mergeCoverage(expectedTests, shards, thresholds = {}) {
     }
     tests += result.numTotalTests;
     pending += result.numPendingTests;
-    merged.merge(data);
+    for (const [file, incoming] of Object.entries(data)) {
+      if (!merged.data[file]) {
+        merged.addFileCoverage(structuredClone(incoming));
+        continue;
+      }
+      const current = merged.fileCoverageFor(file).data;
+      // Location-based merging collapses distinct SWC functions that share a
+      // body location. These shards instrument the same revision: require the
+      // same maps and add counters by ID, preserving every function/branch.
+      for (const map of ["statementMap", "fnMap", "branchMap"]) {
+        assert.deepEqual(
+          current[map],
+          incoming[map],
+          `Instrumentation mismatch: ${file}`,
+        );
+      }
+      for (const counter of ["s", "f", "b", "bT"]) {
+        if (!current[counter] && !incoming[counter]) continue;
+        assert.deepEqual(
+          Object.keys(current[counter]),
+          Object.keys(incoming[counter]),
+        );
+        for (const id of Object.keys(current[counter])) {
+          if (Array.isArray(current[counter][id])) {
+            assert.equal(
+              current[counter][id].length,
+              incoming[counter][id].length,
+            );
+            current[counter][id] = current[counter][id].map(
+              (hits, i) => hits + incoming[counter][id][i],
+            );
+          } else current[counter][id] += incoming[counter][id];
+        }
+      }
+    }
   }
   assert.deepEqual(
     [...seen].sort(),
@@ -83,6 +119,6 @@ if (
     reports.create(reporter).execute(context);
   }
   console.log(
-    `Verified ${result.suites} suites, ${result.tests} tests (${result.pending} intentionally pending); merged coverage thresholds passed.`,
+    `Verified ${result.suites} suites, ${result.tests} tests (${result.pending} pending); merged coverage thresholds passed.`,
   );
 }
