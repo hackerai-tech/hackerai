@@ -99,6 +99,8 @@ export function createAgentRunReporting(context: {
   const captured = new Set<RunEvent>();
   let terminalOutcome: "success" | "error" | "aborted" | undefined;
   let terminalAbortSource: string | undefined;
+  let terminalFinishReason: string | undefined;
+  let terminalStepLimitReached: boolean | undefined;
 
   function once<T>(event: RunEvent, capture: (args: T) => void, args: T) {
     if (captured.has(event)) return;
@@ -134,6 +136,28 @@ export function createAgentRunReporting(context: {
         outcome === "aborted"
       ) {
         terminalOutcome ??= outcome;
+        // A failed enqueue must retain observed stream metadata, without
+        // accepting arbitrary strings or inventing a natural completion.
+        const finishReason = field(args, "finishReason");
+        if (
+          typeof finishReason === "string" &&
+          [
+            "stop",
+            "length",
+            "content-filter",
+            "tool-calls",
+            "error",
+            "other",
+            "unknown",
+          ].includes(finishReason)
+        )
+          terminalFinishReason ??= finishReason;
+        const stepLimitReached = field(
+          field(args, "stepLimitTelemetry"),
+          "stepLimitReached",
+        );
+        if (typeof stepLimitReached === "boolean")
+          terminalStepLimitReached ??= stepLimitReached;
         const abortSource = field(args, "abortSource");
         if (
           typeof abortSource === "string" &&
@@ -186,8 +210,10 @@ export function createAgentRunReporting(context: {
         terminal_reporting_source: "run_finally",
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",
+        failure_kind: failure?.kind ?? (snapshot.canceled ? "canceled" : null),
         outcome,
-        finish_reason: terminalOutcome ? "reporting_fallback" : kind,
+        finish_reason: terminalFinishReason ?? "unknown",
+        step_limit_reached: terminalStepLimitReached ?? null,
         ...(outcome === "aborted" && {
           abort_source:
             terminalAbortSource ??
