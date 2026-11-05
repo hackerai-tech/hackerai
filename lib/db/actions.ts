@@ -1400,8 +1400,10 @@ export async function handleInitialChatAndUserMessage({
       }
     }
 
-    // Ensure title is a string and truncate safely
-    title = (title ?? "New Chat").substring(0, 100);
+    // Keep the title cap without splitting a surrogate pair Convex cannot store.
+    title = (title ?? "New Chat")
+      .substring(0, 100)
+      .replace(/[\uD800-\uDBFF]$/, "");
 
     reportPersistenceStep("save_chat");
     await saveChat({
