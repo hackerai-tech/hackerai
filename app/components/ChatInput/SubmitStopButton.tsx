@@ -111,7 +111,8 @@ export function SubmitStopButton({
       if (
         matchesShortcut(event, "stop", isMac) &&
         !isShortcutTargetBlocked(event) &&
-        !hasOpenShortcutOverlay()
+        !hasOpenShortcutOverlay() &&
+        !document.querySelector('[data-shortcuts-scope="navigation"]')
       ) {
         event.preventDefault();
         onStop();

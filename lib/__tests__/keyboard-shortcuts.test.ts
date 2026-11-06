@@ -109,14 +109,11 @@ describe("web keyboard bindings", () => {
     ).toBe(true);
   });
 
-  it("matches Stop with Shift and keeps copy untouched", () => {
+  it("matches Escape for Stop and keeps copy untouched", () => {
     expect(
       matchesShortcut(
         new KeyboardEvent("keydown", {
-          key: "X",
-          code: "KeyX",
-          ctrlKey: true,
-          shiftKey: true,
+          key: "Escape",
         }),
         "stop",
         false,
@@ -143,6 +140,6 @@ describe("web keyboard bindings", () => {
 
   it("shows platform-appropriate key names", () => {
     expect(shortcutKeys("newTask", true)).toEqual(["⌘", "⇧", "O"]);
-    expect(shortcutKeys("stop", false)).toEqual(["Ctrl", "Shift", "X"]);
+    expect(shortcutKeys("stop", false)).toEqual(["Esc"]);
   });
 });

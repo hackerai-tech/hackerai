@@ -329,7 +329,10 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
 
         {/* Overlay Chat Sidebar - Mobile screens for logged users */}
         {isMobile && !authLoading && user && chatSidebarOpen && (
-          <div className="fixed inset-0 z-50 bg-background">
+          <div
+            className="fixed inset-0 z-50 bg-background"
+            data-shortcuts-scope="navigation"
+          >
             <MainSidebar
               isMobileOverlay
               onClose={() => setChatSidebarOpen(false)}

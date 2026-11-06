@@ -6,7 +6,7 @@ export const SHORTCUTS = {
   sidebar: { label: "Toggle sidebar", key: "s", mod: true, shift: true },
   send: { label: "Send message", key: "Enter" },
   newline: { label: "Insert new line", key: "Enter", shift: true },
-  stop: { label: "Stop response", key: "x", mod: true, shift: true },
+  stop: { label: "Stop response", key: "Escape" },
 } as const;
 
 export type ShortcutId = keyof typeof SHORTCUTS;
@@ -17,7 +17,11 @@ export function shortcutKeys(id: ShortcutId, isMac: boolean): string[] {
   return [
     ...(binding.mod ? [isMac ? "⌘" : "Ctrl"] : []),
     ...(binding.shift ? [isMac ? "⇧" : "Shift"] : []),
-    binding.key === "Enter" ? "Enter" : binding.key.toUpperCase(),
+    binding.key === "Escape"
+      ? "Esc"
+      : binding.key === "Enter"
+        ? "Enter"
+        : binding.key.toUpperCase(),
   ];
 }
 
@@ -38,6 +42,7 @@ export function spokenShortcutKey(key: string): string {
     "⇧": "Shift",
     Ctrl: "Control",
     "/": "Slash",
+    Esc: "Escape",
   };
   return names[key] ?? key;
 }

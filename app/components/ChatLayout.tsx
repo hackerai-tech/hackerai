@@ -123,6 +123,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
       // Portaled dialogs manage their own focus and Escape key.
       if (e.defaultPrevented || hasOpenShortcutOverlay()) return;
       if (e.key === "Escape") {
+        e.preventDefault();
         closeTaskSidebarOverlay();
         return;
       }

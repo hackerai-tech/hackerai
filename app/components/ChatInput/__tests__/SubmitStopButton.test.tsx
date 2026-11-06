@@ -96,10 +96,7 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(copy.defaultPrevented).toBe(false);
     expect(defaultProps.onStop).not.toHaveBeenCalled();
     fireEvent.keyDown(window, {
-      key: "X",
-      code: "KeyX",
-      ctrlKey: true,
-      shiftKey: true,
+      key: "Escape",
     });
     expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
   });
@@ -111,59 +108,41 @@ describe("SubmitStopButton paid mode colors", () => {
     dialog.setAttribute("role", "dialog");
     document.body.append(dialog);
     fireEvent.keyDown(window, {
-      key: "X",
-      code: "KeyX",
-      ctrlKey: true,
-      shiftKey: true,
+      key: "Escape",
     });
     dialog.remove();
     const terminal = document.createElement("textarea");
     terminal.className = "xterm";
     document.body.append(terminal);
     fireEvent.keyDown(terminal, {
-      key: "X",
-      code: "KeyX",
-      ctrlKey: true,
-      shiftKey: true,
+      key: "Escape",
     });
     terminal.remove();
     expect(defaultProps.onStop).not.toHaveBeenCalled();
   });
 
-  it("uses Command instead of Control to stop on Mac", () => {
-    const platform = jest
-      .spyOn(navigator, "platform", "get")
-      .mockReturnValue("MacIntel");
-    try {
-      defaultProps.onStop.mockClear();
-      renderButton("agent", true, true);
-      fireEvent.keyDown(window, {
-        key: "X",
-        code: "KeyX",
-        ctrlKey: true,
-        shiftKey: true,
-      });
-      expect(defaultProps.onStop).not.toHaveBeenCalled();
-      fireEvent.keyDown(window, {
-        key: "X",
-        code: "KeyX",
-        metaKey: true,
-        shiftKey: true,
-      });
-      expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
-    } finally {
-      platform.mockRestore();
-    }
+  it("leaves already-handled Escape and open navigation alone", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", true, true);
+    const handled = new KeyboardEvent("keydown", {
+      key: "Escape",
+      cancelable: true,
+    });
+    handled.preventDefault();
+    window.dispatchEvent(handled);
+    const navigation = document.createElement("div");
+    navigation.dataset.shortcutsScope = "navigation";
+    document.body.append(navigation);
+    fireEvent.keyDown(window, { key: "Escape" });
+    navigation.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
   });
 
   it("ignores Stop while idle", () => {
     defaultProps.onStop.mockClear();
     renderButton("ask", false);
     fireEvent.keyDown(window, {
-      key: "X",
-      code: "KeyX",
-      ctrlKey: true,
-      shiftKey: true,
+      key: "Escape",
     });
     expect(defaultProps.onStop).not.toHaveBeenCalled();
   });
