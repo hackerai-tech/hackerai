@@ -115,6 +115,9 @@ const classifyLocalCopyFailure = (error: unknown): LocalCopyFailureReason => {
   return "unclassified";
 };
 
+type SandboxUploadReadinessProbeReason =
+  SandboxReadinessFailureReason | "process_start_missing_path";
+
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
   phase?: "acquisition" | "readiness" | "transfer";
@@ -124,7 +127,7 @@ type SandboxUploadFailureDetail = {
   localCopyFailureReason?: LocalCopyFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
-  readinessProbeReason?: SandboxReadinessFailureReason;
+  readinessProbeReason?: SandboxUploadReadinessProbeReason;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -258,6 +261,21 @@ const classifySandboxUploadReadinessFailure = (
   error: unknown,
 ): SandboxReadinessFailureReason =>
   classifySandboxReadinessFailureSignal(error) ?? "unknown";
+
+// Diagnostic only: acquisition/retry policy keeps the shared classification.
+const classifySandboxUploadReadinessProbeFailure = (
+  error: unknown,
+): SandboxUploadReadinessProbeReason => {
+  const reason = classifySandboxUploadReadinessFailure(error);
+  if (reason !== "unknown") return reason;
+  const message = errorMessage(error);
+  return message.startsWith("[invalid_argument] error starting process ") &&
+    message.includes(": open ") &&
+    message.endsWith(": no such file or directory") &&
+    !/[\r\n]/.test(message)
+    ? "process_start_missing_path"
+    : "unknown";
+};
 
 const classifySandboxUploadFailureReason = (
   file: SandboxFile,
@@ -1268,7 +1286,7 @@ const summarizeSandboxUploadFailure = (
     // Probe attribution is diagnostic only; acquisition and retry policy keep
     // their existing classification and budget.
     ...(phase === "readiness" && {
-      readinessProbeReason: classifySandboxUploadReadinessFailure(error),
+      readinessProbeReason: classifySandboxUploadReadinessProbeFailure(error),
     }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
