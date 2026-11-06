@@ -21,6 +21,8 @@ type Receipt = NonNullable<
   FunctionReturnType<typeof api.settlementReceipts.getForBackend>
 >;
 const operationId = "wallet-v1:00000000-0000-4000-8000-000000000001:step:1";
+const operationFingerprint =
+  "707584ab11e516e202152bfb85afd637209829a4db7eb8d265a0e3aadaee87c3";
 const userId = "synthetic-user";
 const settlementId = "synthetic-reconciliation";
 const organizationId = "synthetic-org";
@@ -103,7 +105,7 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
         event: "extra_usage_deduction_reconciliation",
         reconciliation_diagnostic_version: 1,
         scope: team ? "team" : "personal",
-        settlement_operation_id: operationId,
+        settlement_operation_fingerprint: operationFingerprint,
         reconciliation_outcome: "completed_receipt_verified",
         verified_result_success: true,
       },
@@ -130,7 +132,7 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
           event: "extra_usage_deduction_reconciliation",
           reconciliation_diagnostic_version: 1,
           scope: team ? "team" : "personal",
-          settlement_operation_id: operationId,
+          settlement_operation_fingerprint: operationFingerprint,
           reconciliation_outcome: "unknown_noreplay",
         },
       );
@@ -307,15 +309,40 @@ it.each([
   },
 );
 
-it("retains an opaque final-operation ID for joining its outcome", async () => {
+it("fingerprints an opaque final-operation ID for joining its outcome", async () => {
   const finalId = operationId.replace(":step:1", ":final");
   await expect(
     deductFromBalance(userId, 20, settlementId, finalId),
   ).resolves.toEqual(unknown);
   expect(phLogger.info).toHaveBeenCalledWith(
     "Extra usage deduction reconciliation",
-    expect.objectContaining({ settlement_operation_id: finalId }),
+    expect.objectContaining({
+      settlement_operation_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    }),
   );
+  expect(mockAction).toHaveBeenCalledTimes(1);
+  expect(mockQuery).toHaveBeenCalledTimes(1);
+  expect(mockMutation).not.toHaveBeenCalled();
+});
+
+it("never logs sensitive-looking digits even inside a wallet-shaped caller ID", async () => {
+  const callerId = operationId.replace(":step:1", ":step:4111111111111111");
+  await expect(
+    deductFromBalance(userId, 20, settlementId, callerId),
+  ).resolves.toEqual(unknown);
+  expect(mockAction.mock.calls[0][1].settlementOperationId).toBe(callerId);
+  expect(mockQuery.mock.calls[0][1].operation_id).toBe(callerId);
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).toEqual({
+    event: "extra_usage_deduction_reconciliation",
+    reconciliation_diagnostic_version: 1,
+    scope: "personal",
+    settlement_operation_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    reconciliation_outcome: "unknown_noreplay",
+  });
+  expect(JSON.stringify(fields)).not.toContain("4111111111111111");
+  expect(JSON.stringify(fields)).not.toContain(callerId);
   expect(mockAction).toHaveBeenCalledTimes(1);
   expect(mockQuery).toHaveBeenCalledTimes(1);
   expect(mockMutation).not.toHaveBeenCalled();

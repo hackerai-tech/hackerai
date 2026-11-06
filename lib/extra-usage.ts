@@ -6,6 +6,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { createHash } from "node:crypto";
 
 export { EXTRA_USAGE_MULTIPLIER };
 
@@ -158,8 +159,8 @@ function logDeductionReconciliation(
   verifiedResultSuccess: boolean | undefined,
 ) {
   try {
-    // Only the generated wallet UUID grammar is safe to join in diagnostics.
-    // Omit arbitrary caller IDs without changing the actual RPC arguments.
+    // Shape cannot establish provenance. Fingerprint bounded wallet IDs for
+    // joining the original capture offline; never add a caller ID in plaintext.
     const safeOperationId =
       settlementOperationId.length <= 80 &&
       /^[a-z0-9:-]+$/i.test(settlementOperationId) &&
@@ -171,7 +172,9 @@ function logDeductionReconciliation(
       reconciliation_diagnostic_version: 1,
       scope,
       ...(safeOperationId && {
-        settlement_operation_id: settlementOperationId,
+        settlement_operation_fingerprint: createHash("sha256")
+          .update(settlementOperationId)
+          .digest("hex"),
       }),
       reconciliation_outcome:
         verifiedResultSuccess === undefined
