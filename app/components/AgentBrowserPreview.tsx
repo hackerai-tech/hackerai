@@ -43,6 +43,7 @@ type BrowserInput =
   | { kind: "text"; text: string };
 
 const FRAME_STALE_MS = 10_000;
+const FRAME_REFRESH_MS = 5_000;
 
 class BrowserRequestError extends Error {
   constructor(
@@ -113,6 +114,32 @@ export function AgentBrowserPreview({
   const session = useQuery(api.browserHandoffs.getForUser, { chatId, agentId });
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
   const [frameSeenAt, setFrameSeenAt] = useState(0);
+  const lastObservedFrame = useRef<BrowserFrame | null>(null);
+  const lastFreshFrameAt = useRef(0);
+  const frameEpoch = useRef(0);
+  const acceptFrame = useCallback(
+    (next: BrowserFrame, authoritative = false) => {
+      const previous = lastObservedFrame.current;
+      if (!authoritative) {
+        lastObservedFrame.current = next;
+        // Streams and ordinary GETs may replay their cache. Do not let that
+        // replace a newer screenshot or renew the age of a frozen image.
+        if (
+          previous?.image === next.image &&
+          previous.width === next.width &&
+          previous.height === next.height &&
+          previous.browserSessionName === next.browserSessionName
+        )
+          return;
+      }
+      frameEpoch.current++;
+      lastFreshFrameAt.current = Date.now();
+      setFrame(next);
+      setFrameSeenAt(lastFreshFrameAt.current);
+      setPreviewState("ready");
+    },
+    [],
+  );
   const [now, setNow] = useState(Date.now());
   const [previewState, setPreviewState] = useState("loading");
   const previewHealthRef = useRef({ previewState, frameSeenAt });
@@ -250,6 +277,9 @@ export function AgentBrowserPreview({
     setFullScreen(false);
     setFrame(null);
     setFrameSeenAt(0);
+    lastObservedFrame.current = null;
+    lastFreshFrameAt.current = 0;
+    frameEpoch.current++;
     setPreviewState("loading");
     setExitOpen(false);
     let savedRequestId: string | null = null;
@@ -323,34 +353,50 @@ export function AgentBrowserPreview({
   );
 
   useEffect(() => {
-    if (!showPreview || !endpoint || !activeSessionId || (grant && relayUrl))
-      return;
+    if (!showPreview || !endpoint || !activeSessionId) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
+    const relayActive = !!grant && !!relayUrl;
     const poll = async () => {
+      const fresh =
+        lastObservedFrame.current !== null &&
+        (Date.now() - lastFreshFrameAt.current >= FRAME_REFRESH_MS ||
+          previewHealthRef.current.previewState !== "ready");
+      // A quiet page need not produce screencast frames. Verify it with an
+      // actual screenshot, even when the relay keeps sending heartbeats.
+      if (relayActive && !fresh) {
+        timer = setTimeout(poll, 1000);
+        return;
+      }
+      const epoch = frameEpoch.current;
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetch(fresh ? `${endpoint}?fresh=1` : endpoint, {
           cache: "no-store",
           credentials: "same-origin",
           signal: controller.signal,
         });
         const data = await response.json();
-        if (stopped) return;
+        // A stream/viewport response arriving during capture is newer than
+        // this request. Its image and connection state must win.
+        if (stopped || frameEpoch.current !== epoch) return;
         if (!response.ok || !data.frame) {
           setPreviewState(data.state ?? "disconnected");
         } else {
-          setFrame(data.frame as BrowserFrame);
-          setFrameSeenAt(Date.now());
-          setPreviewState("ready");
+          acceptFrame(data.frame as BrowserFrame, fresh);
         }
       } catch {
-        if (!stopped) setPreviewState("disconnected");
+        if (!stopped && frameEpoch.current === epoch)
+          setPreviewState("disconnected");
       } finally {
         clearTimeout(timeout);
-        if (!stopped) timer = setTimeout(poll, grantRef.current ? 200 : 1600);
+        if (!stopped)
+          timer = setTimeout(
+            poll,
+            relayActive ? 1000 : grantRef.current ? 200 : 1600,
+          );
       }
     };
     void poll();
@@ -359,7 +405,15 @@ export function AgentBrowserPreview({
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [showPreview, endpoint, activeSessionId, grant, relayUrl, relayReconnect]);
+  }, [
+    showPreview,
+    endpoint,
+    activeSessionId,
+    grant,
+    relayUrl,
+    relayReconnect,
+    acceptFrame,
+  ]);
 
   useEffect(() => {
     if (!showPreview) return;
@@ -400,15 +454,10 @@ export function AgentBrowserPreview({
           controller.signal,
           (nextFrame) => {
             if (controller.signal.aborted) return;
-            setFrame(nextFrame);
-            setFrameSeenAt(Date.now());
-            setPreviewState("ready");
+            acceptFrame(nextFrame);
           },
-          () => {
-            if (controller.signal.aborted) return;
-            setFrameSeenAt(Date.now());
-            setPreviewState("ready");
-          },
+          // Heartbeats prove transport health, not image freshness.
+          () => undefined,
         );
       } catch {
         if (controller.signal.aborted) return;
@@ -421,7 +470,7 @@ export function AgentBrowserPreview({
       controller.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [relayUrl, grant, activeSessionId, relayReconnect]);
+  }, [relayUrl, grant, activeSessionId, relayReconnect, acceptFrame]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -611,9 +660,7 @@ export function AgentBrowserPreview({
       setRelayUrl(data.relayUrl ?? null);
       relaySequence.current = 0;
       setFullScreen(true);
-      setFrame(data.frame);
-      setFrameSeenAt(Date.now());
-      setPreviewState("ready");
+      acceptFrame(data.frame, true);
       setExitOpen(false);
       setHasTakenControl(true);
     } catch (cause) {
@@ -637,6 +684,7 @@ export function AgentBrowserPreview({
     post,
     sessionId,
     hasTakenControl,
+    acceptFrame,
   ]);
 
   const consumedTakeoverRequest = useRef<string | null>(null);
@@ -752,8 +800,7 @@ export function AgentBrowserPreview({
       setError(null);
       setHasTakenControl(false);
       if (data.frame) {
-        setFrame(data.frame);
-        setFrameSeenAt(Date.now());
+        acceptFrame(data.frame, true);
       }
     } catch (cause) {
       if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
@@ -947,9 +994,7 @@ export function AgentBrowserPreview({
             });
             if (cancelled || grantRef.current !== grant) return;
             if (!data.frame) throw new Error("Browser resize unavailable");
-            setFrame(data.frame);
-            setFrameSeenAt(Date.now());
-            setPreviewState("ready");
+            acceptFrame(data.frame, true);
           } catch {
             // Even after the note opens, a failed in-flight resize leaves this
             // grant unsafe for input or resume. A replacement grant is isolated.
@@ -978,7 +1023,10 @@ export function AgentBrowserPreview({
     grant,
     visibleViewport?.width,
     visibleViewport?.height,
+    viewportWidth,
+    viewportHeight,
     post,
+    acceptFrame,
   ]);
 
   const sendText = (text: string) => {
@@ -1550,6 +1598,7 @@ export function AgentBrowserPreview({
           <button
             type="button"
             onClick={() => {
+              lastFreshFrameAt.current = 0;
               setFrameSeenAt(0);
               setPreviewState("loading");
               setRelayReconnect((value) => value + 1);

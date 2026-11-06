@@ -8,7 +8,7 @@ const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
 const mockRenewRelay = jest.fn(async (..._args: unknown[]) => undefined);
-const mockCapture = jest.fn(async () => {
+const mockCapture = jest.fn(async (..._args: unknown[]) => {
   if (mockFailure === "capture" || mockFailure === "unpause")
     throw new Error("Capture failed");
   return { image: "fresh" };
@@ -100,16 +100,17 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
     mockFailure === "identity" ? "another-browser" : "default",
   setAgentBrowserPaused: (...args: Parameters<typeof mockPause>) =>
     mockPause(...args),
-  captureBrowserFrame: () => mockCapture(),
+  captureBrowserFrame: (...args: unknown[]) => mockCapture(...args),
   getPrivateStreamPort: async () => 1234,
 }));
 
 let post: typeof import("../route").POST;
+let get: typeof import("../route").GET;
 beforeAll(async () => {
   const original = process.env.CONVEX_SERVICE_ROLE_KEY;
   process.env.CONVEX_SERVICE_ROLE_KEY = "test-only-service-key";
   try {
-    post = (await import("../route")).POST;
+    ({ POST: post, GET: get } = await import("../route"));
   } finally {
     if (original === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
     else process.env.CONVEX_SERVICE_ROLE_KEY = original;
@@ -130,6 +131,46 @@ const jsonBody = (value: unknown) =>
       controller.close();
     },
   });
+
+const preview = (fresh: boolean) =>
+  get(
+    {
+      nextUrl: new URL(
+        `https://preview.example/api/agent/browser/test${fresh ? "?fresh=1" : ""}`,
+      ),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it.each([false, true])(
+  "honors an authenticated fresh screenshot request (fresh: %s)",
+  async (fresh) => {
+    mockFailure = "";
+    mockState = "human";
+    const result = await preview(fresh);
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ frame: { image: "fresh" } });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "default",
+      fresh,
+    );
+  },
+);
+
+it.each([
+  ["auth", 401],
+  ["identity", 409],
+])(
+  "does not capture a fresh screenshot after %s validation fails",
+  async (failure, status) => {
+    mockFailure = String(failure);
+    mockState = "human";
+    expect((await preview(true)).status).toBe(status);
+    expect(mockCapture).not.toHaveBeenCalled();
+  },
+);
 
 const take = () =>
   post(
