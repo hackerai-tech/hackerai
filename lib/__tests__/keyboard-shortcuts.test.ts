@@ -76,6 +76,39 @@ describe("web keyboard bindings", () => {
     ).toBe(true);
   });
 
+  it("does not confuse remapped keys with Help or Stop", () => {
+    const slash = new KeyboardEvent("keydown", {
+      key: "/",
+      code: "KeyX",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(matchesShortcut(slash, "shortcuts", false)).toBe(true);
+    expect(matchesShortcut(slash, "stop", false)).toBe(false);
+    expect(
+      matchesShortcut(
+        new KeyboardEvent("keydown", {
+          key: "z",
+          code: "Slash",
+          ctrlKey: true,
+        }),
+        "shortcuts",
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      matchesShortcut(
+        new KeyboardEvent("keydown", {
+          key: "ж",
+          code: "Slash",
+          ctrlKey: true,
+        }),
+        "shortcuts",
+        false,
+      ),
+    ).toBe(true);
+  });
+
   it("matches Stop with Shift and keeps copy untouched", () => {
     expect(
       matchesShortcut(

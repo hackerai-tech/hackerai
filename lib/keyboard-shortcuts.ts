@@ -69,12 +69,13 @@ export function matchesShortcut(
   if (event.shiftKey !== Boolean(binding.shift)) return false;
   const key = event.key;
   if (key.toLowerCase() === binding.key.toLowerCase()) return true;
-  if (id === "shortcuts") return event.code === "Slash";
+  const nonAsciiCharacter = key.length === 1 && /[^\x00-\x7f]/.test(key);
+  if (id === "shortcuts") return nonAsciiCharacter && event.code === "Slash";
   // Keep letter bindings usable with non-Latin layouts, without confusing
   // remapped Latin keys (e.g. Dvorak) with their physical positions.
   return (
     /^[a-z]$/i.test(binding.key) &&
-    !/^[a-z]$/i.test(key) &&
+    nonAsciiCharacter &&
     event.code === `Key${binding.key.toUpperCase()}`
   );
 }

@@ -130,6 +130,32 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(defaultProps.onStop).not.toHaveBeenCalled();
   });
 
+  it("uses Command instead of Control to stop on Mac", () => {
+    const platform = jest
+      .spyOn(navigator, "platform", "get")
+      .mockReturnValue("MacIntel");
+    try {
+      defaultProps.onStop.mockClear();
+      renderButton("agent", true, true);
+      fireEvent.keyDown(window, {
+        key: "X",
+        code: "KeyX",
+        ctrlKey: true,
+        shiftKey: true,
+      });
+      expect(defaultProps.onStop).not.toHaveBeenCalled();
+      fireEvent.keyDown(window, {
+        key: "X",
+        code: "KeyX",
+        metaKey: true,
+        shiftKey: true,
+      });
+      expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
   it("ignores Stop while idle", () => {
     defaultProps.onStop.mockClear();
     renderButton("ask", false);

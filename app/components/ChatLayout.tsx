@@ -11,6 +11,7 @@ import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
 import { KeyboardShortcuts } from "./KeyboardShortcuts";
+import { hasOpenShortcutOverlay } from "@/lib/keyboard-shortcuts";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import {
   loadSettingsDialog,
@@ -120,11 +121,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Portaled dialogs manage their own focus and Escape key.
-      if (
-        e.defaultPrevented ||
-        (e.target instanceof Element && !panelRef.current?.contains(e.target))
-      )
-        return;
+      if (e.defaultPrevented || hasOpenShortcutOverlay()) return;
       if (e.key === "Escape") {
         closeTaskSidebarOverlay();
         return;

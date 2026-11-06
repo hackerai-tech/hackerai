@@ -242,7 +242,11 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
 
   return (
     <SharedChatProvider>
-      {!authLoading && user && <KeyboardShortcuts />}
+      {!authLoading && user && (
+        <KeyboardShortcuts
+          onToggleMobileSidebar={() => setChatSidebarOpen(!chatSidebarOpen)}
+        />
+      )}
       <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Header for unlogged users */}
         {!authLoading && !user && (
@@ -326,13 +330,10 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         {/* Overlay Chat Sidebar - Mobile screens for logged users */}
         {isMobile && !authLoading && user && chatSidebarOpen && (
           <div className="fixed inset-0 z-50 bg-background">
-            <SidebarProvider
-              open={chatSidebarOpen}
-              onOpenChange={setChatSidebarOpen}
-              defaultOpen={false}
-            >
-              <MainSidebar />
-            </SidebarProvider>
+            <MainSidebar
+              isMobileOverlay
+              onClose={() => setChatSidebarOpen(false)}
+            />
           </div>
         )}
       </div>
