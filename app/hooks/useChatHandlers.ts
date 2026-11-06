@@ -865,6 +865,7 @@ export const useChatHandlers = ({
           chatId,
           runId: pendingUserWait.runId,
           toolCallId: pendingUserWait.toolCallId,
+          waitWasPublished: pendingUserWait.published,
           text: replyText,
         });
         let response: Response | undefined;

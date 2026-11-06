@@ -129,6 +129,17 @@ describe("Agent wait_for_user reply", () => {
     expect(claimReply).not.toHaveBeenCalled();
   });
 
+  it("rejects a previously published wait cleared after resumption", async () => {
+    getChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    });
+    expect((await post(request({ waitWasPublished: true }))).status).toBe(409);
+    expect(claimReply).not.toHaveBeenCalled();
+    expect(completeToken).not.toHaveBeenCalled();
+  });
+
   it("rejects a terminal or re-associated run", async () => {
     retrieveRun.mockResolvedValue({
       status: "CANCELED",

@@ -10,6 +10,8 @@ export class AgentReplyConflictError extends Error {
 }
 
 export type ActiveAgentUserWait = {
+  /** Client observed this wait in persisted chat state, not only the stream. */
+  published?: true;
   questions?: UserInputQuestion[];
   runId: string;
   toolCallId: string;

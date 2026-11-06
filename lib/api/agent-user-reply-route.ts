@@ -25,6 +25,7 @@ type ReplyBody = {
   runId?: unknown;
   toolCallId?: unknown;
   text?: unknown;
+  waitWasPublished?: unknown;
 };
 
 type DeliveredReply = {
@@ -115,10 +116,13 @@ export const createAgentUserReplyPost =
         chat?.user_id === userId &&
         chat.active_trigger_run_id === runId &&
         chat.deletion_started_at === undefined &&
-        !pending
+        !pending &&
+        body.waitWasPublished !== true
       ) {
         // The stream can show the tool call before the Convex subscription
-        // publishes its wait token. The client may retry the same draft.
+        // publishes its wait token. A client that already saw the persisted
+        // wait knows its absence means released. This hint only suppresses
+        // retries; it never authorizes a reply or changes persisted state.
         return new NextResponse("Agent is preparing to wait for a reply", {
           status: 425,
         });

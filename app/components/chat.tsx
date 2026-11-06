@@ -2619,7 +2619,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [chatId, storedPendingUserWait]);
   const streamedWaitKey = `${chatId}:${agentLongRunId || activeTriggerRunId}:${lastWaitPart?.toolCallId}`;
   const pendingUserWait: ActiveAgentUserWait | undefined =
-    storedPendingUserWait ??
+    (storedPendingUserWait
+      ? { ...storedPendingUserWait, published: true as const }
+      : undefined) ??
     (status === "streaming" &&
     !hasManuallyStoppedRef.current &&
     !observedUserWaitsRef.current.has(streamedWaitKey) &&
