@@ -43,7 +43,6 @@ jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation: mockGoalMutation }),
 }));
 jest.mock("@/lib/goals/server", () => ({
-  goalEnabled: async () => true,
   goalServiceKey: () => "synthetic",
   reconcileGoal: mockReconcileGoal,
 }));

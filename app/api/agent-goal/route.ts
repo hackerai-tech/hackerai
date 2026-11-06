@@ -5,7 +5,7 @@ import { NextRequest } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { goalServiceKey, goalEnabled, reconcileGoal } from "@/lib/goals/server";
+import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import { getChatById } from "@/lib/db/actions";
 import {
   cancelAgentTriggerRun,
@@ -39,7 +39,7 @@ async function handleGet(req: NextRequest) {
     const chatId = req.nextUrl.searchParams.get("chatId");
     const goal = chatId ? await reconcileGoal(chatId, userId) : null;
     return Response.json({
-      enabled: await goalEnabled(userId, subscription),
+      enabled: subscription !== "free",
       ...(chatId ? { goal: goal?.deletedAt ? null : goal } : {}),
     });
   } catch (e) {

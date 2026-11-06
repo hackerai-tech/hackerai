@@ -25,11 +25,13 @@ Object.defineProperty(globalThis, "Response", {
   value: MockResponse,
 });
 jest.mock("@/lib/auth/get-user-id", () => ({
-  getUserIDAndPro: async () => ({ userId: "owner", subscription: "pro" }),
+  getUserIDAndPro: jest.fn(async () => ({
+    userId: "owner",
+    subscription: "pro",
+  })),
 }));
 jest.mock("@/lib/goals/server", () => ({
   goalServiceKey: () => "synthetic",
-  goalEnabled: jest.fn(),
   reconcileGoal: jest.fn(),
 }));
 jest.mock("@/lib/db/convex-client", () => ({
@@ -172,7 +174,6 @@ describe("goal status transport recovery", () => {
       const { getConvexClient } = require("@/lib/db/convex-client");
       getConvexClient.mockReturnValue(client);
       const goals = require("@/lib/goals/server");
-      goals.goalEnabled.mockResolvedValue(true);
       const productionGoals = jest.requireActual("@/lib/goals/server");
       goals.reconcileGoal.mockImplementationOnce(productionGoals.reconcileGoal);
       mockMutation.mockClear();
@@ -216,3 +217,19 @@ describe("goal status transport recovery", () => {
     },
   );
 });
+
+// Menu eligibility is a plan decision, independent of analytics configuration.
+it.each(["free", "pro", "pro-plus", "ultra", "team"])(
+  "reports goal access for the authenticated %s plan",
+  async (subscription) => {
+    require("@/lib/auth/get-user-id").getUserIDAndPro.mockResolvedValueOnce({
+      userId: "owner",
+      subscription,
+    });
+    const response = await GET({
+      nextUrl: new URL("https://fixture.test/api/agent-goal"),
+    } as NextRequest);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: subscription !== "free" });
+  },
+);
