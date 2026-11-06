@@ -120,6 +120,10 @@ interface ChatInputProps {
 }
 
 const COMPOSER_TAP_CLICK_FALLBACK_MS = 500;
+// Prose-only waits use the same isolated draft without displaying a question panel.
+const PLAIN_REPLY_QUESTIONS: UserInputQuestion[] = [
+  { id: "reply", header: "Reply", question: "Your reply", options: [] },
+];
 
 const ChatInputLoadingState = ({
   topNotice,
@@ -413,14 +417,19 @@ const ChatInputContent = ({
     return parsed.success ? parsed.data : [];
   }, [questionSource]);
   const questionKey =
-    isWaitingForReply && questions.length && user
+    isWaitingForReply && user
       ? `hackerai-question:${user.id}:${chatId}:${pendingUserWait ? `${pendingUserWait.runId}:${pendingUserWait.toolCallId}` : `goal:${pendingGoalQuestions!.generation}`}`
       : undefined;
-  const questionAnswers = useQuestionAnswers(questionKey, questions);
-  const hasQuestionPanel = !!questionKey;
+  const answerQuestions = questions.length ? questions : PLAIN_REPLY_QUESTIONS;
+  const questionAnswers = useQuestionAnswers(questionKey, answerQuestions);
+  const hasQuestionPanel = !!questionKey && questions.length > 0;
   const exposedQuestionPanelsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!questionKey || exposedQuestionPanelsRef.current.has(questionKey))
+    if (
+      !hasQuestionPanel ||
+      !questionKey ||
+      exposedQuestionPanelsRef.current.has(questionKey)
+    )
       return;
     if (
       captureAuthenticatedEvent("agent_input_questions_exposed", {
@@ -430,7 +439,7 @@ const ChatInputContent = ({
       })
     )
       exposedQuestionPanelsRef.current.add(questionKey);
-  }, [questionKey, pendingUserWait, questions.length]);
+  }, [questionKey, pendingUserWait, questions.length, hasQuestionPanel]);
   const exposedUserWaitsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!isWaitingForReply || !pendingUserWait) return;
@@ -1133,7 +1142,9 @@ const ChatInputContent = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
-    if (hasQuestionPanel) {
+    if (questionKey) {
+      // A persisted "submitting" wait is a reply claim, not an in-flight HTTP
+      // request. Identical retries recover delivery; the server fences changes.
       if (
         !questionAnswers.ready ||
         !questionAnswers.canAdvance ||
@@ -1141,11 +1152,10 @@ const ChatInputContent = ({
         effectiveSendDisabledReason ||
         uploadedFiles.length ||
         submissionPending ||
-        isStoppingAgent ||
-        pendingUserWait?.status === "submitting"
+        isStoppingAgent
       )
         return;
-      if (questionAnswers.index < questions.length - 1) {
+      if (questionAnswers.index < answerQuestions.length - 1) {
         questionAnswers.go(questionAnswers.index + 1);
         return;
       }
@@ -1468,7 +1478,6 @@ const ChatInputContent = ({
                     !questionAnswers.ready ||
                     submissionPending ||
                     isStoppingAgent ||
-                    pendingUserWait?.status === "submitting" ||
                     isOffline ||
                     !!effectiveSendDisabledReason
                   }
@@ -1589,7 +1598,7 @@ const ChatInputContent = ({
           >
             <ChatInputTextarea
               answerInput={
-                hasQuestionPanel
+                questionKey
                   ? {
                       value: questionAnswers.answer.customAnswer,
                       onChange: questionAnswers.setCustomAnswer,
@@ -1597,11 +1606,10 @@ const ChatInputContent = ({
                   : undefined
               }
               disabled={
-                hasQuestionPanel &&
+                !!questionKey &&
                 (!questionAnswers.ready ||
                   questionAnswers.question?.allowCustomAnswer === false ||
-                  submissionPending ||
-                  pendingUserWait?.status === "submitting")
+                  submissionPending)
               }
               prediction={nextActions.batch?.suggestions[0]}
               onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
@@ -1704,7 +1712,7 @@ const ChatInputContent = ({
               status={status}
               isUploadingFiles={isUploadingFiles}
               input={
-                hasQuestionPanel
+                questionKey
                   ? questionAnswers.canAdvance
                     ? "answer"
                     : ""
@@ -1714,8 +1722,7 @@ const ChatInputContent = ({
               chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={
-                hasQuestionPanel &&
-                (submissionPending || pendingUserWait?.status === "submitting")
+                questionKey && submissionPending
                   ? "Sending your answer…"
                   : goalMode && !isWaitingForReply && !input.trim()
                     ? "Describe your goal before sending."

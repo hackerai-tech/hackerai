@@ -2041,6 +2041,110 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it("isolates questionless replies from an ordinary draft across failure and reload", async () => {
+      mockOnSubmit.mockResolvedValue(false);
+      const ui = (waiting: boolean) => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            chatId="plain-wait-draft"
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            pendingUserWait={
+              waiting
+                ? {
+                    runId: "plain-run",
+                    toolCallId: "plain-tool",
+                    status: "waiting",
+                  }
+                : undefined
+            }
+          />
+        </TestWrapper>
+      );
+      const view = render(ui(false));
+      fireEvent.change(await screen.findByRole("textbox"), {
+        target: { value: "Keep my ordinary draft" },
+      });
+      view.rerender(ui(true));
+      expect(screen.getByRole("textbox")).toHaveValue("");
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Use Beta" },
+      });
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() =>
+        expect(mockOnSubmit).toHaveBeenCalledWith(
+          expect.anything(),
+          "Use Beta",
+          true,
+        ),
+      );
+      await waitFor(() => expect(screen.getByRole("textbox")).toBeEnabled());
+      view.unmount();
+      const reloaded = render(ui(true));
+      expect(await screen.findByRole("textbox")).toHaveValue("Use Beta");
+      mockOnSubmit.mockResolvedValue(true);
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+      reloaded.rerender(ui(false));
+      expect(await screen.findByRole("textbox")).toHaveValue(
+        "Keep my ordinary draft",
+      );
+    });
+
+    it("allows a claimed structured reply to retry after failed delivery and reload", async () => {
+      mockOnSubmit.mockResolvedValue(false);
+      const ui = (status: "waiting" | "submitting") => (
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            chatId="claimed-reply"
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            pendingUserWait={{
+              runId: "claimed-run",
+              toolCallId: "claimed-tool",
+              status,
+              questions: [
+                {
+                  id: "answer",
+                  header: "Answer",
+                  question: "What next?",
+                  options: [],
+                },
+              ],
+            }}
+          />
+        </TestWrapper>
+      );
+      const view = render(ui("waiting"));
+      fireEvent.change(await screen.findByRole("textbox"), {
+        target: { value: "Retry this exact reply" },
+      });
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      view.rerender(ui("submitting"));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Submit answer", exact: true }),
+        ).toBeEnabled(),
+      );
+      view.unmount();
+      render(ui("submitting"));
+      expect(await screen.findByRole("textbox")).toHaveValue(
+        "Retry this exact reply",
+      );
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
+      expect(mockOnSubmit).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "Retry this exact reply",
+        true,
+      );
+    });
+
     it("replaces the composer with an approval selector while awaiting approval", async () => {
       render(
         <TestWrapper>

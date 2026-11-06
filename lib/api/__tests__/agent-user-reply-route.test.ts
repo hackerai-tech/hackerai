@@ -39,9 +39,7 @@ jest.mock("@/app/api/workos", () => ({
   },
 }));
 jest.mock("@/lib/api/agent-route-errors", () => ({
-  handleAgentRouteError: jest.fn(() => {
-    throw new Error("unexpected route error");
-  }),
+  handleAgentRouteError: jest.fn(() => ({ status: 500 })),
 }));
 
 const request = (overrides: Record<string, unknown> = {}) =>
@@ -146,6 +144,34 @@ describe("Agent wait_for_user reply", () => {
     claimReply.mockResolvedValue("duplicate");
     retrieveToken.mockResolvedValue({ status: "COMPLETED", output: delivered });
     expect((await post()).status).toBe(200);
+    expect(completeToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers the same claimed reply after token retrieval fails", async () => {
+    retrieveToken.mockRejectedValueOnce(
+      new Error("temporary retrieval failure"),
+    );
+    expect((await post()).status).toBe(500);
+    expect(completeToken).not.toHaveBeenCalled();
+    claimReply.mockResolvedValue("duplicate");
+    expect((await post()).status).toBe(200);
+    expect(claimReply.mock.calls[1][0]).toEqual(claimReply.mock.calls[0][0]);
+    expect(completeToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("recognizes delivery after a lost completion response without replaying it", async () => {
+    completeToken.mockRejectedValueOnce(
+      new Error("response lost after delivery"),
+    );
+    expect((await post()).status).toBe(500);
+    const delivered = completeToken.mock.calls[0][1];
+    claimReply.mockResolvedValue("duplicate");
+    retrieveToken.mockResolvedValue({ status: "COMPLETED", output: delivered });
+    expect((await post()).status).toBe(200);
+    expect(completeToken).toHaveBeenCalledTimes(1);
+
+    claimReply.mockResolvedValue("busy");
+    expect((await post(request({ text: "Different reply" }))).status).toBe(409);
     expect(completeToken).toHaveBeenCalledTimes(1);
   });
 
