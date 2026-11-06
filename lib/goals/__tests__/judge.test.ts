@@ -123,6 +123,51 @@ describe("independent goal completion check", () => {
     expect(continued).not.toHaveProperty("questions");
   });
 
+  it.each([
+    { questions: "malformed" },
+    { questions: [] },
+    {
+      questions: [
+        {
+          id: "scope",
+          header: "Scope",
+          question: "Choose",
+          options: [],
+          allowCustomAnswer: false,
+        },
+      ],
+    },
+    {
+      questions: [
+        { id: "scope", header: "Scope", question: "Choose", options: [] },
+        { id: "scope", header: "Scope", question: "Choose again", options: [] },
+      ],
+    },
+  ])(
+    "keeps a valid judgment when optional questions are invalid: %j",
+    async ({ questions }) => {
+      generate.mockImplementation(async ({ output }) => ({
+        output: output.schema.parse({
+          verdict: "needs_input",
+          reason: "Choose the next scope",
+          responseOnly: false,
+          waitSeconds: null,
+          evidence: goal.checkpoint!.evidence,
+          questions,
+        }),
+        usage: {},
+      }));
+      const result = await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+      expect(result).toMatchObject({
+        verdict: "needs_input",
+        reason: "Choose the next scope",
+        evidence: [expect.objectContaining({ toolCallId: "cmd", runId: "r1" })],
+      });
+      expect(result).not.toHaveProperty("questions");
+      expect(generate).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(["continue", "uncited_done"])(
     "rechecks %s against the completed updated goal before dispatching more work",
     async (firstVerdict) => {

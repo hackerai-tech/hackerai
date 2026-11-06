@@ -296,7 +296,12 @@ export async function judgeGoalCompletion(
                 ]),
                 reason: z.string().trim().min(1).max(500),
                 responseOnly: z.boolean(),
-                questions: userInputQuestionsSchema.nullable().optional(),
+                // Questions enrich the UI; invalid presentation data must not
+                // discard a valid verdict or its verified tool evidence.
+                questions: userInputQuestionsSchema
+                  .nullable()
+                  .optional()
+                  .catch(undefined),
                 evidence: z
                   .array(
                     z.object({
