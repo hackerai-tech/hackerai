@@ -612,7 +612,9 @@ it.each(["ready", "invalid solution", "poll failure", "ambiguous creation"])(
       expect(result).not.toHaveProperty("providerCostUSD");
       expect(journal.recordCost).not.toHaveBeenCalled();
     }
-    expect(onToolCost).toHaveBeenCalledTimes(outcome === "ready" ? 1 : 0);
+    expect(onToolCost).toHaveBeenCalledTimes(
+      outcome === "ready" || outcome === "invalid solution" ? 1 : 0,
+    );
     expect(evaluate).toHaveBeenCalledTimes(outcome === "ready" ? 2 : 1);
     expect(fetch).toHaveBeenCalledTimes(
       outcome === "ambiguous creation" ? 1 : 2,

@@ -20,7 +20,11 @@ import type { CaptchaSolver } from "./solver";
 import { CAPTCHA_RUNTIME_GUIDANCE } from "./guidance";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
-import { cloudflarePageUrl, CLOUDFLARE_PAGE_URL_SCRIPT } from "./cloudflare";
+import {
+  cloudflarePageUrl,
+  cloudflarePreviewUrls,
+  CLOUDFLARE_PAGE_URL_SCRIPT,
+} from "./cloudflare";
 
 // Module loading cannot be canceled, but Stop must release its waiter. A late
 // initialization only constructs the adapter; it must never start a paid task.
@@ -99,6 +103,11 @@ export function createBrowserChallengeHandler(
     let deliveryStarted = false;
     let taskStarted = false;
     let costRecorded = false;
+    const recordToolCost = (costDollars: number) => {
+      if (costRecorded) return;
+      costRecorded = true;
+      context.onToolCost?.(costDollars);
+    };
     let releaseManaged: (() => Promise<unknown>) | undefined;
     let managedDelivered = false;
     const record = (
@@ -129,7 +138,31 @@ export function createBrowserChallengeHandler(
         clearTimeout(timer);
       }
       signal.throwIfAborted();
-      if (enabled !== true) return { status: "unavailable" };
+      if (enabled !== true) {
+        const approvedUrls = cloudflarePreviewUrls(environment);
+        // Setup may have captured a widget before the rollout became
+        // unavailable. Release only the current owned Cloud document; no
+        // challenge parameters, provider calls or ordinary browser inspection.
+        if (approvedUrls.length) {
+          try {
+            const browser = await context.browserSessions.getChallengeBrowser(
+              signal,
+              target,
+            );
+            if (browser.deliverCloudflare)
+              await browser.evaluate(`(() => {
+                if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
+                const current = window[Symbol.for('hackerai.cloudflareChallenge')];
+                if (!current || current.delivered || typeof current.release !== 'function') return false;
+                current.release(); return true;
+              })()`);
+          } catch {
+            // A lost/paused owner cannot be used for cleanup either.
+          }
+        }
+        signal.throwIfAborted();
+        return { status: "unavailable" };
+      }
       const browser = await context.browserSessions.getChallengeBrowser(
         signal,
         target,
@@ -226,13 +259,13 @@ export function createBrowserChallengeHandler(
         (taskId, costDollars) => {
           providerTaskCreated = true;
           knownCostDollars = costDollars;
+          recordToolCost(costDollars);
           return journal.recordCost(taskId, costDollars);
         },
       );
       providerTaskCreated = true;
       knownCostDollars = solution.costDollars;
-      context.onToolCost?.(solution.costDollars);
-      costRecorded = true;
+      recordToolCost(solution.costDollars);
       signal.throwIfAborted();
       deliveryStarted = true;
       const deliveryScript = buildDeliverCaptchaScript(

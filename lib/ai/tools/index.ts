@@ -285,9 +285,13 @@ export const createTools = (
         runtimePolicy.onBrowserOwnershipLost,
         isCaptchaEligible(runtimePolicy.environment, userID),
         {
-          urls: isCaptchaEligible(runtimePolicy.environment, userID)
-            ? cloudflarePreviewUrls(runtimePolicy.environment)
-            : [],
+          urls:
+            serviceKey &&
+            !requestToolApproval &&
+            (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
+            isCaptchaEligible(runtimePolicy.environment, userID)
+              ? cloudflarePreviewUrls(runtimePolicy.environment)
+              : [],
           enabled: async () => {
             if (!captchaAutomaticSolvingEnabled(runtimePolicy.environment))
               return false;

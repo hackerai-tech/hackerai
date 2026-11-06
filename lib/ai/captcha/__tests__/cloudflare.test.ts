@@ -1,3 +1,4 @@
+/** @jest-environment-options {"url":"https://managed.example/challenge"} */
 import {
   cloudflareInitScript,
   cloudflarePreviewUrls,
@@ -5,6 +6,7 @@ import {
 } from "../cloudflare";
 import { createBrowserChallengeHandler } from "../browser-challenge";
 import type { ToolContext } from "@/types";
+import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import {
   browserChallengeObservation,
   buildDeliverCaptchaScript,
@@ -24,6 +26,7 @@ const inspect = () =>
 const originalEnv = process.env;
 beforeEach(() => {
   jest.useFakeTimers();
+  jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(true);
   document.body.innerHTML = "";
 });
 afterEach(() => {
@@ -244,6 +247,55 @@ it("restores the actual page widget when the handler rejects managed target appr
   expect(page[key]).toBeUndefined();
   expect(solverFactory).not.toHaveBeenCalled();
 });
+
+it.each(["disabled", "timeout", "unapproved page"])(
+  "recovers an intercepted widget without provider work when rollout is unavailable: %s",
+  async (reason) => {
+    const { original, options } = render();
+    process.env = {
+      ...originalEnv,
+      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
+      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
+      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([
+        reason === "unapproved page" ? "https://other.example/" : location.href,
+      ]),
+    };
+    const flag = jest.mocked(getPostHogBooleanFlagDecisionForUser);
+    if (reason === "timeout") flag.mockReturnValue(new Promise(() => {}));
+    else flag.mockResolvedValue(false);
+    const solverFactory = jest.fn();
+    const deliverCloudflare = jest.fn();
+    const context = {
+      userID: "qa-user",
+      triggerRunId: "test-run",
+      browserSessions: {
+        getChallengeBrowser: async () => ({
+          identity: "owner",
+          evaluate: async (script: string) => window.eval(script),
+          deliverCloudflare,
+        }),
+      },
+    } as unknown as ToolContext;
+    const pending = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      solverFactory,
+    )();
+    if (reason === "timeout") await jest.advanceTimersByTimeAsync(1000);
+    await expect(pending).resolves.toEqual({ status: "unavailable" });
+    if (reason === "unapproved page") {
+      expect(original).not.toHaveBeenCalled();
+      expect(page[key]).toBeDefined();
+    } else {
+      expect(original).toHaveBeenCalledWith(document.body, options);
+      expect(page[key]).toBeUndefined();
+    }
+    expect(solverFactory).not.toHaveBeenCalled();
+    expect(deliverCloudflare).not.toHaveBeenCalled();
+  },
+);
 
 it("leaves unapproved pages and ordinary Turnstile renders unchanged", () => {
   const api = { render: jest.fn() };
