@@ -44,10 +44,10 @@ jobs:
           # Azure's mirror can remain reachable while downloads stall. Prefer
           # Ubuntu's archive on x64 while retaining the runner's fallbacks.
           if [ "$RUNNER_ARCH" = X64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf '%s\n' \
-              'https://archive.ubuntu.com/ubuntu/ priority:1' \
-              'http://azure.archive.ubuntu.com/ubuntu/ priority:2' \
-              'https://security.ubuntu.com/ubuntu/ priority:3' \
+            printf '%s\tpriority:%s\n' \
+              'https://archive.ubuntu.com/ubuntu/' 1 \
+              'http://azure.archive.ubuntu.com/ubuntu/' 2 \
+              'https://security.ubuntu.com/ubuntu/' 3 \
               | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
           fi
           sudo apt-get update
