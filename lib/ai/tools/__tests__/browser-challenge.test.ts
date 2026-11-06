@@ -56,7 +56,7 @@ it.each([true, false])(
     const evaluate = jest
       .fn()
       .mockResolvedValueOnce(data)
-      .mockResolvedValue({ status: "token_delivered" });
+      .mockResolvedValue("cleared");
     const deliverCloudflare = jest.fn(async () => ({
       status: "token_delivered",
     }));
@@ -85,6 +85,7 @@ it.each([true, false])(
       expect(result).toMatchObject({
         status: "token_delivered",
         websiteAccepted: false,
+        managedGateCleared: true,
       });
       expect(deliverCloudflare).toHaveBeenCalledWith(
         "solver-browser",
@@ -95,7 +96,7 @@ it.each([true, false])(
         }),
         expect.any(String),
       );
-      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(evaluate).toHaveBeenCalledTimes(2);
       expect(JSON.stringify(result)).not.toMatch(
         /opaque|private-response|solver-browser/,
       );
@@ -373,6 +374,28 @@ it("delivers once, accounts for cost, and never claims website acceptance or exp
     reason: "attempt_limit",
   });
   expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("retains the same confirmed receipt after later snapshots without charging again", async () => {
+  const { tool, evaluate, onToolCost } = setup();
+  expect(tool.getReceiptPrompt()).toBe("");
+  await run(tool, "solve");
+  evaluate.mockResolvedValue({ ...cloneObservation(), widgets: [] });
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    status: "no_pending_challenge",
+    provider: "2captcha",
+    providerTaskCreated: true,
+    providerCostUSD: 0.003,
+  });
+  const prompt = tool.getReceiptPrompt();
+  expect(prompt).toContain("exactly one task");
+  expect(prompt).toContain("0.003 USD");
+  expect(prompt).toContain("delivery: delivered");
+  expect(prompt).not.toMatch(
+    /private-response|private-provider-key|google\.com/,
+  );
+  expect(onToolCost).toHaveBeenCalledTimes(1);
+  expect(setup().tool.getReceiptPrompt()).toBe("");
 });
 
 it("does not retry an ambiguous paid failure, and hands off with a sanitized result", async () => {

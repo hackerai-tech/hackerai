@@ -134,6 +134,7 @@ describe("sandbox acquisition serialization", () => {
       args[20] = "run-1";
       args[22] = { environment: "PREVIEW" };
       const preview = createTools(...args);
+      expect(preview.getCaptchaReceiptPrompt()).toBe("");
       expect(preview.tools.browser_challenge).toBeUndefined();
       await expect(
         preview.tools.run_terminal_cmd.execute!(
@@ -148,6 +149,9 @@ describe("sandbox acquisition serialization", () => {
         ),
       ).resolves.toMatchObject({ reason: "attempt_limit" });
       expect(mockCaptchaSolve).toHaveBeenCalledTimes(1);
+      expect(preview.getCaptchaReceiptPrompt()).toContain("Provider: 2Captcha");
+      expect(preview.getCaptchaReceiptPrompt()).toContain("0.003 USD");
+      expect(createTools(...args).getCaptchaReceiptPrompt()).toBe("");
       args[22] = { environment: "PRODUCTION" };
       await expect(
         createTools(...args).tools.run_terminal_cmd.execute!(

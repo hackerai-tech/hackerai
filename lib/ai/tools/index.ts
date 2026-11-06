@@ -349,7 +349,7 @@ export const createTools = (
   };
 
   // Keep attempt accounting across model fallback/schema rebuilds in this run.
-  context.checkBrowserChallenge =
+  const checkBrowserChallenge =
     browserSessions &&
     serviceKey &&
     triggerRunId &&
@@ -369,6 +369,7 @@ export const createTools = (
           }),
         )
       : undefined;
+  context.checkBrowserChallenge = checkBrowserChallenge;
 
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
@@ -537,6 +538,8 @@ export const createTools = (
   };
 
   return {
+    getCaptchaReceiptPrompt: () =>
+      checkBrowserChallenge?.getReceiptPrompt() ?? "",
     cloudNetworkPrompt: createCloudNetworkPrompt(
       userID,
       () =>

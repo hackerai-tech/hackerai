@@ -13,56 +13,112 @@ const mockFetch = jest.fn();
 const originalFetch = global.fetch;
 const reply = (data: unknown) => ({ ok: true, json: async () => data });
 
-it("sends managed challenge parameters and preserves the returned user agent", async () => {
-  const previous = process.env;
-  const url = "https://dash.cloudflare.com/sign-up";
-  process.env = {
-    ...previous,
-    HACKERAI_ENVIRONMENT: "preview",
-    CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
-  };
-  try {
-    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
-    mockFetch.mockResolvedValueOnce(
-      reply({
-        errorId: 0,
-        status: "ready",
-        cost: "0.00145",
-        solution: { token: "private-token", userAgent: "solver-browser" },
-      }),
-    );
-    const pending = createTwoCaptchaSolver("key").solve(
-      url,
-      {
-        ...widget,
-        kind: "turnstile",
-        managed: {
-          action: "managed",
-          data: "opaque-data",
-          pagedata: "opaque-page-data",
-          userAgent: "original-browser",
+it.each(["valid", "missing", "null"])(
+  "handles the managed request and required returned user agent: %s",
+  async (variant) => {
+    const previous = process.env;
+    const url = "https://dash.cloudflare.com/sign-up";
+    process.env = {
+      ...previous,
+      HACKERAI_ENVIRONMENT: "preview",
+      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
+    };
+    try {
+      mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+      mockFetch.mockResolvedValueOnce(
+        reply({
+          errorId: 0,
+          status: "ready",
+          cost: "0.00145",
+          solution: {
+            token: "private-token",
+            userAgent:
+              variant === "valid"
+                ? "solver-browser"
+                : variant === "null"
+                  ? null
+                  : undefined,
+          },
+        }),
+      );
+      const recordCost = jest.fn(async () => {});
+      const pending = createTwoCaptchaSolver("key").solve(
+        url,
+        {
+          ...widget,
+          kind: "turnstile",
+          managed: {
+            action: "managed",
+            data: "opaque-data",
+            pagedata: "opaque-page-data",
+            userAgent: "original-browser",
+          },
         },
-      },
-      new AbortController().signal,
-    );
-    await jest.advanceTimersByTimeAsync(5000);
-    await expect(pending).resolves.toEqual({
-      token: "private-token",
-      costDollars: 0.00145,
-      userAgent: "solver-browser",
-    });
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body).task).toEqual({
-      type: "TurnstileTaskProxyless",
-      websiteURL: url,
-      websiteKey: widget.siteKey,
-      action: "managed",
-      data: "opaque-data",
-      pagedata: "opaque-page-data",
-    });
-  } finally {
-    process.env = previous;
-  }
-});
+        new AbortController().signal,
+        undefined,
+        recordCost,
+      );
+      const checked =
+        variant === "valid"
+          ? expect(pending).resolves.toEqual({
+              token: "private-token",
+              costDollars: 0.00145,
+              userAgent: "solver-browser",
+            })
+          : expect(pending).rejects.toThrow("invalid solution");
+      await jest.advanceTimersByTimeAsync(5000);
+      await checked;
+      expect(recordCost).toHaveBeenCalledTimes(1);
+      expect(recordCost).toHaveBeenCalledWith(123, 0.00145);
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).task).toEqual({
+        type: "TurnstileTaskProxyless",
+        websiteURL: url,
+        websiteKey: widget.siteKey,
+        action: "managed",
+        data: "opaque-data",
+        pagedata: "opaque-page-data",
+        userAgent: "original-browser",
+      });
+    } finally {
+      process.env = previous;
+    }
+  },
+);
+
+it.each(["control character", "oversized"])(
+  "rejects an invalid managed request user agent before paid creation: %s",
+  async (variant) => {
+    const previous = process.env;
+    const url = "https://dash.cloudflare.com/sign-up";
+    process.env = {
+      ...previous,
+      HACKERAI_ENVIRONMENT: "preview",
+      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
+    };
+    try {
+      await expect(
+        createTwoCaptchaSolver("key").solve(
+          url,
+          {
+            ...widget,
+            kind: "turnstile",
+            managed: {
+              action: "managed",
+              data: "opaque",
+              pagedata: "opaque-page",
+              userAgent:
+                variant === "oversized" ? "x".repeat(1025) : "invalid\nagent",
+            },
+          },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("unsupported");
+      expect(mockFetch).not.toHaveBeenCalled();
+    } finally {
+      process.env = previous;
+    }
+  },
+);
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -91,7 +147,12 @@ it.each(["recaptcha_v2", "turnstile", "hcaptcha"] as const)(
   async (kind) => {
     mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
     mockFetch.mockResolvedValueOnce(
-      reply({ errorId: 0, status: "processing" }),
+      reply({
+        errorId: 0,
+        status: "processing",
+        cost: "",
+        solution: { token: "", gRecaptchaResponse: null, userAgent: null },
+      }),
     );
     mockFetch.mockResolvedValueOnce(
       reply({
@@ -410,24 +471,27 @@ it.each(["deadline", "stop"])(
   },
 );
 
-it("records a known fee even if the returned token is invalid", async () => {
-  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
-  mockFetch.mockResolvedValueOnce(
-    reply({ errorId: 0, status: "ready", cost: "0.00299", solution: {} }),
-  );
-  const recordCost = jest.fn(async () => {});
-  const pending = createTwoCaptchaSolver("provider-key").solve(
-    demo,
-    widget,
-    new AbortController().signal,
-    undefined,
-    recordCost,
-  );
-  const rejected = expect(pending).rejects.toThrow("invalid solution");
-  await jest.advanceTimersByTimeAsync(5000);
-  await rejected;
-  expect(recordCost).toHaveBeenCalledWith(123, 0.00299);
-});
+it.each([{}, null, { gRecaptchaResponse: "" }, { gRecaptchaResponse: null }])(
+  "records a known fee even if the returned token is invalid: %j",
+  async (solution) => {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    mockFetch.mockResolvedValueOnce(
+      reply({ errorId: 0, status: "ready", cost: "0.00299", solution }),
+    );
+    const recordCost = jest.fn(async () => {});
+    const pending = createTwoCaptchaSolver("provider-key").solve(
+      demo,
+      widget,
+      new AbortController().signal,
+      undefined,
+      recordCost,
+    );
+    const rejected = expect(pending).rejects.toThrow("invalid solution");
+    await jest.advanceTimersByTimeAsync(5000);
+    await rejected;
+    expect(recordCost).toHaveBeenCalledWith(123, 0.00299);
+  },
+);
 
 it("accepts a slow hCaptcha result from the original task after three minutes", async () => {
   const started = Date.now();

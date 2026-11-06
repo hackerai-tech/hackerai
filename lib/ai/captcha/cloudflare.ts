@@ -74,6 +74,34 @@ export const CLOUDFLARE_PAGE_URL_SCRIPT = String.raw`(() => {
   return url.origin + url.pathname;
 })()`;
 
+/** Observe clearance, not form acceptance. A replacement managed challenge
+ * consumes no new solve and must be restored for manual verification.
+ */
+export function cloudflareOutcomeScript(url: string): string {
+  return `(async () => {
+    const until = Date.now() + 4000;
+    do {
+      if (window !== top || ${CLOUDFLARE_PAGE_URL_SCRIPT} !== ${JSON.stringify(url)}) return 'page_changed';
+      const current = window[Symbol.for('hackerai.cloudflareChallenge')];
+      const blocked = !!document.querySelector('#challenge-running, #challenge-stage, form#challenge-form, #cf-error-details') ||
+        /^(Just a moment|Cloudflare Security|Attention Required.*Cloudflare)/i.test(document.title) ||
+        /Performing security verification|Verifying you are human/.test(document.querySelector('h2')?.textContent ?? '');
+      if (!blocked && (!current || current.delivered) && document.readyState !== 'loading' && document.body?.textContent?.trim()) return 'cleared';
+      if (Date.now() >= until) return 'pending';
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (true);
+  })()`;
+}
+
+export function cloudflareReleaseScript(approvedUrls: string[]): string {
+  return `(() => {
+    if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
+    const current = window[Symbol.for('hackerai.cloudflareChallenge')];
+    if (!current || current.delivered || typeof current.release !== 'function') return false;
+    current.release(); return true;
+  })()`;
+}
+
 /** Install before navigation. Intercept only the approved page's managed
  * challenge; normal widgets retain their original render function. No logging.
  */

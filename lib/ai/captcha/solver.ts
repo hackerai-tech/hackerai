@@ -6,23 +6,18 @@ const providerResponse = z.object({
   errorId: z.number().int(),
   taskId: z.number().int().positive().optional(),
   status: z.enum(["processing", "ready"]).optional(),
-  solution: z
-    .object({
-      gRecaptchaResponse: z.string().min(1).max(16384).optional(),
-      token: z.string().min(1).max(16384).optional(),
-      userAgent: z
-        .string()
-        .min(1)
-        .max(1024)
-        .regex(/^[\x20-\x7e]+$/)
-        .optional(),
-    })
-    .optional(),
-  cost: z
-    .string()
-    .regex(/^\d+(\.\d+)?$/)
-    .optional(),
+  // Processing replies may contain empty/null placeholders. Validate the
+  // selected solution only after ready, independently of the known expense.
+  solution: z.unknown().optional(),
+  cost: z.unknown().optional(),
 });
+const providerCost = z.string().regex(/^\d+(\.\d+)?$/);
+const providerToken = z.string().min(1).max(16384);
+const providerUserAgent = z
+  .string()
+  .min(1)
+  .max(1024)
+  .regex(/^[\x20-\x7e]+$/);
 
 export type CaptchaSolution = {
   token: string;
@@ -48,7 +43,9 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         !apiKey ||
         !isSupportedCaptchaTarget(url, widget) ||
         !/^[A-Za-z0-9_-]{10,256}$/.test(widget.siteKey) ||
-        widget.invisible
+        widget.invisible ||
+        (widget.managed &&
+          !providerUserAgent.safeParse(widget.managed.userAgent).success)
       )
         throw new Error("CAPTCHA provider or challenge is unsupported.");
       // hCaptcha can still be processing after three minutes. Continue polling
@@ -109,6 +106,7 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
             action: widget.managed.action,
             data: widget.managed.data,
             pagedata: widget.managed.pagedata,
+            userAgent: widget.managed.userAgent,
           }),
         },
       });
@@ -166,11 +164,8 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           throw error;
         }
         if (result.status === "processing") continue;
-        const token =
-          widget.kind === "recaptcha_v2" || widget.kind === "hcaptcha"
-            ? result.solution?.gRecaptchaResponse
-            : result.solution?.token;
-        const costDollars = Number(result.cost);
+        const parsedCost = providerCost.safeParse(result.cost);
+        const costDollars = parsedCost.success ? Number(parsedCost.data) : NaN;
         if (
           result.status === "ready" &&
           Number.isFinite(costDollars) &&
@@ -178,19 +173,33 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           costDollars <= 1
         )
           await onCostKnown?.(created.taskId, costDollars);
+        const solution = z
+          .record(z.string(), z.unknown())
+          .safeParse(result.solution);
+        const token = providerToken.safeParse(
+          solution.success
+            ? solution.data[
+                widget.kind === "turnstile" ? "token" : "gRecaptchaResponse"
+              ]
+            : undefined,
+        );
+        const userAgent = providerUserAgent.safeParse(
+          solution.success ? solution.data.userAgent : undefined,
+        );
         if (
           result.status !== "ready" ||
-          !token ||
-          (widget.managed && !result.solution?.userAgent) ||
+          !token.success ||
+          (widget.managed && !userAgent.success) ||
           !Number.isFinite(costDollars) ||
           costDollars < 0 ||
           costDollars > 1
         )
           throw new Error("CAPTCHA provider returned an invalid solution.");
         return {
-          token,
+          token: token.data,
           costDollars,
-          ...(widget.managed && { userAgent: result.solution!.userAgent }),
+          ...(widget.managed &&
+            userAgent.success && { userAgent: userAgent.data }),
         };
       }
     },

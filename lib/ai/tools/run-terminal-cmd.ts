@@ -1639,8 +1639,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 target,
               );
               if (
-                browserChallenge.status !== "unavailable" &&
-                browserChallenge.status !== "no_pending_challenge"
+                (browserChallenge.status !== "unavailable" &&
+                  browserChallenge.status !== "no_pending_challenge") ||
+                ("providerTaskCreated" in browserChallenge &&
+                  browserChallenge.providerTaskCreated === true)
               ) {
                 return { result: { ...output.result, browserChallenge } };
               }

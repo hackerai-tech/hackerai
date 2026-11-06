@@ -3,6 +3,8 @@ import {
   cloudflareInitScript,
   cloudflarePreviewUrls,
   cloudflarePageUrl,
+  cloudflareOutcomeScript,
+  cloudflareReleaseScript,
 } from "../cloudflare";
 import { createBrowserChallengeHandler } from "../browser-challenge";
 import type { ToolContext } from "@/types";
@@ -57,6 +59,115 @@ function render() {
   api.render(document.body, options);
   return { api, options, original, callback };
 }
+
+it.each(["cleared", "replaced", "stop"])(
+  "verifies the actual managed outcome and restores a new challenge without another solve: %s",
+  async (outcome) => {
+    const { api, options, callback, original } = render();
+    document.body.innerHTML = "<h2>Performing security verification</h2>";
+    callback.mockImplementation(() => {
+      if (outcome === "cleared")
+        document.body.innerHTML =
+          '<form><h1>Sign in</h1><input type="password"></form>';
+      else api.render(document.body, options);
+    });
+    process.env = {
+      ...originalEnv,
+      HACKERAI_ENVIRONMENT: "preview",
+      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
+      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
+      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([location.href]),
+      TWOCAPTCHA_API_KEY: "private-key",
+    };
+    const solve = jest.fn(async () => ({
+      token: "private-token",
+      costDollars: 0.00145,
+      userAgent: "solver-browser",
+    }));
+    const onToolCost = jest.fn();
+    const context = {
+      userID: "qa-user",
+      triggerRunId: "test-run",
+      onToolCost,
+      browserSessions: {
+        getChallengeBrowser: async () => ({
+          identity: "owner",
+          evaluate: async (script: string) => window.eval(script),
+          deliverCloudflare: async (
+            _ua: string,
+            _page: unknown,
+            script: string,
+          ) => window.eval(script),
+        }),
+      },
+    } as unknown as ToolContext;
+    const journal = {
+      reserve: jest.fn(async () => true),
+      registerTask: jest.fn(),
+      recordCost: jest.fn(),
+    };
+    const handler = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      () => ({ solve }),
+      journal,
+    );
+    const controller = new AbortController();
+    const pending = handler(controller.signal);
+    const resultPromise = pending.catch((error) => error);
+    if (outcome === "stop") {
+      await jest.advanceTimersByTimeAsync(1);
+      controller.abort(new Error("stopped"));
+    }
+    await jest.advanceTimersByTimeAsync(5000);
+    const result = await resultPromise;
+    if (outcome === "stop") {
+      expect(result).toEqual(new Error("stopped"));
+      expect(original).not.toHaveBeenCalled();
+      expect(page[key]).toBeDefined();
+      expect(solve).toHaveBeenCalledTimes(1);
+      expect(onToolCost).toHaveBeenCalledTimes(1);
+      return;
+    }
+    if (outcome === "cleared") {
+      expect(result).toMatchObject({
+        status: "token_delivered",
+        managedGateCleared: true,
+        websiteAccepted: false,
+      });
+      expect(original).not.toHaveBeenCalled();
+    } else {
+      expect(result).toMatchObject({
+        status: "handoff_required",
+        reason: "managed_gate_not_cleared",
+        responseDelivered: true,
+        manualWidgetRestored: true,
+      });
+      expect(original).toHaveBeenCalledWith(document.body, options);
+      expect(page[key]).toBeUndefined();
+      await handler();
+    }
+    expect(handler.getReceiptPrompt()).toContain(
+      `post-delivery check: ${outcome === "cleared" ? "cleared" : "pending"}`,
+    );
+    expect(solve).toHaveBeenCalledTimes(1);
+    expect(onToolCost).toHaveBeenCalledTimes(1);
+    expect(journal.reserve).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("does not inspect or release a different page during managed verification", async () => {
+  const { original } = render();
+  const other = "https://other.example/challenge";
+  await expect(window.eval(cloudflareOutcomeScript(other))).resolves.toBe(
+    "page_changed",
+  );
+  expect(window.eval(cloudflareReleaseScript([other]))).toBe(false);
+  expect(original).not.toHaveBeenCalled();
+  expect(page[key]).toBeDefined();
+});
 
 it("lets the vendor initialize its global before capturing the first managed render", () => {
   window.eval(cloudflareInitScript([location.href]));

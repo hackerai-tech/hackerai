@@ -23,6 +23,8 @@ import type { CaptchaJournal } from "./journal";
 import {
   cloudflarePageUrl,
   cloudflarePreviewUrls,
+  cloudflareOutcomeScript,
+  cloudflareReleaseScript,
   CLOUDFLARE_PAGE_URL_SCRIPT,
 } from "./cloudflare";
 
@@ -56,8 +58,15 @@ export function createBrowserChallengeHandler(
   let solveStarted = false;
   let active = false;
   let guidanceSent = false;
+  let providerAttemptStarted = false;
+  let providerTaskCreated = false;
+  let knownCostDollars: number | undefined;
+  let costRecorded = false;
+  let deliveryOutcome: "not_attempted" | "unknown" | "delivered" =
+    "not_attempted";
+  let managedGateOutcome: "cleared" | "pending" | "unknown" | undefined;
   // Internal browser workflow, never a model-facing tool or model input.
-  return async (
+  const check = async (
     abortSignal?: AbortSignal,
     target?: { sandbox: AnySandbox; sessionName: string },
   ) => {
@@ -83,8 +92,6 @@ export function createBrowserChallengeHandler(
       };
     active = true;
     let challengeDetected = false;
-    let providerTaskCreated = false;
-    let knownCostDollars: number | undefined;
     const respond = <T extends { status: string }>(result: T) => {
       const response = {
         ...result,
@@ -102,7 +109,6 @@ export function createBrowserChallengeHandler(
     };
     let deliveryStarted = false;
     let taskStarted = false;
-    let costRecorded = false;
     const recordToolCost = (costDollars: number) => {
       if (costRecorded) return;
       costRecorded = true;
@@ -150,18 +156,13 @@ export function createBrowserChallengeHandler(
               target,
             );
             if (browser.deliverCloudflare)
-              await browser.evaluate(`(() => {
-                if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
-                const current = window[Symbol.for('hackerai.cloudflareChallenge')];
-                if (!current || current.delivered || typeof current.release !== 'function') return false;
-                current.release(); return true;
-              })()`);
+              await browser.evaluate(cloudflareReleaseScript(approvedUrls));
           } catch {
             // A lost/paused owner cannot be used for cleanup either.
           }
         }
         signal.throwIfAborted();
-        return { status: "unavailable" };
+        return respond({ status: "unavailable" });
       }
       const browser = await context.browserSessions.getChallengeBrowser(
         signal,
@@ -181,7 +182,7 @@ export function createBrowserChallengeHandler(
         current.release(); return true;
       })()`);
       if (!pending.length && !observation.interstitial)
-        return { status: "no_pending_challenge" };
+        return respond({ status: "no_pending_challenge" });
       challengeDetected = true;
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
@@ -243,6 +244,7 @@ export function createBrowserChallengeHandler(
       const solver = await waitForProvider(solverFactory(key), signal);
       signal.throwIfAborted();
       taskStarted = true;
+      providerAttemptStarted = true;
       record("browser_captcha_solver_attempt", { captcha_kind: widget.kind });
       const solution = await solver.solve(
         widget.managed ? cloudflarePageUrl(observation.url)! : observation.url,
@@ -268,6 +270,7 @@ export function createBrowserChallengeHandler(
       recordToolCost(solution.costDollars);
       signal.throwIfAborted();
       deliveryStarted = true;
+      deliveryOutcome = "unknown";
       const deliveryScript = buildDeliverCaptchaScript(
         observation,
         widget,
@@ -296,11 +299,64 @@ export function createBrowserChallengeHandler(
         cost_dollars: solution.costDollars,
       });
       managedDelivered = delivered.status === "token_delivered";
+      if (managedDelivered) deliveryOutcome = "delivered";
+      if (widget.managed && managedDelivered) {
+        managedGateOutcome = "unknown";
+        // Navigation can destroy the first evaluation. Retry only this owned,
+        // bounded observation, never task creation or callback delivery.
+        for (let read = 0; read < 2; read++) {
+          signal.throwIfAborted();
+          try {
+            const outcome = z
+              .enum(["cleared", "pending", "page_changed"])
+              .parse(
+                await browser.evaluate(
+                  cloudflareOutcomeScript(cloudflarePageUrl(observation.url)!),
+                ),
+              );
+            signal.throwIfAborted();
+            managedGateOutcome =
+              outcome === "page_changed" ? "unknown" : outcome;
+            break;
+          } catch {
+            signal.throwIfAborted();
+          }
+        }
+        if (managedGateOutcome === "pending") {
+          signal.throwIfAborted();
+          let restored = false;
+          try {
+            // Revalidate ownership for the mutation after the read-only wait;
+            // a stopped in-page promise must never mutate a handed-off page.
+            restored =
+              (await browser.evaluate(
+                cloudflareReleaseScript([cloudflarePageUrl(observation.url)!]),
+              )) === true;
+          } catch {
+            signal.throwIfAborted();
+          }
+          signal.throwIfAborted();
+          return respond({
+            status: "handoff_required",
+            reason: "managed_gate_not_cleared",
+            responseDelivered: true,
+            websiteAccepted: false,
+            manualWidgetRestored: restored,
+            message: `2Captcha delivered one response, but the managed gate remained or issued another challenge. Its paid attempt is used. ${restored ? "The current widget was restored for manual verification." : "Manual verification is required."} Do not create another task or resubmit the response.`,
+          });
+        }
+      }
       return respond(
         delivered.status === "token_delivered"
           ? {
               status: "token_delivered",
               websiteAccepted: false,
+              ...(widget.managed && {
+                managedGateCleared:
+                  managedGateOutcome === "unknown"
+                    ? null
+                    : managedGateOutcome === "cleared",
+              }),
               message: `2Captcha completed one paid task (provider cost ${solution.costDollars} USD), and the runtime delivered its response in this browser. This is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.`,
             }
           : { status: "handoff_required", reason: "page_changed" },
@@ -347,4 +403,10 @@ export function createBrowserChallengeHandler(
       active = false;
     }
   };
+  return Object.assign(check, {
+    getReceiptPrompt: () =>
+      providerAttemptStarted
+        ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`
+        : "",
+  });
 }
