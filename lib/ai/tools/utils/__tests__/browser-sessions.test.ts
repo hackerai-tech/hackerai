@@ -28,7 +28,8 @@ describe("managed browser ownership", () => {
       const command = (
         target.commands.run.mock.calls[0] as unknown as [string]
       )[0];
-      expect(command.includes("https://approved.example/")).toBe(enabled);
+      if (enabled) expect(command).toContain("https://approved.example/");
+      else expect(command).not.toContain("https://approved.example/");
       await owner.cleanup();
     },
   );
