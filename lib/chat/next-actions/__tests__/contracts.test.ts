@@ -272,6 +272,7 @@ test.each([
   "Stop that request.",
   "Thanks, no more on this.",
   "Explain a nonce. Do not suggest any follow-ups afterwards.",
+  "Define 'nonce', then stop.",
 ])("suppresses a prediction after a clear conversational stop: %s", (text) => {
   expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
     true,
@@ -314,6 +315,13 @@ test.each([
   "Explain the difference between start and stop.",
   "What does ‘do not suggest follow-ups’ mean?",
   "What does do not suggest follow-ups mean?",
+  "What does ‘start and do not suggest follow-ups’ mean?",
+  'What does "start and do not suggest follow-ups" mean?',
+  "What does 'start and do not suggest follow-ups' mean?",
+  "What does ‘I'm finished and do not suggest follow-ups’ mean?",
+  "What does ‘I’m finished and do not suggest follow-ups’ mean?",
+  "What does 'I'm finished and do not suggest follow-ups' mean?",
+  "What does ‘no more questions’ mean?",
   "How do I cancel a database query?",
   "Then stop the service and inspect its log.",
   "I'm done with setup; help me try the first command.",

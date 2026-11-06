@@ -157,21 +157,27 @@ export function hasExplicitPredictionStop(
 ): boolean {
   const latest =
     sources.findLast((source) => source.role === "user")?.text ?? "";
+  // Quoted examples are not direct stop instructions. Apostrophes within
+  // words are preserved, including contractions inside a quoted example.
+  const instruction = latest.replace(
+    /"[^"\n]*"|“[^”\n]*”|‘(?:[^’\n]|’(?=[\p{L}\p{N}_]))*’(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])'(?:[^'\n]|'(?=[\p{L}\p{N}_]))*'(?![\p{L}\p{N}_])/gu,
+    " ",
+  );
   return (
     /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(
-      latest,
+      instruction,
     ) ||
     /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?)\b/i.test(
-      latest,
+      instruction,
     ) ||
-    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(latest) ||
-    /\b(?:and|then)\s+stop\s+(?:here|there)[.!]?\s*$/i.test(latest) ||
+    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(instruction) ||
+    /\b(?:and|then)\s+stop\s+(?:here|there)[.!]?\s*$/i.test(instruction) ||
     /^(?:thanks[,.!]\s*)?(?:please\s+)?(?:cancel|stop)(?:\s+(?:that|this)(?:\s+(?:task|request|review))?)?[.!]?\s*$/i.test(
-      latest.trim(),
+      instruction.trim(),
     ) ||
-    /\bno more on this[.!]?\s*$/i.test(latest) ||
+    /\bno more on this[.!]?\s*$/i.test(instruction) ||
     /(?:^|[.!?;,]\s*|\b(?:but|and)\s+|\n)(?:please\s+)?do not suggest (?:a |any )?follow[ -]?ups?\b/i.test(
-      latest,
+      instruction,
     )
   );
 }

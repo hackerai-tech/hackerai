@@ -106,7 +106,11 @@ test("an explicit conversational stop spends no provider tokens", async () => {
   expect(generateText).not.toHaveBeenCalled();
 });
 
-test("quoted stop wording in a question still allows a prediction", async () => {
+test.each([
+  "What does ‘do not suggest follow-ups’ mean?",
+  "What does ‘start and do not suggest follow-ups’ mean?",
+  "What does 'I'm finished and do not suggest follow-ups' mean?",
+])("quoted stop wording still allows a prediction: %s", async (text) => {
   jest
     .mocked(generateText)
     .mockResolvedValueOnce(
@@ -117,7 +121,7 @@ test("quoted stop wording in a question still allows a prediction", async () => 
       {
         id: "u",
         role: "user",
-        text: "What does ‘do not suggest follow-ups’ mean?",
+        text,
       },
       {
         id: "a",
