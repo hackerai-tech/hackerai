@@ -1834,6 +1834,9 @@ export const replaceActiveTriggerRun = mutation({
       active_agent_approval_session_id: args.approvalSessionId ?? undefined,
       active_agent_approval_pending: undefined,
       active_agent_approval_request: undefined,
+      ...(currentRunId !== args.triggerRunId
+        ? { active_agent_user_wait: undefined }
+        : {}),
       canceled_at: undefined,
     });
     return previous;

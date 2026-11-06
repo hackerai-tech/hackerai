@@ -1135,6 +1135,79 @@ describe("Agent approval lifecycle guards", () => {
 });
 
 describe("Agent run replacement", () => {
+  it("allows a replacement run to acquire a wait after late old-run cleanup", async () => {
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "old",
+      active_agent_user_wait: {
+        runId: "old",
+        toolCallId: "old-tool",
+        tokenId: "old-token",
+        status: "waiting",
+      },
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "old",
+      approvalSessionId: null,
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "old",
+        toolCallId: "old-tool",
+      }),
+    ).resolves.toBe("stale");
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "new",
+        toolCallId: "new-tool",
+        tokenId: "new-token",
+      }),
+    ).resolves.toBe("acquired");
+  });
+
+  it("retains the current wait on a same-run replacement retry", async () => {
+    const wait = {
+      runId: "current",
+      toolCallId: "tool",
+      tokenId: "token",
+      status: "waiting",
+    };
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "current",
+      active_agent_user_wait: wait,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "current",
+      expectedRunId: "current",
+      approvalSessionId: null,
+    });
+    expect(chat.active_agent_user_wait).toEqual(wait);
+  });
+
   it("returns the displaced owner atomically and retains saved chat history", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc",
