@@ -1929,6 +1929,38 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
+    it("holds queued work after a wait clears until the resumed run finishes", async () => {
+      mockRouteParams = { id: "wait-queue-chat" };
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockRestoredChat = {
+        id: "wait-queue-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        active_trigger_run_id: "resumed-run",
+        active_agent_user_wait: {
+          runId: "resumed-run",
+          toolCallId: "wait-1",
+          status: "waiting",
+        },
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      delete mockRestoredChat.active_agent_user_wait;
+      await act(async () => rerender(view()));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      delete mockRestoredChat.active_trigger_run_id;
+      await act(async () => rerender(view()));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
     it("rejects goal sends when the SDK settles without admitting the request", async () => {
       mockDesktopState = { chatMode: "agent" };
       const client = require("convex/react").useConvex();

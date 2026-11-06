@@ -2700,6 +2700,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       status === "ready" &&
       !hasPendingSummarySteer &&
       !hasPendingUserWait &&
+      !agentLongRunId &&
+      !activeTriggerRunId &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2747,6 +2749,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     status,
     hasPendingSummarySteer,
     hasPendingUserWait,
+    agentLongRunId,
+    activeTriggerRunId,
     shouldUseAgentLong,
     messageQueue,
     editingQueuedMessageId,
