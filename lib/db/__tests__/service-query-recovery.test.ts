@@ -754,7 +754,10 @@ describe("read-only browser and recovery GET requests", () => {
     // Give each request a client bound to that test's transport, as a fresh worker would.
     const { setConvexUrl } = await import("../convex-client");
     setConvexUrl(deployment);
-    return reader.call({ signal } as NextRequest);
+    return reader.call({
+      signal,
+      nextUrl: new URL("https://preview.example/api/agent/browser/test"),
+    } as NextRequest);
   }
   it.each(readers)(
     "recovers the $name SDK read and preserves request context",

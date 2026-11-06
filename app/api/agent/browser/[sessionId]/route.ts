@@ -91,6 +91,7 @@ export const GET = withServiceQueryRecovery(async function GET(
       sandbox,
       resolved.session,
       browserSessionName,
+      request.nextUrl.searchParams.get("fresh") === "1",
     );
     if (
       (await getActiveBrowserSessionName(sandbox, resolved.session)) !==
