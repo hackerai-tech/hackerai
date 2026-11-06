@@ -36,6 +36,25 @@ it("selects by shortcut and advances a single-choice question once", () => {
   expect(props.onAdvance).toHaveBeenCalledTimes(1);
 });
 
+it("keeps claimed choices fixed while allowing an explicit retry", () => {
+  render(
+    <UserInputQuestionPanel
+      {...props}
+      total={1}
+      answersLocked
+      canAdvance
+      answer={{ selectedValues: ["a"], customAnswer: "" }}
+    />,
+  );
+  expect(screen.getByRole("button", { name: /Alpha/ })).toBeDisabled();
+  fireEvent.keyDown(document.body, { key: "2" });
+  expect(props.onSelect).not.toHaveBeenCalled();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Submit answer", exact: true }),
+  );
+  expect(props.onAdvance).toHaveBeenCalledTimes(1);
+});
+
 it("does not intercept numbers typed into the composer or advance multi-select", () => {
   render(
     <>

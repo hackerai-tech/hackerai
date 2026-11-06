@@ -171,7 +171,9 @@ describe("Agent wait_for_user reply", () => {
     expect(completeToken).toHaveBeenCalledTimes(1);
 
     claimReply.mockResolvedValue("busy");
-    expect((await post(request({ text: "Different reply" }))).status).toBe(409);
+    const conflict = await post(request({ text: "Different reply" }));
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "reply_conflict" });
     expect(completeToken).toHaveBeenCalledTimes(1);
   });
 

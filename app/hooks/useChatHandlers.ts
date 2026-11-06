@@ -14,7 +14,10 @@ import {
   AGENT_REPLY_ENDPOINT,
   AGENT_RESUME_ENDPOINT,
 } from "@/lib/api/agent-endpoints";
-import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
+import {
+  AgentReplyConflictError,
+  type ActiveAgentUserWait,
+} from "@/lib/chat/agent-user-wait";
 
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
@@ -878,19 +881,32 @@ export const useChatHandlers = ({
         }
         if (!response) return false;
         if (!response.ok) {
+          let replyConflict = false;
+          if (response.status === 409) {
+            try {
+              replyConflict =
+                (await response.json()).error === "reply_conflict";
+            } catch {
+              // Older routes and ended waits return a plain-text error.
+            }
+          }
           toast.error("Could not send your reply", {
-            description:
-              response.status === 409
+            description: replyConflict
+              ? "An earlier answer is already being delivered. Retry that same answer, or stop the Agent before sending a different one."
+              : response.status === 409
                 ? "This wait has ended. Reconnect the chat before sending again."
                 : response.status === 425
                   ? "The Agent is still preparing to wait. Your draft is saved; try again shortly."
                   : "Your draft is saved. Retry the same reply.",
           });
+          if (replyConflict && structuredReply)
+            throw new AgentReplyConflictError();
           return false;
         }
         clearSubmittedDraft();
         return true;
-      } catch {
+      } catch (error) {
+        if (error instanceof AgentReplyConflictError) throw error;
         toast.error("Could not send your reply", {
           description: "Your draft is saved. Retry the same reply.",
         });

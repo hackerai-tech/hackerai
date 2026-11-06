@@ -53,7 +53,10 @@ import {
   WaitingForReplyBanner,
   WAITING_FOR_REPLY_DESCRIPTION_ID,
 } from "./WaitingForReplyBanner";
-import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
+import {
+  AgentReplyConflictError,
+  type ActiveAgentUserWait,
+} from "@/lib/chat/agent-user-wait";
 import type { UploadedFileState } from "@/types/file";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -421,7 +424,11 @@ const ChatInputContent = ({
       ? `hackerai-question:${user.id}:${chatId}:${pendingUserWait ? `${pendingUserWait.runId}:${pendingUserWait.toolCallId}` : `goal:${pendingGoalQuestions!.generation}`}`
       : undefined;
   const answerQuestions = questions.length ? questions : PLAIN_REPLY_QUESTIONS;
-  const questionAnswers = useQuestionAnswers(questionKey, answerQuestions);
+  const questionAnswers = useQuestionAnswers(
+    questionKey,
+    answerQuestions,
+    pendingUserWait?.status === "submitting",
+  );
   const hasQuestionPanel = !!questionKey && questions.length > 0;
   const exposedQuestionPanelsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -1170,10 +1177,13 @@ const ChatInputContent = ({
       isSubmittingRef.current = true;
       setSubmissionPending(true);
       try {
+        questionAnswers.markSubmitted();
         const accepted = await onSubmit(e, questionAnswers.text, true);
         if (accepted !== false) questionAnswers.clear();
       } catch (error) {
-        if (error instanceof GoalSubmissionUnconfirmedError) {
+        if (error instanceof AgentReplyConflictError) {
+          questionAnswers.releaseSubmission();
+        } else if (error instanceof GoalSubmissionUnconfirmedError) {
           reportUnconfirmedGoalSubmission(error);
         } else if (!(error instanceof Error && error.name === "AbortError")) {
           toast.error(
@@ -1482,6 +1492,7 @@ const ChatInputContent = ({
                     !!effectiveSendDisabledReason
                   }
                   canAdvance={questionAnswers.canAdvance}
+                  answersLocked={questionAnswers.locked}
                   stopping={isStoppingAgent}
                   onSelect={questionAnswers.select}
                   onAdvance={() =>
@@ -1608,6 +1619,7 @@ const ChatInputContent = ({
               disabled={
                 !!questionKey &&
                 (!questionAnswers.ready ||
+                  questionAnswers.locked ||
                   questionAnswers.question?.allowCustomAnswer === false ||
                   submissionPending)
               }

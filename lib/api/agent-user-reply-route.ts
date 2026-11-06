@@ -164,6 +164,9 @@ export const createAgentUserReplyPost =
         ...identity,
         replyHash,
       });
+      if (claim === "busy") {
+        return NextResponse.json({ error: "reply_conflict" }, { status: 409 });
+      }
       if (claim !== "claimed" && claim !== "duplicate") {
         return new NextResponse("Agent reply is no longer available", {
           status: 409,
@@ -175,9 +178,7 @@ export const createAgentUserReplyPost =
       if (token.status === "COMPLETED") {
         return matchesDeliveredReply(token.output, identity)
           ? NextResponse.json({ accepted: true, runId })
-          : new NextResponse("Agent received a different reply", {
-              status: 409,
-            });
+          : NextResponse.json({ error: "reply_conflict" }, { status: 409 });
       }
       if (token.status !== "WAITING") {
         return new NextResponse("Agent wait has expired", { status: 409 });

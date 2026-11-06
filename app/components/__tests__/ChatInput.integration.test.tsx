@@ -30,6 +30,7 @@ import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
 import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import { AgentReplyConflictError } from "@/lib/chat/agent-user-wait";
 const mockGoalCapture = jest.fn<
   (event: string, properties: Record<string, unknown>) => boolean
 >(() => true);
@@ -2125,7 +2126,13 @@ describe("ChatInput - Integration Tests", () => {
       });
       fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
       await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByRole("textbox")).toBeEnabled());
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Edited while the claim update was delayed" },
+      });
       view.rerender(ui("submitting"));
+      expect(screen.getByRole("textbox")).toHaveValue("Retry this exact reply");
+      expect(screen.getByRole("textbox")).toBeDisabled();
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Submit answer", exact: true }),
@@ -2136,12 +2143,25 @@ describe("ChatInput - Integration Tests", () => {
       expect(await screen.findByRole("textbox")).toHaveValue(
         "Retry this exact reply",
       );
-      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Submit answer", exact: true }),
+      );
       await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(2));
       expect(mockOnSubmit).toHaveBeenLastCalledWith(
         expect.anything(),
         "Retry this exact reply",
         true,
+      );
+      mockOnSubmit.mockRejectedValueOnce(new AgentReplyConflictError());
+      fireEvent.click(
+        screen.getByRole("button", { name: "Submit answer", exact: true }),
+      );
+      await waitFor(() => expect(screen.getByRole("textbox")).toBeEnabled());
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Original answer from another tab" },
+      });
+      expect(screen.getByRole("textbox")).toHaveValue(
+        "Original answer from another tab",
       );
     });
 

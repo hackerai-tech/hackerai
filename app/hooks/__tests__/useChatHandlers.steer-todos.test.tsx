@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
+import { toast } from "sonner";
+import { AgentReplyConflictError } from "@/lib/chat/agent-user-wait";
 
 jest.mock("@/lib/utils/client-token-validation", () => ({
   ...jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
@@ -244,15 +246,25 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
-  it.each([400, 409, 425])(
-    "retains a rejected reply and permits resubmission after HTTP %s",
-    async (status) => {
+  it.each([
+    { status: 400, conflict: false },
+    { status: 409, conflict: false },
+    { status: 425, conflict: false },
+    { status: 409, conflict: true },
+  ])(
+    "retains a rejected reply and permits resubmission after HTTP $status (conflict=$conflict)",
+    async ({ status, conflict }) => {
       jest.useFakeTimers();
+      const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
       try {
         mockInput = "Keep this answer";
-        jest
-          .mocked(global.fetch)
-          .mockResolvedValue({ ok: false, status } as Response);
+        jest.mocked(global.fetch).mockResolvedValue({
+          ok: false,
+          status,
+          ...(conflict
+            ? { json: async () => ({ error: "reply_conflict" }) }
+            : {}),
+        } as Response);
         const { result } = renderHook(() =>
           useChatHandlers({
             chatId: "chat-1",
@@ -272,11 +284,15 @@ describe("useChatHandlers steer todo handoff", () => {
             hasManuallyStoppedRef: { current: false },
           }),
         );
-        let submission!: Promise<boolean>;
+        let submission!: Promise<boolean | Error>;
         await act(async () => {
-          submission = result.current.handleSubmit({
-            preventDefault: jest.fn(),
-          } as any);
+          submission = result.current
+            .handleSubmit(
+              { preventDefault: jest.fn() } as any,
+              conflict ? mockInput : undefined,
+              conflict,
+            )
+            .catch((error) => error);
           await jest.advanceTimersByTimeAsync(0);
         });
         if (status === 425) {
@@ -291,9 +307,20 @@ describe("useChatHandlers steer todo handoff", () => {
             });
           }
         }
-        expect(await submission).toBe(false);
+        if (conflict)
+          expect(await submission).toBeInstanceOf(AgentReplyConflictError);
+        else expect(await submission).toBe(false);
         expect(fetch).toHaveBeenCalledTimes(status === 425 ? 4 : 1);
         expect(mockClearInput).not.toHaveBeenCalled();
+        if (status === 409)
+          expect(errorToast).toHaveBeenCalledWith(
+            "Could not send your reply",
+            expect.objectContaining({
+              description: expect.stringContaining(
+                conflict ? "Retry that same answer" : "This wait has ended",
+              ),
+            }),
+          );
         jest
           .mocked(global.fetch)
           .mockResolvedValue({ ok: true, status: 200 } as Response);
@@ -306,6 +333,7 @@ describe("useChatHandlers steer todo handoff", () => {
         });
         expect(mockClearInput).toHaveBeenCalledTimes(1);
       } finally {
+        errorToast.mockRestore();
         jest.useRealTimers();
       }
     },

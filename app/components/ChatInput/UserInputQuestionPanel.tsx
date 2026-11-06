@@ -15,6 +15,7 @@ export function UserInputQuestionPanel({
   index,
   total,
   disabled,
+  answersLocked = false,
   canAdvance,
   onSelect,
   onAdvance,
@@ -27,6 +28,7 @@ export function UserInputQuestionPanel({
   index: number;
   total: number;
   disabled: boolean;
+  answersLocked?: boolean;
   canAdvance: boolean;
   onSelect: (value: string) => void;
   onAdvance: () => void;
@@ -42,10 +44,11 @@ export function UserInputQuestionPanel({
   });
   useEffect(() => () => clearTimeout(timer.current), [question.id]);
   useEffect(() => {
-    if (disabled || answer.customAnswer) clearTimeout(timer.current);
-  }, [disabled, answer.customAnswer]);
+    if (disabled || answersLocked || answer.customAnswer)
+      clearTimeout(timer.current);
+  }, [disabled, answersLocked, answer.customAnswer]);
   const select = (value: string) => {
-    if (disabled) return;
+    if (disabled || answersLocked) return;
     onSelect(value);
     clearTimeout(timer.current);
     if (!question.multiSelect)
@@ -56,7 +59,7 @@ export function UserInputQuestionPanel({
     selectRef.current = select;
   });
   useEffect(() => {
-    if (disabled || collapsed) return;
+    if (disabled || answersLocked || collapsed) return;
     const handler = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
@@ -81,7 +84,7 @@ export function UserInputQuestionPanel({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [question, disabled, collapsed]);
+  }, [question, disabled, answersLocked, collapsed]);
   return (
     <section
       aria-label="Agent question"
@@ -135,7 +138,7 @@ export function UserInputQuestionPanel({
                   key={option.value}
                   type="button"
                   aria-pressed={selected}
-                  disabled={disabled}
+                  disabled={disabled || answersLocked}
                   onClick={() => select(option.value)}
                   className="flex w-full items-start gap-2.5 rounded-md px-1 py-2 text-left text-foreground/80 outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
