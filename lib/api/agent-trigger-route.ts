@@ -287,6 +287,21 @@ const parseAgentTriggerRequestBody = async (
     };
   }
   if (
+    body.messages.some(
+      (message) =>
+        message === null ||
+        typeof message !== "object" ||
+        !Array.isArray(message.parts),
+    )
+  ) {
+    return {
+      ok: false,
+      response: new NextResponse("Each message must include a parts array", {
+        status: 400,
+      }),
+    };
+  }
+  if (
     body.agentRunRequestId !== undefined &&
     (typeof body.agentRunRequestId !== "string" ||
       !/^[A-Za-z0-9_-]{1,128}$/.test(body.agentRunRequestId))
