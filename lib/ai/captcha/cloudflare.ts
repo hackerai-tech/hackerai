@@ -97,6 +97,10 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
             options.chlPageData.length > 16384 || typeof options.callback !== 'function' ||
             !/^[A-Za-z0-9_-]{10,256}$/.test(options.sitekey ?? ''))
           return original.apply(this, arguments);
+        let target;
+        try { target = typeof container === 'string' ? document.querySelector(container) : container; }
+        catch { return original.apply(this, arguments); }
+        if (!(target instanceof Element) || !target.isConnected) return original.apply(this, arguments);
         const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
         // Re-rendering replaces the identity, so an older solution cannot land.
         window[key] = {siteKey:options.sitekey, observationId, callback:options.callback,
@@ -104,13 +108,15 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
           userAgent:navigator.userAgent, delivered:false};
         const captured = window[key];
         const receiver = this;
-        const args = arguments;
+        const args = Array.from(arguments);
+        args[1] = {...options};
         captured.release = () => {
           if (window[key] !== captured || captured.delivered) return;
           disabled = true;
           clearInterval(timer);
           api.render = original;
           delete window[key];
+          if (!target.isConnected || (typeof container === 'string' && document.querySelector(container) !== target)) return;
           original.apply(receiver, args);
         };
         return 'hackerai-' + observationId;

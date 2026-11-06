@@ -105,13 +105,29 @@ it("does not deliver a solution after the managed challenge re-renders", () => {
 
 it("restores the real widget for manual verification after an unsuccessful solve", () => {
   const { api, original, options } = render();
+  const initialOptions = { ...options };
   const captured = page[key] as { release: () => void };
+  options.callback = jest.fn();
+  options.cData = "changed-page-data";
   captured.release();
-  expect(original).toHaveBeenCalledWith(document.body, options);
+  expect(original).toHaveBeenCalledWith(document.body, initialOptions);
   expect(api.render).toBe(original);
   expect(page[key]).toBeUndefined();
   jest.advanceTimersByTime(100);
   expect(api.render).toBe(original);
+});
+
+it("releases interception without replaying into a removed widget container", () => {
+  const { api, original, options } = render();
+  const container = document.createElement("div");
+  document.body.append(container);
+  api.render(container, options);
+  const captured = page[key] as { release: () => void };
+  container.remove();
+  captured.release();
+  expect(original).not.toHaveBeenCalled();
+  expect(api.render).toBe(original);
+  expect(page[key]).toBeUndefined();
 });
 
 it("stops intercepting a replacement API after releasing the earlier managed challenge", () => {
