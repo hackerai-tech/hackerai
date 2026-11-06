@@ -221,12 +221,20 @@ export function createBrowserChallengeHandler(
             }
           : { status: "handoff_required", reason: "page_changed" },
       );
-    } catch {
+    } catch (error) {
+      const solverTimedOut =
+        !signal.aborted &&
+        taskStarted &&
+        !deliveryStarted &&
+        error instanceof Error &&
+        error.name === "TimeoutError";
       if (taskStarted)
         record("browser_captcha_solver_result", {
           outcome: deliveryStarted
             ? "delivery_outcome_unknown"
-            : "provider_outcome_unknown",
+            : solverTimedOut
+              ? "solver_timeout"
+              : "provider_outcome_unknown",
           charge_status: costRecorded ? "recorded" : "unreconciled",
         });
       signal.throwIfAborted();
@@ -235,7 +243,13 @@ export function createBrowserChallengeHandler(
         status: "handoff_required",
         reason: deliveryStarted
           ? "delivery_outcome_unknown"
-          : "challenge_operation_failed",
+          : solverTimedOut
+            ? "solver_timeout"
+            : "challenge_operation_failed",
+        ...(solverTimedOut && {
+          message:
+            "The solver deadline expired. The existing paid task may still finish and its cost will be reconciled. Do not create another task or continue solving this challenge; manual verification is required.",
+        }),
         ...(deliveryStarted && {
           message:
             "Delivery may have occurred. Inspect the same browser page before any further action; do not repeat the solve.",

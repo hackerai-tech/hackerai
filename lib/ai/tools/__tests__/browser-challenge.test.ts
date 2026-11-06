@@ -301,6 +301,40 @@ it("does not retry an ambiguous paid failure, and hands off with a sanitized res
   expect(solve).toHaveBeenCalledTimes(1);
 });
 
+it("reports the solver deadline without delivering or creating another paid task", async () => {
+  const { tool, solve, evaluate, onToolCost } = setup();
+  solve.mockRejectedValue(
+    new DOMException("private-provider-detail", "TimeoutError"),
+  );
+  const result = await run(tool, "solve");
+  expect(result).toMatchObject({
+    status: "handoff_required",
+    reason: "solver_timeout",
+  });
+  expect(JSON.stringify(result)).not.toContain("private-provider-detail");
+  expect(evaluate).toHaveBeenCalledTimes(1);
+  expect(onToolCost).not.toHaveBeenCalled();
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("does not mislabel the run's own timeout as a provider timeout", async () => {
+  const { tool, solve } = setup();
+  const controller = new AbortController();
+  const reason = new DOMException("Run deadline", "TimeoutError");
+  solve.mockImplementation(async () => {
+    controller.abort(reason);
+    throw reason;
+  });
+  await expect(run(tool, "solve", controller.signal)).rejects.toBe(reason);
+  expect(phLogger.event).not.toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "solver_timeout" }),
+  );
+});
+
 it.each(["denied", "ambiguous write"])(
   "does not create a paid task after journal admission is %s",
   async (variant) => {

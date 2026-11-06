@@ -40,9 +40,13 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         widget.invisible
       )
         throw new Error("CAPTCHA provider or challenge is unsupported.");
-      // Real hCaptcha tasks can exceed two minutes. Keep a hard bound while
-      // leaving room for those results; Stop still cancels delivery immediately.
-      const deadline = AbortSignal.any([signal, AbortSignal.timeout(180_000)]);
+      // hCaptcha can still be processing after three minutes. Continue polling
+      // that same paid task within a five-minute wall-clock bound; never create
+      // a replacement task. Other challenges retain their three-minute bound.
+      const deadline = AbortSignal.any([
+        signal,
+        AbortSignal.timeout(widget.kind === "hcaptcha" ? 300_000 : 180_000),
+      ]);
       const request = async (
         method: "createTask" | "getTaskResult",
         payload: Record<string, unknown>,
@@ -97,7 +101,7 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           }
         }
       }
-      for (let poll = 0; poll < 35; poll++) {
+      for (;;) {
         await abortableDelay(5000, deadline);
         const result = await request("getTaskResult", {
           taskId: created.taskId,
@@ -125,7 +129,6 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           throw new Error("CAPTCHA provider returned an invalid solution.");
         return { token, costDollars };
       }
-      throw new Error("CAPTCHA solver timed out. Do not automatically retry.");
     },
   };
 }

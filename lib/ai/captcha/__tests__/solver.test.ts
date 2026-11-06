@@ -15,11 +15,22 @@ const reply = (data: unknown) => ({ ok: true, json: async () => data });
 
 beforeEach(() => {
   jest.useFakeTimers();
+  // Node's native AbortSignal.timeout does not use Jest's fake clock.
+  jest.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const controller = new AbortController();
+    setTimeout(
+      () =>
+        controller.abort(new DOMException("Deadline expired", "TimeoutError")),
+      ms,
+    );
+    return controller.signal;
+  });
   global.fetch = mockFetch;
   mockFetch.mockReset();
 });
 afterEach(() => {
   global.fetch = originalFetch;
+  jest.clearAllTimers();
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -238,22 +249,96 @@ it("records a known fee even if the returned token is invalid", async () => {
   expect(recordCost).toHaveBeenCalledWith(123, 0.00299);
 });
 
-it("bounds polling without issuing another paid creation", async () => {
+it("accepts a slow hCaptcha result from the original task after three minutes", async () => {
+  const started = Date.now();
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+  mockFetch.mockImplementation(async () =>
+    reply(
+      Date.now() - started < 210_000
+        ? { errorId: 0, status: "processing" }
+        : {
+            errorId: 0,
+            status: "ready",
+            cost: "0.00299",
+            solution: { gRecaptchaResponse: "response" },
+          },
+    ),
+  );
+  const recordCost = jest.fn(async () => {});
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    "https://accounts.hcaptcha.com/demo",
+    {
+      ...widget,
+      kind: "hcaptcha",
+      siteKey: "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2",
+    },
+    new AbortController().signal,
+    undefined,
+    recordCost,
+  );
+  const result = expect(pending).resolves.toEqual({
+    token: "response",
+    costDollars: 0.00299,
+  });
+  await jest.advanceTimersByTimeAsync(210_000);
+  await result;
+  expect(
+    mockFetch.mock.calls.filter(([url]) => url.endsWith("/createTask")),
+  ).toHaveLength(1);
+  expect(recordCost).toHaveBeenCalledTimes(1);
+});
+
+it("Stop cancels slow hCaptcha polling without waiting for its longer deadline", async () => {
   mockFetch
     .mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }))
     .mockResolvedValue(reply({ errorId: 0, status: "processing" }));
+  const controller = new AbortController();
   const pending = createTwoCaptchaSolver("provider-key").solve(
-    demo,
-    widget,
-    new AbortController().signal,
+    "https://accounts.hcaptcha.com/demo",
+    {
+      ...widget,
+      kind: "hcaptcha",
+      siteKey: "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2",
+    },
+    controller.signal,
   );
-  const rejected = expect(pending).rejects.toThrow("timed out");
-  await jest.advanceTimersByTimeAsync(175_000);
+  const rejected = expect(pending).rejects.toThrow("stopped");
+  await jest.advanceTimersByTimeAsync(200_000);
+  const callsBeforeStop = mockFetch.mock.calls.length;
+  controller.abort(new Error("stopped"));
   await rejected;
+  await jest.advanceTimersByTimeAsync(100_000);
+  expect(mockFetch).toHaveBeenCalledTimes(callsBeforeStop);
   expect(
     mockFetch.mock.calls.filter(([url]) => url.endsWith("/createTask")),
   ).toHaveLength(1);
 });
+
+it.each(["recaptcha_v2", "hcaptcha"] as const)(
+  "bounds %s polling without issuing another paid creation",
+  async (kind) => {
+    mockFetch
+      .mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }))
+      .mockResolvedValue(reply({ errorId: 0, status: "processing" }));
+    const pending = createTwoCaptchaSolver("provider-key").solve(
+      kind === "hcaptcha" ? "https://accounts.hcaptcha.com/demo" : demo,
+      kind === "hcaptcha"
+        ? { ...widget, kind, siteKey: "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2" }
+        : widget,
+      new AbortController().signal,
+    );
+    const rejected = expect(pending).rejects.toMatchObject({
+      name: "TimeoutError",
+    });
+    await jest.advanceTimersByTimeAsync(
+      kind === "hcaptcha" ? 300_000 : 180_000,
+    );
+    await rejected;
+    expect(
+      mockFetch.mock.calls.filter(([url]) => url.endsWith("/createTask")),
+    ).toHaveLength(1);
+  },
+);
 
 it.each([
   { url: "https://customer.test/login", widget },
